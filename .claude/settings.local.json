@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npx electron-vite:*)",
+      "Bash(pkill -f electron)",
+      "Bash(node -e \"const Store = require\\(''electron-store''\\); console.log\\(typeof Store\\)\")",
+      "Bash(sips --help)",
+      "Bash(node -e \":*)",
+      "Bash(find /Users/bedware/Desktop/newbro -maxdepth 2 -type f \\\\\\(-name *.config.* -o -name .*.config.* \\\\\\) ! -path */node_modules/*)",
+      "Bash(grep -r \"Newbro\\\\|newbro\\\\|productName\" /Users/bedware/Desktop/newbro --include=\"*.ts\" --include=\"*.tsx\" --include=\"*.json\" ! -path \"*/node_modules/*\" ! -path \"*/out/*\")",
+      "Bash(python3 -c \"import struct, zlib; print\\(''ok''\\)\")",
+      "Bash(mkdir -p /tmp/newbro_icon.iconset)",
+      "Bash(sips -z 256 256 /Users/bedware/Desktop/newbro/resources/icon.png --out /tmp/newbro_icon.iconset/icon_256x256.png)",
+      "Bash(sips -z 128 128 /Users/bedware/Desktop/newbro/resources/icon.png --out /tmp/newbro_icon.iconset/icon_128x128.png)",
+      "Bash(sips -z 512 512 /Users/bedware/Desktop/newbro/resources/icon.png --out /tmp/newbro_icon.iconset/icon_256x256@2x.png)",
+      "Bash(sips -z 32 32 /Users/bedware/Desktop/newbro/resources/icon.png --out /tmp/newbro_icon.iconset/icon_32x32.png)",
+      "Bash(npm run:*)",
+      "Bash(npx electron:*)",
+      "Bash(node -e \"console.log\\(require\\(''./node_modules/electron/package.json''\\).version\\)\")",
+      "Bash(node -e \"const v = process.versions; console.log\\(''Chrome:'', v.chrome || ''N/A''\\)\")"
+    ]
+  }
+}
