@@ -23,6 +23,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Import
   openBookmarkFile: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-bookmark-file'),
 
+  // About
+  showAboutPanel: (): void => { ipcRenderer.send('show-about-panel') },
+
+  // Context menu
+  showContextMenu: (items: any[]): Promise<string | null> => ipcRenderer.invoke('context-menu:show', items),
+
   // Receive events from main process — return cleanup function
   onShortcut: (callback: (action: string) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, action: string) => callback(action)

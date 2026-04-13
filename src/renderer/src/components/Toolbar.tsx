@@ -18,12 +18,17 @@ import { CertificatePopup } from './CertificatePopup'
 import {
   ChevronLeft, ChevronRight, RotateCw, X, ChevronDown, Plus, Trash2, Pencil,
   PanelLeftClose, PanelLeft, User, Layout, Lock, Unlock, ShieldAlert, Import,
+  Menu, Settings, Info, Globe, Copy, Check,
 } from 'lucide-react'
+
+const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
 interface Props {
   windowWorkspaceId: string | null
   sidebarVisible: boolean
   onToggleSidebar: () => void
+  onOpenSettings: () => void
+  onOpenAbout: () => void
 }
 
 function SortableDropdownRow({
@@ -169,7 +174,7 @@ function Dropdown({ items, value, onChange, onDelete, onEdit, onReorder, icon: I
     <div ref={ref} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 h-8 px-2.5 rounded-md bg-secondary hover:bg-accent text-secondary-foreground text-xs font-medium transition-colors"
+        className="shrink-0 flex items-center gap-1.5 h-8 px-2.5 rounded-md bg-secondary hover:bg-accent text-secondary-foreground text-xs font-medium transition-colors"
       >
         <Icon size={13} className="text-muted-foreground" />
         <span className="max-w-[100px] truncate">{selected?.name || label}</span>
@@ -247,7 +252,107 @@ function Dropdown({ items, value, onChange, onDelete, onEdit, onReorder, icon: I
   )
 }
 
-export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar }: Props) {
+function AppMenu({ onOpenSettings, onOpenAbout }: { onOpenSettings: () => void; onOpenAbout: () => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handle = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [open])
+
+  const settingsShortcut = isMacOS ? '⌘,' : 'Ctrl+,'
+
+  return (
+    <div ref={ref} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="h-8 px-2 shrink-0 flex items-center gap-1 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium"
+      >
+        <Menu size={15} />
+        <span>Menu</span>
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 w-48 bg-popover border border-border rounded-lg shadow-lg py-1 z-50 text-xs">
+          <button
+            onClick={() => { setOpen(false); onOpenAbout() }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left"
+          >
+            <Info size={14} className="text-muted-foreground" />
+            <span>About</span>
+          </button>
+          <button
+            onClick={() => { setOpen(false); onOpenSettings() }}
+            className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-accent text-left"
+          >
+            <span className="flex items-center gap-2">
+              <Settings size={14} className="text-muted-foreground" />
+              <span>Settings</span>
+            </span>
+            <span className="text-muted-foreground">{settingsShortcut}</span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ActiveTabTitle({ title, favicon, comment }: { title: string; favicon?: string; comment?: string }) {
+  const displayTitle = comment ? `${comment} — ${title}` : title
+  const textRef = useRef<HTMLSpanElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [isOverflowing, setIsOverflowing] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    const el = textRef.current
+    const container = containerRef.current
+    if (!el || !container) return
+    setIsOverflowing(el.scrollWidth > container.clientWidth)
+  }, [displayTitle])
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(displayTitle)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <div
+      className="group/tabtitle flex-[3] hidden min-[1200px]:flex items-center gap-2 h-8 rounded-md bg-secondary px-2.5"
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      title={displayTitle}
+    >
+      <div className="relative shrink-0 w-4 h-4 flex items-center justify-center">
+        {favicon ? (
+          <img src={favicon} className={`w-4 h-4 rounded-sm transition-opacity ${copied ? 'opacity-0' : 'group-hover/tabtitle:opacity-0'}`} alt="" draggable={false} />
+        ) : (
+          <Globe size={14} className={`text-muted-foreground transition-opacity ${copied ? 'opacity-0' : 'group-hover/tabtitle:opacity-0'}`} />
+        )}
+        <button
+          onClick={handleCopy}
+          className={`absolute inset-0 flex items-center justify-center text-muted-foreground hover:text-foreground transition-opacity ${copied ? 'opacity-100' : 'opacity-0 group-hover/tabtitle:opacity-100'}`}
+        >
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+        </button>
+      </div>
+      <div ref={containerRef} className="flex-1 overflow-hidden">
+        <span
+          ref={textRef}
+          className={`block truncate text-foreground cursor-default ${isOverflowing ? 'text-xs' : 'text-sm'}`}
+        >
+          {displayTitle}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout }: Props) {
   const isMac = navigator.platform.includes('Mac')
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
@@ -558,22 +663,25 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar }: 
   return (
     <>
       <div
-        className="flex items-center gap-1.5 px-3 h-12 border-b border-border bg-card shrink-0"
+        className="flex items-center gap-1.5 px-2 h-12 border-b border-border bg-card shrink-0"
         style={{
-          paddingLeft: isMac ? 80 : 12,
-          paddingRight: isMac ? 12 : 140,
+          paddingLeft: isMac ? 80 : 8,
+          paddingRight: isMac ? 8 : 140,
           WebkitAppRegion: 'drag',
         } as React.CSSProperties}
       >
         {/* Sidebar toggle */}
         <button
           onClick={onToggleSidebar}
-          className="h-8 w-8 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           title="Toggle Sidebar"
         >
           {sidebarVisible ? <PanelLeftClose size={15} /> : <PanelLeft size={15} />}
         </button>
+
+        {/* App menu */}
+        <AppMenu onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} />
 
         {/* Profile selector */}
         <Dropdown
@@ -605,40 +713,40 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar }: 
           extraActions={[{ label: 'Import Workspace', icon: Import, onClick: handleImportWorkspace }]}
         />
 
-        <div className="w-px h-5 bg-border mx-1" />
+        <div className="w-px h-5 bg-border mx-1 shrink-0" />
 
         {/* Nav buttons */}
         <button
           onClick={handleBack}
-          className="h-8 w-8 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <ChevronLeft size={16} />
         </button>
         <button
           onClick={handleForward}
-          className="h-8 w-8 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <ChevronRight size={16} />
         </button>
         <button
           onClick={handleReloadOrStop}
-          className="h-8 w-8 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           title={isLoading ? 'Stop loading' : 'Reload page'}
         >
           {isLoading ? <X size={14} /> : <RotateCw size={14} />}
         </button>
 
-        {/* URL bar with security indicator */}
+        {/* URL bar with security indicator + tab title */}
         <div
-          className="flex-1 flex items-center h-8 rounded-md bg-secondary border border-input focus-within:border-ring focus-within:bg-background"
+          className="flex-[5] flex items-center h-8 rounded-md bg-secondary focus-within:bg-background"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          {security !== 'internal' && (
-            <div
-              className="pl-2.5 pr-0.5 flex items-center cursor-pointer group relative"
+          {security !== 'internal' && (<>
+            <button
+              className="ml-1.5 h-6 w-6 flex items-center justify-center rounded-md bg-card cursor-pointer group relative"
               onClick={() => setCertPopupOpen((v) => !v)}
             >
               {security === 'secure' && <Lock size={13} className="text-green-500" />}
@@ -647,17 +755,14 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar }: 
               {/* Tooltip centered under icon (hidden when popup is open) */}
               {!certPopupOpen && (
                 <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 hidden group-hover:block z-50 pointer-events-none">
-                  <div className={`whitespace-nowrap px-3 py-1.5 rounded-md shadow-lg text-xs font-medium border ${
-                    security === 'secure' ? 'bg-popover border-green-500/30 text-green-400' :
-                    security === 'warning' ? 'bg-popover border-red-500/30 text-red-400' :
-                    'bg-popover border-border text-muted-foreground'
-                  }`}>
+                  <div className="whitespace-nowrap px-3 py-1.5 rounded-md shadow-lg text-xs font-medium border bg-popover border-border text-popover-foreground">
                     {certInfo}
                   </div>
                 </div>
               )}
-            </div>
-          )}
+            </button>
+            <div className="w-px h-full ml-1.5 bg-card" />
+          </>)}
           <input
             id="url-bar"
             ref={urlRef}
@@ -670,6 +775,12 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar }: 
             className="flex-1 h-full px-2.5 bg-transparent border-none text-sm text-foreground outline-none"
           />
         </div>
+
+        {/* Tab title */}
+        {activeTab?.title && (<>
+          <div className="w-px h-5 bg-border mx-1 shrink-0 hidden min-[1200px]:block" />
+          <ActiveTabTitle title={activeTab.title} favicon={activeTab.favicon} comment={activeTab.comment} />
+        </>)}
       </div>
 
       <InputDialog

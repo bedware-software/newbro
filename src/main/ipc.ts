@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog } from 'electron'
+import { ipcMain, BrowserWindow, dialog, app, Menu } from 'electron'
 import * as tls from 'tls'
 import * as fs from 'fs'
 import { loadState, saveState } from './store'
@@ -153,5 +153,42 @@ export function registerIpcHandlers(): void {
     if (result.canceled || result.filePaths.length === 0) return null
     const content = fs.readFileSync(result.filePaths[0], 'utf-8')
     return content
+  })
+
+  ipcMain.handle('context-menu:show', (_e, items: { id: string; label: string; type?: string; enabled?: boolean; submenu?: { id: string; label: string }[] }[]) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win) return null
+    return new Promise<string | null>((resolve) => {
+      const template = items.map((item) => {
+        if (item.type === 'separator') return { type: 'separator' as const }
+        if (item.submenu) {
+          return {
+            label: item.label,
+            submenu: item.submenu.map((sub) => ({
+              label: sub.label,
+              click: () => resolve(sub.id),
+            })),
+          }
+        }
+        return {
+          label: item.label,
+          enabled: item.enabled !== false,
+          click: () => resolve(item.id),
+        }
+      })
+      const menu = Menu.buildFromTemplate(template)
+      menu.popup({ window: win, callback: () => resolve(null) })
+    })
+  })
+
+  ipcMain.on('show-about-panel', (_e) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    // On macOS the about panel can appear behind the window — use the menu item role approach
+    if (process.platform === 'darwin') {
+      const { Menu } = require('electron')
+      Menu.sendActionToFirstResponder('orderFrontStandardAboutPanel:')
+    } else {
+      app.showAboutPanel()
+    }
   })
 }

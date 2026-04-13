@@ -3,6 +3,7 @@ export interface Tab {
   title: string
   url: string
   favicon: string
+  comment?: string
 }
 
 export interface TabGroup {

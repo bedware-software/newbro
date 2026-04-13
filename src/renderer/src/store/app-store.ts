@@ -109,6 +109,7 @@ export interface AppState {
   updateTabUrl: (id: string, url: string) => void
   updateTabTitle: (id: string, title: string) => void
   updateTabFavicon: (id: string, favicon: string) => void
+  setTabComment: (id: string, comment: string) => void
 
   // Ungrouped tab actions
   addUngroupedTab: (workspaceId: string, url?: string) => void
@@ -408,7 +409,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         for (const w of p.workspaces) {
           const g = w.tabGroups.find((g) => g.id === tabGroupId)
           if (g) {
-            g.tabs.push(tab)
+            const activeIdx = g.tabs.findIndex((t) => t.id === s.activeTabId)
+            if (activeIdx !== -1) {
+              g.tabs.splice(activeIdx + 1, 0, tab)
+            } else {
+              g.tabs.push(tab)
+            }
             g.isCollapsed = false // ensure group is expanded so new tab is visible
             s.activeTabId = tab.id
             s.activeTabGroupId = tabGroupId
@@ -523,6 +529,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   })),
 
+  setTabComment: (id, comment) => set(produce((s: AppState) => {
+    for (const p of s.profiles) {
+      for (const w of p.workspaces) {
+        const ut = w.tabs?.find((t) => t.id === id)
+        if (ut) { ut.comment = comment || undefined; return }
+        for (const g of w.tabGroups) {
+          const t = g.tabs.find((t) => t.id === id)
+          if (t) { t.comment = comment || undefined; return }
+        }
+      }
+    }
+  })),
+
   // ── Ungrouped tabs ──
   addUngroupedTab: (workspaceId, url) => {
     const tab = makeTab(url)
@@ -533,7 +552,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (w) {
           if (!w.tabs) w.tabs = []
           w.tabs.push(tab)
-          ensureSidebarOrder(w).push(tab.id)
+          const order = ensureSidebarOrder(w)
+          const activeIdx = s.activeTabId ? order.indexOf(s.activeTabId) : -1
+          if (activeIdx !== -1) {
+            order.splice(activeIdx + 1, 0, tab.id)
+          } else {
+            order.push(tab.id)
+          }
           s.activeTabId = tab.id
           s.activeTabGroupId = null
           return

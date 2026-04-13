@@ -3,21 +3,14 @@ import { useAppStore, getSidebarOrder } from '../store/app-store'
 import { log } from '../lib/log'
 import { InputDialog } from './InputDialog'
 import {
-  ChevronRight, ChevronDown, Plus, X, Globe, FolderPlus,
+  ChevronRight, ChevronDown, Plus, X, Globe, FolderPlus, MessageSquareText,
 } from 'lucide-react'
-
-interface ContextMenuState {
-  x: number
-  y: number
-  type: 'tab' | 'group'
-  tabId?: string
-  groupId?: string
-}
 
 interface TabItem {
   id: string
   title: string
   favicon: string
+  comment?: string
 }
 
 interface GroupItem {
@@ -67,6 +60,7 @@ export function Sidebar({ visible }: Props) {
   const ungroupTab = useAppStore((s) => s.ungroupTab)
   const ungroupAll = useAppStore((s) => s.ungroupAll)
   const closeGroup = useAppStore((s) => s.closeGroup)
+  const setTabComment = useAppStore((s) => s.setTabComment)
 
   const workspace = (() => {
     const profile = profiles.find((p) => p.id === activeProfileId)
@@ -126,6 +120,9 @@ export function Sidebar({ visible }: Props) {
   const [groupFromSelectionOpen, setGroupFromSelectionOpen] = useState(false)
   const [groupFromContextOpen, setGroupFromContextOpen] = useState(false)
   const [contextTabForGroup, setContextTabForGroup] = useState<string | null>(null)
+  const [commentDialogOpen, setCommentDialogOpen] = useState(false)
+  const [commentTabId, setCommentTabId] = useState<string | null>(null)
+  const [commentDefault, setCommentDefault] = useState('')
 
   // ── Drag & Drop (pointer-based, no library) ──
   const [dragging, setDragging] = useState<{ type: 'tab' | 'group'; id: string; ids: string[] } | null>(null)
@@ -133,28 +130,6 @@ export function Sidebar({ visible }: Props) {
   const dragStartPos = useRef<{ x: number; y: number } | null>(null)
   const dragActivated = useRef(false)
   const sidebarRef = useRef<HTMLDivElement>(null)
-
-  // ── Context menu ──
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
-  const contextMenuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!contextMenu) return
-    const handleClick = (e: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
-        setContextMenu(null)
-      }
-    }
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setContextMenu(null)
-    }
-    document.addEventListener('mousedown', handleClick)
-    document.addEventListener('keydown', handleKey)
-    return () => {
-      document.removeEventListener('mousedown', handleClick)
-      document.removeEventListener('keydown', handleKey)
-    }
-  }, [contextMenu])
 
   // ── Drag handlers ──
   const startDrag = useCallback((type: 'tab' | 'group', id: string, ids: string[], e: React.MouseEvent) => {
@@ -408,16 +383,70 @@ export function Sidebar({ visible }: Props) {
     setEditingGroupId(null)
   }
 
-  const handleTabContextMenu = (tabId: string, e: React.MouseEvent) => {
+  const handleTabContextMenu = async (tabId: string, e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    setContextMenu({ x: e.clientX, y: e.clientY, type: 'tab', tabId })
+    const tabGroupId = findTabGroup(tabId)
+    const isUngrouped = tabGroupId === null
+    const tab = workspace.tabs?.find((t) => t.id === tabId) || workspace.tabGroups.flatMap((g) => g.tabs).find((t) => t.id === tabId)
+    const hasComment = !!tab?.comment
+
+    const items: any[] = [
+      { id: 'close', label: 'Close Tab' },
+    ]
+    if (!isUngrouped) {
+      items.push({ id: 'ungroup', label: 'Ungroup Tab' })
+    }
+    items.push({ id: 'new-group', label: 'Add to New Group...' })
+    items.push({ type: 'separator' })
+    items.push({ id: 'set-comment', label: hasComment ? 'Edit Comment...' : 'Set Comment...' })
+    if (hasComment) {
+      items.push({ id: 'remove-comment', label: 'Remove Comment' })
+    }
+    if (workspace.tabGroups.length > 0) {
+      const groups = workspace.tabGroups.filter((g) => g.id !== tabGroupId)
+      if (groups.length > 0) {
+        items.push({ type: 'separator' })
+        items.push({
+          id: 'move-to-group',
+          label: 'Move to Group',
+          submenu: groups.map((g) => ({ id: `move:${g.id}`, label: g.name })),
+        })
+      }
+    }
+
+    const api = (window as any).electronAPI
+    const action = await api.showContextMenu(items)
+    if (!action) return
+    if (action === 'close') closeTab(tabId)
+    else if (action === 'ungroup') ungroupTab(tabId)
+    else if (action === 'new-group') { setContextTabForGroup(tabId); setGroupFromContextOpen(true) }
+    else if (action === 'set-comment') { setCommentTabId(tabId); setCommentDefault(tab?.comment || ''); setCommentDialogOpen(true) }
+    else if (action === 'remove-comment') setTabComment(tabId, '')
+    else if (action.startsWith('move:')) moveTabToGroup(tabId, action.slice(5))
   }
 
-  const handleGroupContextMenu = (groupId: string, e: React.MouseEvent) => {
+  const handleGroupContextMenu = async (groupId: string, e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    setContextMenu({ x: e.clientX, y: e.clientY, type: 'group', groupId })
+    const group = workspace.tabGroups.find((g) => g.id === groupId)
+    if (!group) return
+
+    const items = [
+      { id: 'rename', label: 'Rename Group' },
+      { id: 'add-tab', label: 'Add Tab to Group' },
+      { type: 'separator' },
+      { id: 'ungroup-all', label: 'Ungroup All Tabs' },
+      { id: 'close-group', label: `Close Group (${group.tabs.length} tabs)` },
+    ]
+
+    const api = (window as any).electronAPI
+    const action = await api.showContextMenu(items)
+    if (!action) return
+    if (action === 'rename') handleGroupDoubleClick(groupId, group.name)
+    else if (action === 'add-tab') addTab(groupId)
+    else if (action === 'ungroup-all') ungroupAll(groupId)
+    else if (action === 'close-group') closeGroup(groupId)
   }
 
   const findTabGroup = (tabId: string): string | null => {
@@ -508,7 +537,8 @@ export function Sidebar({ visible }: Props) {
         ) : (
           <Globe size={14} className="shrink-0 text-muted-foreground" />
         )}
-        <span className="flex-1 text-xs truncate">{tab.title}</span>
+        {tab.comment && <MessageSquareText size={10} className="shrink-0 text-primary/60" />}
+        <span className="flex-1 text-xs truncate">{tab.comment ? `${tab.comment} — ${tab.title}` : tab.title}</span>
         <button
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
@@ -686,54 +716,6 @@ export function Sidebar({ visible }: Props) {
         />
       </div>
 
-      {contextMenu && (
-        <div
-          ref={contextMenuRef}
-          className="fixed z-50 min-w-[180px] bg-popover border border-border rounded-lg shadow-lg py-1 text-xs"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-        >
-          {contextMenu.type === 'tab' && contextMenu.tabId && (() => {
-            const tabId = contextMenu.tabId
-            const tabGroupId = findTabGroup(tabId)
-            const isUngrouped = tabGroupId === null
-            return (
-              <>
-                <button className="w-full text-left px-3 py-1.5 hover:bg-accent text-foreground" onClick={() => { closeTab(tabId); setContextMenu(null) }}>Close Tab</button>
-                {!isUngrouped && (
-                  <button className="w-full text-left px-3 py-1.5 hover:bg-accent text-foreground" onClick={() => { ungroupTab(tabId); setContextMenu(null) }}>Ungroup Tab</button>
-                )}
-                <button className="w-full text-left px-3 py-1.5 hover:bg-accent text-foreground" onClick={() => { setContextTabForGroup(tabId); setGroupFromContextOpen(true); setContextMenu(null) }}>Add to New Group...</button>
-                {workspace.tabGroups.length > 0 && (
-                  <>
-                    <div className="h-px bg-border my-1" />
-                    <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">Move to Group</div>
-                    {workspace.tabGroups.filter((g) => g.id !== tabGroupId).map((g) => (
-                      <button key={g.id} className="w-full text-left px-3 py-1.5 hover:bg-accent text-foreground flex items-center gap-2" onClick={() => { moveTabToGroup(tabId, g.id); setContextMenu(null) }}>
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: g.color }} />{g.name}
-                      </button>
-                    ))}
-                  </>
-                )}
-              </>
-            )
-          })()}
-
-          {contextMenu.type === 'group' && contextMenu.groupId && (() => {
-            const groupId = contextMenu.groupId
-            const group = workspace.tabGroups.find((g) => g.id === groupId)
-            if (!group) return null
-            return (
-              <>
-                <button className="w-full text-left px-3 py-1.5 hover:bg-accent text-foreground" onClick={() => { handleGroupDoubleClick(groupId, group.name); setContextMenu(null) }}>Rename Group</button>
-                <button className="w-full text-left px-3 py-1.5 hover:bg-accent text-foreground" onClick={() => { addTab(groupId); setContextMenu(null) }}>Add Tab to Group</button>
-                <div className="h-px bg-border my-1" />
-                <button className="w-full text-left px-3 py-1.5 hover:bg-accent text-foreground" onClick={() => { ungroupAll(groupId); setContextMenu(null) }}>Ungroup All Tabs</button>
-                <button className="w-full text-left px-3 py-1.5 hover:bg-accent text-destructive" onClick={() => { closeGroup(groupId); setContextMenu(null) }}>Close Group ({group.tabs.length} tabs)</button>
-              </>
-            )
-          })()}
-        </div>
-      )}
 
       <InputDialog
         open={groupFromSelectionOpen}
@@ -759,6 +741,23 @@ export function Sidebar({ visible }: Props) {
         onCancel={() => {
           setContextTabForGroup(null)
           setGroupFromContextOpen(false)
+        }}
+      />
+
+      <InputDialog
+        open={commentDialogOpen}
+        title="Tab Comment"
+        placeholder="Enter comment..."
+        defaultValue={commentDefault}
+        confirmLabel="Save"
+        onConfirm={(value) => {
+          if (commentTabId) setTabComment(commentTabId, value)
+          setCommentTabId(null)
+          setCommentDialogOpen(false)
+        }}
+        onCancel={() => {
+          setCommentTabId(null)
+          setCommentDialogOpen(false)
         }}
       />
     </>

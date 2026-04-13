@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useAppStore, withoutSave, setDefaultNewTabUrl, getSidebarOrder } from './store/app-store'
 import { setSearchEngine } from './lib/url'
 import { log } from './lib/log'
@@ -7,6 +7,9 @@ import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
 import { SearchDialog } from './components/SearchDialog'
 import { SettingsDialog } from './components/SettingsDialog'
+import { CommandPalette } from './components/CommandPalette'
+import { InputDialog } from './components/InputDialog'
+import { GroupPicker } from './components/GroupPicker'
 
 interface Settings {
   proxy: {
@@ -62,6 +65,13 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [commentDialogOpen, setCommentDialogOpen] = useState(false)
+  const [commentDefault, setCommentDefault] = useState('')
+  const [newGroupDialogOpen, setNewGroupDialogOpen] = useState(false)
+  const [newGroupForTabId, setNewGroupForTabId] = useState<string | null>(null)
+  const [groupPickerOpen, setGroupPickerOpen] = useState(false)
+  const shortcutHandlerRef = useRef<((action: string) => void) | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(() => {
     const v = localStorage.getItem(SIDEBAR_VISIBLE_KEY)
@@ -182,8 +192,7 @@ export default function App() {
       state.setActiveTab(nextTabId)
     }
 
-    const cleanupShortcut = window.electronAPI.onShortcut((action) => {
-      log.event('shortcut received', action)
+    const handleAction = (action: string) => {
       const s = useAppStore.getState()
       switch (action) {
         case 'new-tab':
@@ -203,6 +212,9 @@ export default function App() {
           break
         case 'settings':
           setSettingsOpen((v) => !v)
+          break
+        case 'command-palette':
+          setCommandPaletteOpen((v) => !v)
           break
         case 'toggle-sidebar':
           toggleSidebar()
@@ -238,7 +250,54 @@ export default function App() {
           break
         case 'new-workspace':
           break
+        case 'about':
+          (window as any).electronAPI.showAboutPanel()
+          break
+        case 'set-comment': {
+          const tab = s.getActiveTab()
+          if (tab) {
+            setCommentDefault(tab.comment || '')
+            setCommentDialogOpen(true)
+          }
+          break
+        }
+        case 'remove-comment':
+          if (s.activeTabId) s.setTabComment(s.activeTabId, '')
+          break
+        case 'move-to-group':
+          if (s.activeTabId) {
+            setGroupPickerOpen(true)
+          }
+          break
+        case 'add-to-new-group':
+          if (s.activeTabId) {
+            setNewGroupForTabId(s.activeTabId)
+            setNewGroupDialogOpen(true)
+          }
+          break
+        case 'close-workspace':
+        case 'close-window':
+          (window as any).electronAPI.closeWindow()
+          break
+        case 'expand-all-groups': {
+          const profile = s.profiles.find((p) => p.id === s.activeProfileId)
+          const ws = profile?.workspaces.find((w) => w.id === s.activeWorkspaceId)
+          if (ws) ws.tabGroups.forEach((g) => { if (g.isCollapsed) s.toggleTabGroupCollapse(g.id) })
+          break
+        }
+        case 'collapse-all-groups': {
+          const profile = s.profiles.find((p) => p.id === s.activeProfileId)
+          const ws = profile?.workspaces.find((w) => w.id === s.activeWorkspaceId)
+          if (ws) ws.tabGroups.forEach((g) => { if (!g.isCollapsed) s.toggleTabGroupCollapse(g.id) })
+          break
+        }
       }
+    }
+    shortcutHandlerRef.current = handleAction
+
+    const cleanupShortcut = window.electronAPI.onShortcut((action) => {
+      log.event('shortcut received', action)
+      handleAction(action)
     })
 
     const cleanupState = window.electronAPI.onStateUpdated((state) => {
@@ -320,13 +379,71 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} onToggleSidebar={toggleSidebar} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => (window as any).electronAPI.showAboutPanel()} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar visible={sidebarVisible} />
         <WebviewPanel />
       </div>
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} windowWorkspaceId={windowWorkspaceId} />
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} onSave={handleSaveSettings} />
+      <CommandPalette
+        open={commandPaletteOpen}
+        onOpenChange={setCommandPaletteOpen}
+        onAction={(action) => {
+          setCommandPaletteOpen(false)
+          // Dispatch the action through the same shortcut handler
+          setTimeout(() => {
+            const handler = shortcutHandlerRef.current
+            if (handler) handler(action)
+          }, 100)
+        }}
+      />
+      <InputDialog
+        open={commentDialogOpen}
+        title="Tab Comment"
+        placeholder="Enter comment..."
+        defaultValue={commentDefault}
+        confirmLabel="Save"
+        onConfirm={(value) => {
+          const s = useAppStore.getState()
+          if (s.activeTabId) s.setTabComment(s.activeTabId, value)
+          setCommentDialogOpen(false)
+        }}
+        onCancel={() => setCommentDialogOpen(false)}
+      />
+      <InputDialog
+        open={newGroupDialogOpen}
+        title="New Group"
+        placeholder="Group name"
+        onConfirm={(name) => {
+          if (newGroupForTabId) {
+            useAppStore.getState().moveTabsToNewGroup([newGroupForTabId], name)
+          }
+          setNewGroupForTabId(null)
+          setNewGroupDialogOpen(false)
+        }}
+        onCancel={() => {
+          setNewGroupForTabId(null)
+          setNewGroupDialogOpen(false)
+        }}
+      />
+      <GroupPicker
+        open={groupPickerOpen}
+        onClose={() => setGroupPickerOpen(false)}
+        onSelect={(groupId) => {
+          const s = useAppStore.getState()
+          if (s.activeTabId) s.moveTabToGroup(s.activeTabId, groupId)
+          setGroupPickerOpen(false)
+        }}
+        onNewGroup={() => {
+          setGroupPickerOpen(false)
+          const s = useAppStore.getState()
+          if (s.activeTabId) {
+            setNewGroupForTabId(s.activeTabId)
+            setNewGroupDialogOpen(true)
+          }
+        }}
+      />
     </>
   )
 }

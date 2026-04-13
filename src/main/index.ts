@@ -3,7 +3,7 @@ import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers } from './ipc'
-import { loadState } from './store'
+import { loadState, loadOpenWorkspaceIds, saveOpenWorkspaceIds } from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { log } from './log'
 
@@ -440,6 +440,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
+    minWidth: 800,
     title: `${workspaceName} — Newbro`,
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac
@@ -459,10 +460,12 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   }
 
   workspaceWindows.set(workspaceId, win)
+  saveOpenWorkspaceIds([...workspaceWindows.keys()])
   installTabCycleInputShortcuts(win.webContents, win)
 
   win.on('closed', () => {
     workspaceWindows.delete(workspaceId)
+    saveOpenWorkspaceIds([...workspaceWindows.keys()])
   })
 
   // Allow renderer-created detached dialog windows and hide their native header.
@@ -624,6 +627,11 @@ function buildMenu(): void {
           click: (_item, win) => win?.webContents.send('shortcut', 'search'),
         },
         {
+          label: 'Command Palette',
+          accelerator: kb['command-palette'],
+          click: (_item, win) => win?.webContents.send('shortcut', 'command-palette'),
+        },
+        {
           label: 'Toggle Sidebar',
           accelerator: kb['toggle-sidebar'],
           click: (_item, win) => win?.webContents.send('shortcut', 'toggle-sidebar'),
@@ -658,6 +666,14 @@ function buildMenu(): void {
   ]
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+
+  // On Windows/Linux, hide the menu bar on all windows (shortcuts still work via the application menu)
+  if (process.platform !== 'darwin') {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.setAutoHideMenuBar(true)
+      win.setMenuBarVisibility(false)
+    }
+  }
 }
 
 function openInitialWindows(): void {
@@ -666,9 +682,22 @@ function openInitialWindows(): void {
   if (!state || !state.profiles || state.profiles.length === 0) return
 
   const activeProfile = state.profiles.find((p: any) => p.id === state.activeProfileId) || state.profiles[0]
-  log.info('opening workspaces for profile', { name: activeProfile.name, workspaceCount: activeProfile.workspaces.length })
-  for (const ws of activeProfile.workspaces) {
-    createWorkspaceWindow(activeProfile.id, ws.id, ws.name)
+  const savedOpenIds = loadOpenWorkspaceIds()
+  log.info('opening workspaces for profile', { name: activeProfile.name, workspaceCount: activeProfile.workspaces.length, savedOpenIds })
+
+  if (savedOpenIds.length > 0) {
+    // Only open workspaces that were open last time and still exist
+    for (const wsId of savedOpenIds) {
+      const ws = activeProfile.workspaces.find((w: any) => w.id === wsId)
+      if (ws) {
+        createWorkspaceWindow(activeProfile.id, ws.id, ws.name)
+      }
+    }
+  } else {
+    // First launch or no saved state — open all workspaces
+    for (const ws of activeProfile.workspaces) {
+      createWorkspaceWindow(activeProfile.id, ws.id, ws.name)
+    }
   }
 }
 
@@ -715,6 +744,12 @@ app.whenReady().then(() => {
       }
     }
   })
+})
+
+app.on('before-quit', () => {
+  const openIds = [...workspaceWindows.keys()]
+  log.info('before-quit: saving open workspace IDs', { openIds })
+  saveOpenWorkspaceIds(openIds)
 })
 
 app.on('window-all-closed', () => {
