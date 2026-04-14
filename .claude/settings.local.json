@@ -18,7 +18,18 @@
       "Bash(npm run:*)",
       "Bash(npx electron:*)",
       "Bash(node -e \"console.log\\(require\\(''./node_modules/electron/package.json''\\).version\\)\")",
-      "Bash(node -e \"const v = process.versions; console.log\\(''Chrome:'', v.chrome || ''N/A''\\)\")"
+      "Bash(node -e \"const v = process.versions; console.log\\(''Chrome:'', v.chrome || ''N/A''\\)\")",
+      "Bash(node -e ':*)",
+      "Bash(git config:*)",
+      "Bash(npx tsc:*)",
+      "Bash(curl -v -L --max-redirs 0 'https://unduck.link/')",
+      "Bash(curl -s 'https://unduck.link/')",
+      "Bash(curl -s 'https://unduck.link/assets/index-CVxS7xes.js')",
+      "Bash(curl -sL 'https://unduck.link/assets/index-CVxS7xes.js')",
+      "Read(//tmp/**)",
+      "Bash(curl -sL 'https://unduck.link/assets/index-CVxS7xes.js' -o /tmp/unduck.js)",
+      "Bash(curl -sL --max-time 10 'https://unduck.link/assets/index-CVxS7xes.js' -o C:/Users/dmitr/Desktop/newbro/tmp_unduck.js)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

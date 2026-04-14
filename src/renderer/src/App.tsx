@@ -31,8 +31,10 @@ declare global {
       setupSession: (partition: string) => Promise<void>
       openWorkspaceWindow: (profileId: string, workspaceId: string, workspaceName: string) => Promise<void>
       setWindowTitle: (title: string) => Promise<void>
+      setTitleBarOverlay: (options: { color: string; symbolColor: string; height: number }) => Promise<void>
       closeWindow: () => Promise<void>
       closeWorkspaceWindows: (workspaceIds: string[]) => Promise<void>
+      quit: () => void
       getCertInfo: (url: string) => Promise<unknown>
       logWrite: (level: string, msg: string) => void
       loadSettings: () => Promise<Settings>
@@ -41,7 +43,6 @@ declare global {
       onStateUpdated: (callback: (state: unknown) => void) => () => void
       onOpenUrlAsTab: (callback: (url: string) => void) => () => void
       onSettingsUpdated: (callback: (settings: unknown) => void) => () => void
-      onAuthComplete: (callback: (destinationUrl: string) => void) => () => void
     }
   }
 }
@@ -54,8 +55,16 @@ function getWindowParams(): { profileId: string | null; workspaceId: string | nu
   }
 }
 
+function getOverlayColors(theme: 'light' | 'dark' | 'system'): { color: string; symbolColor: string; height: number } {
+  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  return isDark
+    ? { color: '#0f0f0f', symbolColor: '#d7d7d7', height: 47 }
+    : { color: '#e3e4eb', symbolColor: '#37394a', height: 47 }
+}
+
 function applyTheme(theme: 'light' | 'dark' | 'system'): void {
   document.documentElement.setAttribute('data-theme', theme)
+  window.electronAPI.setTitleBarOverlay(getOverlayColors(theme))
   log.info('theme applied:', theme)
 }
 
@@ -234,7 +243,7 @@ export default function App() {
           const activeTab = s.getActiveTab()
           const targetUrl = activeTab?.url || ''
           if (wv && targetUrl && wv.loadURL) {
-            wv.loadURL(targetUrl)
+            wv.loadURL(targetUrl).catch(() => {})
           } else if (wv?.reloadIgnoringCache) {
             wv.reloadIgnoringCache()
           } else {
@@ -278,6 +287,9 @@ export default function App() {
         case 'close-workspace':
         case 'close-window':
           (window as any).electronAPI.closeWindow()
+          break
+        case 'quit':
+          (window as any).electronAPI.quit()
           break
         case 'expand-all-groups': {
           const profile = s.profiles.find((p) => p.id === s.activeProfileId)
@@ -346,25 +358,7 @@ export default function App() {
       setSearchEngine(s.searchEngine)
     })
 
-    // After external auth completes, navigate webview to the destination
-    const cleanupAuth = window.electronAPI.onAuthComplete((destinationUrl) => {
-      log.event('auth-complete', { destinationUrl })
-      const s = useAppStore.getState()
-      const wv = document.querySelector(`webview[data-tab-id="${s.activeTabId}"]`) as any
-      if (wv && destinationUrl) {
-        if (wv.loadURL) wv.loadURL(destinationUrl)
-        else wv.src = destinationUrl
-        if (s.activeTabId) s.updateTabUrl(s.activeTabId, destinationUrl)
-      } else if (wv) {
-        const activeTab = s.getActiveTab()
-        const targetUrl = activeTab?.url || ''
-        if (targetUrl && wv.loadURL) wv.loadURL(targetUrl)
-        else if (wv.reloadIgnoringCache) wv.reloadIgnoringCache()
-        else wv.reload()
-      }
-    })
-
-    return () => { cleanupShortcut(); cleanupState(); cleanupPopup(); cleanupSettings(); cleanupAuth() }
+    return () => { cleanupShortcut(); cleanupState(); cleanupPopup(); cleanupSettings() }
   }, [hydrate, windowWorkspaceId, toggleSidebar])
 
   const handleSaveSettings = async (newSettings: Settings) => {
@@ -385,7 +379,7 @@ export default function App() {
         <WebviewPanel />
       </div>
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} windowWorkspaceId={windowWorkspaceId} />
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} onSave={handleSaveSettings} />
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} onSave={handleSaveSettings} onThemePreview={applyTheme} />
       <CommandPalette
         open={commandPaletteOpen}
         onOpenChange={setCommandPaletteOpen}

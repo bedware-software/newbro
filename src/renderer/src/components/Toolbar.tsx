@@ -18,7 +18,7 @@ import { CertificatePopup } from './CertificatePopup'
 import {
   ChevronLeft, ChevronRight, RotateCw, X, ChevronDown, Plus, Trash2, Pencil,
   PanelLeftClose, PanelLeft, User, Layout, Lock, Unlock, ShieldAlert, Import,
-  Menu, Settings, Info, Globe, Copy, Check,
+  Menu, Settings, Info, Globe, Copy, Check, LogOut,
 } from 'lucide-react'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
@@ -174,7 +174,7 @@ function Dropdown({ items, value, onChange, onDelete, onEdit, onReorder, icon: I
     <div ref={ref} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <button
         onClick={() => setOpen(!open)}
-        className="shrink-0 flex items-center gap-1.5 h-8 px-2.5 rounded-md bg-secondary hover:bg-accent text-secondary-foreground text-xs font-medium transition-colors"
+        className="shrink-0 flex items-center gap-1.5 h-8 px-2.5 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium transition-colors"
       >
         <Icon size={13} className="text-muted-foreground" />
         <span className="max-w-[100px] truncate">{selected?.name || label}</span>
@@ -182,7 +182,7 @@ function Dropdown({ items, value, onChange, onDelete, onEdit, onReorder, icon: I
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1 z-50 min-w-[200px] bg-popover border border-border rounded-lg shadow-lg py-1 text-xs">
+        <div className="absolute top-full left-0 mt-1 z-50 min-w-[200px] bg-popover border border-border rounded-lg shadow-lg overflow-hidden text-xs">
           {onReorder ? (
             <DndContext
               sensors={sensors}
@@ -224,7 +224,7 @@ function Dropdown({ items, value, onChange, onDelete, onEdit, onReorder, icon: I
           )}
           {(onNew || extraActions) && (
             <>
-              <div className="h-px bg-border my-1" />
+              <div className="h-px bg-border" />
               {onNew && (
                 <button
                   className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-primary hover:bg-accent/50"
@@ -277,7 +277,7 @@ function AppMenu({ onOpenSettings, onOpenAbout }: { onOpenSettings: () => void; 
         <span>Menu</span>
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-1 w-48 bg-popover border border-border rounded-lg shadow-lg py-1 z-50 text-xs">
+        <div className="absolute top-full left-0 mt-1 w-48 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50 text-xs">
           <button
             onClick={() => { setOpen(false); onOpenAbout() }}
             className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left"
@@ -294,6 +294,14 @@ function AppMenu({ onOpenSettings, onOpenAbout }: { onOpenSettings: () => void; 
               <span>Settings</span>
             </span>
             <span className="text-muted-foreground">{settingsShortcut}</span>
+          </button>
+          <div className="border-t border-border" />
+          <button
+            onClick={() => { setOpen(false); window.electronAPI.quit() }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left text-destructive"
+          >
+            <LogOut size={14} />
+            <span>Quit</span>
           </button>
         </div>
       )}
@@ -323,7 +331,7 @@ function ActiveTabTitle({ title, favicon, comment }: { title: string; favicon?: 
 
   return (
     <div
-      className="group/tabtitle flex-[3] hidden min-[1200px]:flex items-center gap-2 h-8 rounded-md bg-secondary px-2.5"
+      className="group/tabtitle flex-[3] min-w-0 hidden min-[1200px]:flex items-center gap-2 h-8 rounded-md bg-secondary hover:bg-muted px-2.5"
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       title={displayTitle}
     >
@@ -476,7 +484,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         if (webview.reloadIgnoringCache) webview.reloadIgnoringCache()
         else webview.reload?.()
       } else if (webview.loadURL) {
-        webview.loadURL(resolved)
+        webview.loadURL(resolved).catch(() => {})
       } else {
         webview.src = resolved
       }
@@ -500,7 +508,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
     } else {
       const targetUrl = activeTab?.url || ''
       if (targetUrl && wv.loadURL) {
-        wv.loadURL(targetUrl)
+        wv.loadURL(targetUrl).catch(() => {})
       } else if (wv.reloadIgnoringCache) {
         wv.reloadIgnoringCache()
       } else {
@@ -663,10 +671,12 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   return (
     <>
       <div
-        className="flex items-center gap-1.5 px-2 h-12 border-b border-border bg-card shrink-0"
+        className="flex items-center gap-2 h-12 border-b border-border bg-card shrink-0"
         style={{
           paddingLeft: isMac ? 80 : 8,
-          paddingRight: isMac ? 8 : 140,
+          paddingRight: isMac ? 8 : 142,
+          paddingTop: 10,
+          paddingBottom: 10,
           WebkitAppRegion: 'drag',
         } as React.CSSProperties}
       >
@@ -713,7 +723,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
           extraActions={[{ label: 'Import Workspace', icon: Import, onClick: handleImportWorkspace }]}
         />
 
-        <div className="w-px h-5 bg-border mx-1 shrink-0" />
+        <div className="w-px h-5 bg-border shrink-0" />
 
         {/* Nav buttons */}
         <button
@@ -741,7 +751,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
 
         {/* URL bar with security indicator + tab title */}
         <div
-          className="flex-[5] flex items-center h-8 rounded-md bg-secondary focus-within:bg-background"
+          className="flex-[5] min-w-0 flex items-center h-8 rounded-md bg-secondary hover:bg-muted focus-within:bg-background"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           {security !== 'internal' && (<>
@@ -778,7 +788,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
 
         {/* Tab title */}
         {activeTab?.title && (<>
-          <div className="w-px h-5 bg-border mx-1 shrink-0 hidden min-[1200px]:block" />
+          <div className="w-px h-5 bg-border shrink-0 hidden min-[1200px]:block" />
           <ActiveTabTitle title={activeTab.title} favicon={activeTab.favicon} comment={activeTab.comment} />
         </>)}
       </div>

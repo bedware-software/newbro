@@ -39,6 +39,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'settings', label: 'Open Settings', category: 'General' },
   { id: 'about', label: 'About Newbro', category: 'General' },
   { id: 'close-window', label: 'Close Window', category: 'Window' },
+  { id: 'quit', label: 'Quit', category: 'General' },
 ]
 
 function formatKeybinding(binding: string): string {
@@ -214,8 +215,8 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   'close-tab': 'CmdOrCtrl+W',
   'close-window': 'CmdOrCtrl+Shift+W',
   'new-workspace': 'CmdOrCtrl+Shift+N',
-  'next-tab': 'Tab+J',
-  'prev-tab': 'Tab+K',
+  'next-tab': 'Alt+J',
+  'prev-tab': 'Alt+K',
   'toggle-sidebar': 'CmdOrCtrl+B',
   'focus-url': 'CmdOrCtrl+L',
   'search': 'CmdOrCtrl+O',

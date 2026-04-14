@@ -83,11 +83,41 @@ export function WebviewPanel() {
 
         const tabId = tab.id
 
+        // DEBUG: trace webview navigation lifecycle
+        const dbg = (evt: string, detail?: any) => console.log(`[webview:${tabId.slice(0,6)}] ${evt}`, detail ?? '')
+
+        wv.addEventListener('did-start-loading', () => dbg('did-start-loading'))
+        wv.addEventListener('did-stop-loading', () => dbg('did-stop-loading', { url: wv.getURL?.() }))
+        wv.addEventListener('did-start-navigation', (e: any) => dbg('did-start-navigation', { url: e.url, isMainFrame: e.isMainFrame }))
+        wv.addEventListener('will-navigate', (e: any) => dbg('will-navigate', { url: e.url }))
+        wv.addEventListener('dom-ready', () => dbg('dom-ready', { url: wv.getURL?.() }))
+        wv.addEventListener('did-finish-load', () => {
+          dbg('did-finish-load', { url: wv.getURL?.() })
+          // DEBUG: inspect guest DOM after load
+          wv.executeJavaScript?.(`JSON.stringify({
+            appHTML: document.getElementById('app')?.innerHTML?.slice(0, 500) || '<empty>',
+            bodyChildren: document.body.children.length,
+            scripts: document.querySelectorAll('script').length,
+            styles: document.querySelectorAll('link[rel=stylesheet]').length,
+            computedBg: getComputedStyle(document.body).backgroundColor,
+            bodyTags: Array.from(document.body.children).slice(0, 20).map(el => el.tagName + (el.id ? '#'+el.id : '') + (el.className ? '.'+String(el.className).slice(0,30) : '')),
+            headScripts: Array.from(document.querySelectorAll('head script')).map(s => (s.src || s.textContent?.slice(0,80) || '').slice(0, 100)),
+            failedScripts: Array.from(document.querySelectorAll('script[src]')).filter(s => !s.src.startsWith('data:')).map(s => s.src).slice(0, 10),
+          })`).then((r: string) => dbg('guest-dom', JSON.parse(r))).catch((e: any) => dbg('guest-dom-error', e.message))
+        })
+        // DEBUG: capture guest page console output (JS errors from the loaded site)
+        wv.addEventListener('console-message', (e: any) => {
+          const level = ['verbose','info','warning','error'][e.level] || e.level
+          dbg(`guest-console[${level}]`, e.message)
+        })
+
         wv.addEventListener('did-navigate', (e: any) => {
+          dbg('did-navigate', { url: e.url })
           if (!e.url || e.url.startsWith('data:') || e.url === 'about:blank') return
           useAppStore.getState().updateTabUrl(tabId, e.url)
         })
         wv.addEventListener('did-navigate-in-page', (e: any) => {
+          dbg('did-navigate-in-page', { url: e.url, isMainFrame: e.isMainFrame })
           if (e.isMainFrame && e.url && !e.url.startsWith('data:') && e.url !== 'about:blank') {
             useAppStore.getState().updateTabUrl(tabId, e.url)
           }
@@ -107,8 +137,9 @@ export function WebviewPanel() {
         })
 
         wv.addEventListener('did-fail-load', (e: any) => {
+          dbg('did-fail-load', { url: e.validatedURL, code: e.errorCode, desc: e.errorDescription, isMainFrame: e.isMainFrame })
           // Ignore aborted loads (navigation cancelled, redirects) and subframe errors
-          if (e.errorCode === -3 || !e.isMainFrame) return
+          if (e.errorCode === -3 || e.errorCode === -100 || !e.isMainFrame) return
           const url = e.validatedURL || getTabUrlById(tabId) || ''
           const desc = e.errorDescription || 'Unknown error'
 
@@ -132,7 +163,7 @@ export function WebviewPanel() {
         const tab = currentTabs.find((t) => t.id === id)
         const url = tab?.url || 'about:blank'
         if (url && url !== 'about:blank') {
-          ;(wv as any).loadURL(url)
+          ;(wv as any).loadURL(url).catch(() => {})
         }
       }
     }
@@ -145,7 +176,7 @@ export function WebviewPanel() {
       setError(null)
       const retryUrl = error.url || getTabUrlById(error.tabId)
       if (retryUrl && wv.loadURL) {
-        wv.loadURL(retryUrl)
+        wv.loadURL(retryUrl).catch(() => {})
       } else if (wv.reloadIgnoringCache) {
         wv.reloadIgnoringCache()
       } else {

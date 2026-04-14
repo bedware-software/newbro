@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openWorkspaceWindow: (profileId: string, workspaceId: string, workspaceName: string): Promise<void> =>
     ipcRenderer.invoke('workspace:open-window', profileId, workspaceId, workspaceName),
   setWindowTitle: (title: string): Promise<void> => ipcRenderer.invoke('window:set-title', title),
+  setTitleBarOverlay: (options: { color: string; symbolColor: string; height: number }): Promise<void> =>
+    ipcRenderer.invoke('window:set-titlebar-overlay', options),
   closeWindow: (): Promise<void> => ipcRenderer.invoke('window:close'),
   closeWorkspaceWindows: (workspaceIds: string[]): Promise<void> => ipcRenderer.invoke('workspace:close-windows', workspaceIds),
 
@@ -25,6 +27,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // About
   showAboutPanel: (): void => { ipcRenderer.send('show-about-panel') },
+
+  // Quit
+  quit: (): void => { ipcRenderer.send('app:quit') },
 
   // Context menu
   showContextMenu: (items: any[]): Promise<string | null> => ipcRenderer.invoke('context-menu:show', items),
@@ -49,10 +54,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_e: Electron.IpcRendererEvent, settings: unknown) => callback(settings)
     ipcRenderer.on('settings:updated', handler)
     return () => { ipcRenderer.removeListener('settings:updated', handler) }
-  },
-  onAuthComplete: (callback: (destinationUrl: string) => void) => {
-    const handler = (_e: Electron.IpcRendererEvent, destinationUrl: string) => callback(destinationUrl)
-    ipcRenderer.on('auth-complete', handler)
-    return () => { ipcRenderer.removeListener('auth-complete', handler) }
   },
 })

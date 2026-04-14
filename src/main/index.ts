@@ -3,11 +3,31 @@ import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers } from './ipc'
-import { loadState, loadOpenWorkspaceIds, saveOpenWorkspaceIds } from './store'
+import { loadState, loadOpenWindows, saveOpenWindows, type OpenWindowEntry } from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { log } from './log'
 
 // ── Chromium flags ──
+
+// Disable Chromium's User-Agent Client Hints so we don't send sec-ch-ua/
+// sec-ch-ua-mobile/sec-ch-ua-platform headers or expose navigator.userAgentData.
+// Google's sign-in rejection ("Couldn't sign you in — This browser or app may
+// not be secure") is triggered by sec-ch-ua containing only "Chromium" without
+// a recognized product brand like "Google Chrome". With the feature disabled,
+// Google falls back to the User-Agent string alone — which is a clean Chrome UA
+// after the stripping below — and sign-in goes through.
+app.commandLine.appendSwitch(
+  'disable-features',
+  'UserAgentClientHint,UserAgentClientHintFullVersionList,GreaseUACH,CriticalClientHint'
+)
+
+const SCROLLBAR_CSS = `
+::-webkit-scrollbar, *::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
+::-webkit-scrollbar-track, *::-webkit-scrollbar-track { background: transparent !important; }
+::-webkit-scrollbar-thumb, *::-webkit-scrollbar-thumb { background: rgba(100,100,100,0.45) !important; border-radius: 9999px !important; }
+::-webkit-scrollbar-thumb:hover, *::-webkit-scrollbar-thumb:hover { background: rgba(100,100,100,0.75) !important; }
+::-webkit-scrollbar-corner, *::-webkit-scrollbar-corner { background: transparent !important; }
+`
 
 // ── Branding ──
 app.setName('Newbro')
@@ -35,8 +55,20 @@ if (is.dev && process.platform === 'darwin') {
   }
 }
 
+// Suppress harmless Electron GUEST_VIEW_MANAGER_CALL errors caused by webview redirects
+const _origConsoleError = console.error
+console.error = (...args: unknown[]) => {
+  if (
+    typeof args[0] === 'string' &&
+    args[0].includes('GUEST_VIEW_MANAGER_CALL')
+  ) return
+  _origConsoleError(...args)
+}
+
 const configuredPartitions = new Set<string>()
 const workspaceWindows = new Map<string, BrowserWindow>()
+const workspaceProfiles = new Map<string, string>() // workspaceId → profileId
+let lastKnownOpenWindows: OpenWindowEntry[] = []
 
 // Resolve icon paths once
 const iconPng = join(__dirname, '../../resources/icon.png')
@@ -175,8 +207,8 @@ function installTabCycleInputShortcuts(source: Electron.WebContents, targetWindo
 
     const settings = loadSettings()
     const keybindings = { ...DEFAULT_KEYBINDINGS, ...settings.keybindings }
-    const nextBinding = resolveTabCycleBinding(keybindings, 'next-tab', 'Tab+J')
-    const prevBinding = resolveTabCycleBinding(keybindings, 'prev-tab', 'Tab+K')
+    const nextBinding = resolveTabCycleBinding(keybindings, 'next-tab', 'Alt+J')
+    const prevBinding = resolveTabCycleBinding(keybindings, 'prev-tab', 'Alt+K')
     const nextLeaderKey = parseTabLeaderShortcut(nextBinding)
     const prevLeaderKey = parseTabLeaderShortcut(prevBinding)
 
@@ -273,9 +305,15 @@ export function applyProxySettingsToAllSessions(settings: Settings): void {
   }
 }
 
-/** Configure a session to look like a standard Chrome browser */
+/** Absolute path to the webview stealth preload, compiled by electron-vite
+ *  alongside the main preload. Injected into every webview session so the
+ *  navigator/chrome fingerprint overrides run before any page script. */
+const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
+
+/** Configure a session: strip Electron branding from the UA, allow permissions,
+ *  apply proxy settings. Applied to both the default session and partitioned
+ *  webview sessions. */
 function configureSession(ses: Electron.Session): void {
-  // Build a clean UA: strip Electron/app identifiers, extract real Chrome version
   const rawUA = ses.getUserAgent()
   const cleanUA = rawUA
     .replace(/\s*Electron\/\S+/g, '')
@@ -285,35 +323,10 @@ function configureSession(ses: Electron.Session): void {
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(true))
   applyProxyToSession(ses, loadSettings())
 
-  // Extract actual Chrome version from the UA (e.g. "Chrome/132.0.6834.210")
-  const chromeMatch = cleanUA.match(/Chrome\/([\d.]+)/)
-  const chromeVersion = chromeMatch ? chromeMatch[1] : '132.0.0.0'
-  const chromeMajor = chromeVersion.split('.')[0]
-
-  // Only clean up external web requests — skip internal/localhost/devtools
-  // This avoids interfering with system-level ad blockers (AdGuard) and dev tools
   const externalFilter = { urls: ['http://*/*', 'https://*/*'] }
   ses.webRequest.onBeforeSendHeaders(externalFilter, (details, callback) => {
-    // Skip localhost / 127.0.0.1 (used by ad blockers, proxies, dev servers)
-    try {
-      const u = new URL(details.url)
-      if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1') {
-        return callback({ requestHeaders: details.requestHeaders })
-      }
-    } catch { /* proceed with cleanup */ }
-
     const headers = { ...details.requestHeaders }
     delete headers['X-Electron-Version']
-    // Set client hints matching the real Chromium build (not "Google Chrome" — TLS fingerprint won't match)
-    if (!headers['sec-ch-ua']) {
-      headers['sec-ch-ua'] = `"Chromium";v="${chromeMajor}", "Not-A.Brand";v="8"`
-    }
-    if (!headers['sec-ch-ua-mobile']) {
-      headers['sec-ch-ua-mobile'] = '?0'
-    }
-    if (!headers['sec-ch-ua-platform']) {
-      headers['sec-ch-ua-platform'] = `"${process.platform === 'darwin' ? 'macOS' : process.platform === 'win32' ? 'Windows' : 'Linux'}"`
-    }
     callback({ requestHeaders: headers })
   })
 }
@@ -322,99 +335,11 @@ export function setupPartitionSession(partition: string): void {
   if (configuredPartitions.has(partition)) return
   const ses = session.fromPartition(partition)
   configureSession(ses)
+  // Only partitioned webview sessions get the stealth preload — the default
+  // session belongs to the main renderer which doesn't need (and shouldn't
+  // have) page-fingerprint overrides.
+  ses.setPreloads([WEBVIEW_STEALTH_PRELOAD])
   configuredPartitions.add(partition)
-}
-
-/** Auth provider hostnames known to block webview-based sign-in */
-const AUTH_HOSTNAMES = new Set([
-  'accounts.google.com',
-  'login.microsoftonline.com',
-  'login.live.com',
-  'appleid.apple.com',
-  'id.atlassian.com',
-])
-
-/** Check if a URL is an auth provider page known to block webviews */
-function isAuthUrl(url: string): boolean {
-  try {
-    return AUTH_HOSTNAMES.has(new URL(url).hostname)
-  } catch {
-    return false
-  }
-}
-
-/** Extract the auth provider hostname from a URL (e.g. accounts.google.com) */
-function getAuthHostname(url: string): string {
-  try { return new URL(url).hostname } catch { return '' }
-}
-
-/** Open a real BrowserWindow for auth flows (many providers block webview sign-in) */
-function openAuthWindow(url: string, ses: Electron.Session, parent: BrowserWindow): void {
-  log.info('opening auth window', { url: url.slice(0, 120) })
-
-  const authHostname = getAuthHostname(url)
-
-  // Try to extract final destination from common redirect params
-  let destinationUrl = ''
-  try {
-    const u = new URL(url)
-    destinationUrl = u.searchParams.get('continue') ||
-      u.searchParams.get('redirect_uri') ||
-      u.searchParams.get('return_to') ||
-      u.searchParams.get('redirect') ||
-      ''
-  } catch { /* ignore */ }
-
-  const authWin = new BrowserWindow({
-    width: 500,
-    height: 700,
-    parent,
-    modal: false,
-    title: 'Sign In',
-    icon: iconPng,
-    webPreferences: {
-      session: ses,
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
-
-  // Use the session's clean UA (already configured by configureSession)
-  authWin.loadURL(url)
-
-  // Close the auth popup and tell the main window to navigate to the destination
-  let authClosed = false
-  const closeAuth = (navUrl?: string) => {
-    if (authClosed) return
-    authClosed = true
-    const finalUrl = navUrl || destinationUrl
-    log.info('auth complete, closing auth window', { destination: finalUrl })
-    setTimeout(() => {
-      if (!parent.isDestroyed()) {
-        parent.webContents.send('auth-complete', finalUrl)
-      }
-      if (!authWin.isDestroyed()) authWin.close()
-    }, 300)
-  }
-
-  // Detect when auth finishes: user navigates away from the auth provider's hostname
-  const checkAuthDone = (_e: Event, navUrl: string) => {
-    try {
-      const navHost = new URL(navUrl).hostname
-      if (navHost !== authHostname) closeAuth(navUrl)
-    } catch { /* ignore */ }
-  }
-
-  authWin.webContents.on('will-navigate', checkAuthDone)
-  authWin.webContents.on('did-navigate', checkAuthDone)
-
-  authWin.on('closed', () => {
-    if (!authClosed && !parent.isDestroyed()) {
-      if (destinationUrl) {
-        parent.webContents.send('auth-complete', destinationUrl)
-      }
-    }
-  })
 }
 
 export function closeWorkspaceWindow(workspaceId: string): void {
@@ -424,6 +349,7 @@ export function closeWorkspaceWindow(workspaceId: string): void {
     win.close()
   }
   workspaceWindows.delete(workspaceId)
+  workspaceProfiles.delete(workspaceId)
 }
 
 export function createWorkspaceWindow(profileId: string, workspaceId: string, workspaceName: string): BrowserWindow {
@@ -436,6 +362,19 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     return existing
   }
 
+  // Preconfigure the partition session BEFORE the renderer creates webviews,
+  // so configureSession's onBeforeSendHeaders hook and UA are applied from the
+  // very first request. The renderer's setupSession() IPC call is fire-and-forget
+  // and races the webview attach — this preconfiguration closes that race for
+  // the common case where the partition matches the profile id.
+  if (profileId) {
+    try {
+      setupPartitionSession(`persist:profile-${profileId}`)
+    } catch (err) {
+      log.warn('failed to preconfigure partition session', err)
+    }
+  }
+
   const isMac = process.platform === 'darwin'
   const win = new BrowserWindow({
     width: 1400,
@@ -445,7 +384,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac
       ? { trafficLightPosition: { x: 14, y: 14 } }
-      : { autoHideMenuBar: true, titleBarOverlay: true }),
+      : { autoHideMenuBar: true, titleBarOverlay: { color: '#0f0f0f', symbolColor: '#d7d7d7', height: 47 } }),
     icon: iconPng,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -460,12 +399,27 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   }
 
   workspaceWindows.set(workspaceId, win)
-  saveOpenWorkspaceIds([...workspaceWindows.keys()])
+  workspaceProfiles.set(workspaceId, profileId)
+  lastKnownOpenWindows = [...workspaceWindows.keys()].map(id => ({ profileId: workspaceProfiles.get(id)!, workspaceId: id }))
   installTabCycleInputShortcuts(win.webContents, win)
+
+  win.on('close', () => {
+    const allIds = [...workspaceWindows.keys()]
+    const remainingIds = allIds.filter(id => id !== workspaceId)
+    const toEntries = (ids: string[]) => ids.map(id => ({ profileId: workspaceProfiles.get(id)!, workspaceId: id }))
+    if (remainingIds.length === 0) {
+      // Last window closing — preserve it so it restores on next launch
+      lastKnownOpenWindows = toEntries(allIds)
+    } else {
+      // User intentionally closed this window — exclude it
+      lastKnownOpenWindows = toEntries(remainingIds)
+    }
+    log.info('window close: updated lastKnownOpenWindows', { closingWorkspaceId: workspaceId, lastKnownOpenWindows })
+  })
 
   win.on('closed', () => {
     workspaceWindows.delete(workspaceId)
-    saveOpenWorkspaceIds([...workspaceWindows.keys()])
+    workspaceProfiles.delete(workspaceId)
   })
 
   // Allow renderer-created detached dialog windows and hide their native header.
@@ -492,20 +446,15 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   win.webContents.on('did-attach-webview', (_event, webContents) => {
     installTabCycleInputShortcuts(webContents, win)
 
+    webContents.on('did-navigate', () => {
+      webContents.insertCSS(SCROLLBAR_CSS, { cssOrigin: 'user' }).catch(() => {})
+    })
+
     webContents.setWindowOpenHandler(({ url }) => {
       if (!win.isDestroyed()) {
         win.webContents.send('open-url-as-tab', url)
       }
       return { action: 'deny' }
-    })
-
-    // Intercept auth pages: open in a real BrowserWindow so providers don't block webview sign-in.
-    // The webview's session is shared with the auth window so cookies transfer automatically.
-    webContents.on('will-navigate', (e, url) => {
-      if (isAuthUrl(url)) {
-        e.preventDefault()
-        openAuthWindow(url, webContents.session, win)
-      }
     })
   })
 
@@ -681,20 +630,22 @@ function openInitialWindows(): void {
   log.info('openInitialWindows', { hasState: !!state, profileCount: state?.profiles?.length })
   if (!state || !state.profiles || state.profiles.length === 0) return
 
-  const activeProfile = state.profiles.find((p: any) => p.id === state.activeProfileId) || state.profiles[0]
-  const savedOpenIds = loadOpenWorkspaceIds()
-  log.info('opening workspaces for profile', { name: activeProfile.name, workspaceCount: activeProfile.workspaces.length, savedOpenIds })
+  const savedWindows = loadOpenWindows()
+  log.info('openInitialWindows', { savedWindows })
 
-  if (savedOpenIds.length > 0) {
-    // Only open workspaces that were open last time and still exist
-    for (const wsId of savedOpenIds) {
-      const ws = activeProfile.workspaces.find((w: any) => w.id === wsId)
+  if (savedWindows.length > 0) {
+    // Restore windows that were open last time, across all profiles
+    for (const entry of savedWindows) {
+      const profile = state.profiles.find((p: any) => p.id === entry.profileId)
+      if (!profile) continue
+      const ws = profile.workspaces.find((w: any) => w.id === entry.workspaceId)
       if (ws) {
-        createWorkspaceWindow(activeProfile.id, ws.id, ws.name)
+        createWorkspaceWindow(profile.id, ws.id, ws.name)
       }
     }
   } else {
-    // First launch or no saved state — open all workspaces
+    // First launch or no saved state — open all workspaces from active profile
+    const activeProfile = state.profiles.find((p: any) => p.id === state.activeProfileId) || state.profiles[0]
     for (const ws of activeProfile.workspaces) {
       createWorkspaceWindow(activeProfile.id, ws.id, ws.name)
     }
@@ -747,9 +698,15 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', () => {
-  const openIds = [...workspaceWindows.keys()]
-  log.info('before-quit: saving open workspace IDs', { openIds })
-  saveOpenWorkspaceIds(openIds)
+  // Use lastKnownOpenWindows — by this point windows may already be destroyed (close-last-window path)
+  let entries: OpenWindowEntry[]
+  if (workspaceWindows.size > 0) {
+    entries = [...workspaceWindows.keys()].map(id => ({ profileId: workspaceProfiles.get(id)!, workspaceId: id }))
+  } else {
+    entries = lastKnownOpenWindows
+  }
+  log.info('before-quit: saving open windows', { entries })
+  saveOpenWindows(entries)
 })
 
 app.on('window-all-closed', () => {

@@ -34,8 +34,8 @@ const DEFAULT_KEYBINDINGS: Record<string, string> = {
   'close-tab': 'CmdOrCtrl+W',
   'close-window': 'CmdOrCtrl+Shift+W',
   'new-workspace': 'CmdOrCtrl+Shift+N',
-  'next-tab': 'Tab+J',
-  'prev-tab': 'Tab+K',
+  'next-tab': 'Alt+J',
+  'prev-tab': 'Alt+K',
   'toggle-sidebar': 'CmdOrCtrl+B',
   'focus-url': 'CmdOrCtrl+L',
   search: 'CmdOrCtrl+O',
@@ -68,6 +68,7 @@ interface Props {
   onClose: () => void
   settings: Settings | null
   onSave: (settings: Settings) => void
+  onThemePreview?: (theme: 'light' | 'dark' | 'system') => void
 }
 
 /** Convert a KeyboardEvent into an Electron accelerator string */
@@ -201,7 +202,7 @@ function normalizeKnownKeybindings(raw: Record<string, string> | undefined): Rec
   return next
 }
 
-export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
+export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('general')
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('dark')
   const [defaultUrl, setDefaultUrl] = useState('')
@@ -212,12 +213,14 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
   const recordingRef = useRef<string | null>(null)
   const pendingTabChordRef = useRef(false)
+  const originalThemeRef = useRef<'light' | 'dark' | 'system'>('dark')
   recordingRef.current = recordingAction
 
   // Init from settings
   useEffect(() => {
     if (open && settings) {
       setTheme(settings.theme)
+      originalThemeRef.current = settings.theme
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
       setProxy({ ...DEFAULT_PROXY_SETTINGS, ...settings.proxy })
@@ -286,6 +289,11 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
     onClose()
   }
 
+  const handleCancel = () => {
+    onThemePreview?.(originalThemeRef.current)
+    onClose()
+  }
+
   const handleResetKeybindings = () => {
     setKeybindings({ ...DEFAULT_KEYBINDINGS })
   }
@@ -298,7 +306,7 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
       title="Settings - Newbro"
       width={920}
       height={720}
-      onClose={onClose}
+      onClose={handleCancel}
       onWindowChange={setHostWindow}
     >
       <div className="h-full bg-popover text-popover-foreground flex flex-col overflow-hidden">
@@ -310,8 +318,8 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
           <h2 className="text-base font-semibold text-foreground">Settings</h2>
           <button
             data-detached-no-drag
-            onClick={onClose}
-            className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-accent text-muted-foreground hover:text-foreground"
+            onClick={handleCancel}
+            className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
           >
             <X size={16} />
           </button>
@@ -356,11 +364,11 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
                   ]).map(({ value, label, icon: Icon }) => (
                     <button
                       key={value}
-                      onClick={() => setTheme(value)}
+                      onClick={() => { setTheme(value); onThemePreview?.(value) }}
                       className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                         theme === value
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-secondary text-secondary-foreground hover:bg-accent'
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
                       }`}
                     >
                       <Icon size={16} />
@@ -395,8 +403,8 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
                       onClick={() => setSearchEngine(url)}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                         searchEngine === url
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-secondary text-secondary-foreground hover:bg-accent'
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
                       }`}
                     >
                       {name}
@@ -406,8 +414,8 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
                     onClick={() => setSearchEngine('')}
                     className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                       !Object.values(SEARCH_ENGINES).includes(searchEngine)
-                        ? 'bg-primary text-primary-foreground'
-                        : 'bg-secondary text-secondary-foreground hover:bg-accent'
+                        ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                        : 'bg-secondary text-secondary-foreground hover:bg-muted'
                     }`}
                   >
                     Custom
@@ -448,8 +456,8 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
                     onClick={() => setProxy((prev) => ({ ...prev, mode: 'system' }))}
                     className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                       proxy.mode === 'system'
-                        ? 'bg-primary text-primary-foreground'
-                        : 'bg-secondary text-secondary-foreground hover:bg-accent'
+                        ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                        : 'bg-secondary text-secondary-foreground hover:bg-muted'
                     }`}
                   >
                     System
@@ -458,8 +466,8 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
                     onClick={() => setProxy((prev) => ({ ...prev, mode: 'direct' }))}
                     className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                       proxy.mode === 'direct'
-                        ? 'bg-primary text-primary-foreground'
-                        : 'bg-secondary text-secondary-foreground hover:bg-accent'
+                        ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                        : 'bg-secondary text-secondary-foreground hover:bg-muted'
                     }`}
                   >
                     Direct (No Proxy)
@@ -468,8 +476,8 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
                     onClick={() => setProxy((prev) => ({ ...prev, mode: 'custom' }))}
                     className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                       proxy.mode === 'custom'
-                        ? 'bg-primary text-primary-foreground'
-                        : 'bg-secondary text-secondary-foreground hover:bg-accent'
+                        ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                        : 'bg-secondary text-secondary-foreground hover:bg-muted'
                     }`}
                   >
                     Custom Proxy
@@ -517,7 +525,7 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
                 </p>
                 <button
                   onClick={handleResetKeybindings}
-                  className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-accent"
+                  className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted"
                 >
                   <RotateCcw size={12} />
                   Reset to Defaults
@@ -531,7 +539,7 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
                   return (
                     <div
                       key={action}
-                      className="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-accent/50"
+                      className="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-muted/50"
                     >
                       <span className="text-sm text-foreground">{ACTION_LABELS[action]}</span>
                       <div className="flex items-center gap-2">
@@ -570,14 +578,14 @@ export function SettingsDialog({ open, onClose, settings, onSave }: Props) {
         {/* Footer */}
         <div className="flex justify-end gap-2 px-6 py-4 border-t border-border">
           <button
-            onClick={onClose}
-            className="h-8 px-4 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent"
+            onClick={handleCancel}
+            className="h-8 px-4 rounded-md text-sm font-medium text-muted-foreground hover:bg-muted"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="h-8 px-4 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:opacity-90"
+            className="h-8 px-4 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/80"
           >
             Save
           </button>

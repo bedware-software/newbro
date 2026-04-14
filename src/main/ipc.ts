@@ -90,6 +90,14 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('window:set-titlebar-overlay', (_e, options: { color: string; symbolColor: string; height: number }) => {
+    if (process.platform === 'darwin') return
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (win && !win.isDestroyed()) {
+      win.setTitleBarOverlay(options)
+    }
+  })
+
   ipcMain.handle('window:close', (_e) => {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (win && !win.isDestroyed()) {
@@ -179,6 +187,10 @@ export function registerIpcHandlers(): void {
       const menu = Menu.buildFromTemplate(template)
       menu.popup({ window: win, callback: () => resolve(null) })
     })
+  })
+
+  ipcMain.on('app:quit', () => {
+    app.quit()
   })
 
   ipcMain.on('show-about-panel', (_e) => {
