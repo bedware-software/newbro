@@ -28,7 +28,7 @@ export const DEFAULT_KEYBINDINGS: Record<string, string> = {
   'new-workspace': 'CmdOrCtrl+Shift+N',
   'next-tab': 'Alt+J',
   'prev-tab': 'Alt+K',
-  'toggle-sidebar': 'CmdOrCtrl+B',
+  'toggle-sidebar': 'CmdOrCtrl+\\',
   'focus-url': 'CmdOrCtrl+L',
   'search': 'CmdOrCtrl+O',
   'command-palette': 'CmdOrCtrl+P',

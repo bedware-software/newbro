@@ -2,8 +2,9 @@ import { Fragment, useState, useRef, useEffect, useCallback, useMemo } from 'rea
 import { useAppStore, getSidebarOrder } from '../store/app-store'
 import { log } from '../lib/log'
 import { InputDialog } from './InputDialog'
+import { TabFavicon } from './TabFavicon'
 import {
-  ChevronRight, ChevronDown, Plus, X, Globe, FolderPlus, MessageSquareText,
+  ChevronRight, ChevronDown, Plus, X, FolderPlus, MessageSquareText,
 } from 'lucide-react'
 
 interface TabItem {
@@ -532,11 +533,7 @@ export function Sidebar({ visible }: Props) {
         {showBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
-        {tab.favicon ? (
-          <img src={tab.favicon} className="w-4 h-4 shrink-0 rounded-sm" alt="" draggable={false} />
-        ) : (
-          <Globe size={14} className="shrink-0 text-muted-foreground" />
-        )}
+        <TabFavicon favicon={tab.favicon} />
         {tab.comment && <MessageSquareText size={10} className="shrink-0 text-primary/60" />}
         <span className="flex-1 text-xs truncate">{tab.comment ? `${tab.comment} — ${tab.title}` : tab.title}</span>
         <button

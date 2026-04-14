@@ -4,12 +4,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadState: (): Promise<unknown> => ipcRenderer.invoke('store:load'),
   saveState: (state: unknown): Promise<void> => ipcRenderer.invoke('store:save', state),
   setupSession: (partition: string): Promise<void> => ipcRenderer.invoke('session:setup', partition),
-  openWorkspaceWindow: (profileId: string, workspaceId: string, workspaceName: string): Promise<void> =>
-    ipcRenderer.invoke('workspace:open-window', profileId, workspaceId, workspaceName),
+  openWorkspaceWindow: (profileId: string, workspaceId: string, workspaceName: string, targetTabId?: string): Promise<void> =>
+    ipcRenderer.invoke('workspace:open-window', profileId, workspaceId, workspaceName, targetTabId),
   setWindowTitle: (title: string): Promise<void> => ipcRenderer.invoke('window:set-title', title),
   setTitleBarOverlay: (options: { color: string; symbolColor: string; height: number }): Promise<void> =>
     ipcRenderer.invoke('window:set-titlebar-overlay', options),
   closeWindow: (): Promise<void> => ipcRenderer.invoke('window:close'),
+  minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
+  maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),
+  restoreWindow: (): Promise<void> => ipcRenderer.invoke('window:restore'),
   closeWorkspaceWindows: (workspaceIds: string[]): Promise<void> => ipcRenderer.invoke('workspace:close-windows', workspaceIds),
 
   // Logging — fire-and-forget (no await needed)
@@ -28,7 +31,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // About
   showAboutPanel: (): void => { ipcRenderer.send('show-about-panel') },
 
-  // Quit
+  // Exit
   quit: (): void => { ipcRenderer.send('app:quit') },
 
   // Context menu
@@ -54,5 +57,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_e: Electron.IpcRendererEvent, settings: unknown) => callback(settings)
     ipcRenderer.on('settings:updated', handler)
     return () => { ipcRenderer.removeListener('settings:updated', handler) }
+  },
+  onActivateTab: (callback: (tabId: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, tabId: string) => callback(tabId)
+    ipcRenderer.on('activate-tab', handler)
+    return () => { ipcRenderer.removeListener('activate-tab', handler) }
   },
 })

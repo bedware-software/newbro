@@ -66,7 +66,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
   }, [getAllSearchableItems, open, filters])
 
   const fuse = useMemo(
-    () => new Fuse(items, { keys: ['name', 'path', 'url'], threshold: 0.4, includeScore: true }),
+    () => new Fuse(items, { keys: ['name', 'path', 'url', 'comment'], threshold: 0.4, includeScore: true }),
     [items],
   )
 
@@ -147,28 +147,38 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
       await saveStateNow()
       window.electronAPI.openWorkspaceWindow(item.profileId, item.workspaceId!, item.name)
     } else if (item.type === 'tabGroup') {
+      const profiles = useAppStore.getState().profiles
+      const profile = profiles.find((p) => p.id === item.profileId)
+      const workspace = profile?.workspaces.find((w) => w.id === item.workspaceId)
+      const group = workspace?.tabGroups.find((g) => g.id === item.tabGroupId)
+      const firstTabId = group?.tabs[0]?.id
+
       if (item.workspaceId === windowWorkspaceId) {
-        const profiles = useAppStore.getState().profiles
-        for (const p of profiles) {
-          for (const w of p.workspaces) {
-            const g = w.tabGroups.find((g) => g.id === item.tabGroupId)
-            if (g && g.tabs.length > 0) {
-              setActiveTab(g.tabs[0].id)
-              onOpenChange(false)
-              return
-            }
-          }
-        }
+        if (firstTabId) setActiveTab(firstTabId)
       } else {
         await saveStateNow()
-        window.electronAPI.openWorkspaceWindow(item.profileId, item.workspaceId!, item.name)
+        window.electronAPI.openWorkspaceWindow(
+          item.profileId,
+          item.workspaceId!,
+          workspace?.name || item.name,
+          firstTabId,
+        )
       }
     } else if (item.type === 'tab') {
       if (item.workspaceId === windowWorkspaceId) {
         setActiveTab(item.id)
       } else {
+        const profiles = useAppStore.getState().profiles
+        const workspace = profiles
+          .find((p) => p.id === item.profileId)
+          ?.workspaces.find((w) => w.id === item.workspaceId)
         await saveStateNow()
-        window.electronAPI.openWorkspaceWindow(item.profileId, item.workspaceId!, item.name)
+        window.electronAPI.openWorkspaceWindow(
+          item.profileId,
+          item.workspaceId!,
+          workspace?.name || item.name,
+          item.id,
+        )
       }
     }
     onOpenChange(false)
@@ -306,7 +316,9 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
                           <span className="w-8 shrink-0" />
                         )}
                         <div className="flex-1 min-w-0">
-                          <div className="text-sm truncate">{item.name}</div>
+                          <div className="text-sm truncate">
+                            {item.comment ? `${item.comment} — ${item.name}` : item.name}
+                          </div>
                           <div className="text-[10px] text-muted-foreground truncate">
                             {item.path}
                             {item.url && item.url !== 'about:blank' && ` · ${item.url}`}

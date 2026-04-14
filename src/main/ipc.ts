@@ -78,9 +78,9 @@ export function registerIpcHandlers(): void {
     setupPartitionSession(partition)
   })
 
-  ipcMain.handle('workspace:open-window', (_e, profileId: string, workspaceId: string, workspaceName: string) => {
-    log.ipc('workspace:open-window', { profileId, workspaceId, workspaceName })
-    createWorkspaceWindow(profileId, workspaceId, workspaceName)
+  ipcMain.handle('workspace:open-window', (_e, profileId: string, workspaceId: string, workspaceName: string, targetTabId?: string) => {
+    log.ipc('workspace:open-window', { profileId, workspaceId, workspaceName, targetTabId })
+    createWorkspaceWindow(profileId, workspaceId, workspaceName, targetTabId)
   })
 
   ipcMain.handle('window:set-title', (_e, title: string) => {
@@ -102,6 +102,30 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (win && !win.isDestroyed()) {
       win.close()
+    }
+  })
+
+  ipcMain.handle('window:minimize', (_e) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (win && !win.isDestroyed()) {
+      win.minimize()
+    }
+  })
+
+  ipcMain.handle('window:maximize', (_e) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (win && !win.isDestroyed()) {
+      win.maximize()
+    }
+  })
+
+  ipcMain.handle('window:restore', (_e) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win || win.isDestroyed()) return
+    if (win.isMinimized()) {
+      win.restore()
+    } else if (win.isMaximized()) {
+      win.unmaximize()
     }
   })
 

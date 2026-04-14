@@ -35,7 +35,18 @@ export interface SearchableItem {
   name: string
   path: string
   url?: string
+  comment?: string
   profileId: string
   workspaceId?: string
   tabGroupId?: string
+}
+
+/** Parsed workspace candidate from an imported bookmark file, pending user selection. */
+export interface WorkspaceCandidate {
+  id: string // local selection ID (not the final workspace ID)
+  name: string
+  path: string // breadcrumb path to help user distinguish same-named workspaces
+  tabGroups: TabGroup[]
+  tabs: Tab[] // ungrouped tabs
+  sidebarOrder: string[] // interleaved IDs in the order seen in the HTML
 }

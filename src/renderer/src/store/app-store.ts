@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { produce } from 'immer'
 import { v4 as uuid } from 'uuid'
-import type { Profile, Workspace, TabGroup, Tab, SearchableItem } from './types'
+import type { Profile, Workspace, TabGroup, Tab, SearchableItem, WorkspaceCandidate } from './types'
 import { log } from '../lib/log'
 
 const GROUP_COLORS = ['#89b4fa', '#a6e3a1', '#f9e2af', '#f38ba8', '#cba6f7', '#94e2d5', '#fab387', '#74c7ec']
@@ -131,7 +131,7 @@ export interface AppState {
   getAllSearchableItems: () => SearchableItem[]
 
   // Import
-  importWorkspaceFromHtml: (profileId: string, html: string) => Workspace | null
+  importSelectedWorkspaces: (profileId: string, candidates: WorkspaceCandidate[]) => Workspace[]
 
   // Helpers
   getActiveProfile: () => Profile | undefined
@@ -141,77 +141,131 @@ export interface AppState {
   findProfileForTab: (tabId: string) => Profile | undefined
 }
 
-/** Parse Netscape bookmark HTML (Edge workspace export) into a workspace */
-function parseBookmarkHtml(html: string): { name: string; tabGroups: TabGroup[]; tabs: Tab[] } | null {
+/**
+ * Parse a Netscape bookmark HTML file and extract all workspace candidates.
+ *
+ * A folder qualifies as a workspace if it contains at least one tab or tab
+ * group AND has at most one level of nested folders (folders whose only
+ * children are links). Folders with deeper nesting are descended into so we
+ * can still find valid workspaces inside them, but the parent itself is not
+ * offered as a candidate (it would bring in the wrong structure).
+ */
+export function findWorkspaceCandidates(html: string): WorkspaceCandidate[] {
   const parser = new DOMParser()
   const doc = parser.parseFromString(html, 'text/html')
-
-  // Find all top-level DL > DT > H3 folders. Skip "Favorites Bar", use the workspace folder.
   const topDl = doc.querySelector('body > DL') || doc.querySelector('DL')
-  if (!topDl) return null
+  if (!topDl) return []
 
-  let workspaceDt: Element | null = null
-  for (const dt of Array.from(topDl.children).filter((el) => el.tagName === 'DT')) {
-    const h3 = dt.querySelector(':scope > H3')
-    if (h3 && h3.getAttribute('PERSONAL_TOOLBAR_FOLDER') !== 'true') {
-      workspaceDt = dt
-      break
+  const candidates: WorkspaceCandidate[] = []
+
+  /** A folder is a <DT> that directly contains an <H3> and a <DL>. */
+  const getFolderName = (dt: Element): string =>
+    dt.querySelector(':scope > H3')?.textContent?.trim() || 'Folder'
+  const getFolderDl = (dt: Element): Element | null =>
+    dt.querySelector(':scope > DL')
+
+  /** Extract a link <DT><A> into a Tab. */
+  const tabFromAnchor = (a: Element): Tab => ({
+    id: uuid(),
+    title: a.textContent?.trim() || 'Untitled',
+    url: a.getAttribute('HREF') || 'about:blank',
+    favicon: a.getAttribute('ICON') || '',
+  })
+
+  /** True if this folder has no subfolders (its children are all links or empty). */
+  const isFlatTabGroupFolder = (folderDt: Element): boolean => {
+    const dl = getFolderDl(folderDt)
+    if (!dl) return true // no DL means no subfolders — treat as flat/empty
+    for (const c of Array.from(dl.children).filter((el) => el.tagName === 'DT')) {
+      if (c.querySelector(':scope > H3')) return false // contains a subfolder
     }
+    return true
   }
-  if (!workspaceDt) {
-    // Fallback: use the first H3 folder
-    for (const dt of Array.from(topDl.children).filter((el) => el.tagName === 'DT')) {
-      if (dt.querySelector(':scope > H3')) { workspaceDt = dt; break }
-    }
-  }
-  if (!workspaceDt) return null
 
-  const wsName = workspaceDt.querySelector(':scope > H3')?.textContent?.trim() || 'Imported'
-  const wsDl = workspaceDt.querySelector(':scope > DL')
-  if (!wsDl) return null
+  /**
+   * Attempt to extract a workspace from the given folder. Returns null if
+   * the folder has deeper than one level of nesting, or is empty. When it
+   * does return null, caller should recurse into subfolders.
+   */
+  const buildWorkspaceFromFolder = (
+    folderDt: Element,
+    path: string,
+  ): WorkspaceCandidate | null => {
+    const dl = getFolderDl(folderDt)
+    if (!dl) return null
 
-  const ungroupedTabs: Tab[] = []
-  const tabGroups: TabGroup[] = []
+    const ungroupedTabs: Tab[] = []
+    const tabGroups: TabGroup[] = []
+    const sidebarOrder: string[] = []
 
-  for (const dt of Array.from(wsDl.children).filter((el) => el.tagName === 'DT')) {
-    const a = dt.querySelector(':scope > A')
-    const h3 = dt.querySelector(':scope > H3')
+    for (const dt of Array.from(dl.children).filter((el) => el.tagName === 'DT')) {
+      const a = dt.querySelector(':scope > A')
+      const h3 = dt.querySelector(':scope > H3')
 
-    if (a && !h3) {
-      // Direct link = ungrouped tab
-      ungroupedTabs.push({
-        id: uuid(),
-        title: a.textContent?.trim() || 'Untitled',
-        url: a.getAttribute('HREF') || 'about:blank',
-        favicon: a.getAttribute('ICON') || '',
-      })
-    } else if (h3) {
-      // Subfolder = tab group
-      const groupName = h3.textContent?.trim() || 'Group'
-      const groupDl = dt.querySelector(':scope > DL')
+      if (a && !h3) {
+        const tab = tabFromAnchor(a)
+        ungroupedTabs.push(tab)
+        sidebarOrder.push(tab.id)
+        continue
+      }
+      if (!h3) continue
+
+      // Subfolder: must be flat (no further nesting) for this folder to
+      // qualify as a workspace.
+      if (!isFlatTabGroupFolder(dt)) return null
+
+      const groupName = getFolderName(dt)
+      const groupDl = getFolderDl(dt)
       const groupTabs: Tab[] = []
       if (groupDl) {
         for (const gDt of Array.from(groupDl.children).filter((el) => el.tagName === 'DT')) {
           const gA = gDt.querySelector(':scope > A')
-          if (gA) {
-            groupTabs.push({
-              id: uuid(),
-              title: gA.textContent?.trim() || 'Untitled',
-              url: gA.getAttribute('HREF') || 'about:blank',
-              favicon: gA.getAttribute('ICON') || '',
-            })
-          }
+          if (gA) groupTabs.push(tabFromAnchor(gA))
         }
       }
       if (groupTabs.length > 0) {
         const tg = makeTabGroup(groupName, groupTabs)
         tg.isCollapsed = true
         tabGroups.push(tg)
+        sidebarOrder.push(tg.id)
       }
+    }
+
+    if (ungroupedTabs.length === 0 && tabGroups.length === 0) return null
+
+    const name = getFolderName(folderDt)
+    return {
+      id: uuid(),
+      name,
+      path: path ? `${path} / ${name}` : name,
+      tabGroups,
+      tabs: ungroupedTabs,
+      sidebarOrder,
     }
   }
 
-  return { name: wsName, tabGroups, tabs: ungroupedTabs }
+  /** Recurse: try this folder; if not a valid workspace, descend. */
+  const visitFolder = (folderDt: Element, parentPath: string): void => {
+    const candidate = buildWorkspaceFromFolder(folderDt, parentPath)
+    if (candidate) {
+      candidates.push(candidate)
+      return
+    }
+    // Not a valid workspace here — walk into any subfolders.
+    const dl = getFolderDl(folderDt)
+    if (!dl) return
+    const name = getFolderName(folderDt)
+    const nextPath = parentPath ? `${parentPath} / ${name}` : name
+    for (const dt of Array.from(dl.children).filter((el) => el.tagName === 'DT')) {
+      if (dt.querySelector(':scope > H3')) visitFolder(dt, nextPath)
+    }
+  }
+
+  for (const dt of Array.from(topDl.children).filter((el) => el.tagName === 'DT')) {
+    if (dt.querySelector(':scope > H3')) visitFolder(dt, '')
+  }
+
+  return candidates
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -483,6 +537,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             s.activeProfileId = p.id
             s.activeWorkspaceId = w.id
             s.activeTabGroupId = g.id
+            g.isCollapsed = false // expand containing group so the active tab is visible in the sidebar
             return
           }
         }
@@ -943,24 +998,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   })),
 
-  importWorkspaceFromHtml: (profileId, html) => {
-    const parsed = parseBookmarkHtml(html)
-    if (!parsed) return null
-    const ws: Workspace = {
+  importSelectedWorkspaces: (profileId, candidates) => {
+    const created: Workspace[] = candidates.map((c) => ({
       id: uuid(),
-      name: parsed.name,
-      tabGroups: parsed.tabGroups,
-      tabs: parsed.tabs,
-      sidebarOrder: [
-        ...parsed.tabs.map((t) => t.id),
-        ...parsed.tabGroups.map((g) => g.id),
-      ],
-    }
+      name: c.name,
+      tabGroups: c.tabGroups,
+      tabs: c.tabs,
+      sidebarOrder: c.sidebarOrder,
+    }))
     set(produce((s: AppState) => {
       const p = s.profiles.find((p) => p.id === profileId)
-      if (p) p.workspaces.push(ws)
+      if (p) p.workspaces.push(...created)
     }))
-    return ws
+    return created
   },
 
   navigateTo: (profileId, workspaceId, tabGroupId, tabId) => set(produce((s: AppState) => {
@@ -984,12 +1034,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       for (const w of p.workspaces) {
         items.push({ type: 'workspace', id: w.id, name: w.name, path: `${p.name} > ${w.name}`, profileId: p.id, workspaceId: w.id })
         for (const t of (w.tabs || [])) {
-          items.push({ type: 'tab', id: t.id, name: t.title, url: t.url, path: `${p.name} > ${w.name} > ${t.title}`, profileId: p.id, workspaceId: w.id })
+          items.push({ type: 'tab', id: t.id, name: t.title, url: t.url, comment: t.comment, path: `${p.name} > ${w.name} > ${t.title}`, profileId: p.id, workspaceId: w.id })
         }
         for (const g of w.tabGroups) {
           items.push({ type: 'tabGroup', id: g.id, name: g.name, path: `${p.name} > ${w.name} > ${g.name}`, profileId: p.id, workspaceId: w.id, tabGroupId: g.id })
           for (const t of g.tabs) {
-            items.push({ type: 'tab', id: t.id, name: t.title, url: t.url, path: `${p.name} > ${w.name} > ${g.name} > ${t.title}`, profileId: p.id, workspaceId: w.id, tabGroupId: g.id })
+            items.push({ type: 'tab', id: t.id, name: t.title, url: t.url, comment: t.comment, path: `${p.name} > ${w.name} > ${g.name} > ${t.title}`, profileId: p.id, workspaceId: w.id, tabGroupId: g.id })
           }
         }
       }

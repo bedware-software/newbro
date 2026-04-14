@@ -352,13 +352,16 @@ export function closeWorkspaceWindow(workspaceId: string): void {
   workspaceProfiles.delete(workspaceId)
 }
 
-export function createWorkspaceWindow(profileId: string, workspaceId: string, workspaceName: string): BrowserWindow {
-  log.window('createWorkspaceWindow', { profileId, workspaceId, workspaceName })
+export function createWorkspaceWindow(profileId: string, workspaceId: string, workspaceName: string, targetTabId?: string): BrowserWindow {
+  log.window('createWorkspaceWindow', { profileId, workspaceId, workspaceName, targetTabId })
 
   const existing = workspaceWindows.get(workspaceId)
   if (existing && !existing.isDestroyed()) {
     log.window('window already exists, focusing', workspaceId)
     existing.focus()
+    if (targetTabId) {
+      existing.webContents.send('activate-tab', targetTabId)
+    }
     return existing
   }
 
@@ -458,12 +461,13 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     })
   })
 
-  const params = `?profileId=${profileId}&workspaceId=${workspaceId}`
+  const tabSuffix = targetTabId ? `&tabId=${encodeURIComponent(targetTabId)}` : ''
+  const params = `?profileId=${profileId}&workspaceId=${workspaceId}${tabSuffix}`
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'] + params)
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'), {
-      search: `profileId=${profileId}&workspaceId=${workspaceId}`,
+      search: `profileId=${profileId}&workspaceId=${workspaceId}${tabSuffix}`,
     })
   }
 
@@ -505,7 +509,7 @@ function buildMenu(): void {
         { role: 'hideOthers' },
         { role: 'unhide' },
         { type: 'separator' },
-        { label: 'Quit Newbro', role: 'quit' },
+        { label: 'Exit Newbro', role: 'quit' },
       ],
     },
     {

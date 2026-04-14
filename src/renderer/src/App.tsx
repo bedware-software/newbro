@@ -29,10 +29,13 @@ declare global {
       loadState: () => Promise<unknown>
       saveState: (state: unknown) => Promise<void>
       setupSession: (partition: string) => Promise<void>
-      openWorkspaceWindow: (profileId: string, workspaceId: string, workspaceName: string) => Promise<void>
+      openWorkspaceWindow: (profileId: string, workspaceId: string, workspaceName: string, targetTabId?: string) => Promise<void>
       setWindowTitle: (title: string) => Promise<void>
       setTitleBarOverlay: (options: { color: string; symbolColor: string; height: number }) => Promise<void>
       closeWindow: () => Promise<void>
+      minimizeWindow: () => Promise<void>
+      maximizeWindow: () => Promise<void>
+      restoreWindow: () => Promise<void>
       closeWorkspaceWindows: (workspaceIds: string[]) => Promise<void>
       quit: () => void
       getCertInfo: (url: string) => Promise<unknown>
@@ -43,15 +46,17 @@ declare global {
       onStateUpdated: (callback: (state: unknown) => void) => () => void
       onOpenUrlAsTab: (callback: (url: string) => void) => () => void
       onSettingsUpdated: (callback: (settings: unknown) => void) => () => void
+      onActivateTab: (callback: (tabId: string) => void) => () => void
     }
   }
 }
 
-function getWindowParams(): { profileId: string | null; workspaceId: string | null } {
+function getWindowParams(): { profileId: string | null; workspaceId: string | null; tabId: string | null } {
   const params = new URLSearchParams(window.location.search)
   return {
     profileId: params.get('profileId') || null,
     workspaceId: params.get('workspaceId') || null,
+    tabId: params.get('tabId') || null,
   }
 }
 
@@ -87,7 +92,7 @@ export default function App() {
     return v === null ? true : v === 'true'
   })
   const hydrate = useAppStore((s) => s.hydrate)
-  const { profileId: windowProfileId, workspaceId: windowWorkspaceId } = getWindowParams()
+  const { profileId: windowProfileId, workspaceId: windowWorkspaceId, tabId: windowTabId } = getWindowParams()
 
   const toggleSidebar = useCallback(() => {
     setSidebarVisible((v) => {
@@ -134,12 +139,35 @@ export default function App() {
         const ws = profile?.workspaces.find((w) => w.id === windowWorkspaceId)
         if (ws) {
           useAppStore.setState({ activeWorkspaceId: windowWorkspaceId })
-          const firstUngrouped = ws.tabs?.[0]
-          const firstGrouped = ws.tabGroups[0]
-          if (firstUngrouped) {
-            useAppStore.setState({ activeTabGroupId: null, activeTabId: firstUngrouped.id })
-          } else if (firstGrouped) {
-            useAppStore.setState({ activeTabGroupId: firstGrouped.id, activeTabId: firstGrouped.tabs[0]?.id || null })
+
+          // If a specific tab was requested via URL param, activate it
+          let resolvedTabId: string | null = null
+          if (windowTabId) {
+            if (ws.tabs?.some((t) => t.id === windowTabId)) {
+              resolvedTabId = windowTabId
+            } else {
+              for (const g of ws.tabGroups) {
+                if (g.tabs.some((t) => t.id === windowTabId)) {
+                  resolvedTabId = windowTabId
+                  break
+                }
+              }
+            }
+          }
+
+          if (!resolvedTabId) {
+            const firstUngrouped = ws.tabs?.[0]
+            const firstGrouped = ws.tabGroups[0]
+            if (firstUngrouped) {
+              resolvedTabId = firstUngrouped.id
+            } else if (firstGrouped) {
+              resolvedTabId = firstGrouped.tabs[0]?.id || null
+            }
+          }
+
+          if (resolvedTabId) {
+            // Use setActiveTab so the containing tab group is expanded and the tab is visible in the sidebar.
+            useAppStore.getState().setActiveTab(resolvedTabId)
           }
         }
       }
@@ -151,7 +179,7 @@ export default function App() {
       setReady(true)
     }
     load()
-  }, [hydrate, windowProfileId, windowWorkspaceId, loadAndApplySettings])
+  }, [hydrate, windowProfileId, windowWorkspaceId, windowTabId, loadAndApplySettings])
 
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const getActiveWorkspace = useAppStore((s) => s.getActiveWorkspace)
@@ -249,6 +277,8 @@ export default function App() {
           } else {
             wv?.reload()
           }
+          // Hand focus to the page so the cursor doesn't stay trapped in the URL bar
+          wv?.focus?.()
           break
         }
         case 'next-tab':
@@ -287,6 +317,15 @@ export default function App() {
         case 'close-workspace':
         case 'close-window':
           (window as any).electronAPI.closeWindow()
+          break
+        case 'minimize-window':
+          (window as any).electronAPI.minimizeWindow()
+          break
+        case 'maximize-window':
+          (window as any).electronAPI.maximizeWindow()
+          break
+        case 'restore-window':
+          (window as any).electronAPI.restoreWindow()
           break
         case 'quit':
           (window as any).electronAPI.quit()
@@ -358,8 +397,35 @@ export default function App() {
       setSearchEngine(s.searchEngine)
     })
 
-    return () => { cleanupShortcut(); cleanupState(); cleanupPopup(); cleanupSettings() }
+    const cleanupActivateTab = window.electronAPI.onActivateTab((tabId) => {
+      log.event('activate-tab', tabId)
+      useAppStore.getState().setActiveTab(tabId)
+    })
+
+    return () => { cleanupShortcut(); cleanupState(); cleanupPopup(); cleanupSettings(); cleanupActivateTab() }
   }, [hydrate, windowWorkspaceId, toggleSidebar])
+
+  // Global Escape handler: when a chrome button or the URL bar has keyboard
+  // focus, blur it and hand focus back to the active webview. Prevents
+  // Chromium's :focus-visible ring from sticking on toolbar/sidebar buttons
+  // after the user hits Esc, and lets Esc exit the URL bar back to the page.
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const active = document.activeElement as HTMLElement | null
+      if (!active) return
+      const isButton = active.tagName === 'BUTTON'
+      const isUrlBar = active.id === 'url-bar'
+      if (!isButton && !isUrlBar) return
+      active.blur()
+      const s = useAppStore.getState()
+      if (!s.activeTabId) return
+      const wv = document.querySelector(`webview[data-tab-id="${s.activeTabId}"]`) as any
+      wv?.focus?.()
+    }
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [])
 
   const handleSaveSettings = async (newSettings: Settings) => {
     setSettings(newSettings)
@@ -373,7 +439,7 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => (window as any).electronAPI.showAboutPanel()} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => (window as any).electronAPI.showAboutPanel()} onOpenSearch={() => setSearchOpen(true)} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar visible={sidebarVisible} />
         <WebviewPanel />

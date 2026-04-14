@@ -9,16 +9,18 @@ import {
 } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { useAppStore, saveStateNow } from '../store/app-store'
+import { useAppStore, saveStateNow, findWorkspaceCandidates } from '../store/app-store'
 import { normalizeURL } from '../lib/url'
 import { log } from '../lib/log'
 import { InputDialog } from './InputDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CertificatePopup } from './CertificatePopup'
+import { ImportWorkspaceDialog } from './ImportWorkspaceDialog'
+import type { WorkspaceCandidate } from '../store/types'
 import {
   ChevronLeft, ChevronRight, RotateCw, X, ChevronDown, Plus, Trash2, Pencil,
   PanelLeftClose, PanelLeft, User, Layout, Lock, Unlock, ShieldAlert, Import,
-  Menu, Settings, Info, Globe, Copy, Check, LogOut,
+  Menu, Settings, Info, Globe, Copy, Check, LogOut, Search,
 } from 'lucide-react'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
@@ -29,6 +31,7 @@ interface Props {
   onToggleSidebar: () => void
   onOpenSettings: () => void
   onOpenAbout: () => void
+  onOpenSearch: () => void
 }
 
 function SortableDropdownRow({
@@ -252,20 +255,26 @@ function Dropdown({ items, value, onChange, onDelete, onEdit, onReorder, icon: I
   )
 }
 
-function AppMenu({ onOpenSettings, onOpenAbout }: { onOpenSettings: () => void; onOpenAbout: () => void }) {
+function AppMenu({ onOpenSettings, onOpenAbout, onOpenSearch }: { onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
-    const handle = (e: MouseEvent) => {
+    const handleClick = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
     }
-    document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
   }, [open])
 
   const settingsShortcut = isMacOS ? '⌘,' : 'Ctrl+,'
+  const searchShortcut = isMacOS ? '⌘O' : 'Ctrl+O'
 
   return (
     <div ref={ref} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
@@ -279,11 +288,14 @@ function AppMenu({ onOpenSettings, onOpenAbout }: { onOpenSettings: () => void; 
       {open && (
         <div className="absolute top-full left-0 mt-1 w-48 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50 text-xs">
           <button
-            onClick={() => { setOpen(false); onOpenAbout() }}
-            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left"
+            onClick={() => { setOpen(false); onOpenSearch() }}
+            className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-accent text-left"
           >
-            <Info size={14} className="text-muted-foreground" />
-            <span>About</span>
+            <span className="flex items-center gap-2">
+              <Search size={14} className="text-muted-foreground" />
+              <span>Search Everything</span>
+            </span>
+            <span className="text-muted-foreground">{searchShortcut}</span>
           </button>
           <button
             onClick={() => { setOpen(false); onOpenSettings() }}
@@ -295,13 +307,20 @@ function AppMenu({ onOpenSettings, onOpenAbout }: { onOpenSettings: () => void; 
             </span>
             <span className="text-muted-foreground">{settingsShortcut}</span>
           </button>
+          <button
+            onClick={() => { setOpen(false); onOpenAbout() }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left"
+          >
+            <Info size={14} className="text-muted-foreground" />
+            <span>About</span>
+          </button>
           <div className="border-t border-border" />
           <button
             onClick={() => { setOpen(false); window.electronAPI.quit() }}
             className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left text-destructive"
           >
             <LogOut size={14} />
-            <span>Quit</span>
+            <span>Exit</span>
           </button>
         </div>
       )}
@@ -315,6 +334,10 @@ function ActiveTabTitle({ title, favicon, comment }: { title: string; favicon?: 
   const containerRef = useRef<HTMLDivElement>(null)
   const [isOverflowing, setIsOverflowing] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [faviconBroken, setFaviconBroken] = useState(false)
+
+  // Reset broken state when the favicon URL changes.
+  useEffect(() => { setFaviconBroken(false) }, [favicon])
 
   useEffect(() => {
     const el = textRef.current
@@ -336,8 +359,15 @@ function ActiveTabTitle({ title, favicon, comment }: { title: string; favicon?: 
       title={displayTitle}
     >
       <div className="relative shrink-0 w-4 h-4 flex items-center justify-center">
-        {favicon ? (
-          <img src={favicon} className={`w-4 h-4 rounded-sm transition-opacity ${copied ? 'opacity-0' : 'group-hover/tabtitle:opacity-0'}`} alt="" draggable={false} />
+        {favicon && !faviconBroken ? (
+          <img
+            key={favicon}
+            src={favicon}
+            className={`w-4 h-4 rounded-sm transition-opacity ${copied ? 'opacity-0' : 'group-hover/tabtitle:opacity-0'}`}
+            alt=""
+            draggable={false}
+            onError={() => setFaviconBroken(true)}
+          />
         ) : (
           <Globe size={14} className={`text-muted-foreground transition-opacity ${copied ? 'opacity-0' : 'group-hover/tabtitle:opacity-0'}`} />
         )}
@@ -360,7 +390,7 @@ function ActiveTabTitle({ title, favicon, comment }: { title: string; favicon?: 
   )
 }
 
-export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout }: Props) {
+export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch }: Props) {
   const isMac = navigator.platform.includes('Mac')
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
@@ -373,7 +403,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   const renameProfile = useAppStore((s) => s.renameProfile)
   const renameWorkspace = useAppStore((s) => s.renameWorkspace)
   const moveWorkspace = useAppStore((s) => s.moveWorkspace)
-  const importWorkspaceFromHtml = useAppStore((s) => s.importWorkspaceFromHtml)
+  const importSelectedWorkspaces = useAppStore((s) => s.importSelectedWorkspaces)
   const getActiveProfile = useAppStore((s) => s.getActiveProfile)
   const getActiveTab = useAppStore((s) => s.getActiveTab)
 
@@ -396,6 +426,10 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   const [confirmTitle, setConfirmTitle] = useState('')
   const [confirmMessage, setConfirmMessage] = useState('')
   const [confirmAction, setConfirmAction] = useState<() => void>(() => {})
+
+  // Import workspace dialog state
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
+  const [importCandidates, setImportCandidates] = useState<WorkspaceCandidate[]>([])
 
   const [isLoading, setIsLoading] = useState(false)
   const [certPopupOpen, setCertPopupOpen] = useState(false)
@@ -488,6 +522,8 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
       } else {
         webview.src = resolved
       }
+      // Hand focus to the page so the cursor doesn't stay trapped in the URL bar
+      webview.focus?.()
     }
     if (activeTabId) useAppStore.getState().updateTabUrl(activeTabId, resolved)
   }
@@ -660,12 +696,27 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
     if (!activeProfileId) return
     const html = await window.electronAPI.openBookmarkFile()
     if (!html) return
-    const ws = importWorkspaceFromHtml(activeProfileId, html)
-    if (ws) {
+    const candidates = findWorkspaceCandidates(html)
+    log.action('importWorkspaceScan', { profileId: activeProfileId, count: candidates.length })
+    setImportCandidates(candidates)
+    setImportDialogOpen(true)
+  }
+
+  const handleImportConfirm = async (selected: WorkspaceCandidate[]) => {
+    if (!activeProfileId || selected.length === 0) {
+      setImportDialogOpen(false)
+      return
+    }
+    const created = importSelectedWorkspaces(activeProfileId, selected)
+    for (const ws of created) {
       log.action('importWorkspace', { profileId: activeProfileId, wsId: ws.id, name: ws.name })
-      await saveStateNow()
+    }
+    await saveStateNow()
+    for (const ws of created) {
       window.electronAPI.openWorkspaceWindow(activeProfileId, ws.id, ws.name)
     }
+    setImportDialogOpen(false)
+    setImportCandidates([])
   }
 
   return (
@@ -691,7 +742,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         </button>
 
         {/* App menu */}
-        <AppMenu onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} />
+        <AppMenu onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} />
 
         {/* Profile selector */}
         <Dropdown
@@ -809,6 +860,13 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         message={confirmMessage}
         onConfirm={confirmAction}
         onCancel={() => setConfirmOpen(false)}
+      />
+
+      <ImportWorkspaceDialog
+        open={importDialogOpen}
+        candidates={importCandidates}
+        onConfirm={handleImportConfirm}
+        onCancel={() => { setImportDialogOpen(false); setImportCandidates([]) }}
       />
 
       {certPopupOpen && (

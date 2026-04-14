@@ -37,10 +37,42 @@ const COMMANDS: CommandItem[] = [
   { id: 'search', label: 'Search Everything', category: 'General' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'View' },
   { id: 'settings', label: 'Open Settings', category: 'General' },
-  { id: 'about', label: 'About Newbro', category: 'General' },
+  { id: 'about', label: 'About', category: 'General' },
   { id: 'close-window', label: 'Close Window', category: 'Window' },
-  { id: 'quit', label: 'Quit', category: 'General' },
+  { id: 'minimize-window', label: 'Minimize', category: 'Window' },
+  { id: 'maximize-window', label: 'Maximize', category: 'Window' },
+  { id: 'restore-window', label: 'Restore', category: 'Window' },
+  { id: 'quit', label: 'Exit', category: 'General' },
 ]
+
+function fuzzyScore(query: string, text: string): number {
+  if (!query) return 0
+  const q = query.toLowerCase()
+  const t = text.toLowerCase()
+
+  // Direct substring match scores highest; earlier position is better.
+  const idx = t.indexOf(q)
+  if (idx !== -1) {
+    return 1000 - idx * 2 + (idx === 0 ? 50 : 0)
+  }
+
+  // Subsequence match: all query chars must appear in order in the text.
+  // Word-boundary and consecutive-char matches are weighted higher.
+  const isWordStart = (i: number) => i === 0 || /[\s\-_]/.test(t[i - 1])
+  let score = 0
+  let qi = 0
+  let lastMatchIdx = -2
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] !== q[qi]) continue
+    let charScore = 1
+    if (isWordStart(ti)) charScore += 10
+    if (ti === lastMatchIdx + 1) charScore += 5
+    score += charScore
+    lastMatchIdx = ti
+    qi++
+  }
+  return qi === q.length ? score : 0
+}
 
 function formatKeybinding(binding: string): string {
   return binding
@@ -80,11 +112,18 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
 
   const filtered = useMemo(() => {
     if (!query.trim()) return availableCommands
-    const q = query.toLowerCase()
-    return availableCommands.filter((cmd) =>
-      cmd.label.toLowerCase().includes(q) || cmd.category.toLowerCase().includes(q)
-    )
-  }, [query])
+    return availableCommands
+      .map((cmd) => ({
+        cmd,
+        score: Math.max(
+          fuzzyScore(query, cmd.label),
+          fuzzyScore(query, cmd.category),
+        ),
+      }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.cmd)
+  }, [query, availableCommands])
 
   // Group by category
   const grouped = useMemo(() => {
@@ -217,7 +256,7 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   'new-workspace': 'CmdOrCtrl+Shift+N',
   'next-tab': 'Alt+J',
   'prev-tab': 'Alt+K',
-  'toggle-sidebar': 'CmdOrCtrl+B',
+  'toggle-sidebar': 'CmdOrCtrl+\\',
   'focus-url': 'CmdOrCtrl+L',
   'search': 'CmdOrCtrl+O',
   'command-palette': 'CmdOrCtrl+P',
