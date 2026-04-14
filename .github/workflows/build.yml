@@ -41,9 +41,7 @@ jobs:
         run: npm ci
 
       - name: Build distributable
-        run: npm run ${{ matrix.script }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run ${{ matrix.script }} -- --publish=never
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
