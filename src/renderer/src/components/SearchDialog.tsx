@@ -47,7 +47,6 @@ function saveFilters(filters: Set<FilterType>) {
 }
 
 const isMac = navigator.platform.includes('Mac')
-const MOD = isMac ? '\u2318' : 'Ctrl+'
 const OPT = isMac ? '\u2325' : 'Alt+'
 
 export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
@@ -200,15 +199,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
       }
     }
 
-    if ((e.metaKey || e.ctrlKey) && !e.altKey && digit !== null) {
-      const idx = digit === 0 ? 9 : digit - 1
-      if (idx >= 0 && idx < flatResults.length) {
-        e.preventDefault()
-        handleSelect(flatResults[idx])
-        return
-      }
-    }
-
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       setSelectedIndex((i) => Math.min(i + 1, flatResults.length - 1))
@@ -291,13 +281,12 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
               return (
                 <div key={type}>
                   <div className="px-4 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
-                    <span className="w-8 shrink-0" />
+                    <span className="w-6 shrink-0" />
                     <span className="flex-1">{TYPE_LABELS[type] || type}</span>
                     <span className="w-8 text-right">{countLabel}</span>
                   </div>
                   {groupItems.map((item) => {
                     const idx = flatIdx++
-                    const shortcutNum = idx < 9 ? idx + 1 : idx === 9 ? 0 : null
                     return (
                       <div
                         key={item.id}
@@ -308,13 +297,9 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
                         onClick={() => handleSelect(item)}
                         onMouseEnter={() => setSelectedIndex(idx)}
                       >
-                        {shortcutNum !== null ? (
-                          <span className="w-8 text-center text-[10px] text-muted-foreground/60 font-mono shrink-0">
-                            {MOD}{shortcutNum}
-                          </span>
-                        ) : (
-                          <span className="w-8 shrink-0" />
-                        )}
+                        <span className="w-6 shrink-0 flex items-center">
+                          <TypeIcon size={16} className="text-muted-foreground/60" />
+                        </span>
                         <div className="flex-1 min-w-0">
                           <div className="text-sm truncate">
                             {item.comment ? `${item.comment} — ${item.name}` : item.name}
@@ -324,7 +309,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
                             {item.url && item.url !== 'about:blank' && ` · ${item.url}`}
                           </div>
                         </div>
-                        <TypeIcon size={14} className="shrink-0 text-muted-foreground/40" />
                       </div>
                     )
                   })}
@@ -332,14 +316,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
               )
             })
           )}
-        </div>
-
-        <div className="flex items-center gap-4 px-4 py-2 border-t border-border text-[10px] text-muted-foreground shrink-0">
-          <span>↑↓ navigate</span>
-          <span>↵ select</span>
-          <span>{MOD}1-0 quick select</span>
-          <span>{OPT}1-4 toggle filters</span>
-          <span>esc close</span>
         </div>
       </div>
     </DetachedWindow>

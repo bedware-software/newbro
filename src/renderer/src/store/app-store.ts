@@ -71,6 +71,11 @@ function defaultState() {
     activeWorkspaceId: ws.id,
     activeTabGroupId: firstGroup?.id || null,
     activeTabId: firstTab?.id || null,
+    // Session-only: origins the user has chosen to bypass a cert warning on.
+    // Mirrors the main-process bypass set. Any tab showing one of these
+    // origins gets a "warning" padlock in the URL bar.
+    // Not persisted (see getSerializableState).
+    certBypassedOrigins: new Set<string>(),
   }
 }
 
@@ -80,6 +85,10 @@ export interface AppState {
   activeWorkspaceId: string | null
   activeTabGroupId: string | null
   activeTabId: string | null
+
+  /** Origins the user bypassed a cert warning for (session-only). Drives URL-bar warning icon. */
+  certBypassedOrigins: Set<string>
+  markOriginCertBypassed: (url: string) => void
 
   hydrate: (data: unknown) => void
 
@@ -292,6 +301,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       set(state)
     }
   },
+
+  markOriginCertBypassed: (url) => set((s) => {
+    let origin: string
+    try { origin = new URL(url).origin } catch { return s }
+    if (s.certBypassedOrigins.has(origin)) return s
+    const next = new Set(s.certBypassedOrigins)
+    next.add(origin)
+    return { certBypassedOrigins: next }
+  }),
 
   // ── Profile ──
   addProfile: (name) => {
@@ -1104,6 +1122,46 @@ export function withoutSave(fn: () => void): void {
   suppressSave = true
   try { fn() } finally { suppressSave = false }
 }
+
+// ── Per-workspace last-active-tab sync ──
+// Whenever activeTabId changes, stamp it onto the containing workspace's
+// lastActiveTabId so each workspace independently remembers its own last-active
+// tab across app restarts. Multi-window setups rely on this: the global
+// activeTabId only reflects the last-focused window's tab, but each workspace
+// needs its own memory so all workspace windows restore correctly, not just the
+// last-focused one.
+let lastSyncedActiveTabId: string | null = null
+useAppStore.subscribe(() => {
+  const state = useAppStore.getState()
+  const tabId = state.activeTabId
+  if (tabId === lastSyncedActiveTabId) return
+  lastSyncedActiveTabId = tabId
+  if (!tabId) return
+
+  // Locate the workspace containing the newly-active tab.
+  let ownerWorkspaceId: string | null = null
+  outer: for (const p of state.profiles) {
+    for (const w of p.workspaces) {
+      if (w.tabs?.some((t) => t.id === tabId)) { ownerWorkspaceId = w.id; break outer }
+      for (const g of w.tabGroups) {
+        if (g.tabs.some((t) => t.id === tabId)) { ownerWorkspaceId = w.id; break outer }
+      }
+    }
+  }
+  if (!ownerWorkspaceId) return
+
+  // Only write if it's actually changing, to avoid pointless save churn.
+  const owner = state.profiles.flatMap((p) => p.workspaces).find((w) => w.id === ownerWorkspaceId)
+  if (!owner || owner.lastActiveTabId === tabId) return
+
+  useAppStore.setState(produce((s: AppState) => {
+    for (const p of s.profiles) {
+      for (const w of p.workspaces) {
+        if (w.id === ownerWorkspaceId) { w.lastActiveTabId = tabId; return }
+      }
+    }
+  }))
+})
 
 let saveTimeout: ReturnType<typeof setTimeout> | null = null
 let lastSavedJson = ''

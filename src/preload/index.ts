@@ -20,10 +20,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Certificate info
   getCertInfo: (url: string): Promise<unknown> => ipcRenderer.invoke('cert:get-info', url),
+  bypassCertForUrl: (url: string): Promise<void> => ipcRenderer.invoke('cert:bypass-origin', url),
 
   // Settings
   loadSettings: (): Promise<unknown> => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings: unknown): Promise<void> => ipcRenderer.invoke('settings:save', settings),
+
+  // Danger zone: wipe the entire userData directory and relaunch.
+  wipeAllData: (): Promise<void> => ipcRenderer.invoke('app:wipe-data'),
 
   // Import
   openBookmarkFile: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-bookmark-file'),

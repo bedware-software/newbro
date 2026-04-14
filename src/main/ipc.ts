@@ -1,9 +1,11 @@
-import { ipcMain, BrowserWindow, dialog, app, Menu } from 'electron'
+import { ipcMain, BrowserWindow, dialog, app, Menu, session } from 'electron'
 import * as tls from 'tls'
 import * as fs from 'fs'
+import * as path from 'path'
+import { spawn } from 'child_process'
 import { loadState, saveState } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
-import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions } from './index'
+import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin } from './index'
 import { log } from './log'
 
 interface CertInfo {
@@ -154,6 +156,11 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('cert:bypass-origin', (_e, url: string) => {
+    log.ipc('cert:bypass-origin', url)
+    addBypassedCertOrigin(url)
+  })
+
   ipcMain.handle('settings:load', () => {
     log.ipc('settings:load')
     return loadSettings()
@@ -226,5 +233,134 @@ export function registerIpcHandlers(): void {
     } else {
       app.showAboutPanel()
     }
+  })
+
+  ipcMain.handle('app:wipe-data', async () => {
+    log.ipc('app:wipe-data', 'start')
+    const userDataDir = app.getPath('userData')
+
+    // Best-effort in-process clear of session data. This frees most Chromium
+    // file locks before we relaunch, so the post-quit rmdir has a much better
+    // chance of succeeding on Windows.
+    try {
+      const sessions = new Set<Electron.Session>([session.defaultSession])
+      // Also clear any partitioned sessions we know about via existing windows.
+      for (const win of BrowserWindow.getAllWindows()) {
+        try {
+          sessions.add(win.webContents.session)
+        } catch {
+          /* ignore */
+        }
+      }
+      await Promise.all(
+        Array.from(sessions).map(async (ses) => {
+          try {
+            await ses.clearStorageData()
+            await ses.clearCache()
+            await ses.clearAuthCache()
+            await ses.clearHostResolverCache()
+          } catch (err) {
+            log.warn('wipe-data: failed to clear a session', err)
+          }
+        })
+      )
+    } catch (err) {
+      log.warn('wipe-data: session clear failed', err)
+    }
+
+    // Spawn a detached helper that waits for this process to exit, then
+    // recursively deletes the userData directory and relaunches the app.
+    // Running the delete after quit avoids file-lock failures on Windows
+    // where Chromium holds onto files under Partitions/ and GPUCache/ until
+    // the process fully exits. The helper — not app.relaunch() — starts the
+    // new instance so the relaunched app can't race with the wipe and
+    // re-create files mid-delete.
+    try {
+      const pid = process.pid
+      const tmpDir = app.getPath('temp')
+      const scriptPath = path.join(tmpDir, `newbro-wipe-${pid}-${Date.now()}.js`)
+
+      // Capture the current launch command so the helper can relaunch a
+      // fresh instance with the same executable and args. ELECTRON_RUN_AS_NODE
+      // must be stripped from the child env — otherwise the relaunched app
+      // would start in Node mode and never open a window.
+      const relaunchExec = process.execPath
+      const relaunchArgs = process.argv.slice(1)
+      const relaunchEnv: Record<string, string> = {}
+      for (const [key, value] of Object.entries(process.env)) {
+        if (key === 'ELECTRON_RUN_AS_NODE') continue
+        if (typeof value === 'string') relaunchEnv[key] = value
+      }
+
+      const script = `
+const fs = require('fs');
+const { spawn } = require('child_process');
+const pid = ${pid};
+const target = ${JSON.stringify(userDataDir)};
+const relaunchExec = ${JSON.stringify(relaunchExec)};
+const relaunchArgs = ${JSON.stringify(relaunchArgs)};
+const relaunchEnv = ${JSON.stringify(relaunchEnv)};
+
+function alive(p) {
+  try { process.kill(p, 0); return true } catch { return false }
+}
+
+(async () => {
+  // Wait for parent to exit (max ~15s)
+  for (let i = 0; i < 150; i++) {
+    if (!alive(pid)) break
+    await new Promise(r => setTimeout(r, 100))
+  }
+  // Give Chromium a final moment to release file handles
+  await new Promise(r => setTimeout(r, 500))
+  // Retry deletion — locks can linger briefly
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+      break
+    } catch (err) {
+      await new Promise(r => setTimeout(r, 500))
+    }
+  }
+  // Relaunch the app AFTER the wipe is fully done, so the fresh instance
+  // sees an empty userData and re-creates it cleanly.
+  try {
+    const child = spawn(relaunchExec, relaunchArgs, {
+      detached: true,
+      stdio: 'ignore',
+      env: relaunchEnv,
+    })
+    child.unref()
+  } catch (err) {
+    // Best-effort — if relaunch fails the user can start the app manually.
+  }
+  try { fs.unlinkSync(__filename) } catch {}
+})()
+`
+      fs.writeFileSync(scriptPath, script, 'utf8')
+
+      const child = spawn(process.execPath, [scriptPath], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      })
+      child.unref()
+      log.info('wipe-data: helper spawned', { pid: child.pid, scriptPath })
+    } catch (err) {
+      log.error('wipe-data: failed to spawn helper', err)
+    }
+
+    // Tear down every window and exit. The detached helper will wipe
+    // userData once this process dies, then launch a fresh instance.
+    log.info('wipe-data: quitting so helper can take over')
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        win.removeAllListeners('close')
+        win.destroy()
+      } catch {
+        /* ignore */
+      }
+    }
+    app.exit(0)
   })
 }

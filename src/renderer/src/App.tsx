@@ -39,9 +39,11 @@ declare global {
       closeWorkspaceWindows: (workspaceIds: string[]) => Promise<void>
       quit: () => void
       getCertInfo: (url: string) => Promise<unknown>
+      bypassCertForUrl: (url: string) => Promise<void>
       logWrite: (level: string, msg: string) => void
       loadSettings: () => Promise<Settings>
       saveSettings: (settings: Settings) => Promise<void>
+      wipeAllData: () => Promise<void>
       onShortcut: (callback: (action: string) => void) => () => void
       onStateUpdated: (callback: (state: unknown) => void) => () => void
       onOpenUrlAsTab: (callback: (url: string) => void) => () => void
@@ -140,21 +142,34 @@ export default function App() {
         if (ws) {
           useAppStore.setState({ activeWorkspaceId: windowWorkspaceId })
 
-          // If a specific tab was requested via URL param, activate it
-          let resolvedTabId: string | null = null
-          if (windowTabId) {
-            if (ws.tabs?.some((t) => t.id === windowTabId)) {
-              resolvedTabId = windowTabId
-            } else {
-              for (const g of ws.tabGroups) {
-                if (g.tabs.some((t) => t.id === windowTabId)) {
-                  resolvedTabId = windowTabId
-                  break
-                }
-              }
+          const workspaceContainsTab = (tabId: string): boolean => {
+            if (ws.tabs?.some((t) => t.id === tabId)) return true
+            for (const g of ws.tabGroups) {
+              if (g.tabs.some((t) => t.id === tabId)) return true
             }
+            return false
           }
 
+          // Resolve which tab to activate, in priority order:
+          //   1. windowTabId from URL query param (explicit target when opening a new window)
+          //   2. ws.lastActiveTabId — per-workspace persisted last-active tab
+          //      (required so every workspace window restores its own tab, not just the last-focused one)
+          //   3. hydrated global activeTabId — transitional fallback for pre-existing state
+          //      that doesn't yet have lastActiveTabId set on each workspace
+          //   4. First tab in the workspace
+          let resolvedTabId: string | null = null
+          if (windowTabId && workspaceContainsTab(windowTabId)) {
+            resolvedTabId = windowTabId
+          }
+          if (!resolvedTabId && ws.lastActiveTabId && workspaceContainsTab(ws.lastActiveTabId)) {
+            resolvedTabId = ws.lastActiveTabId
+          }
+          if (!resolvedTabId) {
+            const hydratedActiveId = useAppStore.getState().activeTabId
+            if (hydratedActiveId && workspaceContainsTab(hydratedActiveId)) {
+              resolvedTabId = hydratedActiveId
+            }
+          }
           if (!resolvedTabId) {
             const firstUngrouped = ws.tabs?.[0]
             const firstGrouped = ws.tabGroups[0]

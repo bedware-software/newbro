@@ -9,20 +9,26 @@ interface LoadError {
   description: string
 }
 
+interface CertError {
+  tabId: string
+  url: string
+  code: number
+  /** Electron's errorDescription, e.g. "ERR_CERT_AUTHORITY_INVALID" */
+  description: string
+}
+
 export function WebviewPanel() {
   const containerRef = useRef<HTMLDivElement>(null)
   const webviewsRef = useRef<Map<string, HTMLElement>>(new Map())
   // Track which tabs have been activated (had their real URL loaded)
   const activatedTabsRef = useRef<Set<string>>(new Set())
-  const [error, setError] = useState<LoadError | null>(null)
+  const [errors, setErrors] = useState<Map<string, LoadError>>(new Map())
+  const [certErrors, setCertErrors] = useState<Map<string, CertError>>(new Map())
 
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
-
-  // Clear error when switching tabs
-  useEffect(() => { setError(null) }, [activeTabId])
 
   // Only collect tabs from the active workspace
   const getWorkspaceTabs = useCallback(() => {
@@ -86,7 +92,12 @@ export function WebviewPanel() {
         // DEBUG: trace webview navigation lifecycle
         const dbg = (evt: string, detail?: any) => console.log(`[webview:${tabId.slice(0,6)}] ${evt}`, detail ?? '')
 
-        wv.addEventListener('did-start-loading', () => dbg('did-start-loading'))
+        wv.addEventListener('did-start-loading', () => {
+          dbg('did-start-loading')
+          // Clear any stale error/cert-error banners for this tab when a new load begins
+          setErrors((prev) => { if (!prev.has(tabId)) return prev; const m = new Map(prev); m.delete(tabId); return m })
+          setCertErrors((prev) => { if (!prev.has(tabId)) return prev; const m = new Map(prev); m.delete(tabId); return m })
+        })
         wv.addEventListener('did-stop-loading', () => dbg('did-stop-loading', { url: wv.getURL?.() }))
         wv.addEventListener('did-start-navigation', (e: any) => dbg('did-start-navigation', { url: e.url, isMainFrame: e.isMainFrame }))
         wv.addEventListener('will-navigate', (e: any) => dbg('will-navigate', { url: e.url }))
@@ -123,17 +134,16 @@ export function WebviewPanel() {
           }
         })
         wv.addEventListener('page-title-updated', (e: any) => {
-          useAppStore.getState().updateTabTitle(tabId, e.title)
+          // Pages like about:blank fire this with an empty title, which would
+          // wipe out the user-facing tab name. Only accept non-empty titles.
+          const title = (e.title || '').trim()
+          if (!title) return
+          useAppStore.getState().updateTabTitle(tabId, title)
         })
         wv.addEventListener('page-favicon-updated', (e: any) => {
           if (e.favicons && e.favicons.length > 0) {
             useAppStore.getState().updateTabFavicon(tabId, e.favicons[0])
           }
-        })
-
-        // Clear error when page starts loading successfully
-        wv.addEventListener('did-start-loading', () => {
-          setError((prev) => prev?.tabId === tabId ? null : prev)
         })
 
         wv.addEventListener('did-fail-load', (e: any) => {
@@ -143,10 +153,17 @@ export function WebviewPanel() {
           const url = e.validatedURL || getTabUrlById(tabId) || ''
           const desc = e.errorDescription || 'Unknown error'
 
-          log.warn('page load failed', { url, code: e.errorCode, desc })
+          // Cert / SSL error codes: ERR_CERT_* (-200..-215) and related SSL
+          // codes (-216..-219), plus ERR_INSECURE_RESPONSE (-501).
+          const isCert = (e.errorCode >= -219 && e.errorCode <= -200) || e.errorCode === -501
+          if (isCert) {
+            log.warn('cert error', { url, code: e.errorCode, desc })
+            setCertErrors((prev) => new Map(prev).set(tabId, { tabId, url, code: e.errorCode, description: desc }))
+            return
+          }
 
-          // Show error banner for the active tab only
-          setError({ tabId, url, code: e.errorCode, description: desc })
+          log.warn('page load failed', { url, code: e.errorCode, desc })
+          setErrors((prev) => new Map(prev).set(tabId, { tabId, url, code: e.errorCode, description: desc }))
         })
 
         container.appendChild(wv)
@@ -169,38 +186,71 @@ export function WebviewPanel() {
     }
   }, [profiles, activeTabId, activeWorkspaceId, getWorkspaceTabs])
 
+  // Hand focus to the active webview whenever the active tab changes so
+  // keyboard input goes to the page. Covers tab cycling (Ctrl+Tab /
+  // Ctrl+Shift+Tab), Search Everything selection, sidebar clicks, etc.
+  // The Enter-in-URL-bar path focuses directly from the Toolbar handler
+  // because the URL may not change (reload case). Declared after the
+  // create/show effect so display:flex is applied before we focus.
+  useEffect(() => {
+    if (!activeTabId) return
+    const wv = webviewsRef.current.get(activeTabId)
+    if (!wv) return
+    ;(wv as any).focus?.()
+  }, [activeTabId])
+
+  const activeError = activeTabId ? errors.get(activeTabId) ?? null : null
+  const activeCertError = activeTabId ? certErrors.get(activeTabId) ?? null : null
+  const showCertError = activeCertError !== null
+  // Only show the generic error banner when there's no cert-warning overlay on top
+  const showError = activeError !== null && !showCertError
+
+  const failedHost = (() => {
+    if (!activeError?.url) return ''
+    try { return new URL(activeError.url).hostname } catch { return activeError.url }
+  })()
+
   const handleRetry = () => {
-    if (!error) return
-    const wv = document.querySelector(`webview[data-tab-id="${error.tabId}"]`) as any
-    if (wv) {
-      setError(null)
-      const retryUrl = error.url || getTabUrlById(error.tabId)
-      if (retryUrl && wv.loadURL) {
-        wv.loadURL(retryUrl).catch(() => {})
-      } else if (wv.reloadIgnoringCache) {
-        wv.reloadIgnoringCache()
-      } else {
-        wv.reload()
-      }
+    if (!activeError) return
+    const wv = webviewsRef.current.get(activeError.tabId) as any
+    if (!wv) return
+    setErrors((prev) => { const m = new Map(prev); m.delete(activeError.tabId); return m })
+    const retryUrl = activeError.url || getTabUrlById(activeError.tabId)
+    if (retryUrl && wv.loadURL) {
+      wv.loadURL(retryUrl).catch(() => {})
+    } else if (wv.reloadIgnoringCache) {
+      wv.reloadIgnoringCache()
+    } else {
+      wv.reload()
     }
   }
 
-  // Only show error for the currently active tab
-  const showError = error && error.tabId === activeTabId
-  const failedHost = (() => {
-    if (!showError?.url) return ''
-    try {
-      return new URL(showError.url).hostname
-    } catch {
-      return showError.url
+  const handleCertContinue = async (err: CertError) => {
+    // Tell main to allow the cert for this origin BEFORE we reload.
+    try { await window.electronAPI.bypassCertForUrl(err.url) } catch { /* ignore */ }
+    useAppStore.getState().markOriginCertBypassed(err.url)
+    setCertErrors((prev) => { const m = new Map(prev); m.delete(err.tabId); return m })
+    const wv = webviewsRef.current.get(err.tabId) as any
+    if (wv && err.url) wv.loadURL(err.url).catch(() => {})
+  }
+
+  const handleCertBack = (err: CertError) => {
+    setCertErrors((prev) => { const m = new Map(prev); m.delete(err.tabId); return m })
+    const wv = webviewsRef.current.get(err.tabId) as any
+    if (!wv) return
+    if (wv.canGoBack?.()) {
+      wv.goBack()
+      return
     }
-  })()
+    wv.loadURL('about:blank').catch(() => {})
+    useAppStore.getState().updateTabUrl(err.tabId, 'about:blank')
+  }
 
   return (
     <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
       <div ref={containerRef} style={{ flex: 1, display: 'flex' }} />
 
-      {showError && (
+      {showError && activeError && (
         <div className="absolute inset-0 z-50 bg-[#eaecf1] text-[#11151f] flex items-center justify-center">
           <div className="w-full max-w-[640px] px-8">
             <h2 className="text-4xl font-semibold mb-4">Hmmm... can&apos;t reach this page</h2>
@@ -212,7 +262,7 @@ export function WebviewPanel() {
               <li>Checking the connection</li>
               <li>Checking the proxy and the firewall</li>
             </ul>
-            <p className="text-sm text-[#586070] mb-6">{error.description} ({error.code})</p>
+            <p className="text-sm text-[#586070] mb-6">{activeError.description} ({activeError.code})</p>
             <button
               onClick={handleRetry}
               className="px-6 py-2.5 rounded bg-[#2f6ecb] text-white text-sm font-semibold hover:bg-[#245fb5]"
@@ -222,6 +272,57 @@ export function WebviewPanel() {
           </div>
         </div>
       )}
+
+      {showCertError && activeCertError && (
+        <CertWarningOverlay
+          url={activeCertError.url}
+          code={activeCertError.description || `Error ${activeCertError.code}`}
+          onBack={() => handleCertBack(activeCertError)}
+          onContinue={() => handleCertContinue(activeCertError)}
+        />
+      )}
+    </div>
+  )
+}
+
+function CertWarningOverlay({
+  url,
+  code,
+  onBack,
+  onContinue,
+}: {
+  url: string
+  code: string
+  onBack: () => void
+  onContinue: () => void
+}) {
+  let hostname = url
+  try { hostname = new URL(url).hostname } catch { /* ignore */ }
+  return (
+    <div className="absolute inset-0 z-50 bg-[#eaecf1] text-[#11151f] flex items-center justify-center">
+      <div className="w-full max-w-[640px] px-8">
+        <div className="w-16 h-16 mb-6 rounded-full bg-red-600 text-white flex items-center justify-center text-4xl font-bold leading-none">!</div>
+        <h2 className="text-4xl font-semibold mb-4">Your connection isn&apos;t private</h2>
+        <p className="text-base mb-4">
+          Attackers might be trying to steal your information from{' '}
+          <strong>{hostname}</strong> (for example, passwords, messages, or credit cards).
+        </p>
+        <p className="text-sm text-[#586070] mb-8 font-mono">{code}</p>
+        <div className="flex items-center gap-4">
+          <button
+            onClick={onBack}
+            className="px-6 py-2.5 rounded bg-[#2f6ecb] text-white text-sm font-semibold hover:bg-[#245fb5]"
+          >
+            Back to safety
+          </button>
+          <button
+            onClick={onContinue}
+            className="px-2 py-2.5 text-sm text-[#586070] hover:text-[#11151f] underline"
+          >
+            Continue to {hostname} (unsafe)
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

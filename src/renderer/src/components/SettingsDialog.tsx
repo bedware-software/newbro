@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2 } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
+import { ConfirmDialog } from './ConfirmDialog'
 
 interface ProxySettings {
   mode: 'system' | 'direct' | 'custom'
@@ -34,8 +35,8 @@ const DEFAULT_KEYBINDINGS: Record<string, string> = {
   'close-tab': 'CmdOrCtrl+W',
   'close-window': 'CmdOrCtrl+Shift+W',
   'new-workspace': 'CmdOrCtrl+Shift+N',
-  'next-tab': 'Alt+J',
-  'prev-tab': 'Alt+K',
+  'next-tab': 'CmdOrCtrl+Tab',
+  'prev-tab': 'CmdOrCtrl+Shift+Tab',
   'toggle-sidebar': 'CmdOrCtrl+\\',
   'focus-url': 'CmdOrCtrl+L',
   search: 'CmdOrCtrl+O',
@@ -211,6 +212,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
   const [keybindings, setKeybindings] = useState<Record<string, string>>({ ...DEFAULT_KEYBINDINGS })
   const [recordingAction, setRecordingAction] = useState<string | null>(null)
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
+  const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false)
   const recordingRef = useRef<string | null>(null)
   const pendingTabChordRef = useRef(false)
   const originalThemeRef = useRef<'light' | 'dark' | 'system'>('dark')
@@ -240,7 +242,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
       return
     }
 
-    if (e.key === 'Tab') {
+    // Only treat a bare Tab press (no modifiers) as the start of a Tab+X chord.
+    // Tab with modifiers (e.g. Ctrl+Tab) is a regular accelerator.
+    if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
       pendingTabChordRef.current = true
       return
     }
@@ -296,6 +300,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
 
   const handleResetKeybindings = () => {
     setKeybindings({ ...DEFAULT_KEYBINDINGS })
+  }
+
+  const handleWipeAllData = () => {
+    setWipeConfirmOpen(false)
+    // Fire-and-forget — the main process will relaunch the app immediately.
+    window.electronAPI.wipeAllData()
   }
 
   if (!open) return null
@@ -514,6 +524,32 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                   </p>
                 )}
               </div>
+
+              {/* Danger Zone */}
+              <div className="pt-4 mt-2 border-t border-destructive/30">
+                <div className="flex items-center gap-2 mb-3">
+                  <AlertTriangle size={14} className="text-destructive" />
+                  <h3 className="text-sm font-semibold text-destructive">Danger Zone</h3>
+                </div>
+                <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 flex items-start gap-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-foreground">Wipe all data</p>
+                    <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                      Permanently deletes the entire Newbro application directory, including every
+                      workspace, tab, bookmark, cookie, login session, cache, history, setting, and
+                      keybinding. The app will relaunch as if freshly installed. This action cannot
+                      be undone.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setWipeConfirmOpen(true)}
+                    className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-destructive text-destructive-foreground hover:opacity-90"
+                  >
+                    <Trash2 size={12} />
+                    Wipe all data
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -591,6 +627,15 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
           </button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={wipeConfirmOpen}
+        title="Wipe all Newbro data?"
+        message="This will permanently delete every workspace, tab, bookmark, cookie, login session, cache, setting, and keybinding, then relaunch the app. This cannot be undone."
+        confirmLabel="Wipe everything"
+        onConfirm={handleWipeAllData}
+        onCancel={() => setWipeConfirmOpen(false)}
+      />
     </DetachedWindow>
   )
 }

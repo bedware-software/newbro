@@ -396,6 +396,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   const activeProfileId = useAppStore((s) => s.activeProfileId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const activeTabId = useAppStore((s) => s.activeTabId)
+  const certBypassedOrigins = useAppStore((s) => s.certBypassedOrigins)
   const addProfile = useAppStore((s) => s.addProfile)
   const addWorkspace = useAppStore((s) => s.addWorkspace)
   const removeProfile = useAppStore((s) => s.removeProfile)
@@ -444,14 +445,27 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
     const url = activeTab?.url || ''
     setUrlValue(url)
     if (activeTabId) updateSecurity(url, activeTabId)
-  }, [activeTab?.url, activeTabId])
+  }, [activeTab?.url, activeTabId, certBypassedOrigins])
 
   // Derive security state from URL
   const updateSecurity = (url: string, tabId: string) => {
     if (!url || url === 'about:blank' || url.startsWith('data:') || url.startsWith('file:') || url.startsWith('chrome:')) {
       setSecurity('internal')
       setCertInfo('')
-    } else if (certErrorTabs.current.has(tabId)) {
+      return
+    }
+    // Session-bypassed cert? Show warning even though the load succeeded.
+    // Read from the store directly to avoid stale closures in webview event
+    // listeners (which are registered once per activeTabId change).
+    let origin = ''
+    try { origin = new URL(url).origin } catch { /* ignore */ }
+    const bypassed = useAppStore.getState().certBypassedOrigins
+    if (origin && bypassed.has(origin)) {
+      setSecurity('warning')
+      setCertInfo('You bypassed a certificate warning for this site')
+      return
+    }
+    if (certErrorTabs.current.has(tabId)) {
       setSecurity('warning')
       setCertInfo('Certificate error')
     } else if (url.startsWith('https://')) {
@@ -807,12 +821,21 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         >
           {security !== 'internal' && (<>
             <button
-              className="ml-1.5 h-6 w-6 flex items-center justify-center rounded-md bg-card cursor-pointer group relative"
+              className={
+                security === 'warning'
+                  ? 'ml-1.5 h-6 px-2 flex items-center gap-1 rounded-md bg-red-600 text-white cursor-pointer group relative hover:bg-red-700'
+                  : 'ml-1.5 h-6 w-6 flex items-center justify-center rounded-md bg-card cursor-pointer group relative'
+              }
               onClick={() => setCertPopupOpen((v) => !v)}
             >
-              {security === 'secure' && <Lock size={13} className="text-green-500" />}
+              {security === 'secure' && <Lock size={13} className="text-secondary-foreground" />}
               {security === 'insecure' && <Unlock size={13} className="text-muted-foreground" />}
-              {security === 'warning' && <ShieldAlert size={13} className="text-red-500" />}
+              {security === 'warning' && (
+                <>
+                  <ShieldAlert size={13} />
+                  <span className="text-xs font-semibold leading-none">Not secure</span>
+                </>
+              )}
               {/* Tooltip centered under icon (hidden when popup is open) */}
               {!certPopupOpen && (
                 <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 hidden group-hover:block z-50 pointer-events-none">

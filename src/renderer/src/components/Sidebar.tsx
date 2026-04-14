@@ -534,7 +534,7 @@ export function Sidebar({ visible }: Props) {
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
         <TabFavicon favicon={tab.favicon} />
-        {tab.comment && <MessageSquareText size={10} className="shrink-0 text-primary/60" />}
+        {tab.comment && <MessageSquareText size={16} className="shrink-0 text-primary/60" />}
         <span className="flex-1 text-xs truncate">{tab.comment ? `${tab.comment} — ${tab.title}` : tab.title}</span>
         <button
           onMouseDown={(e) => e.stopPropagation()}

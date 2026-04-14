@@ -20,6 +20,8 @@ export interface Workspace {
   tabGroups: TabGroup[]
   tabs: Tab[] // ungrouped tabs
   sidebarOrder?: string[] // interleaved IDs of ungrouped tabs and tab groups for display order
+  /** ID of the tab that was last active in this workspace — used to restore the right tab when reopening a workspace window. */
+  lastActiveTabId?: string
 }
 
 export interface Profile {

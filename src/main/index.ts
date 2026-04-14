@@ -21,6 +21,32 @@ app.commandLine.appendSwitch(
   'UserAgentClientHint,UserAgentClientHintFullVersionList,GreaseUACH,CriticalClientHint'
 )
 
+// ── Certificate error bypass ──
+// Origins the user has explicitly chosen to bypass for this session.
+// Cleared when the app quits — not persisted.
+const bypassedCertOrigins = new Set<string>()
+
+export function addBypassedCertOrigin(url: string): void {
+  try {
+    bypassedCertOrigins.add(new URL(url).origin)
+  } catch {
+    /* ignore invalid URLs */
+  }
+}
+
+app.on('certificate-error', (event, _wc, url, _error, _cert, callback) => {
+  try {
+    if (bypassedCertOrigins.has(new URL(url).origin)) {
+      event.preventDefault()
+      callback(true)
+      return
+    }
+  } catch {
+    /* fall through */
+  }
+  callback(false)
+})
+
 const SCROLLBAR_CSS = `
 ::-webkit-scrollbar, *::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
 ::-webkit-scrollbar-track, *::-webkit-scrollbar-track { background: transparent !important; }
@@ -133,8 +159,10 @@ function parseAcceleratorShortcut(binding: string | undefined): ParsedAccelerato
       cmdOrCtrl = true
       continue
     }
-    // Tab+X is handled separately as a two-step chord.
-    if (part === 'tab' && parts.length > 1) return null
+    // Tab+X chord (Tab as leader) is handled by parseTabLeaderShortcut — only
+    // reject when Tab appears at the leader position (first token, no modifiers
+    // seen yet). With modifiers like CmdOrCtrl+Tab, Tab is a regular key.
+    if (part === 'tab' && !shift && !alt && !cmdOrCtrl && !key) return null
     if (key) return null
     key = normalizeShortcutKeyToken(rawPart)
   }
@@ -171,7 +199,7 @@ function matchesAccelerator(input: Electron.Input, shortcut: ParsedAccelerator |
   return true
 }
 
-function installTabCycleInputShortcuts(source: Electron.WebContents, targetWindow: BrowserWindow): void {
+function installShortcutInterceptor(source: Electron.WebContents, targetWindow: BrowserWindow): void {
   let tabDown = false
   let tabResetTimer: NodeJS.Timeout | null = null
 
@@ -193,25 +221,22 @@ function installTabCycleInputShortcuts(source: Electron.WebContents, targetWindo
   }
 
   source.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return
+
     const key = keyTokenFromInput(input)
     const noOtherModifiers = !input.alt && !input.control && !input.meta && !input.shift
 
-    if (input.type === 'keyUp') {
-      if (key === 'tab') {
-        // Tab released — keep chord armed (timer handles expiry)
-      }
-      return
-    }
-
-    if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return
-
     const settings = loadSettings()
     const keybindings = { ...DEFAULT_KEYBINDINGS, ...settings.keybindings }
-    const nextBinding = resolveTabCycleBinding(keybindings, 'next-tab', 'Alt+J')
-    const prevBinding = resolveTabCycleBinding(keybindings, 'prev-tab', 'Alt+K')
+
+    // Tab-leader chord support (e.g. "Tab+J" for next-tab): resolved separately
+    // because parseAcceleratorShortcut rejects Tab-as-leader bindings.
+    const nextBinding = resolveTabCycleBinding(keybindings, 'next-tab', 'CmdOrCtrl+Tab')
+    const prevBinding = resolveTabCycleBinding(keybindings, 'prev-tab', 'CmdOrCtrl+Shift+Tab')
     const nextLeaderKey = parseTabLeaderShortcut(nextBinding)
     const prevLeaderKey = parseTabLeaderShortcut(prevBinding)
 
+    // Plain Tab: arm the chord if the user has a Tab-leader binding configured.
     if (key === 'tab' && noOtherModifiers) {
       if (nextLeaderKey || prevLeaderKey) {
         armTabState()
@@ -222,6 +247,7 @@ function installTabCycleInputShortcuts(source: Electron.WebContents, targetWindo
       return
     }
 
+    // Second key in an armed Tab-leader chord.
     if (tabDown && noOtherModifiers) {
       if (nextLeaderKey && key === nextLeaderKey) {
         event.preventDefault()
@@ -240,16 +266,22 @@ function installTabCycleInputShortcuts(source: Electron.WebContents, targetWindo
       }
     }
 
-    const nextAccelerator = parseAcceleratorShortcut(nextBinding)
-    const prevAccelerator = parseAcceleratorShortcut(prevBinding)
-    if (matchesAccelerator(input, nextAccelerator)) {
-      event.preventDefault()
-      if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', 'next-tab')
-      return
-    }
-    if (matchesAccelerator(input, prevAccelerator)) {
-      event.preventDefault()
-      if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', 'prev-tab')
+    // Match against every user-defined accelerator-style keybinding. We run
+    // here (before-input-event) rather than relying only on native menu
+    // accelerators because menu accelerators can lose the race when a page's
+    // own keydown handler calls preventDefault — e.g. Yandex Code capturing
+    // Ctrl+P to jump to a matching parenthesis. Intercepting at
+    // before-input-event runs BEFORE any page script sees the key, and
+    // calling event.preventDefault() here cancels both the page keydown
+    // AND the menu shortcut, so there's no double dispatch.
+    for (const action of Object.keys(keybindings)) {
+      const parsed = parseAcceleratorShortcut(keybindings[action])
+      if (!parsed) continue
+      if (matchesAccelerator(input, parsed)) {
+        event.preventDefault()
+        if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', action)
+        return
+      }
     }
   })
 
@@ -322,6 +354,28 @@ function configureSession(ses: Electron.Session): void {
   ses.setUserAgent(cleanUA)
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(true))
   applyProxyToSession(ses, loadSettings())
+
+  // Synchronously allow TLS handshakes for user-bypassed origins. This is
+  // called for every request (including subresources like favicons and
+  // images), while app.on('certificate-error') is async and unreliable for
+  // subresources — the renderer's <img src="https://bad-cert/favicon.ico">
+  // needs this to succeed after the user has clicked through the warning.
+  //
+  // Callback values (from Electron docs):
+  //   0  = trust (skip further checks)
+  //   -3 = use Chromium's default verification
+  //   -2 = hard failure (do NOT use for "just defer to default" — it rejects!)
+  ses.setCertificateVerifyProc((request, callback) => {
+    try {
+      if (bypassedCertOrigins.has(new URL(`https://${request.hostname}`).origin)) {
+        callback(0)
+        return
+      }
+    } catch {
+      /* fall through */
+    }
+    callback(-3)
+  })
 
   const externalFilter = { urls: ['http://*/*', 'https://*/*'] }
   ses.webRequest.onBeforeSendHeaders(externalFilter, (details, callback) => {
@@ -404,7 +458,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   workspaceWindows.set(workspaceId, win)
   workspaceProfiles.set(workspaceId, profileId)
   lastKnownOpenWindows = [...workspaceWindows.keys()].map(id => ({ profileId: workspaceProfiles.get(id)!, workspaceId: id }))
-  installTabCycleInputShortcuts(win.webContents, win)
+  installShortcutInterceptor(win.webContents, win)
 
   win.on('close', () => {
     const allIds = [...workspaceWindows.keys()]
@@ -447,7 +501,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
 
   // Redirect webview popups to the renderer as new tabs
   win.webContents.on('did-attach-webview', (_event, webContents) => {
-    installTabCycleInputShortcuts(webContents, win)
+    installShortcutInterceptor(webContents, win)
 
     webContents.on('did-navigate', () => {
       webContents.insertCSS(SCROLLBAR_CSS, { cssOrigin: 'user' }).catch(() => {})

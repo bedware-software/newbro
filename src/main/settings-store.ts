@@ -26,8 +26,8 @@ export const DEFAULT_KEYBINDINGS: Record<string, string> = {
   'close-tab': 'CmdOrCtrl+W',
   'close-window': 'CmdOrCtrl+Shift+W',
   'new-workspace': 'CmdOrCtrl+Shift+N',
-  'next-tab': 'Alt+J',
-  'prev-tab': 'Alt+K',
+  'next-tab': 'CmdOrCtrl+Tab',
+  'prev-tab': 'CmdOrCtrl+Shift+Tab',
   'toggle-sidebar': 'CmdOrCtrl+\\',
   'focus-url': 'CmdOrCtrl+L',
   'search': 'CmdOrCtrl+O',
@@ -75,11 +75,17 @@ function isValidShortcut(binding: string): boolean {
   const parts = binding.split('+').map((part) => part.trim()).filter(Boolean)
   if (parts.length < 2) return false
   const modifiers = new Set(['cmdorctrl', 'ctrl', 'control', 'cmd', 'command', 'shift', 'alt', 'option'])
+
+  // Special case: "Tab+X" chord uses Tab as a leader, not a key. Accept if
+  // there are exactly two tokens, the first is `tab`, and the second is not a modifier.
+  if (parts.length === 2 && parts[0].toLowerCase() === 'tab') {
+    return !modifiers.has(parts[1].toLowerCase())
+  }
+
   let keyCount = 0
   for (const part of parts) {
     const token = part.toLowerCase()
     if (modifiers.has(token)) continue
-    if (token === 'tab') continue
     keyCount += 1
   }
   return keyCount === 1
