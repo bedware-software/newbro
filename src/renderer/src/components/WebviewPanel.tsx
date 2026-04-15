@@ -17,6 +17,51 @@ interface CertError {
   description: string
 }
 
+/**
+ * Theme the webview's root document scrollbar so it matches the rest of the
+ * app (search window, command palette, etc.). We intentionally set *only*
+ * `scrollbar-width` + `scrollbar-color` on `html`, matching what the renderer
+ * effectively gets from `globals.css` under modern Chromium (where
+ * `scrollbar-width: thin` wins over `::-webkit-scrollbar` rules).
+ *
+ * Why this scope and nothing more:
+ *   - `scrollbar-width` is not inherited, so we touch only the root scrollbar
+ *     and leave inner scroll containers (code viewers, app sidebars, etc.)
+ *     using whatever the site decided — no more double scrollbars from sites
+ *     that hide the native one and paint their own inside a container, and no
+ *     more thickness inconsistencies from sites that pick a non-10px width.
+ *   - No `!important`: if a site styles its own `html` scrollbar, let it win.
+ *   - Literal oklch values because the webview document can't read the
+ *     renderer's CSS custom properties.
+ */
+function resolveTheme(): 'dark' | 'light' {
+  const attr = document.documentElement.getAttribute('data-theme')
+  if (attr === 'dark') return 'dark'
+  if (attr === 'light') return 'light'
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+function buildScrollbarCss(): string {
+  const isDark = resolveTheme() === 'dark'
+  const card = isDark ? 'oklch(0.17 0 0)' : 'oklch(0.92 0.01 280)'
+  const border = isDark ? 'oklch(0.30 0 0)' : 'oklch(0.84 0.01 280)'
+  return `html { scrollbar-width: thin; scrollbar-color: ${border} ${card}; }`
+}
+
+function applyScrollbarStyle(wv: any): void {
+  const css = buildScrollbarCss()
+  const js = `(() => {
+    let s = document.getElementById('__newbro_scrollbar_style__');
+    if (!s) {
+      s = document.createElement('style');
+      s.id = '__newbro_scrollbar_style__';
+      (document.head || document.documentElement).appendChild(s);
+    }
+    s.textContent = ${JSON.stringify(css)};
+  })()`
+  wv.executeJavaScript?.(js).catch(() => {})
+}
+
 export function WebviewPanel() {
   const containerRef = useRef<HTMLDivElement>(null)
   const webviewsRef = useRef<Map<string, HTMLElement>>(new Map())
@@ -101,7 +146,10 @@ export function WebviewPanel() {
         wv.addEventListener('did-stop-loading', () => dbg('did-stop-loading', { url: wv.getURL?.() }))
         wv.addEventListener('did-start-navigation', (e: any) => dbg('did-start-navigation', { url: e.url, isMainFrame: e.isMainFrame }))
         wv.addEventListener('will-navigate', (e: any) => dbg('will-navigate', { url: e.url }))
-        wv.addEventListener('dom-ready', () => dbg('dom-ready', { url: wv.getURL?.() }))
+        wv.addEventListener('dom-ready', () => {
+          dbg('dom-ready', { url: wv.getURL?.() })
+          applyScrollbarStyle(wv)
+        })
         wv.addEventListener('did-finish-load', () => {
           dbg('did-finish-load', { url: wv.getURL?.() })
           // DEBUG: inspect guest DOM after load
@@ -185,6 +233,25 @@ export function WebviewPanel() {
       }
     }
   }, [profiles, activeTabId, activeWorkspaceId, getWorkspaceTabs])
+
+  // Re-apply the themed scrollbar style to every live webview when the app
+  // theme changes (data-theme attribute on <html>) or when the OS colour
+  // scheme flips while the app is set to "system".
+  useEffect(() => {
+    const reapply = () => {
+      for (const wv of webviewsRef.current.values()) {
+        applyScrollbarStyle(wv)
+      }
+    }
+    const observer = new MutationObserver(reapply)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    media.addEventListener('change', reapply)
+    return () => {
+      observer.disconnect()
+      media.removeEventListener('change', reapply)
+    }
+  }, [])
 
   // Hand focus to the active webview whenever the active tab changes so
   // keyboard input goes to the page. Covers tab cycling (Ctrl+Tab /

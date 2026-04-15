@@ -47,14 +47,6 @@ app.on('certificate-error', (event, _wc, url, _error, _cert, callback) => {
   callback(false)
 })
 
-const SCROLLBAR_CSS = `
-::-webkit-scrollbar, *::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
-::-webkit-scrollbar-track, *::-webkit-scrollbar-track { background: transparent !important; }
-::-webkit-scrollbar-thumb, *::-webkit-scrollbar-thumb { background: rgba(100,100,100,0.45) !important; border-radius: 9999px !important; }
-::-webkit-scrollbar-thumb:hover, *::-webkit-scrollbar-thumb:hover { background: rgba(100,100,100,0.75) !important; }
-::-webkit-scrollbar-corner, *::-webkit-scrollbar-corner { background: transparent !important; }
-`
-
 // ── Branding ──
 app.setName('Newbro')
 
@@ -509,10 +501,6 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   // Redirect webview popups to the renderer as new tabs
   win.webContents.on('did-attach-webview', (_event, webContents) => {
     installShortcutInterceptor(webContents, win)
-
-    webContents.on('did-navigate', () => {
-      webContents.insertCSS(SCROLLBAR_CSS, { cssOrigin: 'user' }).catch(() => {})
-    })
 
     webContents.setWindowOpenHandler(({ url }) => {
       if (!win.isDestroyed()) {
