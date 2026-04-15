@@ -17,9 +17,9 @@ A workspace-based desktop browser built with Electron, React and TypeScript. Org
 <details>
 <summary>More screenshots</summary>
 
-**Light mode**
+**Command Palette**
 
-![Newbro Browser - Light mode](docs/screenshot-white.png)
+![Newbro Browser - Light mode](docs/screenshot-command-palette.png)
 
 **Settings dialog**
 
