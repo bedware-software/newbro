@@ -2,7 +2,7 @@ import { app, BrowserWindow, session, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
-import { registerIpcHandlers } from './ipc'
+import { registerIpcHandlers, registerDetachedPopup } from './ipc'
 import { loadState, loadOpenWindows, saveOpenWindows, type OpenWindowEntry } from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { log } from './log'
@@ -497,6 +497,13 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
       }
     }
     return { action: 'deny' }
+  })
+
+  // Track detached popups so the drag IPC handlers can identify them when the
+  // renderer requests a move. The popup is created synchronously after the
+  // setWindowOpenHandler callback returns `allow`, and this event fires.
+  win.webContents.on('did-create-window', (childWindow) => {
+    registerDetachedPopup(childWindow)
   })
 
   // Redirect webview popups to the renderer as new tabs

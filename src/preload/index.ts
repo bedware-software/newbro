@@ -13,6 +13,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),
   restoreWindow: (): Promise<void> => ipcRenderer.invoke('window:restore'),
+
+  // Detached popup dragging — main process computes new position via
+  // screen.getCursorScreenPoint() + BrowserWindow.setPosition() to avoid DPI
+  // coordinate mismatches on Windows.
+  detachedWindowDragStart: (): Promise<boolean> => ipcRenderer.invoke('detached-window:drag-start'),
+  detachedWindowDragUpdate: (): Promise<void> => ipcRenderer.invoke('detached-window:drag-update'),
+  detachedWindowDragEnd: (): Promise<void> => ipcRenderer.invoke('detached-window:drag-end'),
   closeWorkspaceWindows: (workspaceIds: string[]): Promise<void> => ipcRenderer.invoke('workspace:close-windows', workspaceIds),
 
   // Logging — fire-and-forget (no await needed)

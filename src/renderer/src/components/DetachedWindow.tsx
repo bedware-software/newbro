@@ -108,15 +108,23 @@ export function DetachedWindow({
       if (closeOnEscape && e.key === 'Escape') onCloseRef.current()
     }
 
+    // Drag is fully driven by the main process: on mousedown we ask it to
+    // snapshot the popup's position and the cursor screen point, and on each
+    // mousemove we ask it to reposition the popup relative to those anchors.
+    // We don't use `popup.screenX` / `popup.moveTo()` — on Windows with DPI
+    // scaling those mix coordinate spaces and cause the window to grow while
+    // dragging. `screen.getCursorScreenPoint()` + `BrowserWindow.setPosition()`
+    // in main stay in DIP coordinates end-to-end.
     let dragState: {
       startScreenX: number
       startScreenY: number
-      startWindowX: number
-      startWindowY: number
       moved: boolean
     } | null = null
 
     const stopDragging = () => {
+      if (dragState) {
+        window.electronAPI.detachedWindowDragEnd()
+      }
       dragState = null
       popup.document.body.style.userSelect = ''
       popup.document.body.style.cursor = ''
@@ -128,13 +136,13 @@ export function DetachedWindow({
       if (!target) return
       if (target.closest(DRAG_CANCEL_SELECTOR)) return
       if (!target.closest(DRAG_HANDLE_SELECTOR)) return
-      dragState = {
-        startScreenX: e.screenX,
-        startScreenY: e.screenY,
-        startWindowX: popup.screenX,
-        startWindowY: popup.screenY,
-        moved: false,
-      }
+      const startScreenX = e.screenX
+      const startScreenY = e.screenY
+      window.electronAPI.detachedWindowDragStart().then((ok) => {
+        // Ignore if the drag was already stopped (e.g. mouseup before IPC resolved).
+        if (!ok) return
+        dragState = { startScreenX, startScreenY, moved: false }
+      })
     }
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -147,7 +155,7 @@ export function DetachedWindow({
       dragState.moved = true
       popup.document.body.style.userSelect = 'none'
       popup.document.body.style.cursor = 'move'
-      popup.moveTo(Math.round(dragState.startWindowX + dx), Math.round(dragState.startWindowY + dy))
+      window.electronAPI.detachedWindowDragUpdate()
       e.preventDefault()
     }
 

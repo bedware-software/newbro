@@ -36,6 +36,9 @@ declare global {
       minimizeWindow: () => Promise<void>
       maximizeWindow: () => Promise<void>
       restoreWindow: () => Promise<void>
+      detachedWindowDragStart: () => Promise<boolean>
+      detachedWindowDragUpdate: () => Promise<void>
+      detachedWindowDragEnd: () => Promise<void>
       closeWorkspaceWindows: (workspaceIds: string[]) => Promise<void>
       quit: () => void
       getCertInfo: (url: string) => Promise<unknown>

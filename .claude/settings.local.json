@@ -29,7 +29,8 @@
       "Read(//tmp/**)",
       "Bash(curl -sL 'https://unduck.link/assets/index-CVxS7xes.js' -o /tmp/unduck.js)",
       "Bash(curl -sL --max-time 10 'https://unduck.link/assets/index-CVxS7xes.js' -o C:/Users/dmitr/Desktop/newbro/tmp_unduck.js)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(npx husky:*)"
     ]
   }
 }

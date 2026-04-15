@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog, app, Menu, session } from 'electron'
+import { ipcMain, BrowserWindow, dialog, app, Menu, session, screen } from 'electron'
 import * as tls from 'tls'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -49,6 +49,30 @@ function getCertificate(hostname: string, port = 443): Promise<CertInfo | null> 
     socket.on('error', () => { clearTimeout(timeout); resolve(null) })
   })
 }
+
+// ── Detached popup window tracking ──
+// Popups opened via window.open() from a workspace window (e.g. SettingsDialog,
+// CommandPalette). We track them so the drag IPC handlers below can safely
+// identify which window the renderer is trying to move.
+const detachedPopups = new Set<BrowserWindow>()
+
+export function registerDetachedPopup(popup: BrowserWindow): void {
+  detachedPopups.add(popup)
+  popup.once('closed', () => detachedPopups.delete(popup))
+}
+
+// Drag session state for detached popup dragging. We compute every frame's new
+// position in the main process using `screen.getCursorScreenPoint()` and
+// `BrowserWindow.setPosition()` — both operate in consistent DIP coordinates,
+// avoiding the DPI-scaling mismatch that `popup.screenX` / `popup.moveTo()`
+// exhibit on Windows (which caused the window to grow while dragging).
+let detachedDragSession: {
+  popup: BrowserWindow
+  startWinX: number
+  startWinY: number
+  startCursorX: number
+  startCursorY: number
+} | null = null
 
 export function registerIpcHandlers(): void {
   ipcMain.handle('store:load', () => {
@@ -129,6 +153,35 @@ export function registerIpcHandlers(): void {
     } else if (win.isMaximized()) {
       win.unmaximize()
     }
+  })
+
+  // ── Detached popup drag ──
+  // The renderer calls these during a header drag. We use main-process APIs
+  // (screen.getCursorScreenPoint + BrowserWindow.setPosition) so the coordinate
+  // space is always DIP and never mismatches with DOM `screenX`/`moveTo()`.
+  ipcMain.handle('detached-window:drag-start', () => {
+    const popup = BrowserWindow.getFocusedWindow()
+    if (!popup || popup.isDestroyed() || !detachedPopups.has(popup)) {
+      detachedDragSession = null
+      return false
+    }
+    const [startWinX, startWinY] = popup.getPosition()
+    const { x: startCursorX, y: startCursorY } = screen.getCursorScreenPoint()
+    detachedDragSession = { popup, startWinX, startWinY, startCursorX, startCursorY }
+    return true
+  })
+
+  ipcMain.handle('detached-window:drag-update', () => {
+    const s = detachedDragSession
+    if (!s || s.popup.isDestroyed()) return
+    const { x, y } = screen.getCursorScreenPoint()
+    const dx = x - s.startCursorX
+    const dy = y - s.startCursorY
+    s.popup.setPosition(Math.round(s.startWinX + dx), Math.round(s.startWinY + dy))
+  })
+
+  ipcMain.handle('detached-window:drag-end', () => {
+    detachedDragSession = null
   })
 
   ipcMain.handle('workspace:close-windows', (_e, workspaceIds: string[]) => {
