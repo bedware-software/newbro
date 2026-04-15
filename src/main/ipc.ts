@@ -61,15 +61,23 @@ export function registerDetachedPopup(popup: BrowserWindow): void {
   popup.once('closed', () => detachedPopups.delete(popup))
 }
 
-// Drag session state for detached popup dragging. We compute every frame's new
-// position in the main process using `screen.getCursorScreenPoint()` and
-// `BrowserWindow.setPosition()` — both operate in consistent DIP coordinates,
-// avoiding the DPI-scaling mismatch that `popup.screenX` / `popup.moveTo()`
-// exhibit on Windows (which caused the window to grow while dragging).
+// Drag session state for detached popup dragging.
+//
+// Why this is complicated: on Windows with non-100% DPI scaling there is a
+// long-standing Electron/Chromium bug (electron/electron#9477, open since 2017)
+// where `BrowserWindow.setPosition()` silently grows the window by 1–3 px on
+// every call. Dragging calls setPosition ~60×/sec, so the popup visibly
+// "grows" while the user drags. Calling `setBounds({ width, height, x, y })`
+// with CONSTANT width/height captured ONCE at drag start (never re-read via
+// `getBounds()`/`getSize()`, which also return DPI-skewed values) is the
+// accepted workaround from that issue's thread.
 let detachedDragSession: {
   popup: BrowserWindow
   startWinX: number
   startWinY: number
+  // Captured once, never updated during the drag — see the note above.
+  winWidth: number
+  winHeight: number
   startCursorX: number
   startCursorY: number
 } | null = null
@@ -156,31 +164,47 @@ export function registerIpcHandlers(): void {
   })
 
   // ── Detached popup drag ──
-  // The renderer calls these during a header drag. We use main-process APIs
-  // (screen.getCursorScreenPoint + BrowserWindow.setPosition) so the coordinate
-  // space is always DIP and never mismatches with DOM `screenX`/`moveTo()`.
+  // drag-start is `handle` (needs response). drag-update / drag-end are `on`
+  // (fire-and-forget `ipcRenderer.send`) — `invoke` round-trips on every
+  // mousemove created noticeable lag during the drag.
   ipcMain.handle('detached-window:drag-start', () => {
     const popup = BrowserWindow.getFocusedWindow()
     if (!popup || popup.isDestroyed() || !detachedPopups.has(popup)) {
       detachedDragSession = null
       return false
     }
-    const [startWinX, startWinY] = popup.getPosition()
+    // getBounds is only called HERE, once. See the session-state comment above
+    // for why we never re-read size during the drag.
+    const bounds = popup.getBounds()
     const { x: startCursorX, y: startCursorY } = screen.getCursorScreenPoint()
-    detachedDragSession = { popup, startWinX, startWinY, startCursorX, startCursorY }
+    detachedDragSession = {
+      popup,
+      startWinX: bounds.x,
+      startWinY: bounds.y,
+      winWidth: bounds.width,
+      winHeight: bounds.height,
+      startCursorX,
+      startCursorY,
+    }
     return true
   })
 
-  ipcMain.handle('detached-window:drag-update', () => {
+  ipcMain.on('detached-window:drag-update', () => {
     const s = detachedDragSession
     if (!s || s.popup.isDestroyed()) return
     const { x, y } = screen.getCursorScreenPoint()
     const dx = x - s.startCursorX
     const dy = y - s.startCursorY
-    s.popup.setPosition(Math.round(s.startWinX + dx), Math.round(s.startWinY + dy))
+    // setBounds with constant width/height — the Windows DPI workaround.
+    s.popup.setBounds({
+      x: Math.round(s.startWinX + dx),
+      y: Math.round(s.startWinY + dy),
+      width: s.winWidth,
+      height: s.winHeight,
+    })
   })
 
-  ipcMain.handle('detached-window:drag-end', () => {
+  ipcMain.on('detached-window:drag-end', () => {
     detachedDragSession = null
   })
 

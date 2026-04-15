@@ -30,7 +30,14 @@
       "Bash(curl -sL 'https://unduck.link/assets/index-CVxS7xes.js' -o /tmp/unduck.js)",
       "Bash(curl -sL --max-time 10 'https://unduck.link/assets/index-CVxS7xes.js' -o C:/Users/dmitr/Desktop/newbro/tmp_unduck.js)",
       "WebFetch(domain:github.com)",
-      "Bash(npx husky:*)"
+      "Bash(npx husky:*)",
+      "Bash(node -e \"console.log\\(require\\('./package.json'\\).devDependencies.electron || require\\('./package.json'\\).dependencies.electron\\)\")",
+      "WebSearch",
+      "Bash(gh issue:*)",
+      "Bash(where gh:*)",
+      "Bash(curl -s -H \"Accept: application/vnd.github.v3+json\" https://api.github.com/repos/electron/electron/issues/45916)",
+      "Bash(curl -s -H \"Accept: application/vnd.github.v3+json\" https://api.github.com/repos/electron/electron/issues/9477)",
+      "Bash(xargs wc:*)"
     ]
   }
 }

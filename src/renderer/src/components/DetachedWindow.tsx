@@ -108,24 +108,24 @@ export function DetachedWindow({
       if (closeOnEscape && e.key === 'Escape') onCloseRef.current()
     }
 
-    // Drag is fully driven by the main process: on mousedown we ask it to
-    // snapshot the popup's position and the cursor screen point, and on each
-    // mousemove we ask it to reposition the popup relative to those anchors.
-    // We don't use `popup.screenX` / `popup.moveTo()` — on Windows with DPI
-    // scaling those mix coordinate spaces and cause the window to grow while
-    // dragging. `screen.getCursorScreenPoint()` + `BrowserWindow.setPosition()`
-    // in main stay in DIP coordinates end-to-end.
+    // Drag is driven by the main process — it's the only coordinate space
+    // that's consistent on Windows with non-100% DPI. On mousedown we tell
+    // main to snapshot the popup's bounds + cursor; on mousemove we tell it
+    // to reposition. See src/main/ipc.ts for why we can't use popup.moveTo /
+    // setPosition and why width/height must be captured once.
     let dragState: {
       startScreenX: number
       startScreenY: number
       moved: boolean
     } | null = null
+    let rafPending = false
 
     const stopDragging = () => {
       if (dragState) {
         window.electronAPI.detachedWindowDragEnd()
       }
       dragState = null
+      rafPending = false
       popup.document.body.style.userSelect = ''
       popup.document.body.style.cursor = ''
     }
@@ -155,7 +155,16 @@ export function DetachedWindow({
       dragState.moved = true
       popup.document.body.style.userSelect = 'none'
       popup.document.body.style.cursor = 'move'
-      window.electronAPI.detachedWindowDragUpdate()
+      // Coalesce updates with rAF so we send at most one IPC per paint. The
+      // main process reads the live cursor itself, so we don't need to pass
+      // anything — the latest cursor position is always correct.
+      if (!rafPending) {
+        rafPending = true
+        popup.requestAnimationFrame(() => {
+          rafPending = false
+          if (dragState) window.electronAPI.detachedWindowDragUpdate()
+        })
+      }
       e.preventDefault()
     }
 

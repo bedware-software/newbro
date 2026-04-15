@@ -14,12 +14,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),
   restoreWindow: (): Promise<void> => ipcRenderer.invoke('window:restore'),
 
-  // Detached popup dragging — main process computes new position via
-  // screen.getCursorScreenPoint() + BrowserWindow.setPosition() to avoid DPI
-  // coordinate mismatches on Windows.
+  // Detached popup dragging. drag-start awaits a response (we need to know
+  // whether tracking was accepted). drag-update / drag-end are fire-and-forget
+  // — `send` avoids the ~60×/sec round-trip latency of `invoke`.
   detachedWindowDragStart: (): Promise<boolean> => ipcRenderer.invoke('detached-window:drag-start'),
-  detachedWindowDragUpdate: (): Promise<void> => ipcRenderer.invoke('detached-window:drag-update'),
-  detachedWindowDragEnd: (): Promise<void> => ipcRenderer.invoke('detached-window:drag-end'),
+  detachedWindowDragUpdate: (): void => { ipcRenderer.send('detached-window:drag-update') },
+  detachedWindowDragEnd: (): void => { ipcRenderer.send('detached-window:drag-end') },
   closeWorkspaceWindows: (workspaceIds: string[]): Promise<void> => ipcRenderer.invoke('workspace:close-windows', workspaceIds),
 
   // Logging — fire-and-forget (no await needed)

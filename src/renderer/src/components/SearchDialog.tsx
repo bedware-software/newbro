@@ -317,6 +317,16 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
             })
           )}
         </div>
+
+        <div
+          data-detached-drag-handle
+          className="px-4 py-2 border-t border-border text-[10px] text-muted-foreground flex gap-3 shrink-0"
+        >
+          <span>↑↓ Navigate</span>
+          <span>↵ Open</span>
+          <span>{OPT}1-4 Toggle Filters</span>
+          <span>Esc Close</span>
+        </div>
       </div>
     </DetachedWindow>
   )
