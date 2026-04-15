@@ -452,6 +452,17 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   lastKnownOpenWindows = [...workspaceWindows.keys()].map(id => ({ profileId: workspaceProfiles.get(id)!, workspaceId: id }))
   installShortcutInterceptor(win.webContents, win)
 
+  // Route the mouse side buttons (XButton1/XButton2 on Windows, matching
+  // swipe gestures on macOS) to the renderer's existing back/forward shortcut
+  // handler, which calls goBack()/goForward() on the active webview.
+  win.on('app-command', (_event, command) => {
+    if (command === 'browser-backward') {
+      win.webContents.send('shortcut', 'back')
+    } else if (command === 'browser-forward') {
+      win.webContents.send('shortcut', 'forward')
+    }
+  })
+
   win.on('close', () => {
     const allIds = [...workspaceWindows.keys()]
     const remainingIds = allIds.filter(id => id !== workspaceId)

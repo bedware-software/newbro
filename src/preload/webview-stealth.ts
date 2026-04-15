@@ -9,7 +9,7 @@
 // rejecting form submission with "Couldn't sign you in — This browser or
 // app may not be secure."
 
-import { webFrame } from 'electron'
+import { webFrame, ipcRenderer } from 'electron'
 
 // Diagnostic marker so we can confirm in the webview's DevTools console that
 // this preload is actually being loaded. If you see "[newbro-stealth] preload
@@ -165,4 +165,35 @@ try {
 } catch (err) {
   // eslint-disable-next-line no-console
   console.log('[newbro-stealth] executeJavaScript threw:', err)
+}
+
+// ── Mouse side buttons → host navigation ──────────────────────────────────
+// Chromium inside an Electron <webview> doesn't reliably surface XButton1 /
+// XButton2 (mouse back/forward) as a WM_APPCOMMAND, so neither
+// `BrowserWindow.on('app-command')` nor `webContents.on('app-command')` fire
+// when the guest page has focus. We listen here in the preload (isolated
+// world — DOM events still reach us) and relay the intent to the host via
+// `ipcRenderer.sendToHost`, which fires an `ipc-message` event on the
+// <webview> DOM element in the renderer process.
+//
+// We cover the full button-press lifecycle (mousedown / mouseup / auxclick)
+// in the capture phase so page scripts can't swallow the event first, and
+// preventDefault on all three to suppress any site handler that might try
+// to use these buttons for its own UI (e.g. Jira keyboard/mouse shortcuts).
+try {
+  const relay = (e: MouseEvent): void => {
+    // MouseEvent.button: 3 = XButton1 (back), 4 = XButton2 (forward)
+    if (e.button !== 3 && e.button !== 4) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.type === 'mouseup') {
+      ipcRenderer.sendToHost('newbro-nav', e.button === 3 ? 'back' : 'forward')
+    }
+  }
+  window.addEventListener('mousedown', relay, true)
+  window.addEventListener('mouseup', relay, true)
+  window.addEventListener('auxclick', relay, true)
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.log('[newbro-stealth] mouse-nav wiring failed:', err)
 }

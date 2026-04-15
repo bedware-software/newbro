@@ -170,6 +170,17 @@ export function WebviewPanel() {
           dbg(`guest-console[${level}]`, e.message)
         })
 
+        // Mouse side-button navigation from the guest page. The stealth
+        // preload listens for XButton1/XButton2 in the guest and relays via
+        // `ipcRenderer.sendToHost('newbro-nav', 'back' | 'forward')`, which
+        // surfaces here as an `ipc-message` event on the webview element.
+        wv.addEventListener('ipc-message', (e: any) => {
+          if (e.channel !== 'newbro-nav') return
+          const dir = e.args?.[0]
+          if (dir === 'back' && wv.canGoBack?.()) wv.goBack()
+          else if (dir === 'forward' && wv.canGoForward?.()) wv.goForward()
+        })
+
         wv.addEventListener('did-navigate', (e: any) => {
           dbg('did-navigate', { url: e.url })
           if (!e.url || e.url.startsWith('data:') || e.url === 'about:blank') return
