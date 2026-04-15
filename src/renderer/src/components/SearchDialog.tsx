@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
-import Fuse from 'fuse.js'
 import { useAppStore, saveStateNow } from '../store/app-store'
 import { log } from '../lib/log'
+import { fuzzyFilter } from '../lib/fuzzy'
 import { Search, User, Layout, Layers, Globe } from 'lucide-react'
 import type { SearchableItem } from '../store/types'
 import { DetachedWindow } from './DetachedWindow'
@@ -64,15 +64,15 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
     return all.filter((item) => filters.has(item.type as FilterType))
   }, [getAllSearchableItems, open, filters])
 
-  const fuse = useMemo(
-    () => new Fuse(items, { keys: ['name', 'path', 'url', 'comment'], threshold: 0.4, includeScore: true }),
-    [items],
-  )
-
   const results = useMemo(() => {
     if (!query.trim()) return items.slice(0, 250)
-    return fuse.search(query).map((r) => r.item)
-  }, [query, fuse, items])
+    return fuzzyFilter(query, items, (item) => [
+      { value: item.name, weight: 1 },
+      { value: item.comment, weight: 0.9 },
+      { value: item.url, weight: 0.5 },
+      { value: item.path, weight: 0.3 },
+    ])
+  }, [query, items])
 
   // Count totals per type from all items (not just visible results)
   const allItems = useMemo(() => getAllSearchableItems(), [getAllSearchableItems, open])
