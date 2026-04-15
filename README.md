@@ -7,9 +7,10 @@ A workspace-based desktop browser built with Electron, React and TypeScript. Org
 ## Features
 
 - **Profiles** — separate session partitions keep cookies and logins isolated
-- **Workspaces** — switch between independent workspaces (work, personal, projects) from the top bar
+- **Workspaces** — switch between independent workspaces (work, personal, projects)
 - **Tab groups** — color-coded, collapsible groups with drag-and-drop reordering
-- **Command palette** — fuzzy-search all commands, tabs, groups and workspaces
+- **Search Everything** — fuzzy-search all profiles, workspaces, groups and tabs
+- **Command palette** — fuzzy-search all commands
 - **Tab comments** — annotate any tab with a short note
 - **Import workspace** — bring tab groups in from exported browser bookmarks
 
