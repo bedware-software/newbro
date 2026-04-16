@@ -68,8 +68,8 @@ function getWindowParams(): { profileId: string | null; workspaceId: string | nu
 function getOverlayColors(theme: 'light' | 'dark' | 'system'): { color: string; symbolColor: string; height: number } {
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
   return isDark
-    ? { color: '#0f0f0f', symbolColor: '#d7d7d7', height: 47 }
-    : { color: '#e3e4eb', symbolColor: '#37394a', height: 47 }
+    ? { color: '#161616', symbolColor: '#d7d7d7', height: 47 }
+    : { color: '#f7f7f7', symbolColor: '#303030', height: 47 }
 }
 
 function applyTheme(theme: 'light' | 'dark' | 'system'): void {

@@ -208,6 +208,20 @@ export function registerIpcHandlers(): void {
     detachedDragSession = null
   })
 
+  // Reveal a detached popup once the renderer has finished rendering content.
+  // Popups start at opacity 0 (set in did-create-window) so they are physically
+  // invisible at the OS compositor level while React paints.  Setting opacity
+  // back to 1 makes the fully-rendered window appear in a single
+  // compositor frame — no white flash.
+  ipcMain.on('detached-window:show', (_e) => {
+    for (const popup of detachedPopups) {
+      if (!popup.isDestroyed() && popup.getOpacity() < 1) {
+        popup.setOpacity(1)
+        popup.focus()
+      }
+    }
+  })
+
   ipcMain.handle('workspace:close-windows', (_e, workspaceIds: string[]) => {
     log.ipc('workspace:close-windows', workspaceIds)
     for (const wsId of workspaceIds) {

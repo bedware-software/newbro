@@ -43,8 +43,8 @@ function resolveTheme(): 'dark' | 'light' {
 
 function buildScrollbarCss(): string {
   const isDark = resolveTheme() === 'dark'
-  const card = isDark ? 'oklch(0.17 0 0)' : 'oklch(0.92 0.01 280)'
-  const border = isDark ? 'oklch(0.30 0 0)' : 'oklch(0.84 0.01 280)'
+  const card = isDark ? 'oklch(0.17 0 0)' : 'oklch(0.955 0 0)'
+  const border = isDark ? 'oklch(0.30 0 0)' : 'oklch(0.88 0 0)'
   return `html { scrollbar-width: thin; scrollbar-color: ${border} ${card}; }`
 }
 

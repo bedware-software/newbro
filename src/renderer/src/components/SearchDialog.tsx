@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useAppStore, saveStateNow } from '../store/app-store'
 import { log } from '../lib/log'
 import { fuzzyFilter } from '../lib/fuzzy'
-import { Search, User, Layout, Layers, Globe } from 'lucide-react'
+import { Search, User, Layout, Layers, Globe, ArrowUpDown, CornerDownLeft } from 'lucide-react'
 import type { SearchableItem } from '../store/types'
 import { DetachedWindow } from './DetachedWindow'
 
@@ -230,7 +230,9 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
           data-detached-drag-handle
           className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0"
         >
-          <Search size={16} className="text-muted-foreground shrink-0" />
+          <span className="w-6 shrink-0 flex items-center">
+            <Search size={16} className="text-muted-foreground" />
+          </span>
           <input
             data-detached-drag-handle
             ref={inputRef}
@@ -265,7 +267,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
           })}
         </div>
 
-        <div ref={listRef} className="flex-1 overflow-y-auto py-2 min-h-0">
+        <div ref={listRef} className="flex-1 overflow-y-auto min-h-0">
           {flatResults.length === 0 ? (
             <div className="px-4 py-6 text-center text-sm text-muted-foreground">
               No results found
@@ -282,7 +284,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
                 <div key={type}>
                   <div className="px-4 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
                     <span className="w-6 shrink-0" />
-                    <span className="flex-1">{TYPE_LABELS[type] || type}</span>
+                    <span className="flex-1 flex items-center gap-1"><TypeIcon size={10} /> {TYPE_LABELS[type] || type}</span>
                     <span className="w-8 text-right">{countLabel}</span>
                   </div>
                   {groupItems.map((item) => {
@@ -320,12 +322,14 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
 
         <div
           data-detached-drag-handle
-          className="px-4 py-2 border-t border-border text-[10px] text-muted-foreground flex gap-3 shrink-0"
+          className="h-10 px-4 flex items-center justify-between border-t border-border bg-toolbar text-[11px] font-medium text-muted-foreground shrink-0"
         >
-          <span>↑↓ Navigate</span>
-          <span>↵ Open</span>
-          <span>{OPT}1-4 Toggle Filters</span>
-          <span>Esc Close</span>
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
+            <span className="flex items-center gap-1">Open <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
+            <span className="flex items-center gap-1">Toggle Filters <kbd>{isMac ? '⌥' : 'Alt'}</kbd><kbd>1…4</kbd></span>
+          </div>
+          <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>
         </div>
       </div>
     </DetachedWindow>

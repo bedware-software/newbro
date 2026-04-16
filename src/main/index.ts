@@ -433,7 +433,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac
       ? { trafficLightPosition: { x: 14, y: 14 } }
-      : { autoHideMenuBar: true, titleBarOverlay: { color: '#0f0f0f', symbolColor: '#d7d7d7', height: 47 } }),
+      : { autoHideMenuBar: true, titleBarOverlay: { color: '#161616', symbolColor: '#d7d7d7', height: 47 } }),
     icon: iconPng,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -488,6 +488,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
+          show: false,
           frame: false,
           autoHideMenuBar: true,
           fullscreenable: false,
@@ -507,6 +508,12 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   // setWindowOpenHandler callback returns `allow`, and this event fires.
   win.webContents.on('did-create-window', (childWindow) => {
     registerDetachedPopup(childWindow)
+    // The popup was created with show:false. Make it physically invisible via
+    // OS compositor opacity, then "show" it so the renderer can paint into it.
+    // The window stays at opacity 0 until the renderer signals that React has
+    // finished rendering content (detached-window:show IPC).
+    childWindow.setOpacity(0)
+    childWindow.showInactive()
   })
 
   // Redirect webview popups to the renderer as new tabs

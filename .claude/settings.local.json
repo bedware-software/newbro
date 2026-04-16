@@ -41,7 +41,9 @@
       "Bash(node -e \"console.log\\(require\\('./package.json'\\).devDependencies.electron\\)\")",
       "Read(//c/Users/dmitr/AppData/Local/Temp/fuzzy-test/**)",
       "Read(//c//**)",
-      "Bash(powershell -Command 'Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile\\('\\\\''C:\\\\Users\\\\dmitr\\\\Desktop\\\\newbro\\\\resources\\\\icon.png'\\\\''\\); Write-Host \"PNG size: $\\($img.Width\\)x$\\($img.Height\\)\"; $img.Dispose\\(\\)')"
+      "Bash(powershell -Command 'Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile\\('\\\\''C:\\\\Users\\\\dmitr\\\\Desktop\\\\newbro\\\\resources\\\\icon.png'\\\\''\\); Write-Host \"PNG size: $\\($img.Width\\)x$\\($img.Height\\)\"; $img.Dispose\\(\\)')",
+      "Bash(grep -r \"ready-to-show\\\\|willFinishLaunching\\\\|show\\\\|visible\" /c/Users/dmitr/Desktop/newbro/src/main/*.ts)",
+      "Bash(npx vite:*)"
     ]
   }
 }

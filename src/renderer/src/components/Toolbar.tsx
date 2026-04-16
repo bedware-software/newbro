@@ -273,8 +273,12 @@ function AppMenu({ onOpenSettings, onOpenAbout, onOpenSearch }: { onOpenSettings
     }
   }, [open])
 
-  const settingsShortcut = isMacOS ? '⌘,' : 'Ctrl+,'
-  const searchShortcut = isMacOS ? '⌘O' : 'Ctrl+O'
+  const settingsShortcut = isMacOS
+    ? <span className="inline-flex items-center gap-0.5"><kbd>⌘</kbd><kbd>,</kbd></span>
+    : <span className="inline-flex items-center gap-0.5"><kbd>Ctrl</kbd><kbd>,</kbd></span>
+  const searchShortcut = isMacOS
+    ? <span className="inline-flex items-center gap-0.5"><kbd>⌘</kbd><kbd>O</kbd></span>
+    : <span className="inline-flex items-center gap-0.5"><kbd>Ctrl</kbd><kbd>O</kbd></span>
 
   return (
     <div ref={ref} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
@@ -736,7 +740,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   return (
     <>
       <div
-        className="flex items-center gap-2 h-12 border-b border-border bg-card shrink-0"
+        className="flex items-center gap-2 h-12 border-b border-border bg-toolbar shrink-0"
         style={{
           paddingLeft: isMac ? 80 : 8,
           paddingRight: isMac ? 8 : 142,

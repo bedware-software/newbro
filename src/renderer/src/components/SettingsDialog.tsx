@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2 } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -160,17 +160,22 @@ function eventToAccelerator(e: KeyboardEvent): string | null {
   return parts.join('+')
 }
 
-/** Format an Electron accelerator for display (replace CmdOrCtrl with platform symbol) */
-function formatAccelerator(accel: string): string {
+/** Format an Electron accelerator for display as <kbd> elements */
+function formatAccelerator(accel: string): React.ReactNode {
   const isMac = navigator.platform.includes('Mac')
-  if (isMac && /^Tab\+/.test(accel)) {
-    return accel.replace(/^Tab\+/, '\u21E5')
-  }
-  return accel
-    .replace(/CmdOrCtrl/g, isMac ? '\u2318' : 'Ctrl')
-    .replace(/Shift/g, isMac ? '\u21E7' : 'Shift')
-    .replace(/Alt/g, isMac ? '\u2325' : 'Alt')
-    .replace(/\+/g, isMac ? '' : '+')
+  const parts = accel
+    .replace(/CmdOrCtrl/g, isMac ? '⌘' : 'Ctrl')
+    .replace(/Shift/g, isMac ? '⇧' : 'Shift')
+    .replace(/Alt/g, isMac ? '⌥' : 'Alt')
+    .split('+')
+    .filter(Boolean)
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      {parts.map((part, i) => (
+        <kbd key={i}>{part}</kbd>
+      ))}
+    </span>
+  )
 }
 
 type Tab = 'general' | 'shortcuts'
@@ -319,7 +324,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
       onClose={handleCancel}
       onWindowChange={setHostWindow}
     >
-      <div className="h-full bg-popover text-popover-foreground flex flex-col overflow-hidden">
+      <div className="h-full bg-card text-card-foreground flex flex-col overflow-hidden">
         {/* Header */}
         <div
           data-detached-drag-handle
@@ -368,20 +373,20 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                 <label className="block text-sm font-medium text-foreground mb-2">Theme</label>
                 <div className="flex gap-2">
                   {([
+                    { value: 'system' as const, label: 'System', icon: Monitor },
                     { value: 'light' as const, label: 'Light', icon: Sun },
                     { value: 'dark' as const, label: 'Dark', icon: Moon },
-                    { value: 'system' as const, label: 'System', icon: Monitor },
                   ]).map(({ value, label, icon: Icon }) => (
                     <button
                       key={value}
                       onClick={() => { setTheme(value); onThemePreview?.(value) }}
-                      className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                         theme === value
                           ? 'bg-primary text-primary-foreground hover:bg-primary/80'
                           : 'bg-secondary text-secondary-foreground hover:bg-muted'
                       }`}
                     >
-                      <Icon size={16} />
+                      <Icon size={14} />
                       {label}
                     </button>
                   ))}
@@ -411,7 +416,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                     <button
                       key={name}
                       onClick={() => setSearchEngine(url)}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                         searchEngine === url
                           ? 'bg-primary text-primary-foreground hover:bg-primary/80'
                           : 'bg-secondary text-secondary-foreground hover:bg-muted'
@@ -422,7 +427,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                   ))}
                   <button
                     onClick={() => setSearchEngine('')}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                       !Object.values(SEARCH_ENGINES).includes(searchEngine)
                         ? 'bg-primary text-primary-foreground hover:bg-primary/80'
                         : 'bg-secondary text-secondary-foreground hover:bg-muted'
@@ -464,7 +469,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                 <div className="flex flex-wrap gap-2 mb-2">
                   <button
                     onClick={() => setProxy((prev) => ({ ...prev, mode: 'system' }))}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                       proxy.mode === 'system'
                         ? 'bg-primary text-primary-foreground hover:bg-primary/80'
                         : 'bg-secondary text-secondary-foreground hover:bg-muted'
@@ -474,7 +479,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                   </button>
                   <button
                     onClick={() => setProxy((prev) => ({ ...prev, mode: 'direct' }))}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                       proxy.mode === 'direct'
                         ? 'bg-primary text-primary-foreground hover:bg-primary/80'
                         : 'bg-secondary text-secondary-foreground hover:bg-muted'
@@ -484,7 +489,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                   </button>
                   <button
                     onClick={() => setProxy((prev) => ({ ...prev, mode: 'custom' }))}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                       proxy.mode === 'custom'
                         ? 'bg-primary text-primary-foreground hover:bg-primary/80'
                         : 'bg-secondary text-secondary-foreground hover:bg-muted'
@@ -568,14 +573,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                 </button>
               </div>
 
-              <div className="space-y-1">
+              <div className="flex flex-col divide-y divide-border border border-input rounded-md bg-card overflow-hidden">
                 {Object.keys(ACTION_LABELS).map((action) => {
                   const isRecording = recordingAction === action
                   const isCustom = keybindings[action] !== DEFAULT_KEYBINDINGS[action]
                   return (
                     <div
                       key={action}
-                      className="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-muted/50"
+                      className="flex items-center justify-between gap-4 px-4 py-3"
                     >
                       <span className="text-sm text-foreground">{ACTION_LABELS[action]}</span>
                       <div className="flex items-center gap-2">
@@ -590,12 +595,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                         )}
                         <button
                           onClick={() => setRecordingAction(isRecording ? null : action)}
-                          className={`min-w-[120px] h-8 px-3 rounded-md text-xs font-mono transition-colors ${
+                          className={`min-w-[120px] h-8 px-3 rounded-md text-xs flex items-center justify-center transition-colors ${
                             isRecording
-                              ? 'bg-primary/20 text-primary border border-primary/50 animate-pulse'
-                              : isCustom
-                                ? 'bg-primary/10 text-primary border border-primary/30'
-                                : 'bg-secondary text-secondary-foreground border border-transparent hover:border-border'
+                              ? 'bg-background border border-ring text-primary'
+                              : 'bg-card border border-input text-foreground'
                           }`}
                         >
                           {isRecording

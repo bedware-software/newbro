@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
-import { Command } from 'lucide-react'
+import { Command, ArrowUpDown, CornerDownLeft } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { useAppStore } from '../store/app-store'
 
@@ -74,12 +74,20 @@ function fuzzyScore(query: string, text: string): number {
   return qi === q.length ? score : 0
 }
 
-function formatKeybinding(binding: string): string {
-  return binding
+function formatKeybinding(binding: string): React.ReactNode {
+  const parts = binding
     .replace(/CmdOrCtrl/g, isMac ? '⌘' : 'Ctrl')
     .replace(/Shift/g, isMac ? '⇧' : 'Shift')
     .replace(/Alt/g, isMac ? '⌥' : 'Alt')
-    .replace(/\+/g, isMac ? '' : '+')
+    .split('+')
+    .filter(Boolean)
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      {parts.map((part, i) => (
+        <kbd key={i}>{part}</kbd>
+      ))}
+    </span>
+  )
 }
 
 export function CommandPalette({ open, onOpenChange, onAction }: Props) {
@@ -220,7 +228,7 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
                   >
                     <span>{cmd.label}</span>
                     {binding && (
-                      <span className="text-xs text-muted-foreground ml-4 shrink-0">
+                      <span className="text-xs text-muted-foreground ml-4 shrink-0 flex items-center">
                         {formatKeybinding(binding)}
                       </span>
                     )}
@@ -238,11 +246,13 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
 
         <div
           data-detached-drag-handle
-          className="px-4 py-2 border-t border-border text-[10px] text-muted-foreground flex gap-3 shrink-0"
+          className="h-10 px-3 flex items-center justify-between border-t border-border bg-toolbar text-[11px] font-medium text-muted-foreground shrink-0"
         >
-          <span>↑↓ Navigate</span>
-          <span>↵ Run</span>
-          <span>Esc Close</span>
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
+            <span className="flex items-center gap-1">Run <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
+          </div>
+          <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>
         </div>
       </div>
     </DetachedWindow>

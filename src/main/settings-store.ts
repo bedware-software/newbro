@@ -39,7 +39,7 @@ export const DEFAULT_KEYBINDINGS: Record<string, string> = {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  theme: 'dark',
+  theme: 'system',
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
   proxy: {

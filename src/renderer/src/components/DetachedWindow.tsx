@@ -201,6 +201,20 @@ export function DetachedWindow({
     }
   }, [open, width, height, resizable, closeOnEscape])
 
+  // Show the popup window once React has rendered content into the portal.
+  // Double-rAF ensures the browser has committed the paint before we reveal.
+  useEffect(() => {
+    if (!containerEl) return
+    const popup = popupRef.current
+    if (!popup || popup.closed) return
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        ;(window as any).electronAPI?.detachedWindowShow()
+      })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [containerEl])
+
   useEffect(() => {
     const popup = popupRef.current
     if (!popup || popup.closed) return
