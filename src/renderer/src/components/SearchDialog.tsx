@@ -130,6 +130,14 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
     })
   }, [])
 
+  const selectFilter = useCallback((type: FilterType) => {
+    setFilters(() => {
+      const next = new Set<FilterType>([type])
+      saveFilters(next)
+      return next
+    })
+  }, [])
+
   const handleSelect = useCallback(async (item: SearchableItem) => {
     log.action('search:select', { type: item.type, id: item.id, name: item.name })
 
@@ -191,8 +199,13 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     const digit = codeToDigit(e.code)
 
-    if (e.altKey && !e.metaKey && !e.ctrlKey && digit !== null) {
-      if (digit >= 1 && digit <= FILTER_TYPES.length) {
+    if (digit !== null && digit >= 1 && digit <= FILTER_TYPES.length) {
+      if (e.altKey && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault()
+        selectFilter(FILTER_TYPES[digit - 1])
+        return
+      }
+      if (e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault()
         toggleFilter(FILTER_TYPES[digit - 1])
         return
@@ -211,7 +224,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
     } else if (e.key === 'Escape') {
       onOpenChange(false)
     }
-  }, [flatResults, selectedIndex, handleSelect, onOpenChange, toggleFilter])
+  }, [flatResults, selectedIndex, handleSelect, onOpenChange, toggleFilter, selectFilter])
 
   if (!open) return null
 
@@ -327,7 +340,8 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
             <span className="flex items-center gap-1">Open <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
-            <span className="flex items-center gap-1">Toggle Filters <kbd>{isMac ? '⌥' : 'Alt'}</kbd><kbd>1…4</kbd></span>
+            <span className="flex items-center gap-1">Select Filter <kbd>{isMac ? '⌥' : 'Alt'}</kbd><kbd>1…4</kbd></span>
+            <span className="flex items-center gap-1">Toggle Filter <kbd>{isMac ? '⌃' : 'Ctrl'}</kbd><kbd>1…4</kbd></span>
           </div>
           <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>
         </div>
