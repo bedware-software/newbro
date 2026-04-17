@@ -1,9 +1,16 @@
-import { app, BrowserWindow, session, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, session, Menu, nativeImage, screen } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers, registerDetachedPopup } from './ipc'
-import { loadState, loadOpenWindows, saveOpenWindows, type OpenWindowEntry } from './store'
+import {
+  loadState,
+  loadOpenWindows,
+  saveOpenWindows,
+  loadWorkspaceBounds,
+  saveWorkspaceBounds,
+  type OpenWindowEntry,
+} from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { log } from './log'
 
@@ -388,6 +395,54 @@ export function setupPartitionSession(partition: string): void {
   configuredPartitions.add(partition)
 }
 
+// ── Per-workspace window bounds persistence ──
+const DEFAULT_WINDOW_WIDTH = 1400
+const DEFAULT_WINDOW_HEIGHT = 900
+const persistBoundsTimers = new Map<string, NodeJS.Timeout>()
+
+function boundsVisibleOnAnyDisplay(b: { x: number; y: number; width: number; height: number }): boolean {
+  for (const d of screen.getAllDisplays()) {
+    const wa = d.workArea
+    const overlapX = Math.min(b.x + b.width, wa.x + wa.width) - Math.max(b.x, wa.x)
+    const overlapY = Math.min(b.y + b.height, wa.y + wa.height) - Math.max(b.y, wa.y)
+    if (overlapX > 100 && overlapY > 40) return true
+  }
+  return false
+}
+
+function captureWorkspaceBounds(workspaceId: string, win: BrowserWindow): void {
+  if (!workspaceId || win.isDestroyed()) return
+  const bounds = win.getNormalBounds()
+  saveWorkspaceBounds(workspaceId, {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    maximized: win.isMaximized(),
+  })
+}
+
+function scheduleCaptureWorkspaceBounds(workspaceId: string, win: BrowserWindow): void {
+  if (!workspaceId) return
+  const existing = persistBoundsTimers.get(workspaceId)
+  if (existing) clearTimeout(existing)
+  persistBoundsTimers.set(
+    workspaceId,
+    setTimeout(() => {
+      persistBoundsTimers.delete(workspaceId)
+      captureWorkspaceBounds(workspaceId, win)
+    }, 500),
+  )
+}
+
+function flushPendingBoundsCapture(workspaceId: string): void {
+  const t = persistBoundsTimers.get(workspaceId)
+  if (t) {
+    clearTimeout(t)
+    persistBoundsTimers.delete(workspaceId)
+  }
+}
+
 export function closeWorkspaceWindow(workspaceId: string): void {
   const win = workspaceWindows.get(workspaceId)
   if (win && !win.isDestroyed()) {
@@ -425,9 +480,20 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   }
 
   const isMac = process.platform === 'darwin'
+  const savedBounds = loadWorkspaceBounds(workspaceId)
+  const useSavedPosition =
+    !!savedBounds &&
+    boundsVisibleOnAnyDisplay({
+      x: savedBounds.x,
+      y: savedBounds.y,
+      width: savedBounds.width,
+      height: savedBounds.height,
+    })
+
   const win = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    width: savedBounds?.width ?? DEFAULT_WINDOW_WIDTH,
+    height: savedBounds?.height ?? DEFAULT_WINDOW_HEIGHT,
+    ...(useSavedPosition ? { x: savedBounds!.x, y: savedBounds!.y } : {}),
     minWidth: 800,
     title: `${workspaceName} — Newbro`,
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
@@ -446,6 +512,9 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   if (!isMac) {
     win.setMenuBarVisibility(false)
   }
+  if (savedBounds?.maximized) {
+    win.maximize()
+  }
 
   workspaceWindows.set(workspaceId, win)
   workspaceProfiles.set(workspaceId, profileId)
@@ -463,7 +532,24 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     }
   })
 
+  // Persist bounds on resize/move (debounced) and immediately on maximize
+  // state changes so the window restores to its last size/position/maximized
+  // state on the next launch or reopen.
+  win.on('resize', () => scheduleCaptureWorkspaceBounds(workspaceId, win))
+  win.on('move', () => scheduleCaptureWorkspaceBounds(workspaceId, win))
+  win.on('maximize', () => {
+    flushPendingBoundsCapture(workspaceId)
+    captureWorkspaceBounds(workspaceId, win)
+  })
+  win.on('unmaximize', () => {
+    flushPendingBoundsCapture(workspaceId)
+    captureWorkspaceBounds(workspaceId, win)
+  })
+
   win.on('close', () => {
+    flushPendingBoundsCapture(workspaceId)
+    captureWorkspaceBounds(workspaceId, win)
+
     const allIds = [...workspaceWindows.keys()]
     const remainingIds = allIds.filter(id => id !== workspaceId)
     const toEntries = (ids: string[]) => ids.map(id => ({ profileId: workspaceProfiles.get(id)!, workspaceId: id }))
