@@ -2,11 +2,21 @@ import Store from 'electron-store'
 
 export interface Settings {
   theme: 'light' | 'dark' | 'system'
+  /** Selected variant within the Light family (e.g. 'light-default' | 'light-bright' | 'light-soft'). */
+  lightVariant: string
+  /** Selected variant within the Dark family (e.g. 'dark-default' | 'dark-deep' | 'dark-soft'). */
+  darkVariant: string
+  /** Layout density — 'compact' (tight, legacy) or 'normal' (extra row gaps). */
+  density: 'compact' | 'normal'
   defaultPageUrl: string
   searchEngine: string
   proxy: ProxySettings
   keybindings: Record<string, string>
 }
+
+const KNOWN_LIGHT_VARIANTS = new Set(['light-default', 'light-bright', 'light-soft'])
+const KNOWN_DARK_VARIANTS = new Set(['dark-default', 'dark-deep', 'dark-soft'])
+const KNOWN_DENSITIES = new Set(['compact', 'normal'])
 
 export interface ProxySettings {
   mode: 'system' | 'direct' | 'custom'
@@ -40,6 +50,9 @@ export const DEFAULT_KEYBINDINGS: Record<string, string> = {
 
 export const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
+  lightVariant: 'light-default',
+  darkVariant: 'dark-default',
+  density: 'normal',
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
   proxy: {
@@ -132,6 +145,15 @@ export function loadSettings(): Settings {
   return {
     ...DEFAULT_SETTINGS,
     ...saved,
+    lightVariant: KNOWN_LIGHT_VARIANTS.has(saved?.lightVariant as string)
+      ? (saved!.lightVariant as string)
+      : DEFAULT_SETTINGS.lightVariant,
+    darkVariant: KNOWN_DARK_VARIANTS.has(saved?.darkVariant as string)
+      ? (saved!.darkVariant as string)
+      : DEFAULT_SETTINGS.darkVariant,
+    density: KNOWN_DENSITIES.has(saved?.density as string)
+      ? (saved!.density as 'compact' | 'normal')
+      : DEFAULT_SETTINGS.density,
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...savedProxy,
@@ -145,6 +167,15 @@ export function saveSettings(settings: Settings): void {
   const normalizedSettings: Settings = {
     ...DEFAULT_SETTINGS,
     ...settings,
+    lightVariant: KNOWN_LIGHT_VARIANTS.has(settings.lightVariant)
+      ? settings.lightVariant
+      : DEFAULT_SETTINGS.lightVariant,
+    darkVariant: KNOWN_DARK_VARIANTS.has(settings.darkVariant)
+      ? settings.darkVariant
+      : DEFAULT_SETTINGS.darkVariant,
+    density: KNOWN_DENSITIES.has(settings.density)
+      ? settings.density
+      : DEFAULT_SETTINGS.density,
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...settings.proxy,

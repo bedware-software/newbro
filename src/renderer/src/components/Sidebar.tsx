@@ -511,6 +511,7 @@ export function Sidebar({ visible }: Props) {
     return (
       <div
         key={tab.id}
+        data-sidebar-row=""
         data-drop-tab-id={tab.id}
         data-drop-container={containerAttr}
         data-drop-index={index}
@@ -559,6 +560,7 @@ export function Sidebar({ visible }: Props) {
 
     return (
       <div
+        data-sidebar-row=""
         data-drop-group-header={group.id}
         data-sidebar-index={sidebarIdx}
         className={`relative flex items-center gap-1 px-1.5 py-1 cursor-pointer group ${
@@ -648,7 +650,7 @@ export function Sidebar({ visible }: Props) {
 
   return (
     <>
-      <div ref={sidebarRef} style={{ width }} className="bg-card border-r border-border flex flex-col shrink-0 overflow-hidden select-none relative">
+      <div ref={sidebarRef} style={{ width }} className="bg-toolbar border-r border-border flex flex-col shrink-0 overflow-hidden select-none relative">
         {hasSelection && (
           <div className="flex items-center gap-1 px-1.5 py-1 border-b border-border bg-accent/30">
             <span className="text-[10px] text-muted-foreground flex-1">{selectedTabIds.size} selected</span>

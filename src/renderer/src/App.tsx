@@ -10,6 +10,7 @@ import { SettingsDialog } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { InputDialog } from './components/InputDialog'
 import { GroupPicker } from './components/GroupPicker'
+import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 
 interface Settings {
   proxy: {
@@ -17,7 +18,10 @@ interface Settings {
     proxyRules: string
     proxyBypassRules: string
   }
-  theme: 'light' | 'dark' | 'system'
+  theme: ThemeChoice
+  lightVariant: string
+  darkVariant: string
+  density: Density
   defaultPageUrl: string
   searchEngine: string
   keybindings: Record<string, string>
@@ -65,17 +69,53 @@ function getWindowParams(): { profileId: string | null; workspaceId: string | nu
   }
 }
 
-function getOverlayColors(theme: 'light' | 'dark' | 'system'): { color: string; symbolColor: string; height: number } {
-  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
-  return isDark
-    ? { color: '#161616', symbolColor: '#d7d7d7', height: 47 }
-    : { color: '#f7f7f7', symbolColor: '#303030', height: 47 }
+/** Convert an "rgb(r, g, b)" or "rgba(r, g, b, a)" string to "#rrggbb". */
+function rgbStringToHex(rgb: string): string | null {
+  const m = rgb.match(/rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i)
+  if (!m) return null
+  const hex = (n: string) => Number(n).toString(16).padStart(2, '0')
+  return `#${hex(m[1])}${hex(m[2])}${hex(m[3])}`
 }
 
-function applyTheme(theme: 'light' | 'dark' | 'system'): void {
+/**
+ * Resolve a CSS custom property (declared on :root via @theme or a
+ * [data-theme*=""] override) to its final sRGB hex value by letting the
+ * browser compute it on a hidden element. Needed because setTitleBarOverlay
+ * expects "#rrggbb" strings, not the oklch() values used in CSS. Must be
+ * called AFTER the theme/variant data attributes have been written so the
+ * computed value reflects the currently active variant.
+ */
+function resolveCssVarToHex(varName: string): string | null {
+  const el = document.createElement('div')
+  el.style.backgroundColor = `var(${varName})`
+  el.style.position = 'absolute'
+  el.style.visibility = 'hidden'
+  el.style.pointerEvents = 'none'
+  document.body.appendChild(el)
+  const rgb = getComputedStyle(el).backgroundColor
+  document.body.removeChild(el)
+  return rgbStringToHex(rgb)
+}
+
+function getOverlayColors(theme: ThemeChoice): { color: string; symbolColor: string; height: number } {
+  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  // Match the title bar background to the active variant's toolbar color
+  // so the Windows min/max/close buttons blend in. Fall back to the legacy
+  // hardcoded values if CSS resolution fails (shouldn't happen in practice).
+  const toolbarHex = resolveCssVarToHex('--color-toolbar')
+  return {
+    color: toolbarHex ?? (isDark ? '#161616' : '#f7f7f7'),
+    symbolColor: isDark ? '#d7d7d7' : '#303030',
+    height: 47,
+  }
+}
+
+function applyTheme(theme: ThemeChoice, lightVariant: string, darkVariant: string): void {
+  const variant = resolveVariantId(theme, lightVariant, darkVariant)
   document.documentElement.setAttribute('data-theme', theme)
+  document.documentElement.setAttribute('data-theme-variant', variant)
   window.electronAPI.setTitleBarOverlay(getOverlayColors(theme))
-  log.info('theme applied:', theme)
+  log.info('theme applied:', theme, variant)
 }
 
 const SIDEBAR_VISIBLE_KEY = 'newbro-sidebar-visible'
@@ -110,10 +150,17 @@ export default function App() {
   const loadAndApplySettings = useCallback(async () => {
     try {
       const s = await window.electronAPI.loadSettings()
-      setSettings(s)
-      applyTheme(s.theme)
-      setDefaultNewTabUrl(s.defaultPageUrl)
-      setSearchEngine(s.searchEngine)
+      const normalized: Settings = {
+        ...s,
+        lightVariant: normalizeLightVariant(s.lightVariant),
+        darkVariant: normalizeDarkVariant(s.darkVariant),
+        density: normalizeDensity(s.density),
+      }
+      setSettings(normalized)
+      applyTheme(normalized.theme, normalized.lightVariant, normalized.darkVariant)
+      applyDensity(normalized.density)
+      setDefaultNewTabUrl(normalized.defaultPageUrl)
+      setSearchEngine(normalized.searchEngine)
     } catch (err) {
       log.error('failed to load settings', err)
     }
@@ -408,9 +455,16 @@ export default function App() {
 
     const cleanupSettings = window.electronAPI.onSettingsUpdated((newSettings) => {
       log.ipc('settings:updated received')
-      const s = newSettings as Settings
+      const raw = newSettings as Settings
+      const s: Settings = {
+        ...raw,
+        lightVariant: normalizeLightVariant(raw.lightVariant),
+        darkVariant: normalizeDarkVariant(raw.darkVariant),
+        density: normalizeDensity(raw.density),
+      }
       setSettings(s)
-      applyTheme(s.theme)
+      applyTheme(s.theme, s.lightVariant, s.darkVariant)
+      applyDensity(s.density)
       setDefaultNewTabUrl(s.defaultPageUrl)
       setSearchEngine(s.searchEngine)
     })
@@ -423,34 +477,56 @@ export default function App() {
     return () => { cleanupShortcut(); cleanupState(); cleanupPopup(); cleanupSettings(); cleanupActivateTab() }
   }, [hydrate, windowWorkspaceId, toggleSidebar])
 
-  // Global Escape handler: when a chrome button or the URL bar has keyboard
-  // focus, blur it and hand focus back to the active webview. Prevents
-  // Chromium's :focus-visible ring from sticking on toolbar/sidebar buttons
-  // after the user hits Esc, and lets Esc exit the URL bar back to the page.
+  // When the user has the theme set to "system", follow the OS when it
+  // flips between light and dark by re-resolving which variant to apply.
+  // For explicit 'light' / 'dark' themes the OS preference is irrelevant,
+  // so skip the update in that case.
+  useEffect(() => {
+    if (!settings) return
+    if (settings.theme !== 'system') return
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const update = (): void => {
+      applyTheme(settings.theme, settings.lightVariant, settings.darkVariant)
+    }
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [settings])
+
+  // Global Escape handler: whenever focus is parked somewhere in the chrome
+  // (toolbar button, URL bar, sidebar item, etc.) instead of the active
+  // webview, Esc blurs it and hands focus back to the page. Prevents
+  // Chromium's :focus-visible ring from sticking on chrome buttons and
+  // lets keystrokes always end up in the site content.
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      const active = document.activeElement as HTMLElement | null
-      if (!active) return
-      const isButton = active.tagName === 'BUTTON'
-      const isUrlBar = active.id === 'url-bar'
-      if (!isButton && !isUrlBar) return
-      active.blur()
       const s = useAppStore.getState()
       if (!s.activeTabId) return
       const wv = document.querySelector(`webview[data-tab-id="${s.activeTabId}"]`) as any
-      wv?.focus?.()
+      if (!wv) return
+      const active = document.activeElement as HTMLElement | null
+      // Focus is already inside the webview — let Esc reach the page.
+      if (!active || active === wv) return
+      active.blur?.()
+      wv.focus?.()
     }
     window.addEventListener('keydown', handleEscape)
     return () => window.removeEventListener('keydown', handleEscape)
   }, [])
 
   const handleSaveSettings = async (newSettings: Settings) => {
-    setSettings(newSettings)
-    applyTheme(newSettings.theme)
-    setDefaultNewTabUrl(newSettings.defaultPageUrl)
-    setSearchEngine(newSettings.searchEngine)
-    await window.electronAPI.saveSettings(newSettings)
+    const normalized: Settings = {
+      ...newSettings,
+      lightVariant: normalizeLightVariant(newSettings.lightVariant),
+      darkVariant: normalizeDarkVariant(newSettings.darkVariant),
+      density: normalizeDensity(newSettings.density),
+    }
+    setSettings(normalized)
+    applyTheme(normalized.theme, normalized.lightVariant, normalized.darkVariant)
+    applyDensity(normalized.density)
+    setDefaultNewTabUrl(normalized.defaultPageUrl)
+    setSearchEngine(normalized.searchEngine)
+    await window.electronAPI.saveSettings(normalized)
   }
 
   if (!ready) return null
@@ -463,7 +539,13 @@ export default function App() {
         <WebviewPanel />
       </div>
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} windowWorkspaceId={windowWorkspaceId} />
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} onSave={handleSaveSettings} onThemePreview={applyTheme} />
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        settings={settings}
+        onSave={handleSaveSettings}
+        onAppearancePreview={(p) => { applyTheme(p.theme, p.lightVariant, p.darkVariant); applyDensity(p.density) }}
+      />
       <CommandPalette
         open={commandPaletteOpen}
         onOpenChange={setCommandPaletteOpen}

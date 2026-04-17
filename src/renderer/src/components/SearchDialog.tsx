@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useAppStore, saveStateNow } from '../store/app-store'
 import { log } from '../lib/log'
 import { fuzzyFilter } from '../lib/fuzzy'
-import { Search, User, Layout, Layers, Globe, ArrowUpDown, CornerDownLeft } from 'lucide-react'
+import { Search, User, Layout, Layers, Globe, ArrowUpDown, CornerDownLeft, Asterisk } from 'lucide-react'
 import type { SearchableItem } from '../store/types'
 import { DetachedWindow } from './DetachedWindow'
 
@@ -138,6 +138,16 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
     })
   }, [])
 
+  const selectAllFilters = useCallback(() => {
+    setFilters(() => {
+      const next = new Set<FilterType>(FILTER_TYPES)
+      saveFilters(next)
+      return next
+    })
+  }, [])
+
+  const allActive = filters.size === FILTER_TYPES.length
+
   const handleSelect = useCallback(async (item: SearchableItem) => {
     log.action('search:select', { type: item.type, id: item.id, name: item.name })
 
@@ -199,6 +209,12 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     const digit = codeToDigit(e.code)
 
+    if (e.code === 'Backquote' && e.altKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault()
+      selectAllFilters()
+      return
+    }
+
     if (digit !== null && digit >= 1 && digit <= FILTER_TYPES.length) {
       if (e.altKey && !e.metaKey && !e.ctrlKey) {
         e.preventDefault()
@@ -224,7 +240,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
     } else if (e.key === 'Escape') {
       onOpenChange(false)
     }
-  }, [flatResults, selectedIndex, handleSelect, onOpenChange, toggleFilter, selectFilter])
+  }, [flatResults, selectedIndex, handleSelect, onOpenChange, toggleFilter, selectFilter, selectAllFilters])
 
   if (!open) return null
 
@@ -259,6 +275,18 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
         </div>
 
         <div className="flex items-center gap-1 px-4 py-2 border-b border-border shrink-0">
+          <button
+            onClick={() => selectAllFilters()}
+            className={`flex items-center gap-1 h-6 px-2 rounded-full text-[10px] font-medium transition-colors ${
+              allActive
+                ? 'bg-primary/20 text-primary border border-primary/30'
+                : 'bg-secondary text-muted-foreground border border-transparent hover:bg-accent'
+            }`}
+          >
+            <Asterisk size={10} />
+            All
+            <span className="opacity-50 ml-0.5">{OPT}~</span>
+          </button>
           {FILTER_TYPES.map((type, i) => {
             const Icon = TYPE_ICONS[type]
             const active = filters.has(type)
@@ -340,7 +368,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
             <span className="flex items-center gap-1">Open <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
-            <span className="flex items-center gap-1">Select Filter <kbd>{isMac ? '⌥' : 'Alt'}</kbd><kbd>1…4</kbd></span>
+            <span className="flex items-center gap-1">Select Filter <kbd>{isMac ? '⌥' : 'Alt'}</kbd><kbd>~/1…4</kbd></span>
             <span className="flex items-center gap-1">Toggle Filter <kbd>{isMac ? '⌃' : 'Ctrl'}</kbd><kbd>1…4</kbd></span>
           </div>
           <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2 } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
+import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
 
 interface ProxySettings {
   mode: 'system' | 'direct' | 'custom'
@@ -10,11 +11,21 @@ interface ProxySettings {
 }
 
 interface Settings {
-  theme: 'light' | 'dark' | 'system'
+  theme: ThemeChoice
+  lightVariant: string
+  darkVariant: string
+  density: Density
   defaultPageUrl: string
   searchEngine: string
   proxy: ProxySettings
   keybindings: Record<string, string>
+}
+
+interface AppearancePreview {
+  theme: ThemeChoice
+  lightVariant: string
+  darkVariant: string
+  density: Density
 }
 
 const SEARCH_ENGINES: Record<string, string> = {
@@ -69,7 +80,7 @@ interface Props {
   onClose: () => void
   settings: Settings | null
   onSave: (settings: Settings) => void
-  onThemePreview?: (theme: 'light' | 'dark' | 'system') => void
+  onAppearancePreview?: (preview: AppearancePreview) => void
 }
 
 /** Convert a KeyboardEvent into an Electron accelerator string */
@@ -178,7 +189,7 @@ function formatAccelerator(accel: string): React.ReactNode {
   )
 }
 
-type Tab = 'general' | 'shortcuts'
+type Tab = 'general' | 'appearance' | 'shortcuts'
 
 function normalizeKeybindingValue(raw: string): string {
   let value = raw.trim()
@@ -208,9 +219,12 @@ function normalizeKnownKeybindings(raw: Record<string, string> | undefined): Rec
   return next
 }
 
-export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview }: Props) {
+export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePreview }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('general')
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('dark')
+  const [theme, setTheme] = useState<ThemeChoice>('dark')
+  const [lightVariant, setLightVariant] = useState<string>(LIGHT_VARIANTS[0].id)
+  const [darkVariant, setDarkVariant] = useState<string>(DARK_VARIANTS[0].id)
+  const [density, setDensity] = useState<Density>(DEFAULT_DENSITY)
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
   const [proxy, setProxy] = useState<ProxySettings>({ ...DEFAULT_PROXY_SETTINGS })
@@ -220,14 +234,25 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false)
   const recordingRef = useRef<string | null>(null)
   const pendingTabChordRef = useRef(false)
-  const originalThemeRef = useRef<'light' | 'dark' | 'system'>('dark')
+  const originalAppearanceRef = useRef<AppearancePreview>({
+    theme: 'dark',
+    lightVariant: LIGHT_VARIANTS[0].id,
+    darkVariant: DARK_VARIANTS[0].id,
+    density: DEFAULT_DENSITY,
+  })
   recordingRef.current = recordingAction
 
   // Init from settings
   useEffect(() => {
     if (open && settings) {
+      const lv = normalizeLightVariant(settings.lightVariant)
+      const dv = normalizeDarkVariant(settings.darkVariant)
+      const dens = normalizeDensity(settings.density)
       setTheme(settings.theme)
-      originalThemeRef.current = settings.theme
+      setLightVariant(lv)
+      setDarkVariant(dv)
+      setDensity(dens)
+      originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens }
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
       setProxy({ ...DEFAULT_PROXY_SETTINGS, ...settings.proxy })
@@ -290,6 +315,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
 
     onSave({
       theme,
+      lightVariant,
+      darkVariant,
+      density,
       defaultPageUrl: defaultUrl,
       searchEngine,
       proxy: normalizedProxy,
@@ -299,8 +327,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
   }
 
   const handleCancel = () => {
-    onThemePreview?.(originalThemeRef.current)
+    onAppearancePreview?.(originalAppearanceRef.current)
     onClose()
+  }
+
+  const previewAppearance = (next: Partial<AppearancePreview>): void => {
+    onAppearancePreview?.({ theme, lightVariant, darkVariant, density, ...next })
   }
 
   const handleResetKeybindings = () => {
@@ -353,6 +385,16 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
             General
           </button>
           <button
+            onClick={() => setActiveTab('appearance')}
+            className={`px-5 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === 'appearance'
+                ? 'text-foreground border-b-2 border-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            Appearance
+          </button>
+          <button
             onClick={() => setActiveTab('shortcuts')}
             className={`px-5 py-2.5 text-sm font-medium transition-colors ${
               activeTab === 'shortcuts'
@@ -366,11 +408,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
 
         {/* Content */}
         <div className="px-6 py-5 flex-1 min-h-0 overflow-y-auto">
-          {activeTab === 'general' && (
-            <div className="space-y-6">
+          {activeTab === 'appearance' && (
+            <div className="space-y-8">
               {/* Theme */}
               <div>
-                <label className="block text-sm font-medium text-foreground mb-2">Theme</label>
+                <h3 className="text-sm font-semibold text-foreground mb-1">Theme</h3>
+                <p className="text-[11px] text-muted-foreground mb-3">
+                  Choose the overall family, then pick a brightness variant for each family.
+                </p>
                 <div className="flex gap-2">
                   {([
                     { value: 'system' as const, label: 'System', icon: Monitor },
@@ -379,7 +424,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                   ]).map(({ value, label, icon: Icon }) => (
                     <button
                       key={value}
-                      onClick={() => { setTheme(value); onThemePreview?.(value) }}
+                      onClick={() => { setTheme(value); previewAppearance({ theme: value }) }}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                         theme === value
                           ? 'bg-primary text-primary-foreground hover:bg-primary/80'
@@ -391,8 +436,87 @@ export function SettingsDialog({ open, onClose, settings, onSave, onThemePreview
                     </button>
                   ))}
                 </div>
+
+                {/* Variant pickers — show only the family the current theme
+                    can actually render. On 'system' we show both so the
+                    user can tune each OS state independently. */}
+                {(theme === 'light' || theme === 'system') && (
+                  <div className="mt-3">
+                    <div className="text-[11px] font-medium text-muted-foreground mb-1.5 flex items-center gap-1.5">
+                      <Sun size={11} />
+                      Light variant
+                    </div>
+                    <div className="flex gap-2 flex-wrap">
+                      {LIGHT_VARIANTS.map((v) => (
+                        <button
+                          key={v.id}
+                          onClick={() => { setLightVariant(v.id); previewAppearance({ lightVariant: v.id }) }}
+                          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                            lightVariant === v.id
+                              ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                              : 'bg-secondary text-secondary-foreground hover:bg-muted'
+                          }`}
+                        >
+                          {v.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {(theme === 'dark' || theme === 'system') && (
+                  <div className="mt-3">
+                    <div className="text-[11px] font-medium text-muted-foreground mb-1.5 flex items-center gap-1.5">
+                      <Moon size={11} />
+                      Dark variant
+                    </div>
+                    <div className="flex gap-2 flex-wrap">
+                      {DARK_VARIANTS.map((v) => (
+                        <button
+                          key={v.id}
+                          onClick={() => { setDarkVariant(v.id); previewAppearance({ darkVariant: v.id }) }}
+                          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                            darkVariant === v.id
+                              ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                              : 'bg-secondary text-secondary-foreground hover:bg-muted'
+                          }`}
+                        >
+                          {v.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
+              {/* Density */}
+              <div>
+                <h3 className="text-sm font-semibold text-foreground mb-1">Density</h3>
+                <p className="text-[11px] text-muted-foreground mb-3">
+                  Vertical breathing room between sidebar rows.
+                </p>
+                <div className="flex gap-2">
+                  {DENSITIES.map((d) => (
+                    <button
+                      key={d.id}
+                      onClick={() => { setDensity(d.id); previewAppearance({ density: d.id }) }}
+                      title={d.hint}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                        density === d.id
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
+                      }`}
+                    >
+                      {d.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'general' && (
+            <div className="space-y-6">
               {/* Default page URL */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Default New Tab URL</label>

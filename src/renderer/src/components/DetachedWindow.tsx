@@ -21,6 +21,9 @@ function syncThemeToPopup(popupDoc: Document): void {
   const theme = document.documentElement.getAttribute('data-theme')
   if (theme) popupDoc.documentElement.setAttribute('data-theme', theme)
   else popupDoc.documentElement.removeAttribute('data-theme')
+  const variant = document.documentElement.getAttribute('data-theme-variant')
+  if (variant) popupDoc.documentElement.setAttribute('data-theme-variant', variant)
+  else popupDoc.documentElement.removeAttribute('data-theme-variant')
 }
 
 function copyStylesToPopup(popupDoc: Document): void {
@@ -171,7 +174,7 @@ export function DetachedWindow({
     const themeObserver = new MutationObserver(() => syncThemeToPopup(popup.document))
     themeObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme'],
+      attributeFilter: ['data-theme', 'data-theme-variant'],
     })
 
     popup.addEventListener('beforeunload', handleBeforeUnload)

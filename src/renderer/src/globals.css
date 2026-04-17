@@ -75,6 +75,73 @@
   }
 }
 
+/* ── Theme sub-variants (brightness gradations) ──
+ * Each variant overrides only the surface lightness channels; primary,
+ * destructive and foreground colors stay identical within a family so
+ * the UI feel is consistent. Variant ids are namespaced by family
+ * (light-* / dark-*) so a single [data-theme-variant=""] selector is
+ * enough — the JS layer guarantees the variant always matches the
+ * currently resolved family.
+ */
+[data-theme-variant="light-bright"] {
+  --color-background: oklch(0.985 0 0);
+  --color-card: oklch(1 0 0);
+  --color-popover: oklch(0.99 0 0);
+  --color-secondary: oklch(0.975 0 0);
+  --color-muted: oklch(0.93 0 0);
+  --color-accent: oklch(0.975 0 0);
+  --color-border: oklch(0.94 0 0);
+  --color-input: oklch(0.94 0 0);
+  --color-toolbar: oklch(0.99 0 0);
+}
+
+[data-theme-variant="light-soft"] {
+  --color-background: oklch(0.92 0 0);
+  --color-card: oklch(0.955 0 0);
+  --color-popover: oklch(0.935 0 0);
+  --color-secondary: oklch(0.905 0 0);
+  --color-muted: oklch(0.85 0 0);
+  --color-accent: oklch(0.905 0 0);
+  --color-border: oklch(0.87 0 0);
+  --color-input: oklch(0.87 0 0);
+  --color-toolbar: oklch(0.935 0 0);
+}
+
+[data-theme-variant="dark-deep"] {
+  --color-background: oklch(0.14 0 0);
+  --color-card: oklch(0.10 0 0);
+  --color-popover: oklch(0.10 0 0);
+  --color-secondary: oklch(0.22 0 0);
+  --color-muted: oklch(0.27 0 0);
+  --color-accent: oklch(0.22 0 0);
+  --color-border: oklch(0.22 0 0);
+  --color-input: oklch(0.22 0 0);
+  --color-toolbar: oklch(0.12 0 0);
+}
+
+[data-theme-variant="dark-soft"] {
+  --color-background: oklch(0.28 0 0);
+  --color-card: oklch(0.23 0 0);
+  --color-popover: oklch(0.23 0 0);
+  --color-secondary: oklch(0.36 0 0);
+  --color-muted: oklch(0.42 0 0);
+  --color-accent: oklch(0.36 0 0);
+  --color-border: oklch(0.36 0 0);
+  --color-input: oklch(0.36 0 0);
+  --color-toolbar: oklch(0.27 0 0);
+}
+
+/* ── Layout density ──
+ * `normal` (default) gives sidebar rows toolbar-height padding so they
+ * breathe like the top chrome. `compact` is the legacy tighter look.
+ * Padding is bumped on the rows themselves — no vertical margin gaps
+ * between rows, because the rest of the UI doesn't use gaps either.
+ */
+[data-density="normal"] [data-sidebar-row] {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
 /* ── kbd key caps ── */
 kbd {
   display: inline-flex;

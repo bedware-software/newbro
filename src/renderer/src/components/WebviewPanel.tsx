@@ -62,11 +62,29 @@ function applyScrollbarStyle(wv: any): void {
   wv.executeJavaScript?.(js).catch(() => {})
 }
 
+// Transfer keyboard focus to `wv`. Blurs whatever currently owns focus
+// (toolbar button, URL bar, sidebar item, OR the previously active
+// webview that's now hidden) so it releases its claim on keystrokes.
+// Blurring is the critical step: Electron's <webview> won't actually
+// receive keystrokes if another element — especially a sibling webview
+// that was just display:none'd — still holds :focus.
+function handoffFocusTo(wv: HTMLElement): void {
+  const active = document.activeElement as HTMLElement | null
+  if (active && active !== document.body && active !== wv) {
+    active.blur?.()
+  }
+  ;(wv as any).focus?.()
+}
+
 export function WebviewPanel() {
   const containerRef = useRef<HTMLDivElement>(null)
   const webviewsRef = useRef<Map<string, HTMLElement>>(new Map())
   // Track which tabs have been activated (had their real URL loaded)
   const activatedTabsRef = useRef<Set<string>>(new Set())
+  // Track which webviews have been focused at least once after attach, so
+  // the first-paint focus only runs once per webview and dom-ready events
+  // on subsequent navigations don't steal focus back from the user.
+  const initiallyFocusedRef = useRef<Set<string>>(new Set())
   const [errors, setErrors] = useState<Map<string, LoadError>>(new Map())
   const [certErrors, setCertErrors] = useState<Map<string, CertError>>(new Map())
 
@@ -113,6 +131,7 @@ export function WebviewPanel() {
         if (wv && container.contains(wv)) container.removeChild(wv)
         webviewsRef.current.delete(id)
         activatedTabsRef.current.delete(id)
+        initiallyFocusedRef.current.delete(id)
       }
     }
 
@@ -149,6 +168,17 @@ export function WebviewPanel() {
         wv.addEventListener('dom-ready', () => {
           dbg('dom-ready', { url: wv.getURL?.() })
           applyScrollbarStyle(wv)
+          // For a brand-new tab (Ctrl+T) the guest webContents isn't
+          // attached when the activeTabId effect calls focus(), so that
+          // call is a no-op on the page. The *first* dom-ready for this
+          // webview is the earliest point we can reliably hand focus to
+          // the guest. Subsequent dom-ready events (navigations, reloads)
+          // are skipped so we don't yank focus back if the user
+          // intentionally moved it to chrome.
+          if (initiallyFocusedRef.current.has(tabId)) return
+          initiallyFocusedRef.current.add(tabId)
+          if (useAppStore.getState().activeTabId !== tabId) return
+          handoffFocusTo(wv)
         })
         wv.addEventListener('did-finish-load', () => {
           dbg('did-finish-load', { url: wv.getURL?.() })
@@ -268,13 +298,19 @@ export function WebviewPanel() {
   // keyboard input goes to the page. Covers tab cycling (Ctrl+Tab /
   // Ctrl+Shift+Tab), Search Everything selection, sidebar clicks, etc.
   // The Enter-in-URL-bar path focuses directly from the Toolbar handler
-  // because the URL may not change (reload case). Declared after the
-  // create/show effect so display:flex is applied before we focus.
+  // because the URL may not change (reload case). Brand-new tabs
+  // (Ctrl+T) are additionally handled by the first-dom-ready listener,
+  // because the webview's guest webContents isn't attached yet when
+  // this effect runs. Declared after the create/show effect so
+  // display:flex is applied before we focus.
   useEffect(() => {
     if (!activeTabId) return
-    const wv = webviewsRef.current.get(activeTabId)
-    if (!wv) return
-    ;(wv as any).focus?.()
+    const raf = requestAnimationFrame(() => {
+      const wv = webviewsRef.current.get(activeTabId)
+      if (!wv) return
+      handoffFocusTo(wv)
+    })
+    return () => cancelAnimationFrame(raf)
   }, [activeTabId])
 
   const activeError = activeTabId ? errors.get(activeTabId) ?? null : null
