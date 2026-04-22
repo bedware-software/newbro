@@ -11,6 +11,13 @@ env:
 
 jobs:
   build:
+    # electron-builder uses GH_TOKEN to create/update the GitHub Release
+    # when --publish=onTagOrDraft runs from a tag. The default job token
+    # is read-only; without contents:write we get
+    #   HttpError: 403 Forbidden … "Resource not accessible by integration"
+    # on POST /repos/{owner}/{repo}/releases.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
