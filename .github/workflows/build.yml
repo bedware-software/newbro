@@ -18,15 +18,27 @@ jobs:
           - os: windows-latest
             script: dist:win
             artifact_name: newbro-windows
-            artifact_path: release/*.exe
+            # Installers + latest.yml metadata (electron-updater needs the yml).
+            # *.blockmap lets the updater do delta downloads on subsequent upgrades.
+            artifact_paths: |
+              release/*.exe
+              release/latest*.yml
+              release/*.blockmap
           - os: macos-latest
             script: dist:mac
             artifact_name: newbro-macos
-            artifact_path: release/*.dmg
+            artifact_paths: |
+              release/*.dmg
+              release/*.zip
+              release/latest-mac*.yml
+              release/*.blockmap
           - os: ubuntu-latest
             script: dist:linux
             artifact_name: newbro-linux
-            artifact_path: release/*.AppImage
+            artifact_paths: |
+              release/*.AppImage
+              release/latest-linux*.yml
+              release/*.blockmap
 
     runs-on: ${{ matrix.os }}
 
@@ -43,14 +55,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # --publish=onTagOrDraft makes electron-builder emit the latest*.yml
+      # metadata files (required by electron-updater) and upload everything
+      # to the GitHub Release when running from a tag. For workflow_dispatch
+      # runs without a tag it falls back to local-only artifacts.
       - name: Build distributable
-        run: npm run ${{ matrix.script }} -- --publish=never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run ${{ matrix.script }} -- --publish=onTagOrDraft
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_path }}
+          path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
 
   release:
@@ -66,6 +84,9 @@ jobs:
         with:
           path: artifacts
 
+      # Aggregate draft release — kept as a safety net in case the direct
+      # electron-builder upload is skipped (e.g. network flake). Harmless
+      # when the draft already exists from the publish step above.
       - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:

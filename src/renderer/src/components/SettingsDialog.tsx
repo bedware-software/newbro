@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2 } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2 } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
@@ -27,6 +27,15 @@ interface AppearancePreview {
   darkVariant: string
   density: Density
 }
+
+type UpdateStatus =
+  | { phase: 'idle' }
+  | { phase: 'checking' }
+  | { phase: 'not-available'; version: string }
+  | { phase: 'available'; version: string; releaseNotes?: string | null }
+  | { phase: 'downloading'; version: string; percent: number; bytesPerSecond: number }
+  | { phase: 'downloaded'; version: string; releaseNotes?: string | null }
+  | { phase: 'error'; message: string }
 
 const SEARCH_ENGINES: Record<string, string> = {
   Google: 'https://www.google.com/search?q=%s',
@@ -232,6 +241,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [recordingAction, setRecordingAction] = useState<string | null>(null)
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false)
+  const [appVersion, setAppVersion] = useState<string>('')
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' })
   const recordingRef = useRef<string | null>(null)
   const pendingTabChordRef = useRef(false)
   const originalAppearanceRef = useRef<AppearancePreview>({
@@ -241,6 +252,35 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     density: DEFAULT_DENSITY,
   })
   recordingRef.current = recordingAction
+
+  // Subscribe to updater status while the dialog is open so the
+  // General → Updates section reflects live download / install events.
+  useEffect(() => {
+    if (!open) return
+    const api = (window as any).electronAPI
+    if (!api) return
+    api.getAppVersion?.().then((v: string) => { if (v) setAppVersion(v) })
+    api.getUpdaterStatus?.().then((s: UpdateStatus) => { if (s) setUpdateStatus(s) })
+    const cleanup = api.onUpdaterStatus?.((s: UpdateStatus) => setUpdateStatus(s))
+    return cleanup
+  }, [open])
+
+  const handleCheckForUpdates = useCallback(async () => {
+    const api = (window as any).electronAPI
+    if (!api) return
+    setUpdateStatus({ phase: 'checking' })
+    try {
+      const s = await api.checkForUpdates?.()
+      if (s) setUpdateStatus(s)
+    } catch (err: unknown) {
+      setUpdateStatus({ phase: 'error', message: err instanceof Error ? err.message : String(err) })
+    }
+  }, [])
+
+  const handleInstallUpdate = useCallback(() => {
+    const api = (window as any).electronAPI
+    api?.installUpdate?.()
+  }, [])
 
   // Init from settings
   useEffect(() => {
@@ -517,6 +557,72 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
           {activeTab === 'general' && (
             <div className="space-y-6">
+              {/* Updates */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">Updates</label>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleCheckForUpdates}
+                    disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'}
+                    className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium transition-colors ${
+                      updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'
+                        ? 'bg-secondary text-muted-foreground cursor-default'
+                        : 'bg-secondary text-secondary-foreground hover:bg-muted'
+                    }`}
+                  >
+                    {updateStatus.phase === 'checking' ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Download size={12} />
+                    )}
+                    Check for updates
+                  </button>
+                  {updateStatus.phase === 'downloaded' && (
+                    <button
+                      onClick={handleInstallUpdate}
+                      className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground hover:bg-primary/80 text-xs font-medium"
+                    >
+                      <RotateCcw size={12} />
+                      Restart to install
+                    </button>
+                  )}
+                  <span className="text-[11px] text-muted-foreground">
+                    {appVersion ? `Current version: ${appVersion}` : ''}
+                  </span>
+                </div>
+                <div className="mt-2 text-[11px]">
+                  {updateStatus.phase === 'idle' && (
+                    <span className="text-muted-foreground">The app checks for updates automatically on startup.</span>
+                  )}
+                  {updateStatus.phase === 'checking' && (
+                    <span className="text-muted-foreground">Checking for updates…</span>
+                  )}
+                  {updateStatus.phase === 'not-available' && (
+                    <span className="text-muted-foreground flex items-center gap-1">
+                      <CheckCircle2 size={11} className="text-primary" />
+                      You're on the latest version.
+                    </span>
+                  )}
+                  {updateStatus.phase === 'available' && (
+                    <span className="text-foreground">Update v{updateStatus.version} available — downloading…</span>
+                  )}
+                  {updateStatus.phase === 'downloading' && (
+                    <span className="text-foreground">
+                      Downloading v{updateStatus.version} · {updateStatus.percent}%
+                    </span>
+                  )}
+                  {updateStatus.phase === 'downloaded' && (
+                    <span className="text-foreground">Update v{updateStatus.version} ready — restart to install.</span>
+                  )}
+                  {updateStatus.phase === 'error' && (
+                    <span className="text-destructive flex items-center gap-1">
+                      <AlertTriangle size={11} />
+                      Check failed: {updateStatus.message}
+                    </span>
+                  )}
+                </div>
+              </div>
+
               {/* Default page URL */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Default New Tab URL</label>

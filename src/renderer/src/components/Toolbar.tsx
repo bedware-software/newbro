@@ -20,7 +20,7 @@ import type { WorkspaceCandidate } from '../store/types'
 import {
   ChevronLeft, ChevronRight, RotateCw, X, ChevronDown, Plus, Trash2, Pencil,
   PanelLeftClose, PanelLeft, User, Layout, Lock, Unlock, ShieldAlert, Import,
-  Menu, Settings, Info, Globe, Copy, Check, LogOut, Search,
+  Menu, Settings, Info, Globe, Copy, Check, LogOut, Search, Download,
 } from 'lucide-react'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
@@ -310,6 +310,13 @@ function AppMenu({ onOpenSettings, onOpenAbout, onOpenSearch }: { onOpenSettings
               <span>Settings</span>
             </span>
             <span className="text-muted-foreground">{settingsShortcut}</span>
+          </button>
+          <button
+            onClick={() => { setOpen(false); (window as any).electronAPI.checkForUpdates?.() }}
+            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left"
+          >
+            <Download size={14} className="text-muted-foreground" />
+            <span>Check for Updates…</span>
           </button>
           <button
             onClick={() => { setOpen(false); onOpenAbout() }}

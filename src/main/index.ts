@@ -3,6 +3,7 @@ import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers, registerDetachedPopup } from './ipc'
+import { setupAutoUpdater } from './updater'
 import {
   loadState,
   loadOpenWindows,
@@ -838,6 +839,7 @@ app.whenReady().then(() => {
 
   buildMenu()
   registerIpcHandlers()
+  setupAutoUpdater()
   openInitialWindows()
 
   if (BrowserWindow.getAllWindows().length === 0) {

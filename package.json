@@ -1,8 +1,12 @@
 {
   "name": "newbro-browser",
   "productName": "Newbro",
-  "version": "1.1.12",
+  "version": "1.1.13",
   "description": "Newbro Browser — workspace-based browser with profiles and tab groups",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bedware-software/newbro.git"
+  },
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -66,6 +70,11 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "bedware-software",
+      "repo": "newbro"
     }
   },
   "dependencies": {
@@ -73,6 +82,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "electron-store": "^8.2.0",
+    "electron-updater": "^6.3.9",
     "immer": "^11.1.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

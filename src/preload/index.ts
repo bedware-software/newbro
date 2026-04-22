@@ -49,6 +49,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Context menu
   showContextMenu: (items: any[]): Promise<string | null> => ipcRenderer.invoke('context-menu:show', items),
 
+  // Auto-updater
+  checkForUpdates: (): Promise<unknown> => ipcRenderer.invoke('updater:check'),
+  downloadUpdate: (): Promise<void> => ipcRenderer.invoke('updater:download'),
+  installUpdate: (): Promise<void> => ipcRenderer.invoke('updater:install'),
+  getUpdaterStatus: (): Promise<unknown> => ipcRenderer.invoke('updater:get-status'),
+  getAppVersion: (): Promise<string> => ipcRenderer.invoke('updater:get-app-version'),
+
   // Receive events from main process — return cleanup function
   onShortcut: (callback: (action: string) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, action: string) => callback(action)
@@ -74,5 +81,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_e: Electron.IpcRendererEvent, tabId: string) => callback(tabId)
     ipcRenderer.on('activate-tab', handler)
     return () => { ipcRenderer.removeListener('activate-tab', handler) }
+  },
+  onUpdaterStatus: (callback: (status: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, status: unknown) => callback(status)
+    ipcRenderer.on('updater:status', handler)
+    return () => { ipcRenderer.removeListener('updater:status', handler) }
   },
 })

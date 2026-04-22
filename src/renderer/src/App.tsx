@@ -10,6 +10,7 @@ import { SettingsDialog } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { InputDialog } from './components/InputDialog'
 import { GroupPicker } from './components/GroupPicker'
+import { UpdateBanner } from './components/UpdateBanner'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 
 interface Settings {
@@ -56,9 +57,24 @@ declare global {
       onOpenUrlAsTab: (callback: (url: string) => void) => () => void
       onSettingsUpdated: (callback: (settings: unknown) => void) => () => void
       onActivateTab: (callback: (tabId: string) => void) => () => void
+      checkForUpdates: () => Promise<UpdateStatus>
+      downloadUpdate: () => Promise<void>
+      installUpdate: () => Promise<void>
+      getUpdaterStatus: () => Promise<UpdateStatus>
+      getAppVersion: () => Promise<string>
+      onUpdaterStatus: (callback: (status: UpdateStatus) => void) => () => void
     }
   }
 }
+
+type UpdateStatus =
+  | { phase: 'idle' }
+  | { phase: 'checking' }
+  | { phase: 'not-available'; version: string }
+  | { phase: 'available'; version: string; releaseNotes?: string | null }
+  | { phase: 'downloading'; version: string; percent: number; bytesPerSecond: number }
+  | { phase: 'downloaded'; version: string; releaseNotes?: string | null }
+  | { phase: 'error'; message: string }
 
 function getWindowParams(): { profileId: string | null; workspaceId: string | null; tabId: string | null } {
   const params = new URLSearchParams(window.location.search)
@@ -539,6 +555,7 @@ export default function App() {
         <WebviewPanel />
       </div>
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} windowWorkspaceId={windowWorkspaceId} />
+      <UpdateBanner />
       <SettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}

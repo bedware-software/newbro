@@ -7,6 +7,7 @@ import { loadState, saveState } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
 import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin } from './index'
 import { log } from './log'
+import { checkForUpdatesNow, downloadUpdateNow, installUpdateNow, getLatestStatus } from './updater'
 
 interface CertInfo {
   subject: { CN?: string; O?: string; OU?: string }
@@ -453,5 +454,22 @@ function alive(p) {
       }
     }
     app.exit(0)
+  })
+
+  // ── Auto-updater ──
+  ipcMain.handle('updater:check', async () => {
+    return await checkForUpdatesNow()
+  })
+  ipcMain.handle('updater:download', async () => {
+    await downloadUpdateNow()
+  })
+  ipcMain.handle('updater:install', () => {
+    installUpdateNow()
+  })
+  ipcMain.handle('updater:get-status', () => {
+    return getLatestStatus()
+  })
+  ipcMain.handle('updater:get-app-version', () => {
+    return app.getVersion()
   })
 }
