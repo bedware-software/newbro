@@ -8,6 +8,9 @@ export interface Settings {
   darkVariant: string
   /** Layout density — 'compact' (tight, legacy) or 'normal' (extra row gaps). */
   density: 'compact' | 'normal'
+  /** Where keyboard focus lands when a new tab is created —
+   *  'site' focuses the page (current behavior), 'url' focuses the URL bar. */
+  newTabFocus: 'site' | 'url'
   defaultPageUrl: string
   searchEngine: string
   proxy: ProxySettings
@@ -17,6 +20,7 @@ export interface Settings {
 const KNOWN_LIGHT_VARIANTS = new Set(['light-default', 'light-bright', 'light-soft'])
 const KNOWN_DARK_VARIANTS = new Set(['dark-default', 'dark-deep', 'dark-soft'])
 const KNOWN_DENSITIES = new Set(['compact', 'normal'])
+const KNOWN_NEW_TAB_FOCUS = new Set(['site', 'url'])
 
 export interface ProxySettings {
   mode: 'system' | 'direct' | 'custom'
@@ -53,6 +57,7 @@ export const DEFAULT_SETTINGS: Settings = {
   lightVariant: 'light-default',
   darkVariant: 'dark-default',
   density: 'normal',
+  newTabFocus: 'site',
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
   proxy: {
@@ -154,6 +159,9 @@ export function loadSettings(): Settings {
     density: KNOWN_DENSITIES.has(saved?.density as string)
       ? (saved!.density as 'compact' | 'normal')
       : DEFAULT_SETTINGS.density,
+    newTabFocus: KNOWN_NEW_TAB_FOCUS.has(saved?.newTabFocus as string)
+      ? (saved!.newTabFocus as 'site' | 'url')
+      : DEFAULT_SETTINGS.newTabFocus,
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...savedProxy,
@@ -176,6 +184,9 @@ export function saveSettings(settings: Settings): void {
     density: KNOWN_DENSITIES.has(settings.density)
       ? settings.density
       : DEFAULT_SETTINGS.density,
+    newTabFocus: KNOWN_NEW_TAB_FOCUS.has(settings.newTabFocus)
+      ? settings.newTabFocus
+      : DEFAULT_SETTINGS.newTabFocus,
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...settings.proxy,

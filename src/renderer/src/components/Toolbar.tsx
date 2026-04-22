@@ -454,8 +454,31 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
 
   useEffect(() => {
     const url = activeTab?.url || ''
+    // Preserve the "select-all" state across a value sync. When the user
+    // opens a new tab with the "focus URL bar" preference, we focus +
+    // select-all the input. Any subsequent activeTab.url update from the
+    // store (did-navigate, redirects, final page URL once the load
+    // finishes, or a security-state-driven re-render) would otherwise
+    // clobber the highlight — React rewrites the input's value and the
+    // browser resets the selection. If the input is focused AND was
+    // fully selected before the sync, reapply the select after React
+    // commits the new value.
+    const input = urlRef.current
+    const hadFullSelection =
+      !!input &&
+      document.activeElement === input &&
+      input.value.length > 0 &&
+      input.selectionStart === 0 &&
+      input.selectionEnd === input.value.length
     setUrlValue(url)
     if (activeTabId) updateSecurity(url, activeTabId)
+    if (hadFullSelection) {
+      setTimeout(() => {
+        const el = urlRef.current
+        if (!el || document.activeElement !== el) return
+        try { el.select() } catch { /* non-text inputs may throw */ }
+      }, 0)
+    }
   }, [activeTab?.url, activeTabId, certBypassedOrigins])
 
   // Derive security state from URL

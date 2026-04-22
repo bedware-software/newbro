@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { useAppStore } from '../store/app-store'
+import { useAppStore, consumeNewTabUrlFocus } from '../store/app-store'
 import { log } from '../lib/log'
 
 interface LoadError {
@@ -74,6 +74,25 @@ function handoffFocusTo(wv: HTMLElement): void {
     active.blur?.()
   }
   ;(wv as any).focus?.()
+}
+
+/** Focus + select the toolbar URL bar. Used when the user prefers the
+ *  URL input to have focus after opening a new tab instead of the page.
+ *
+ *  We defer the select() call to a macrotask because the Toolbar has its
+ *  own useEffect that writes the new tab's URL into this input on the
+ *  same activeTabId change — calling select() synchronously either
+ *  selects stale text or gets clobbered by the subsequent DOM write. By
+ *  the time setTimeout fires, React has flushed and the input holds
+ *  the real value we want to highlight. */
+function focusAndSelectUrlBar(): void {
+  const urlBar = document.getElementById('url-bar') as HTMLInputElement | null
+  if (!urlBar) return
+  urlBar.focus()
+  setTimeout(() => {
+    if (document.activeElement !== urlBar) return
+    try { urlBar.select() } catch { /* select may throw on non-text inputs */ }
+  }, 0)
 }
 
 export function WebviewPanel() {
@@ -178,6 +197,12 @@ export function WebviewPanel() {
           if (initiallyFocusedRef.current.has(tabId)) return
           initiallyFocusedRef.current.add(tabId)
           if (useAppStore.getState().activeTabId !== tabId) return
+          // Respect "Focus URL on new tab" preference for the unlikely
+          // case that dom-ready fires before the activeTabId RAF has run.
+          if (consumeNewTabUrlFocus(tabId)) {
+            focusAndSelectUrlBar()
+            return
+          }
           handoffFocusTo(wv)
         })
         wv.addEventListener('did-finish-load', () => {
@@ -303,11 +328,21 @@ export function WebviewPanel() {
   // because the webview's guest webContents isn't attached yet when
   // this effect runs. Declared after the create/show effect so
   // display:flex is applied before we focus.
+  //
+  // "Focus URL on new tab" preference: the store actions that create
+  // tabs mark the new tab id; we consume that flag here and route focus
+  // to the URL bar instead, additionally marking the tab as already
+  // initially-focused so the dom-ready handler won't steal focus back.
   useEffect(() => {
     if (!activeTabId) return
     const raf = requestAnimationFrame(() => {
       const wv = webviewsRef.current.get(activeTabId)
       if (!wv) return
+      if (consumeNewTabUrlFocus(activeTabId)) {
+        initiallyFocusedRef.current.add(activeTabId)
+        focusAndSelectUrlBar()
+        return
+      }
       handoffFocusTo(wv)
     })
     return () => cancelAnimationFrame(raf)

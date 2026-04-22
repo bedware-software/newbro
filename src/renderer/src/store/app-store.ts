@@ -12,6 +12,29 @@ export function setDefaultNewTabUrl(url: string): void {
   defaultNewTabUrl = url || 'about:blank'
 }
 
+/**
+ * Where keyboard focus should land after opening a new tab. Updated from
+ * settings. Consumed by the store actions that create new tabs so a one-
+ * shot flag is placed on the new tab id — the WebviewPanel's focus logic
+ * then reads/consumes that flag to redirect focus to the URL bar instead
+ * of the webview. Switching to an existing tab is unaffected.
+ */
+export type NewTabFocus = 'site' | 'url'
+let newTabFocusPref: NewTabFocus = 'site'
+export function setNewTabFocusPref(mode: NewTabFocus): void {
+  newTabFocusPref = mode === 'url' ? 'url' : 'site'
+}
+
+const newTabUrlFocusPending = new Set<string>()
+function markNewTabForUrlFocusIfEnabled(tabId: string): void {
+  if (newTabFocusPref === 'url') newTabUrlFocusPending.add(tabId)
+}
+export function consumeNewTabUrlFocus(tabId: string): boolean {
+  if (!newTabUrlFocusPending.has(tabId)) return false
+  newTabUrlFocusPending.delete(tabId)
+  return true
+}
+
 function makeTab(url?: string): Tab {
   return { id: uuid(), title: 'New Tab', url: url || defaultNewTabUrl, favicon: '' }
 }
@@ -476,6 +499,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   addTab: (tabGroupId, url) => {
     const tab = makeTab(url)
     log.action('addTab', { tabGroupId, url, tabId: tab.id })
+    markNewTabForUrlFocusIfEnabled(tab.id)
     set(produce((s: AppState) => {
       for (const p of s.profiles) {
         for (const w of p.workspaces) {
@@ -619,6 +643,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   addUngroupedTab: (workspaceId, url) => {
     const tab = makeTab(url)
     log.action('addUngroupedTab', { workspaceId, url, tabId: tab.id })
+    markNewTabForUrlFocusIfEnabled(tab.id)
     set(produce((s: AppState) => {
       for (const p of s.profiles) {
         const w = p.workspaces.find((w) => w.id === workspaceId)

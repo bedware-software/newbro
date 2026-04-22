@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useAppStore, withoutSave, setDefaultNewTabUrl, getSidebarOrder } from './store/app-store'
+import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getSidebarOrder, type NewTabFocus } from './store/app-store'
 import { setSearchEngine } from './lib/url'
 import { log } from './lib/log'
 import { Toolbar } from './components/Toolbar'
@@ -23,9 +23,14 @@ interface Settings {
   lightVariant: string
   darkVariant: string
   density: Density
+  newTabFocus: NewTabFocus
   defaultPageUrl: string
   searchEngine: string
   keybindings: Record<string, string>
+}
+
+function normalizeNewTabFocus(value: string | undefined): NewTabFocus {
+  return value === 'url' ? 'url' : 'site'
 }
 
 declare global {
@@ -171,11 +176,13 @@ export default function App() {
         lightVariant: normalizeLightVariant(s.lightVariant),
         darkVariant: normalizeDarkVariant(s.darkVariant),
         density: normalizeDensity(s.density),
+        newTabFocus: normalizeNewTabFocus(s.newTabFocus),
       }
       setSettings(normalized)
       applyTheme(normalized.theme, normalized.lightVariant, normalized.darkVariant)
       applyDensity(normalized.density)
       setDefaultNewTabUrl(normalized.defaultPageUrl)
+      setNewTabFocusPref(normalized.newTabFocus)
       setSearchEngine(normalized.searchEngine)
     } catch (err) {
       log.error('failed to load settings', err)
@@ -477,11 +484,13 @@ export default function App() {
         lightVariant: normalizeLightVariant(raw.lightVariant),
         darkVariant: normalizeDarkVariant(raw.darkVariant),
         density: normalizeDensity(raw.density),
+        newTabFocus: normalizeNewTabFocus(raw.newTabFocus),
       }
       setSettings(s)
       applyTheme(s.theme, s.lightVariant, s.darkVariant)
       applyDensity(s.density)
       setDefaultNewTabUrl(s.defaultPageUrl)
+      setNewTabFocusPref(s.newTabFocus)
       setSearchEngine(s.searchEngine)
     })
 
@@ -536,11 +545,13 @@ export default function App() {
       lightVariant: normalizeLightVariant(newSettings.lightVariant),
       darkVariant: normalizeDarkVariant(newSettings.darkVariant),
       density: normalizeDensity(newSettings.density),
+      newTabFocus: normalizeNewTabFocus(newSettings.newTabFocus),
     }
     setSettings(normalized)
     applyTheme(normalized.theme, normalized.lightVariant, normalized.darkVariant)
     applyDensity(normalized.density)
     setDefaultNewTabUrl(normalized.defaultPageUrl)
+    setNewTabFocusPref(normalized.newTabFocus)
     setSearchEngine(normalized.searchEngine)
     await window.electronAPI.saveSettings(normalized)
   }

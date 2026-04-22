@@ -15,6 +15,7 @@ interface Settings {
   lightVariant: string
   darkVariant: string
   density: Density
+  newTabFocus: 'site' | 'url'
   defaultPageUrl: string
   searchEngine: string
   proxy: ProxySettings
@@ -234,6 +235,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [lightVariant, setLightVariant] = useState<string>(LIGHT_VARIANTS[0].id)
   const [darkVariant, setDarkVariant] = useState<string>(DARK_VARIANTS[0].id)
   const [density, setDensity] = useState<Density>(DEFAULT_DENSITY)
+  const [newTabFocus, setNewTabFocus] = useState<'site' | 'url'>('site')
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
   const [proxy, setProxy] = useState<ProxySettings>({ ...DEFAULT_PROXY_SETTINGS })
@@ -292,6 +294,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setLightVariant(lv)
       setDarkVariant(dv)
       setDensity(dens)
+      setNewTabFocus(settings.newTabFocus === 'url' ? 'url' : 'site')
       originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens }
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
@@ -358,6 +361,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       lightVariant,
       darkVariant,
       density,
+      newTabFocus,
       defaultPageUrl: defaultUrl,
       searchEngine,
       proxy: normalizedProxy,
@@ -635,6 +639,33 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 />
                 <p className="text-[11px] text-muted-foreground mt-1">
                   The URL to load when creating a new tab. Leave empty for a blank page.
+                </p>
+              </div>
+
+              {/* New-tab focus target */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">Focus on New Tab</label>
+                <div className="flex gap-2">
+                  {([
+                    { value: 'site' as const, label: 'Site', hint: 'Keystrokes go straight to the loaded page.' },
+                    { value: 'url' as const, label: 'URL bar', hint: 'Type a URL right away, like a fresh Chrome tab.' },
+                  ]).map(({ value, label, hint }) => (
+                    <button
+                      key={value}
+                      onClick={() => setNewTabFocus(value)}
+                      title={hint}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                        newTabFocus === value
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Where keyboard focus lands when a new tab is opened.
                 </p>
               </div>
 
