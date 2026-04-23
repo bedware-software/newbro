@@ -20,7 +20,7 @@ import type { WorkspaceCandidate } from '../store/types'
 import {
   ChevronLeft, ChevronRight, RotateCw, X, ChevronDown, Plus, Trash2, Pencil,
   PanelLeftClose, PanelLeft, User, Layout, Lock, Unlock, ShieldAlert, Import,
-  Menu, Settings, Info, Globe, Copy, Check, LogOut, Search, Download,
+  Menu, Settings, Info, Globe, Copy, Check, LogOut, Search, Download, Puzzle,
 } from 'lucide-react'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
@@ -251,6 +251,67 @@ function Dropdown({ items, value, onChange, onDelete, onEdit, onReorder, icon: I
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+interface ExtensionInfo {
+  id: string
+  name: string
+  version: string
+  enabled: boolean
+  hasAction: boolean
+  iconUrl?: string | null
+  actionDefaultTitle?: string
+}
+
+/** Render enabled extensions that declare `action` as clickable icons. */
+function ExtensionActions({ activeTabId }: { activeTabId: string | null }) {
+  const [extensions, setExtensions] = useState<ExtensionInfo[]>([])
+
+  useEffect(() => {
+    const api = (window as any).electronAPI
+    if (!api?.listExtensions) return
+    api.listExtensions().then((list: ExtensionInfo[]) => setExtensions(list || []))
+    const cleanup = api.onExtensionsChanged?.((list: ExtensionInfo[]) => setExtensions(list || []))
+    return cleanup
+  }, [])
+
+  const active = extensions.filter((e) => e.enabled && e.hasAction)
+  if (active.length === 0) return null
+
+  const handleClick = (ext: ExtensionInfo): void => {
+    const api = (window as any).electronAPI
+    api?.openExtensionAction?.(ext.id, activeTabId).then((ok: boolean) => {
+      if (!ok) {
+        // No popup declared — fall back to the options page, which is
+        // what Chrome does when `default_popup` is empty.
+        api?.openExtensionOptions?.(ext.id)
+      }
+    })
+  }
+
+  return (
+    <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      {active.map((ext) => (
+        <button
+          key={ext.id}
+          onClick={() => handleClick(ext)}
+          title={ext.actionDefaultTitle || ext.name}
+          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md hover:bg-muted text-secondary-foreground overflow-hidden"
+        >
+          {ext.iconUrl ? (
+            <img
+              src={ext.iconUrl}
+              alt=""
+              className="w-5 h-5"
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+            />
+          ) : (
+            <Puzzle size={15} />
+          )}
+        </button>
+      ))}
     </div>
   )
 }
@@ -519,84 +580,93 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
     }
   }
 
-  // Track webview loading state + security for the active tab
+  // Track loading state + security for the active tab. Tabs now live in
+  // main as WebContentsViews; we subscribe to tab-event via electronAPI
+  // instead of wiring DOM events on a <webview> element.
   useEffect(() => {
     if (!activeTabId) return
-    const wv = document.querySelector(`webview[data-tab-id="${activeTabId}"]`) as any
-    if (!wv) { setIsLoading(false); setSecurity('internal'); return }
+    let cancelled = false
 
-    // Check current state
-    setIsLoading(wv.isLoading?.() ?? false)
-    updateSecurity(wv.getURL?.() || activeTab?.url || '', activeTabId)
+    // Seed from the live main-process state in case the tab was already
+    // navigating/loaded when this effect re-runs (e.g. on tab switch).
+    window.electronAPI.tabGetState?.(activeTabId).then((state) => {
+      if (cancelled || !state) return
+      setIsLoading(state.isLoading)
+      updateSecurity(state.url || activeTab?.url || '', activeTabId)
+    })
 
-    const onStart = () => setIsLoading(true)
-    const onStop = () => {
-      setIsLoading(false)
-      updateSecurity(wv.getURL?.() || '', activeTabId)
-    }
-    const onNavigate = (e: any) => {
-      const url = e.url || ''
-      if (!url.startsWith('data:')) updateSecurity(url, activeTabId)
-    }
-    const onCertError = () => {
-      certErrorTabs.current.add(activeTabId)
-      setSecurity('warning')
-      setCertInfo('Certificate is not valid')
-    }
+    const cleanup = window.electronAPI.onTabEvent?.((raw) => {
+      const evt = raw as {
+        type: string
+        tabId: string
+        url?: string
+      }
+      if (evt.tabId !== activeTabId) return
+      switch (evt.type) {
+        case 'did-start-loading':
+          setIsLoading(true)
+          break
+        case 'did-stop-loading':
+          setIsLoading(false)
+          if (evt.url) updateSecurity(evt.url, activeTabId)
+          break
+        case 'did-navigate':
+        case 'did-navigate-in-page':
+          if (evt.url && !evt.url.startsWith('data:')) updateSecurity(evt.url, activeTabId)
+          break
+        case 'did-fail-load': {
+          const full = raw as { errorCode?: number }
+          const code = full.errorCode ?? 0
+          // ERR_CERT_* (-200..-219) and ERR_INSECURE_RESPONSE (-501) all
+          // surface as the warning chip on the URL bar.
+          if ((code >= -219 && code <= -200) || code === -501) {
+            certErrorTabs.current.add(activeTabId)
+            setSecurity('warning')
+            setCertInfo('Certificate is not valid')
+          }
+          break
+        }
+        default:
+          break
+      }
+    })
 
-    wv.addEventListener('did-start-loading', onStart)
-    wv.addEventListener('did-stop-loading', onStop)
-    wv.addEventListener('did-navigate', onNavigate)
-    wv.addEventListener('certificate-error', onCertError)
     return () => {
-      wv.removeEventListener('did-start-loading', onStart)
-      wv.removeEventListener('did-stop-loading', onStop)
-      wv.removeEventListener('did-navigate', onNavigate)
-      wv.removeEventListener('certificate-error', onCertError)
+      cancelled = true
+      cleanup?.()
     }
   }, [activeTabId])
 
-  const handleNavigate = () => {
+  const handleNavigate = async () => {
     const resolved = normalizeURL(urlValue)
-    if (!resolved) return
-    const webview = document.querySelector(`webview[data-tab-id="${activeTabId}"]`) as any
-    if (webview) {
-      const currentUrl = webview.getURL?.() || ''
-      if (currentUrl === resolved) {
-        if (webview.reloadIgnoringCache) webview.reloadIgnoringCache()
-        else webview.reload?.()
-      } else if (webview.loadURL) {
-        webview.loadURL(resolved).catch(() => {})
-      } else {
-        webview.src = resolved
-      }
-      // Hand focus to the page so the cursor doesn't stay trapped in the URL bar
-      webview.focus?.()
+    if (!resolved || !activeTabId) return
+    // Ask main for the live URL so hitting Enter on an unchanged URL triggers
+    // a reload (matches old <webview>.reload behavior), not a redundant load.
+    const state = await window.electronAPI.tabGetState?.(activeTabId)
+    if (state && state.url === resolved) {
+      window.electronAPI.tabReload?.(activeTabId, true)
+    } else {
+      window.electronAPI.tabNavigate?.(activeTabId, resolved)
     }
-    if (activeTabId) useAppStore.getState().updateTabUrl(activeTabId, resolved)
+    useAppStore.getState().updateTabUrl(activeTabId, resolved)
   }
 
   const handleBack = () => {
-    const wv = document.querySelector(`webview[data-tab-id="${activeTabId}"]`) as any
-    if (wv?.canGoBack()) wv.goBack()
+    if (activeTabId) window.electronAPI.tabGoBack?.(activeTabId)
   }
   const handleForward = () => {
-    const wv = document.querySelector(`webview[data-tab-id="${activeTabId}"]`) as any
-    if (wv?.canGoForward()) wv.goForward()
+    if (activeTabId) window.electronAPI.tabGoForward?.(activeTabId)
   }
   const handleReloadOrStop = () => {
-    const wv = document.querySelector(`webview[data-tab-id="${activeTabId}"]`) as any
-    if (!wv) return
+    if (!activeTabId) return
     if (isLoading) {
-      wv.stop()
+      window.electronAPI.tabStop?.(activeTabId)
     } else {
       const targetUrl = activeTab?.url || ''
-      if (targetUrl && wv.loadURL) {
-        wv.loadURL(targetUrl).catch(() => {})
-      } else if (wv.reloadIgnoringCache) {
-        wv.reloadIgnoringCache()
+      if (targetUrl) {
+        window.electronAPI.tabNavigate?.(activeTabId, targetUrl)
       } else {
-        wv.reload()
+        window.electronAPI.tabReload?.(activeTabId, true)
       }
     }
   }
@@ -847,6 +917,10 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         >
           {isLoading ? <X size={14} /> : <RotateCw size={14} />}
         </button>
+
+        {/* Extension action icons (Chrome-style puzzle row). Rendered only
+            when at least one enabled extension declares an `action`. */}
+        <ExtensionActions activeTabId={activeTabId} />
 
         {/* URL bar with security indicator + tab title */}
         <div

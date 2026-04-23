@@ -57,6 +57,10 @@ declare global {
       loadSettings: () => Promise<Settings>
       saveSettings: (settings: Settings) => Promise<void>
       wipeAllData: () => Promise<void>
+      openBookmarkFile: () => Promise<string | null>
+      showContextMenu: (items: unknown[]) => Promise<string | null>
+      showAboutPanel: () => void
+      detachedWindowShow: () => void
       onShortcut: (callback: (action: string) => void) => () => void
       onStateUpdated: (callback: (state: unknown) => void) => () => void
       onOpenUrlAsTab: (callback: (url: string) => void) => () => void
@@ -68,6 +72,29 @@ declare global {
       getUpdaterStatus: () => Promise<UpdateStatus>
       getAppVersion: () => Promise<string>
       onUpdaterStatus: (callback: (status: UpdateStatus) => void) => () => void
+
+      // Tab hosting (WebContentsView in main)
+      tabCreate?: (tabId: string, partition: string, url: string, active: boolean) => Promise<void>
+      tabDestroy?: (tabId: string) => Promise<void>
+      tabActivate?: (tabId: string, url: string) => Promise<void>
+      tabSetBounds?: (bounds: { x: number; y: number; width: number; height: number }) => void
+      tabNavigate?: (tabId: string, url: string) => Promise<void>
+      tabGoBack?: (tabId: string) => Promise<void>
+      tabGoForward?: (tabId: string) => Promise<void>
+      tabReload?: (tabId: string, ignoreCache?: boolean) => Promise<void>
+      tabStop?: (tabId: string) => Promise<void>
+      tabGetState?: (tabId: string) => Promise<{ isLoading: boolean; url: string; canGoBack: boolean; canGoForward: boolean } | null>
+      tabExecuteJS?: (tabId: string, code: string) => Promise<unknown>
+      onTabEvent?: (callback: (evt: unknown) => void) => () => void
+
+      // Extensions
+      listExtensions?: () => Promise<unknown[]>
+      installExtension?: (idOrUrl: string) => Promise<unknown>
+      uninstallExtension?: (extensionId: string) => Promise<unknown[]>
+      setExtensionEnabled?: (extensionId: string, enabled: boolean) => Promise<unknown[]>
+      openExtensionOptions?: (extensionId: string) => Promise<string | null>
+      openExtensionAction?: (extensionId: string, tabId: string | null) => Promise<boolean>
+      onExtensionsChanged?: (callback: (extensions: unknown[]) => void) => () => void
     }
   }
 }
@@ -345,28 +372,22 @@ export default function App() {
           toggleSidebar()
           break
         case 'back': {
-          const wv = document.querySelector(`webview[data-tab-id="${s.activeTabId}"]`) as any
-          if (wv?.canGoBack()) wv.goBack()
+          if (s.activeTabId) window.electronAPI.tabGoBack?.(s.activeTabId)
           break
         }
         case 'forward': {
-          const wv = document.querySelector(`webview[data-tab-id="${s.activeTabId}"]`) as any
-          if (wv?.canGoForward()) wv.goForward()
+          if (s.activeTabId) window.electronAPI.tabGoForward?.(s.activeTabId)
           break
         }
         case 'reload': {
-          const wv = document.querySelector(`webview[data-tab-id="${s.activeTabId}"]`) as any
+          if (!s.activeTabId) break
           const activeTab = s.getActiveTab()
           const targetUrl = activeTab?.url || ''
-          if (wv && targetUrl && wv.loadURL) {
-            wv.loadURL(targetUrl).catch(() => {})
-          } else if (wv?.reloadIgnoringCache) {
-            wv.reloadIgnoringCache()
+          if (targetUrl) {
+            window.electronAPI.tabNavigate?.(s.activeTabId, targetUrl)
           } else {
-            wv?.reload()
+            window.electronAPI.tabReload?.(s.activeTabId, true)
           }
-          // Hand focus to the page so the cursor doesn't stay trapped in the URL bar
-          wv?.focus?.()
           break
         }
         case 'next-tab':
@@ -527,13 +548,15 @@ export default function App() {
       if (e.key !== 'Escape') return
       const s = useAppStore.getState()
       if (!s.activeTabId) return
-      const wv = document.querySelector(`webview[data-tab-id="${s.activeTabId}"]`) as any
-      if (!wv) return
       const active = document.activeElement as HTMLElement | null
-      // Focus is already inside the webview — let Esc reach the page.
-      if (!active || active === wv) return
+      // Already parked on the body — nothing to blur; main's tab view
+      // already owns keystrokes.
+      if (!active || active === document.body) return
       active.blur?.()
-      wv.focus?.()
+      // Re-activating the tab nudges main to call wc.focus() so the page
+      // actually starts receiving input again.
+      const tab = s.getActiveTab()
+      window.electronAPI.tabActivate?.(s.activeTabId, tab?.url || '')
     }
     window.addEventListener('keydown', handleEscape)
     return () => window.removeEventListener('keydown', handleEscape)

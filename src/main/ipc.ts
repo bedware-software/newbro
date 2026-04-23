@@ -8,6 +8,30 @@ import { loadSettings, saveSettings, type Settings } from './settings-store'
 import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin } from './index'
 import { log } from './log'
 import { checkForUpdatesNow, downloadUpdateNow, installUpdateNow, getLatestStatus } from './updater'
+import {
+  activateTab,
+  createTab,
+  destroyTab,
+  openExtensionPopup,
+  setWindowBounds,
+  tabExecuteJS,
+  tabGetState,
+  tabGoBack,
+  tabGoForward,
+  tabNavigate,
+  tabReload,
+  tabStop,
+  type TabBounds,
+} from './tab-views'
+import {
+  listExtensions,
+  installExtensionById,
+  uninstallExtension,
+  setExtensionEnabled,
+  openOptionsPageUrl,
+  getActionPopupPathForTab,
+  extractExtensionIdFromUrl,
+} from './extensions/manager'
 
 interface CertInfo {
   subject: { CN?: string; O?: string; OU?: string }
@@ -111,6 +135,103 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('session:setup', (_e, partition: string) => {
     log.ipc('session:setup', partition)
     setupPartitionSession(partition)
+  })
+
+  // ── Tab hosting (WebContentsView) ──
+  // The renderer tells main when to create/destroy/activate/position a tab;
+  // main runs each tab as a WebContentsView child of the owning window's
+  // contentView. See src/main/tab-views.ts for the implementation and why
+  // we replaced <webview> tags.
+  ipcMain.handle('tab:create', (_e, tabId: string, partition: string, url: string, active: boolean) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win) return
+    createTab({ windowId: win.id, tabId, partition, url, active })
+  })
+
+  ipcMain.handle('tab:destroy', (_e, tabId: string) => {
+    destroyTab(tabId)
+  })
+
+  ipcMain.handle('tab:activate', (_e, tabId: string, url: string) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win) return
+    activateTab(win.id, tabId, url)
+  })
+
+  // High-frequency: bounds update on resize/sidebar toggle. `send` (no
+  // round-trip) matches the detached-window drag pattern.
+  ipcMain.on('tab:bounds', (_e, bounds: TabBounds) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win) return
+    setWindowBounds(win.id, bounds)
+  })
+
+  ipcMain.handle('tab:navigate', (_e, tabId: string, url: string) => {
+    tabNavigate(tabId, url)
+  })
+
+  ipcMain.handle('tab:go-back', (_e, tabId: string) => {
+    tabGoBack(tabId)
+  })
+
+  ipcMain.handle('tab:go-forward', (_e, tabId: string) => {
+    tabGoForward(tabId)
+  })
+
+  ipcMain.handle('tab:reload', (_e, tabId: string, ignoreCache: boolean) => {
+    tabReload(tabId, ignoreCache)
+  })
+
+  ipcMain.handle('tab:stop', (_e, tabId: string) => {
+    tabStop(tabId)
+  })
+
+  ipcMain.handle('tab:get-state', (_e, tabId: string) => {
+    return tabGetState(tabId)
+  })
+
+  ipcMain.handle('tab:execute-js', (_e, tabId: string, code: string) => {
+    return tabExecuteJS(tabId, code)
+  })
+
+  // ── Extensions ──
+  ipcMain.handle('extensions:list', () => {
+    return listExtensions()
+  })
+
+  ipcMain.handle('extensions:install', async (_e, idOrUrl: string) => {
+    const id = extractExtensionIdFromUrl(idOrUrl)
+    if (!id) throw new Error('Could not parse extension ID from input')
+    return await installExtensionById(id)
+  })
+
+  ipcMain.handle('extensions:uninstall', async (_e, extensionId: string) => {
+    await uninstallExtension(extensionId)
+    return listExtensions()
+  })
+
+  ipcMain.handle('extensions:set-enabled', async (_e, extensionId: string, enabled: boolean) => {
+    await setExtensionEnabled(extensionId, enabled)
+    return listExtensions()
+  })
+
+  ipcMain.handle('extensions:open-options', (_e, extensionId: string) => {
+    const url = openOptionsPageUrl(extensionId)
+    if (!url) return null
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('open-url-as-tab', url)
+    }
+    return url
+  })
+
+  ipcMain.handle('extensions:open-action', (_e, extensionId: string, tabId: string | null) => {
+    const popupPath = getActionPopupPathForTab(extensionId, tabId)
+    if (!popupPath) return false
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win) return false
+    openExtensionPopup(win.id, extensionId, popupPath)
+    return true
   })
 
   ipcMain.handle('workspace:open-window', (_e, profileId: string, workspaceId: string, workspaceName: string, targetTabId?: string) => {

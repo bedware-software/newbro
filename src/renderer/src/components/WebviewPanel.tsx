@@ -1,6 +1,18 @@
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAppStore, consumeNewTabUrlFocus } from '../store/app-store'
 import { log } from '../lib/log'
+
+// Tab rendering lives in the main process now, as a WebContentsView per tab
+// attached to the window's root contentView. This component is a thin layout
+// shell: it measures its own bounds and reports them to main so the active
+// tab's WebContentsView tracks the viewport. All tab lifecycle (create,
+// activate, destroy, navigate) and all tab events (navigation, title,
+// favicon, load errors, cert errors) flow through IPC.
+//
+// Why: Electron's session.loadExtension() only injects content scripts into
+// BrowserWindow / WebContentsView, never into <webview> tags. Hosting tabs
+// in main is the minimum change required to make Chrome extensions actually
+// run against page content. See src/main/tab-views.ts.
 
 interface LoadError {
   tabId: string
@@ -17,23 +29,16 @@ interface CertError {
   description: string
 }
 
-/**
- * Theme the webview's root document scrollbar so it matches the rest of the
- * app (search window, command palette, etc.). We intentionally set *only*
- * `scrollbar-width` + `scrollbar-color` on `html`, matching what the renderer
- * effectively gets from `globals.css` under modern Chromium (where
- * `scrollbar-width: thin` wins over `::-webkit-scrollbar` rules).
- *
- * Why this scope and nothing more:
- *   - `scrollbar-width` is not inherited, so we touch only the root scrollbar
- *     and leave inner scroll containers (code viewers, app sidebars, etc.)
- *     using whatever the site decided — no more double scrollbars from sites
- *     that hide the native one and paint their own inside a container, and no
- *     more thickness inconsistencies from sites that pick a non-10px width.
- *   - No `!important`: if a site styles its own `html` scrollbar, let it win.
- *   - Literal oklch values because the webview document can't read the
- *     renderer's CSS custom properties.
- */
+type TabEvent =
+  | { type: 'did-start-loading'; tabId: string }
+  | { type: 'did-stop-loading'; tabId: string; url: string }
+  | { type: 'did-navigate'; tabId: string; url: string }
+  | { type: 'did-navigate-in-page'; tabId: string; url: string; isMainFrame: boolean }
+  | { type: 'page-title-updated'; tabId: string; title: string }
+  | { type: 'page-favicon-updated'; tabId: string; favicons: string[] }
+  | { type: 'did-fail-load'; tabId: string; url: string; errorCode: number; errorDescription: string; isMainFrame: boolean }
+  | { type: 'dom-ready'; tabId: string; url: string }
+
 function resolveTheme(): 'dark' | 'light' {
   const attr = document.documentElement.getAttribute('data-theme')
   if (attr === 'dark') return 'dark'
@@ -48,7 +53,10 @@ function buildScrollbarCss(): string {
   return `html { scrollbar-width: thin; scrollbar-color: ${border} ${card}; }`
 }
 
-function applyScrollbarStyle(wv: any): void {
+/** Re-theme the scrollbar inside each tab's document. With <webview> we
+ *  called executeJavaScript on the DOM element; now we route through IPC
+ *  to the guest webContents in main. */
+function applyScrollbarStyle(tabId: string): void {
   const css = buildScrollbarCss()
   const js = `(() => {
     let s = document.getElementById('__newbro_scrollbar_style__');
@@ -59,32 +67,11 @@ function applyScrollbarStyle(wv: any): void {
     }
     s.textContent = ${JSON.stringify(css)};
   })()`
-  wv.executeJavaScript?.(js).catch(() => {})
-}
-
-// Transfer keyboard focus to `wv`. Blurs whatever currently owns focus
-// (toolbar button, URL bar, sidebar item, OR the previously active
-// webview that's now hidden) so it releases its claim on keystrokes.
-// Blurring is the critical step: Electron's <webview> won't actually
-// receive keystrokes if another element — especially a sibling webview
-// that was just display:none'd — still holds :focus.
-function handoffFocusTo(wv: HTMLElement): void {
-  const active = document.activeElement as HTMLElement | null
-  if (active && active !== document.body && active !== wv) {
-    active.blur?.()
-  }
-  ;(wv as any).focus?.()
+  window.electronAPI.tabExecuteJS?.(tabId, js)
 }
 
 /** Focus + select the toolbar URL bar. Used when the user prefers the
- *  URL input to have focus after opening a new tab instead of the page.
- *
- *  We defer the select() call to a macrotask because the Toolbar has its
- *  own useEffect that writes the new tab's URL into this input on the
- *  same activeTabId change — calling select() synchronously either
- *  selects stale text or gets clobbered by the subsequent DOM write. By
- *  the time setTimeout fires, React has flushed and the input holds
- *  the real value we want to highlight. */
+ *  URL input to have focus after opening a new tab. */
 function focusAndSelectUrlBar(): void {
   const urlBar = document.getElementById('url-bar') as HTMLInputElement | null
   if (!urlBar) return
@@ -97,29 +84,29 @@ function focusAndSelectUrlBar(): void {
 
 export function WebviewPanel() {
   const containerRef = useRef<HTMLDivElement>(null)
-  const webviewsRef = useRef<Map<string, HTMLElement>>(new Map())
-  // Track which tabs have been activated (had their real URL loaded)
-  const activatedTabsRef = useRef<Set<string>>(new Set())
-  // Track which webviews have been focused at least once after attach, so
-  // the first-paint focus only runs once per webview and dom-ready events
-  // on subsequent navigations don't steal focus back from the user.
-  const initiallyFocusedRef = useRef<Set<string>>(new Set())
   const [errors, setErrors] = useState<Map<string, LoadError>>(new Map())
   const [certErrors, setCertErrors] = useState<Map<string, CertError>>(new Map())
+  // Tabs we've already asked main to create, so we can diff against the store
+  // and avoid duplicate create/destroy calls.
+  const createdTabsRef = useRef<Set<string>>(new Set())
+  // Tabs that have been activated at least once (main also tracks this, but
+  // the renderer tracks a parallel bit for the "focus URL on new tab" flag).
+  const activatedTabsRef = useRef<Set<string>>(new Set())
 
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
 
-  // Only collect tabs from the active workspace
-  const getWorkspaceTabs = useCallback(() => {
+  // Collect tabs from the active workspace. We only host one workspace per
+  // window; tabs from other workspaces are not reified as WebContentsViews.
+  const getWorkspaceTabs = (): { id: string; url: string; partition: string }[] => {
     const tabs: { id: string; url: string; partition: string }[] = []
-    const profile = profiles.find(p => p.id === activeProfileId)
+    const profile = profiles.find((p) => p.id === activeProfileId)
     if (!profile) return tabs
-    const workspace = profile.workspaces.find(w => w.id === activeWorkspaceId)
+    const workspace = profile.workspaces.find((w) => w.id === activeWorkspaceId)
     if (!workspace) return tabs
-    for (const t of (workspace.tabs || [])) {
+    for (const t of workspace.tabs || []) {
       tabs.push({ id: t.id, url: t.url, partition: profile.partition })
     }
     for (const g of workspace.tabGroups) {
@@ -128,186 +115,182 @@ export function WebviewPanel() {
       }
     }
     return tabs
-  }, [profiles, activeProfileId, activeWorkspaceId])
+  }
 
-  const getTabUrlById = useCallback((tabId: string): string => {
-    const tabs = getWorkspaceTabs()
-    return tabs.find((t) => t.id === tabId)?.url || ''
-  }, [getWorkspaceTabs])
-
+  // Reconcile tabs with main. Create new ones, destroy removed ones,
+  // activate the current one. Also trigger initial session setup per
+  // partition (the tab:create handler does this in main, but keeping the
+  // call preserves the old race-closing behavior when the partition is
+  // used for other reasons — e.g. future devtools workflows).
   useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
-
     const currentTabs = getWorkspaceTabs()
     const currentTabIds = new Set(currentTabs.map((t) => t.id))
-    const existingIds = new Set(webviewsRef.current.keys())
 
-    // Remove webviews for deleted/out-of-scope tabs
-    for (const id of existingIds) {
+    // Destroy tabs no longer in scope
+    for (const id of Array.from(createdTabsRef.current)) {
       if (!currentTabIds.has(id)) {
-        const wv = webviewsRef.current.get(id)
-        if (wv && container.contains(wv)) container.removeChild(wv)
-        webviewsRef.current.delete(id)
+        window.electronAPI.tabDestroy?.(id)
+        createdTabsRef.current.delete(id)
         activatedTabsRef.current.delete(id)
-        initiallyFocusedRef.current.delete(id)
       }
     }
 
-    // Create webviews for new tabs (lazy: start with about:blank unless it's the active tab)
+    // Create newly-seen tabs (lazy: only the active one eager-loads)
     for (const tab of currentTabs) {
-      if (!webviewsRef.current.has(tab.id)) {
-        const wv = document.createElement('webview') as any
+      if (!createdTabsRef.current.has(tab.id)) {
         const isActiveNow = tab.id === activeTabId
-        // Eager-load the active tab, lazy-load the rest
-        const initialSrc = isActiveNow ? (tab.url || 'about:blank') : 'about:blank'
+        window.electronAPI.setupSession?.(tab.partition)
+        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow)
+        createdTabsRef.current.add(tab.id)
         if (isActiveNow) activatedTabsRef.current.add(tab.id)
-        wv.setAttribute('src', initialSrc)
-        wv.setAttribute('partition', tab.partition)
-        wv.setAttribute('allowpopups', '')
-        wv.setAttribute('data-tab-id', tab.id)
-        wv.style.cssText = 'flex:1;width:100%;height:100%;border:none;display:none;'
-
-        window.electronAPI?.setupSession(tab.partition)
-
-        const tabId = tab.id
-
-        // DEBUG: trace webview navigation lifecycle
-        const dbg = (evt: string, detail?: any) => console.log(`[webview:${tabId.slice(0,6)}] ${evt}`, detail ?? '')
-
-        wv.addEventListener('did-start-loading', () => {
-          dbg('did-start-loading')
-          // Clear any stale error/cert-error banners for this tab when a new load begins
-          setErrors((prev) => { if (!prev.has(tabId)) return prev; const m = new Map(prev); m.delete(tabId); return m })
-          setCertErrors((prev) => { if (!prev.has(tabId)) return prev; const m = new Map(prev); m.delete(tabId); return m })
-        })
-        wv.addEventListener('did-stop-loading', () => dbg('did-stop-loading', { url: wv.getURL?.() }))
-        wv.addEventListener('did-start-navigation', (e: any) => dbg('did-start-navigation', { url: e.url, isMainFrame: e.isMainFrame }))
-        wv.addEventListener('will-navigate', (e: any) => dbg('will-navigate', { url: e.url }))
-        wv.addEventListener('dom-ready', () => {
-          dbg('dom-ready', { url: wv.getURL?.() })
-          applyScrollbarStyle(wv)
-          // For a brand-new tab (Ctrl+T) the guest webContents isn't
-          // attached when the activeTabId effect calls focus(), so that
-          // call is a no-op on the page. The *first* dom-ready for this
-          // webview is the earliest point we can reliably hand focus to
-          // the guest. Subsequent dom-ready events (navigations, reloads)
-          // are skipped so we don't yank focus back if the user
-          // intentionally moved it to chrome.
-          if (initiallyFocusedRef.current.has(tabId)) return
-          initiallyFocusedRef.current.add(tabId)
-          if (useAppStore.getState().activeTabId !== tabId) return
-          // Respect "Focus URL on new tab" preference for the unlikely
-          // case that dom-ready fires before the activeTabId RAF has run.
-          if (consumeNewTabUrlFocus(tabId)) {
-            focusAndSelectUrlBar()
-            return
-          }
-          handoffFocusTo(wv)
-        })
-        wv.addEventListener('did-finish-load', () => {
-          dbg('did-finish-load', { url: wv.getURL?.() })
-          // DEBUG: inspect guest DOM after load
-          wv.executeJavaScript?.(`JSON.stringify({
-            appHTML: document.getElementById('app')?.innerHTML?.slice(0, 500) || '<empty>',
-            bodyChildren: document.body.children.length,
-            scripts: document.querySelectorAll('script').length,
-            styles: document.querySelectorAll('link[rel=stylesheet]').length,
-            computedBg: getComputedStyle(document.body).backgroundColor,
-            bodyTags: Array.from(document.body.children).slice(0, 20).map(el => el.tagName + (el.id ? '#'+el.id : '') + (el.className ? '.'+String(el.className).slice(0,30) : '')),
-            headScripts: Array.from(document.querySelectorAll('head script')).map(s => (s.src || s.textContent?.slice(0,80) || '').slice(0, 100)),
-            failedScripts: Array.from(document.querySelectorAll('script[src]')).filter(s => !s.src.startsWith('data:')).map(s => s.src).slice(0, 10),
-          })`).then((r: string) => dbg('guest-dom', JSON.parse(r))).catch((e: any) => dbg('guest-dom-error', e.message))
-        })
-        // DEBUG: capture guest page console output (JS errors from the loaded site)
-        wv.addEventListener('console-message', (e: any) => {
-          const level = ['verbose','info','warning','error'][e.level] || e.level
-          dbg(`guest-console[${level}]`, e.message)
-        })
-
-        // Mouse side-button navigation from the guest page. The stealth
-        // preload listens for XButton1/XButton2 in the guest and relays via
-        // `ipcRenderer.sendToHost('newbro-nav', 'back' | 'forward')`, which
-        // surfaces here as an `ipc-message` event on the webview element.
-        wv.addEventListener('ipc-message', (e: any) => {
-          if (e.channel !== 'newbro-nav') return
-          const dir = e.args?.[0]
-          if (dir === 'back' && wv.canGoBack?.()) wv.goBack()
-          else if (dir === 'forward' && wv.canGoForward?.()) wv.goForward()
-        })
-
-        wv.addEventListener('did-navigate', (e: any) => {
-          dbg('did-navigate', { url: e.url })
-          if (!e.url || e.url.startsWith('data:') || e.url === 'about:blank') return
-          useAppStore.getState().updateTabUrl(tabId, e.url)
-        })
-        wv.addEventListener('did-navigate-in-page', (e: any) => {
-          dbg('did-navigate-in-page', { url: e.url, isMainFrame: e.isMainFrame })
-          if (e.isMainFrame && e.url && !e.url.startsWith('data:') && e.url !== 'about:blank') {
-            useAppStore.getState().updateTabUrl(tabId, e.url)
-          }
-        })
-        wv.addEventListener('page-title-updated', (e: any) => {
-          // Pages like about:blank fire this with an empty title, which would
-          // wipe out the user-facing tab name. Only accept non-empty titles.
-          const title = (e.title || '').trim()
-          if (!title) return
-          useAppStore.getState().updateTabTitle(tabId, title)
-        })
-        wv.addEventListener('page-favicon-updated', (e: any) => {
-          if (e.favicons && e.favicons.length > 0) {
-            useAppStore.getState().updateTabFavicon(tabId, e.favicons[0])
-          }
-        })
-
-        wv.addEventListener('did-fail-load', (e: any) => {
-          dbg('did-fail-load', { url: e.validatedURL, code: e.errorCode, desc: e.errorDescription, isMainFrame: e.isMainFrame })
-          // Ignore aborted loads (navigation cancelled, redirects) and subframe errors
-          if (e.errorCode === -3 || e.errorCode === -100 || !e.isMainFrame) return
-          const url = e.validatedURL || getTabUrlById(tabId) || ''
-          const desc = e.errorDescription || 'Unknown error'
-
-          // Cert / SSL error codes: ERR_CERT_* (-200..-215) and related SSL
-          // codes (-216..-219), plus ERR_INSECURE_RESPONSE (-501).
-          const isCert = (e.errorCode >= -219 && e.errorCode <= -200) || e.errorCode === -501
-          if (isCert) {
-            log.warn('cert error', { url, code: e.errorCode, desc })
-            setCertErrors((prev) => new Map(prev).set(tabId, { tabId, url, code: e.errorCode, description: desc }))
-            return
-          }
-
-          log.warn('page load failed', { url, code: e.errorCode, desc })
-          setErrors((prev) => new Map(prev).set(tabId, { tabId, url, code: e.errorCode, description: desc }))
-        })
-
-        container.appendChild(wv)
-        webviewsRef.current.set(tab.id, wv)
       }
     }
 
-    // Show/hide based on active tab; lazy-load real URL on first activation
-    for (const [id, wv] of webviewsRef.current) {
-      const isActive = id === activeTabId
-      ;(wv as HTMLElement).style.display = isActive ? 'flex' : 'none'
-      if (isActive && !activatedTabsRef.current.has(id)) {
-        activatedTabsRef.current.add(id)
-        const tab = currentTabs.find((t) => t.id === id)
-        const url = tab?.url || 'about:blank'
-        if (url && url !== 'about:blank') {
-          ;(wv as any).loadURL(url).catch(() => {})
+    // Activate the current tab (this also lazy-loads it if it's the first time)
+    if (activeTabId && createdTabsRef.current.has(activeTabId)) {
+      const tab = currentTabs.find((t) => t.id === activeTabId)
+      const url = tab?.url || 'about:blank'
+      window.electronAPI.tabActivate?.(activeTabId, url)
+      if (!activatedTabsRef.current.has(activeTabId)) {
+        activatedTabsRef.current.add(activeTabId)
+        // Respect "Focus URL on new tab" — the store flag is consumed once.
+        if (consumeNewTabUrlFocus(activeTabId)) {
+          focusAndSelectUrlBar()
         }
       }
     }
-  }, [profiles, activeTabId, activeWorkspaceId, getWorkspaceTabs])
+  }, [profiles, activeTabId, activeWorkspaceId, activeProfileId])
 
-  // Re-apply the themed scrollbar style to every live webview when the app
-  // theme changes (data-theme attribute on <html>) or when the OS colour
-  // scheme flips while the app is set to "system".
+  // Track the WebviewPanel's bounds and forward them to main on mount,
+  // on window resize, and any time the container's ClientRect changes
+  // (sidebar toggle, detached popups, zoom level changes, etc.).
+  //
+  // Also listens for 'newbro-tab-hide' / 'newbro-tab-show' CustomEvents
+  // dispatched by the Sidebar during drag/resize — with tabs hosted as
+  // WebContentsViews (which compose *on top of* the renderer DOM), the
+  // sidebar's pointermove handler can't run while the cursor is over a
+  // visible tab. Hiding the tab bounds during drag routes mouse events
+  // back to the renderer; the real bounds are re-applied on 'show'.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    let frame = 0
+    let suppressed = false
+
+    const report = (force = false): void => {
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        if (!el.isConnected) return
+        if (suppressed && !force) return
+        const rect = el.getBoundingClientRect()
+        window.electronAPI.tabSetBounds?.({
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          width: Math.max(0, Math.round(rect.width)),
+          height: Math.max(0, Math.round(rect.height)),
+        })
+      })
+    }
+
+    const hide = (): void => {
+      suppressed = true
+      window.electronAPI.tabSetBounds?.({ x: 0, y: 0, width: 0, height: 0 })
+    }
+    const show = (): void => {
+      suppressed = false
+      report()
+    }
+
+    const onWindowResize = (): void => report()
+    report()
+    const ro = new ResizeObserver(() => report())
+    ro.observe(el)
+    window.addEventListener('resize', onWindowResize)
+    window.addEventListener('newbro-tab-hide', hide)
+    window.addEventListener('newbro-tab-show', show)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', onWindowResize)
+      window.removeEventListener('newbro-tab-hide', hide)
+      window.removeEventListener('newbro-tab-show', show)
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [])
+
+  // Receive tab lifecycle events from main and drive the store + error UI
+  useEffect(() => {
+    const cleanup = window.electronAPI.onTabEvent?.((raw) => {
+      const evt = raw as TabEvent
+      switch (evt.type) {
+        case 'did-start-loading': {
+          setErrors((prev) => {
+            if (!prev.has(evt.tabId)) return prev
+            const m = new Map(prev); m.delete(evt.tabId); return m
+          })
+          setCertErrors((prev) => {
+            if (!prev.has(evt.tabId)) return prev
+            const m = new Map(prev); m.delete(evt.tabId); return m
+          })
+          break
+        }
+        case 'did-navigate': {
+          if (!evt.url || evt.url.startsWith('data:') || evt.url === 'about:blank') break
+          useAppStore.getState().updateTabUrl(evt.tabId, evt.url)
+          break
+        }
+        case 'did-navigate-in-page': {
+          if (!evt.isMainFrame) break
+          if (!evt.url || evt.url.startsWith('data:') || evt.url === 'about:blank') break
+          useAppStore.getState().updateTabUrl(evt.tabId, evt.url)
+          break
+        }
+        case 'page-title-updated': {
+          const title = (evt.title || '').trim()
+          if (!title) break
+          useAppStore.getState().updateTabTitle(evt.tabId, title)
+          break
+        }
+        case 'page-favicon-updated': {
+          if (evt.favicons && evt.favicons.length > 0) {
+            useAppStore.getState().updateTabFavicon(evt.tabId, evt.favicons[0])
+          }
+          break
+        }
+        case 'did-fail-load': {
+          if (evt.errorCode === -3 || evt.errorCode === -100 || !evt.isMainFrame) break
+          const url = evt.url || ''
+          const isCert = (evt.errorCode >= -219 && evt.errorCode <= -200) || evt.errorCode === -501
+          if (isCert) {
+            log.warn('cert error', { url, code: evt.errorCode, desc: evt.errorDescription })
+            setCertErrors((prev) =>
+              new Map(prev).set(evt.tabId, { tabId: evt.tabId, url, code: evt.errorCode, description: evt.errorDescription })
+            )
+          } else {
+            log.warn('page load failed', { url, code: evt.errorCode, desc: evt.errorDescription })
+            setErrors((prev) =>
+              new Map(prev).set(evt.tabId, { tabId: evt.tabId, url, code: evt.errorCode, description: evt.errorDescription })
+            )
+          }
+          break
+        }
+        case 'dom-ready': {
+          applyScrollbarStyle(evt.tabId)
+          break
+        }
+        default:
+          break
+      }
+    })
+    return cleanup
+  }, [])
+
+  // Re-apply the themed scrollbar style to every live tab when the app theme
+  // changes (data-theme attribute on <html>) or when the OS colour scheme
+  // flips while the app is set to "system".
   useEffect(() => {
     const reapply = () => {
-      for (const wv of webviewsRef.current.values()) {
-        applyScrollbarStyle(wv)
-      }
+      for (const id of createdTabsRef.current) applyScrollbarStyle(id)
     }
     const observer = new MutationObserver(reapply)
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
@@ -319,39 +302,9 @@ export function WebviewPanel() {
     }
   }, [])
 
-  // Hand focus to the active webview whenever the active tab changes so
-  // keyboard input goes to the page. Covers tab cycling (Ctrl+Tab /
-  // Ctrl+Shift+Tab), Search Everything selection, sidebar clicks, etc.
-  // The Enter-in-URL-bar path focuses directly from the Toolbar handler
-  // because the URL may not change (reload case). Brand-new tabs
-  // (Ctrl+T) are additionally handled by the first-dom-ready listener,
-  // because the webview's guest webContents isn't attached yet when
-  // this effect runs. Declared after the create/show effect so
-  // display:flex is applied before we focus.
-  //
-  // "Focus URL on new tab" preference: the store actions that create
-  // tabs mark the new tab id; we consume that flag here and route focus
-  // to the URL bar instead, additionally marking the tab as already
-  // initially-focused so the dom-ready handler won't steal focus back.
-  useEffect(() => {
-    if (!activeTabId) return
-    const raf = requestAnimationFrame(() => {
-      const wv = webviewsRef.current.get(activeTabId)
-      if (!wv) return
-      if (consumeNewTabUrlFocus(activeTabId)) {
-        initiallyFocusedRef.current.add(activeTabId)
-        focusAndSelectUrlBar()
-        return
-      }
-      handoffFocusTo(wv)
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [activeTabId])
-
   const activeError = activeTabId ? errors.get(activeTabId) ?? null : null
   const activeCertError = activeTabId ? certErrors.get(activeTabId) ?? null : null
   const showCertError = activeCertError !== null
-  // Only show the generic error banner when there's no cert-warning overlay on top
   const showError = activeError !== null && !showCertError
 
   const failedHost = (() => {
@@ -359,45 +312,37 @@ export function WebviewPanel() {
     try { return new URL(activeError.url).hostname } catch { return activeError.url }
   })()
 
-  const handleRetry = () => {
+  const handleRetry = (): void => {
     if (!activeError) return
-    const wv = webviewsRef.current.get(activeError.tabId) as any
-    if (!wv) return
     setErrors((prev) => { const m = new Map(prev); m.delete(activeError.tabId); return m })
-    const retryUrl = activeError.url || getTabUrlById(activeError.tabId)
-    if (retryUrl && wv.loadURL) {
-      wv.loadURL(retryUrl).catch(() => {})
-    } else if (wv.reloadIgnoringCache) {
-      wv.reloadIgnoringCache()
+    const retryUrl = activeError.url || ''
+    if (retryUrl) {
+      window.electronAPI.tabNavigate?.(activeError.tabId, retryUrl)
     } else {
-      wv.reload()
+      window.electronAPI.tabReload?.(activeError.tabId, true)
     }
   }
 
-  const handleCertContinue = async (err: CertError) => {
-    // Tell main to allow the cert for this origin BEFORE we reload.
+  const handleCertContinue = async (err: CertError): Promise<void> => {
     try { await window.electronAPI.bypassCertForUrl(err.url) } catch { /* ignore */ }
     useAppStore.getState().markOriginCertBypassed(err.url)
     setCertErrors((prev) => { const m = new Map(prev); m.delete(err.tabId); return m })
-    const wv = webviewsRef.current.get(err.tabId) as any
-    if (wv && err.url) wv.loadURL(err.url).catch(() => {})
+    if (err.url) window.electronAPI.tabNavigate?.(err.tabId, err.url)
   }
 
-  const handleCertBack = (err: CertError) => {
+  const handleCertBack = (err: CertError): void => {
     setCertErrors((prev) => { const m = new Map(prev); m.delete(err.tabId); return m })
-    const wv = webviewsRef.current.get(err.tabId) as any
-    if (!wv) return
-    if (wv.canGoBack?.()) {
-      wv.goBack()
-      return
-    }
-    wv.loadURL('about:blank').catch(() => {})
+    // Best-effort: go back; if there's no history, route to about:blank.
+    window.electronAPI.tabGoBack?.(err.tabId)
     useAppStore.getState().updateTabUrl(err.tabId, 'about:blank')
   }
 
   return (
     <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-      <div ref={containerRef} style={{ flex: 1, display: 'flex' }} />
+      {/* Transparent placeholder whose rect defines where main paints the
+          active tab's WebContentsView. Must remain empty — any child DOM
+          here would overlap the tab view in unpredictable ways. */}
+      <div ref={containerRef} style={{ flex: 1 }} />
 
       {showError && activeError && (
         <div className="absolute inset-0 z-50 bg-[#eaecf1] text-[#11151f] flex items-center justify-center">
