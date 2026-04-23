@@ -150,6 +150,67 @@ const STEALTH_SCRIPT = `
     }
   } catch (e) { log('permissions.query override failed', e); }
 
+  // 7. navigator.userAgentData — Client Hints API. We disabled UACH at the
+  //    Chromium command-line level (so sec-ch-ua headers are never sent,
+  //    which is what lets Google sign-in succeed); but that also wipes
+  //    navigator.userAgentData, which is exactly what the Chrome Web Store
+  //    and Edge Add-ons pages check to decide whether to enable the
+  //    "Add to Chrome" / "Get" button. With no userAgentData they show
+  //    "Item currently unavailable" / "Incompatible with your browser".
+  //
+  //    Fake a shape that matches what stable Chrome/Edge reports, including
+  //    a plausible getHighEntropyValues() implementation. The install flow
+  //    we actually use does not rely on any Chrome-private API that could
+  //    be detected later, so the spoof is sufficient for the store pages
+  //    to let us through.
+  try {
+    if (!navigator.userAgentData) {
+      const uaMatch = /Chrom(?:e|ium)\\/([0-9]+)/.exec(navigator.userAgent);
+      const majorVersion = (uaMatch && uaMatch[1]) || '132';
+      const fullVersion = majorVersion + '.0.0.0';
+      const platformName = (() => {
+        const p = navigator.platform || '';
+        if (/win/i.test(p)) return 'Windows';
+        if (/mac/i.test(p)) return 'macOS';
+        return 'Linux';
+      })();
+      const brands = [
+        { brand: 'Chromium', version: majorVersion },
+        { brand: 'Google Chrome', version: majorVersion },
+        { brand: 'Not_A Brand', version: '24' },
+      ];
+      const highEntropy = {
+        architecture: 'x86',
+        bitness: '64',
+        brands: brands,
+        fullVersionList: brands.map(function (b) { return { brand: b.brand, version: fullVersion }; }),
+        mobile: false,
+        model: '',
+        platform: platformName,
+        platformVersion: '15.0.0',
+        uaFullVersion: fullVersion,
+        wow64: false,
+      };
+      const fake = {
+        brands: brands,
+        mobile: false,
+        platform: platformName,
+        getHighEntropyValues: function (hints) {
+          const filtered = { brands: brands, mobile: false, platform: platformName };
+          for (const h of (hints || [])) {
+            if (highEntropy[h] !== undefined) filtered[h] = highEntropy[h];
+          }
+          return Promise.resolve(filtered);
+        },
+        toJSON: function () { return { brands: brands, mobile: false, platform: platformName }; },
+      };
+      Object.defineProperty(navigator, 'userAgentData', {
+        get: function () { return fake; },
+        configurable: true,
+      });
+    }
+  } catch (e) { log('userAgentData override failed', e); }
+
   log('main-world injection complete');
 })();
 `
