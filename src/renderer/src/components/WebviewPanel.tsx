@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useAppStore, consumeNewTabUrlFocus } from '../store/app-store'
+import { normalizeURL } from '../lib/url'
 import { log } from '../lib/log'
 
 interface LoadError {
@@ -225,15 +226,45 @@ export function WebviewPanel() {
           dbg(`guest-console[${level}]`, e.message)
         })
 
-        // Mouse side-button navigation from the guest page. The stealth
-        // preload listens for XButton1/XButton2 in the guest and relays via
-        // `ipcRenderer.sendToHost('newbro-nav', 'back' | 'forward')`, which
-        // surfaces here as an `ipc-message` event on the webview element.
-        wv.addEventListener('ipc-message', (e: any) => {
-          if (e.channel !== 'newbro-nav') return
-          const dir = e.args?.[0]
-          if (dir === 'back' && wv.canGoBack?.()) wv.goBack()
-          else if (dir === 'forward' && wv.canGoForward?.()) wv.goForward()
+        // Messages from the stealth preload (see src/preload/webview-stealth.ts).
+        // Currently relayed: mouse side-buttons for back/forward navigation,
+        // middle-click on a link to open as a new tab, and right-click with a
+        // text selection to show a host-side context menu.
+        wv.addEventListener('ipc-message', async (e: any) => {
+          if (e.channel === 'newbro-nav') {
+            const dir = e.args?.[0]
+            if (dir === 'back' && wv.canGoBack?.()) wv.goBack()
+            else if (dir === 'forward' && wv.canGoForward?.()) wv.goForward()
+            return
+          }
+          if (e.channel === 'newbro-open-in-new-tab') {
+            const url = e.args?.[0]
+            if (typeof url !== 'string' || !url) return
+            const s = useAppStore.getState()
+            if (s.activeTabGroupId) s.addTab(s.activeTabGroupId, url)
+            else if (s.activeWorkspaceId) s.addUngroupedTab(s.activeWorkspaceId, url)
+            return
+          }
+          if (e.channel === 'newbro-context-menu') {
+            const payload = e.args?.[0] as { selection?: string } | undefined
+            const selection = payload?.selection?.trim() ?? ''
+            if (!selection) return
+            const api = (window as any).electronAPI
+            const action = await api.showContextMenu([
+              { id: 'copy', label: 'Copy' },
+              { id: 'copy-and-search', label: 'Copy and search' },
+            ])
+            if (!action) return
+            try { await navigator.clipboard.writeText(selection) } catch { /* ignore */ }
+            if (action === 'copy-and-search') {
+              const searchUrl = normalizeURL(selection)
+              if (!searchUrl) return
+              const s = useAppStore.getState()
+              if (s.activeTabGroupId) s.addTab(s.activeTabGroupId, searchUrl)
+              else if (s.activeWorkspaceId) s.addUngroupedTab(s.activeWorkspaceId, searchUrl)
+            }
+            return
+          }
         })
 
         wv.addEventListener('did-navigate', (e: any) => {
