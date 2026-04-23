@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getSidebarOrder, type NewTabFocus } from './store/app-store'
-import { setSearchEngine } from './lib/url'
+import { normalizeURL, setSearchEngine } from './lib/url'
 import { log } from './lib/log'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
@@ -95,6 +95,7 @@ declare global {
       openExtensionOptions?: (extensionId: string) => Promise<string | null>
       openExtensionAction?: (extensionId: string, tabId: string | null) => Promise<boolean>
       onExtensionsChanged?: (callback: (extensions: unknown[]) => void) => () => void
+      onTabContextSearch?: (callback: (query: string) => void) => () => void
     }
   }
 }
@@ -520,7 +521,25 @@ export default function App() {
       useAppStore.getState().setActiveTab(tabId)
     })
 
-    return () => { cleanupShortcut(); cleanupState(); cleanupPopup(); cleanupSettings(); cleanupActivateTab() }
+    // "Copy and search" from the tab's right-click menu: main relays the
+    // selection here, we resolve it through the user's configured search
+    // engine (normalizeURL) and open it as a new tab.
+    const cleanupContextSearch = window.electronAPI.onTabContextSearch?.((query) => {
+      const searchUrl = normalizeURL(query)
+      if (!searchUrl) return
+      const s = useAppStore.getState()
+      if (s.activeTabGroupId) s.addTab(s.activeTabGroupId, searchUrl)
+      else if (s.activeWorkspaceId) s.addUngroupedTab(s.activeWorkspaceId, searchUrl)
+    })
+
+    return () => {
+      cleanupShortcut()
+      cleanupState()
+      cleanupPopup()
+      cleanupSettings()
+      cleanupActivateTab()
+      cleanupContextSearch?.()
+    }
   }, [hydrate, windowWorkspaceId, toggleSidebar])
 
   // When the user has the theme set to "system", follow the OS when it

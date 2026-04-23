@@ -129,4 +129,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('extensions:changed', handler)
     return () => { ipcRenderer.removeListener('extensions:changed', handler) }
   },
+  onTabContextSearch: (callback: (query: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, query: string) => callback(query)
+    ipcRenderer.on('tab-context-search', handler)
+    return () => { ipcRenderer.removeListener('tab-context-search', handler) }
+  },
 })

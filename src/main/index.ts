@@ -14,7 +14,7 @@ import {
 } from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { log } from './log'
-import { registerWorkspaceWindowForTabs } from './tab-views'
+import { registerWorkspaceWindowForTabs, installTabPreloadListeners } from './tab-views'
 import { loadEnabledExtensionsInto, rehydrateExtensionsOnStartup } from './extensions/manager'
 
 // ── Chromium flags ──
@@ -859,6 +859,7 @@ app.whenReady().then(() => {
 
   buildMenu()
   registerIpcHandlers()
+  installTabPreloadListeners()
   setupAutoUpdater()
   openInitialWindows()
 

@@ -595,9 +595,9 @@ export function Sidebar({ visible }: Props) {
         ) : (
           <span
             className="flex-1 text-xs font-medium text-foreground truncate"
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation()
-              handleGroupDoubleClick(group.id, group.name)
+              toggleTabGroupCollapse(group.id)
             }}
           >
             {group.name}

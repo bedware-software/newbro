@@ -18,7 +18,7 @@
 // channel. The renderer's electronAPI.onTabEvent listener turns those
 // back into store updates and error-banner state.
 
-import { BrowserWindow, WebContentsView, session, app } from 'electron'
+import { BrowserWindow, Menu, WebContentsView, clipboard, ipcMain, session, app } from 'electron'
 import type { Session, WebContents } from 'electron'
 import { join } from 'path'
 import { log } from './log'
@@ -72,6 +72,11 @@ const tabs = new Map<string, TabRecord>()
 const windowBounds = new Map<number, TabBounds>()
 /** windowId -> active tabId. Inactive tabs get HIDDEN_BOUNDS. */
 const activeTabByWindow = new Map<number, string>()
+/** webContents.id -> tabId. Used by the global ipcMain.on handlers to
+ *  route preload-sent events (newbro-nav / newbro-open-in-new-tab /
+ *  newbro-context-menu) back to the correct tab without leaking per-tab
+ *  listeners on a global channel. */
+const wcIdToTabId = new Map<number, string>()
 /** Per-window hook: given a tab's WebContents, install keyboard shortcut
  *  interception so Ctrl+T / Ctrl+Tab / etc. fire from page focus. The
  *  window's creator in main/index.ts registers the callback so the
@@ -184,6 +189,7 @@ export function createTab(opts: {
     lastBounds: HIDDEN_BOUNDS,
   }
   tabs.set(opts.tabId, rec)
+  wcIdToTabId.set(view.webContents.id, opts.tabId)
   wireEvents(rec)
 
   // Let the owning window install its shortcut interceptor on this tab's
@@ -245,6 +251,7 @@ function setActiveTab(windowId: number, tabId: string): void {
 export function destroyTab(tabId: string): void {
   const rec = tabs.get(tabId)
   if (!rec) return
+  const wcId = rec.view.webContents.id
   const win = BrowserWindow.fromId(rec.windowId)
   if (win && !win.isDestroyed()) {
     try {
@@ -265,6 +272,7 @@ export function destroyTab(tabId: string): void {
     }
   }
   tabs.delete(tabId)
+  wcIdToTabId.delete(wcId)
   if (activeTabByWindow.get(rec.windowId) === tabId) {
     activeTabByWindow.delete(rec.windowId)
   }
@@ -407,6 +415,73 @@ export function registerWorkspaceWindowForTabs(
 ): void {
   shortcutInstallers.set(win.id, installShortcuts)
   attachWindowLifecycle(win)
+}
+
+/** Listeners installed ONCE at app start for events relayed from tab
+ *  preloads (webview-stealth.ts): mouse side-button navigation, middle-
+ *  click-to-new-tab, and right-click context menu. Each channel is
+ *  dispatched only for senders we recognise as tabs via wcIdToTabId; a
+ *  message from the main renderer itself is ignored. */
+let tabPreloadListenersInstalled = false
+
+export function installTabPreloadListeners(): void {
+  if (tabPreloadListenersInstalled) return
+  tabPreloadListenersInstalled = true
+
+  ipcMain.on('newbro-nav', (event, direction: unknown) => {
+    const tabId = wcIdToTabId.get(event.sender.id)
+    if (!tabId) return
+    if (direction === 'back') tabGoBack(tabId)
+    else if (direction === 'forward') tabGoForward(tabId)
+  })
+
+  ipcMain.on('newbro-open-in-new-tab', (event, url: unknown) => {
+    const tabId = wcIdToTabId.get(event.sender.id)
+    if (!tabId) return
+    if (typeof url !== 'string' || !url) return
+    const rec = tabs.get(tabId)
+    if (!rec) return
+    sendToWindowRenderer(rec.windowId, 'open-url-as-tab', url)
+  })
+
+  ipcMain.on('newbro-context-menu', async (event, payload: unknown) => {
+    const tabId = wcIdToTabId.get(event.sender.id)
+    if (!tabId) return
+    const rec = tabs.get(tabId)
+    if (!rec) return
+    const win = BrowserWindow.fromId(rec.windowId)
+    if (!win || win.isDestroyed()) return
+    const selection =
+      typeof payload === 'object' && payload !== null && typeof (payload as { selection?: unknown }).selection === 'string'
+        ? (payload as { selection: string }).selection.trim()
+        : ''
+    if (!selection) return
+
+    // Show a native menu anchored to the owner window. The renderer then
+    // decides whether to copy or copy-and-search — we delegate the search
+    // URL construction to the renderer so the user's configured search
+    // engine is respected without main needing to know about settings.
+    const chosen = await new Promise<'copy' | 'copy-and-search' | null>((resolve) => {
+      const menu = Menu.buildFromTemplate([
+        { label: 'Copy', click: () => resolve('copy') },
+        { label: 'Copy and search', click: () => resolve('copy-and-search') },
+      ])
+      menu.popup({ window: win, callback: () => resolve(null) })
+    })
+    if (!chosen) return
+
+    try {
+      clipboard.writeText(selection)
+    } catch (err) {
+      log.warn('context-menu: clipboard write failed', String(err))
+    }
+    if (chosen === 'copy-and-search') {
+      // Hand the renderer the raw query; the renderer already knows how
+      // to normalise → search URL and open a new tab (mirrors the flow
+      // the pre-merge <webview> path used).
+      win.webContents.send('tab-context-search', selection)
+    }
+  })
 }
 
 // Silence unused-app warning on some bundlers — `app` is used indirectly
