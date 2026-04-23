@@ -168,13 +168,13 @@ try {
 }
 
 // ── Mouse side buttons → host navigation ──────────────────────────────────
-// Chromium inside an Electron <webview> doesn't reliably surface XButton1 /
-// XButton2 (mouse back/forward) as a WM_APPCOMMAND, so neither
+// Chromium inside a tab's guest webContents doesn't reliably surface
+// XButton1 / XButton2 (mouse back/forward) as a WM_APPCOMMAND, so neither
 // `BrowserWindow.on('app-command')` nor `webContents.on('app-command')` fire
 // when the guest page has focus. We listen here in the preload (isolated
-// world — DOM events still reach us) and relay the intent to the host via
-// `ipcRenderer.sendToHost`, which fires an `ipc-message` event on the
-// <webview> DOM element in the renderer process.
+// world — DOM events still reach us) and relay the intent to main via
+// `ipcRenderer.send`, which ipcMain in main/tab-views.ts turns into
+// goBack/goForward on the sender's WebContents.
 //
 // We cover the full button-press lifecycle (mousedown / mouseup / auxclick)
 // in the capture phase so page scripts can't swallow the event first, and
@@ -187,7 +187,7 @@ try {
     e.preventDefault()
     e.stopPropagation()
     if (e.type === 'mouseup') {
-      ipcRenderer.sendToHost('newbro-nav', e.button === 3 ? 'back' : 'forward')
+      ipcRenderer.send('newbro-nav', e.button === 3 ? 'back' : 'forward')
     }
   }
   window.addEventListener('mousedown', relay, true)
@@ -199,13 +199,13 @@ try {
 }
 
 // ── Middle-click on <a> → open in new tab ─────────────────────────────────
-// Chromium's native middle-click-opens-link behaviour in a <webview> fires
-// `window.open()`, which the host already redirects to a new tab. But many
-// sites install their own `mousedown`/`click` handlers on links that call
-// `preventDefault()` and do their own navigation (SPA routers, click
-// tracking), so middle-click silently does nothing. We walk up from the
-// event target to find the nearest <a href>, cancel the event, and relay
-// the URL to the host which opens it as a new tab.
+// Chromium's native middle-click-opens-link behaviour fires `window.open()`,
+// which main's setWindowOpenHandler already redirects to the renderer as a
+// new tab. But many sites install their own `mousedown`/`click` handlers on
+// links that call `preventDefault()` and do their own navigation (SPA
+// routers, click tracking), so middle-click silently does nothing. We walk
+// up from the event target to find the nearest <a href>, cancel the event,
+// and relay the URL to main which forwards to the renderer as a new tab.
 try {
   const findAnchor = (target: EventTarget | null): HTMLAnchorElement | null => {
     let node = target as Node | null
@@ -222,7 +222,7 @@ try {
     e.preventDefault()
     e.stopPropagation()
     if (e.type === 'auxclick') {
-      ipcRenderer.sendToHost('newbro-open-in-new-tab', a.href)
+      ipcRenderer.send('newbro-open-in-new-tab', a.href)
     }
   }
   window.addEventListener('mousedown', middleClickRelay, true)
@@ -234,8 +234,8 @@ try {
 
 // ── Right-click on selected text → host context menu ──────────────────────
 // When the user right-clicks with text selected on the page, suppress the
-// guest page's own context menu and relay the selection to the host so it
-// can show a native Electron context menu with Copy / Copy and search.
+// guest page's own context menu and relay the selection to main so it can
+// show a native Electron context menu with Copy / Copy and search.
 // Right-click without a selection is left to the page.
 try {
   window.addEventListener('contextmenu', (e: MouseEvent) => {
@@ -243,7 +243,7 @@ try {
     if (!selection) return
     e.preventDefault()
     e.stopPropagation()
-    ipcRenderer.sendToHost('newbro-context-menu', { selection })
+    ipcRenderer.send('newbro-context-menu', { selection })
   }, true)
 } catch (err) {
   // eslint-disable-next-line no-console

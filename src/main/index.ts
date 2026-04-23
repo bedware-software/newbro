@@ -14,6 +14,8 @@ import {
 } from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { log } from './log'
+import { registerWorkspaceWindowForTabs, installTabPreloadListeners } from './tab-views'
+import { loadEnabledExtensionsInto, rehydrateExtensionsOnStartup } from './extensions/manager'
 
 // ── Chromium flags ──
 
@@ -389,11 +391,25 @@ export function setupPartitionSession(partition: string): void {
   if (configuredPartitions.has(partition)) return
   const ses = session.fromPartition(partition)
   configureSession(ses)
-  // Only partitioned webview sessions get the stealth preload — the default
+  // Only partitioned tab sessions get the stealth preload — the default
   // session belongs to the main renderer which doesn't need (and shouldn't
   // have) page-fingerprint overrides.
   ses.setPreloads([WEBVIEW_STEALTH_PRELOAD])
   configuredPartitions.add(partition)
+  // Load every user-installed, enabled extension into the partition so
+  // content scripts / declarativeNetRequest rules / MV3 service workers
+  // attach before the first page navigation in this partition. Fire and
+  // forget — any individual extension failing shouldn't block partition
+  // setup for the rest.
+  loadEnabledExtensionsInto(ses).catch((err) => {
+    log.warn('extensions: loadEnabledExtensionsInto failed', { partition, err: String(err) })
+  })
+}
+
+/** Partitions configured so far — exported so the extension manager can
+ *  broadcast install/uninstall events to every live session. */
+export function getConfiguredPartitions(): string[] {
+  return Array.from(configuredPartitions)
 }
 
 // ── Per-workspace window bounds persistence ──
@@ -506,7 +522,12 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webviewTag: true,
+      // Tabs are hosted as WebContentsView children of the window's content
+      // view (see src/main/tab-views.ts). The <webview> tag is disabled so
+      // Chrome extensions loaded via session.loadExtension() actually attach
+      // to page content — Electron's extension system does not inject into
+      // <webview>, only into BrowserWindow / WebContentsView.
+      webviewTag: false,
       nativeWindowOpen: true,
     },
   })
@@ -603,17 +624,10 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     childWindow.showInactive()
   })
 
-  // Redirect webview popups to the renderer as new tabs
-  win.webContents.on('did-attach-webview', (_event, webContents) => {
-    installShortcutInterceptor(webContents, win)
-
-    webContents.setWindowOpenHandler(({ url }) => {
-      if (!win.isDestroyed()) {
-        win.webContents.send('open-url-as-tab', url)
-      }
-      return { action: 'deny' }
-    })
-  })
+  // Each tab is a WebContentsView child of this window (see tab-views.ts).
+  // Register callbacks so the manager can install the shortcut interceptor
+  // on every new tab's webContents, and tear down tabs on window close.
+  registerWorkspaceWindowForTabs(win, installShortcutInterceptor)
 
   const tabSuffix = targetTabId ? `&tabId=${encodeURIComponent(targetTabId)}` : ''
   const params = `?profileId=${profileId}&workspaceId=${workspaceId}${tabSuffix}`
@@ -837,8 +851,15 @@ app.whenReady().then(() => {
   configureSession(session.defaultSession)
   applyProxySettingsToAllSessions(loadSettings())
 
+  // Rehydrate installed extensions before any window opens. Each entry is
+  // loaded into sessions as they get configured by setupPartitionSession.
+  rehydrateExtensionsOnStartup().catch((err) => {
+    log.warn('extensions: rehydrate failed', String(err))
+  })
+
   buildMenu()
   registerIpcHandlers()
+  installTabPreloadListeners()
   setupAutoUpdater()
   openInitialWindows()
 

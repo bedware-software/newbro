@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2 } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
@@ -199,7 +199,24 @@ function formatAccelerator(accel: string): React.ReactNode {
   )
 }
 
-type Tab = 'general' | 'appearance' | 'shortcuts'
+type Tab = 'general' | 'appearance' | 'shortcuts' | 'extensions'
+
+interface ExtensionInfo {
+  id: string
+  name: string
+  shortName?: string
+  version: string
+  description?: string
+  enabled: boolean
+  path: string
+  hostPermissions: string[]
+  permissions: string[]
+  hasOptionsPage: boolean
+  hasAction: boolean
+  actionDefaultTitle?: string
+  iconUrl?: string | null
+  installedAt: number
+}
 
 function normalizeKeybindingValue(raw: string): string {
   let value = raw.trim()
@@ -245,6 +262,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false)
   const [appVersion, setAppVersion] = useState<string>('')
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' })
+  const [extensions, setExtensions] = useState<ExtensionInfo[]>([])
+  const [extInput, setExtInput] = useState('')
+  const [extInstalling, setExtInstalling] = useState(false)
+  const [extError, setExtError] = useState<string | null>(null)
   const recordingRef = useRef<string | null>(null)
   const pendingTabChordRef = useRef(false)
   const originalAppearanceRef = useRef<AppearancePreview>({
@@ -283,6 +304,55 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     const api = (window as any).electronAPI
     api?.installUpdate?.()
   }, [])
+
+  // ── Extensions ──
+  // Load + subscribe when the Extensions tab becomes visible, or when the
+  // dialog first opens — broadcasts from main keep the list fresh even if
+  // the user stays on this tab across installs/uninstalls from elsewhere.
+  useEffect(() => {
+    if (!open) return
+    const api = (window as any).electronAPI
+    if (!api?.listExtensions) return
+    api.listExtensions().then((list: ExtensionInfo[]) => setExtensions(list || []))
+    const cleanup = api.onExtensionsChanged?.((list: ExtensionInfo[]) => setExtensions(list || []))
+    return cleanup
+  }, [open])
+
+  const handleInstallExtension = useCallback(async () => {
+    const trimmed = extInput.trim()
+    if (!trimmed) return
+    setExtError(null)
+    setExtInstalling(true)
+    try {
+      const api = (window as any).electronAPI
+      await api.installExtension(trimmed)
+      setExtInput('')
+    } catch (err: unknown) {
+      setExtError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtInstalling(false)
+    }
+  }, [extInput])
+
+  const handleToggleExtension = useCallback(async (id: string, next: boolean) => {
+    const api = (window as any).electronAPI
+    const updated = await api.setExtensionEnabled(id, next)
+    if (Array.isArray(updated)) setExtensions(updated)
+  }, [])
+
+  const handleUninstallExtension = useCallback(async (id: string) => {
+    const api = (window as any).electronAPI
+    const updated = await api.uninstallExtension(id)
+    if (Array.isArray(updated)) setExtensions(updated)
+  }, [])
+
+  const handleOpenExtensionOptions = useCallback(async (id: string) => {
+    const api = (window as any).electronAPI
+    await api.openExtensionOptions(id)
+    // After opening a new tab with chrome-extension:// URL, close the
+    // settings dialog so the tab is visible behind it.
+    onClose()
+  }, [onClose])
 
   // Init from settings
   useEffect(() => {
@@ -447,6 +517,16 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
             }`}
           >
             Keyboard Shortcuts
+          </button>
+          <button
+            onClick={() => setActiveTab('extensions')}
+            className={`px-5 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === 'extensions'
+                ? 'text-foreground border-b-2 border-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            Extensions
           </button>
         </div>
 
@@ -815,6 +895,126 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     Wipe all data
                   </button>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'extensions' && (
+            <div className="space-y-5">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground mb-1 flex items-center gap-2">
+                  <Puzzle size={14} />
+                  Chrome Web Store extensions
+                </h3>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Paste a Chrome Web Store URL or a 32-character extension ID.
+                  Newbro downloads the .crx, unpacks it locally, and loads it
+                  into every profile. Manifest V3 extensions work best; some
+                  Manifest V2 features (notably blocking webRequest) are not
+                  supported by Electron.
+                </p>
+              </div>
+
+              <div className="flex items-stretch gap-2">
+                <input
+                  type="text"
+                  value={extInput}
+                  onChange={(e) => setExtInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !extInstalling) handleInstallExtension() }}
+                  placeholder="https://chromewebstore.google.com/detail/…/<id> or <id>"
+                  className="flex-1 h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background font-mono"
+                  disabled={extInstalling}
+                />
+                <button
+                  onClick={handleInstallExtension}
+                  disabled={extInstalling || !extInput.trim()}
+                  className={`flex items-center gap-1.5 h-9 px-3 rounded-md text-xs font-medium transition-colors ${
+                    extInstalling || !extInput.trim()
+                      ? 'bg-secondary text-muted-foreground cursor-default'
+                      : 'bg-primary text-primary-foreground hover:bg-primary/80'
+                  }`}
+                >
+                  {extInstalling ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Plus size={12} />
+                  )}
+                  Install
+                </button>
+              </div>
+
+              {extError && (
+                <div className="text-xs text-destructive flex items-start gap-1.5">
+                  <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">{extError}</span>
+                </div>
+              )}
+
+              <div className="flex flex-col divide-y divide-border border border-input rounded-md bg-card overflow-hidden">
+                {extensions.length === 0 ? (
+                  <div className="px-4 py-8 text-xs text-center text-muted-foreground">
+                    No extensions installed yet.
+                  </div>
+                ) : (
+                  extensions.map((ext) => (
+                    <div key={ext.id} className="flex items-start gap-3 px-4 py-3">
+                      <div className="shrink-0 w-8 h-8 rounded-md bg-muted flex items-center justify-center overflow-hidden">
+                        {ext.iconUrl ? (
+                          <img
+                            src={ext.iconUrl}
+                            className="w-8 h-8"
+                            alt=""
+                            onError={(e) => { (e.currentTarget.style.display = 'none') }}
+                          />
+                        ) : (
+                          <Puzzle size={14} className="text-muted-foreground" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-foreground font-medium truncate">{ext.name}</div>
+                        <div className="text-[11px] text-muted-foreground">v{ext.version}</div>
+                        {ext.description && (
+                          <div className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2">
+                            {ext.description}
+                          </div>
+                        )}
+                        {(ext.hostPermissions.length > 0 || ext.permissions.length > 0) && (
+                          <div className="text-[10px] text-muted-foreground mt-1 font-mono line-clamp-1" title={[...ext.hostPermissions, ...ext.permissions].join(', ')}>
+                            {[...ext.hostPermissions, ...ext.permissions].slice(0, 4).join(', ')}
+                            {[...ext.hostPermissions, ...ext.permissions].length > 4 ? ' …' : ''}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {ext.hasOptionsPage && (
+                          <button
+                            onClick={() => handleOpenExtensionOptions(ext.id)}
+                            className="h-7 px-2 rounded-md text-[11px] bg-secondary text-secondary-foreground hover:bg-muted flex items-center gap-1"
+                            title="Open options page"
+                          >
+                            <ExternalLink size={11} />
+                            Options
+                          </button>
+                        )}
+                        <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={ext.enabled}
+                            onChange={(e) => handleToggleExtension(ext.id, e.target.checked)}
+                          />
+                          Enabled
+                        </label>
+                        <button
+                          onClick={() => handleUninstallExtension(ext.id)}
+                          className="h-7 w-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                          title="Uninstall"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}

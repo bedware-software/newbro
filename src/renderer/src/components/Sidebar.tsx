@@ -82,9 +82,10 @@ export function Sidebar({ visible }: Props) {
     startW.current = currentW.current
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
-    document.querySelectorAll('webview').forEach((wv) => {
-      ;(wv as HTMLElement).style.pointerEvents = 'none'
-    })
+    // Tabs are now WebContentsViews layered on top of the renderer; with
+    // them visible, pointermove would be eaten by the guest. Tell the
+    // WebviewPanel to zero out tab bounds for the duration of the drag.
+    window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
   }, [])
 
   useEffect(() => {
@@ -101,9 +102,7 @@ export function Sidebar({ visible }: Props) {
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       localStorage.setItem(SIDEBAR_WIDTH_KEY, String(currentW.current))
-      document.querySelectorAll('webview').forEach((wv) => {
-        ;(wv as HTMLElement).style.pointerEvents = ''
-      })
+      window.dispatchEvent(new CustomEvent('newbro-tab-show'))
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -145,10 +144,7 @@ export function Sidebar({ visible }: Props) {
       if (!dragActivated.current && Math.abs(dx) + Math.abs(dy) < 6) return
       dragActivated.current = true
       setDragging({ type, id, ids })
-      // Disable webview pointer events during drag
-      document.querySelectorAll('webview').forEach((wv) => {
-        ;(wv as HTMLElement).style.pointerEvents = 'none'
-      })
+      window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
       // Determine drop target from pointer position
       updateDropTarget(me.clientY, type)
     }
@@ -271,9 +267,7 @@ export function Sidebar({ visible }: Props) {
     // Clean up immediately
     setDragging(null)
     setDropTarget(null)
-    document.querySelectorAll('webview').forEach((wv) => {
-      ;(wv as HTMLElement).style.pointerEvents = ''
-    })
+    window.dispatchEvent(new CustomEvent('newbro-tab-show'))
 
     if (!d || !dt) return
 
@@ -304,9 +298,7 @@ export function Sidebar({ visible }: Props) {
       if (!dragActivated.current) {
         dragActivated.current = true
         setDragging({ type, id, ids })
-        document.querySelectorAll('webview').forEach((wv) => {
-          ;(wv as HTMLElement).style.pointerEvents = 'none'
-        })
+        window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
       }
     }
 
