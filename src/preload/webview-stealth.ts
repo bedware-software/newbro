@@ -197,3 +197,55 @@ try {
   // eslint-disable-next-line no-console
   console.log('[newbro-stealth] mouse-nav wiring failed:', err)
 }
+
+// ── Middle-click on <a> → open in new tab ─────────────────────────────────
+// Chromium's native middle-click-opens-link behaviour in a <webview> fires
+// `window.open()`, which the host already redirects to a new tab. But many
+// sites install their own `mousedown`/`click` handlers on links that call
+// `preventDefault()` and do their own navigation (SPA routers, click
+// tracking), so middle-click silently does nothing. We walk up from the
+// event target to find the nearest <a href>, cancel the event, and relay
+// the URL to the host which opens it as a new tab.
+try {
+  const findAnchor = (target: EventTarget | null): HTMLAnchorElement | null => {
+    let node = target as Node | null
+    while (node) {
+      if (node instanceof HTMLAnchorElement && node.href) return node
+      node = (node as Node).parentNode
+    }
+    return null
+  }
+  const middleClickRelay = (e: MouseEvent): void => {
+    if (e.button !== 1) return
+    const a = findAnchor(e.target)
+    if (!a) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.type === 'auxclick') {
+      ipcRenderer.sendToHost('newbro-open-in-new-tab', a.href)
+    }
+  }
+  window.addEventListener('mousedown', middleClickRelay, true)
+  window.addEventListener('auxclick', middleClickRelay, true)
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.log('[newbro-stealth] middle-click wiring failed:', err)
+}
+
+// ── Right-click on selected text → host context menu ──────────────────────
+// When the user right-clicks with text selected on the page, suppress the
+// guest page's own context menu and relay the selection to the host so it
+// can show a native Electron context menu with Copy / Copy and search.
+// Right-click without a selection is left to the page.
+try {
+  window.addEventListener('contextmenu', (e: MouseEvent) => {
+    const selection = (window.getSelection?.()?.toString() ?? '').trim()
+    if (!selection) return
+    e.preventDefault()
+    e.stopPropagation()
+    ipcRenderer.sendToHost('newbro-context-menu', { selection })
+  }, true)
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.log('[newbro-stealth] context-menu wiring failed:', err)
+}
