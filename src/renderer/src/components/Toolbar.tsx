@@ -265,6 +265,73 @@ interface ExtensionInfo {
   actionDefaultTitle?: string
 }
 
+/** Regex for the 32-char [a-p] Chrome/Edge extension ID, matched at the
+ *  end of a detail path. Shared between store detection and the badge. */
+const STORE_DETAIL_REGEX =
+  /^https?:\/\/(?:chromewebstore\.google\.com|chrome\.google\.com\/webstore|microsoftedge\.microsoft\.com\/addons)\/(?:detail|webstore\/detail)\/[^/]+\/([a-p]{32})/i
+
+function extractExtensionIdFromStoreUrl(url: string | undefined): string | null {
+  if (!url) return null
+  const m = url.match(STORE_DETAIL_REGEX)
+  return m ? m[1] : null
+}
+
+/** Toolbar affordance for installing the extension currently shown in the
+ *  active tab. Both the Chrome Web Store and Edge Add-ons block their own
+ *  install buttons when they detect a non-Chrome/non-Edge browser — this
+ *  is the reliable Newbro-side path. Visible only when the active tab's
+ *  URL points at a store detail page. */
+function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined }) {
+  const [state, setState] = useState<'idle' | 'installing' | 'ok' | { error: string }>('idle')
+  const extensionId = extractExtensionIdFromStoreUrl(activeTabUrl)
+  // Reset success/error banner when the user navigates away or to a new listing.
+  useEffect(() => { setState('idle') }, [extensionId])
+
+  if (!extensionId) return null
+
+  const handleClick = async (): Promise<void> => {
+    if (state === 'installing') return
+    setState('installing')
+    try {
+      const api = (window as any).electronAPI
+      await api.installExtension(extensionId)
+      setState('ok')
+      setTimeout(() => setState('idle'), 3500)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setState({ error: msg })
+      setTimeout(() => setState('idle'), 6000)
+    }
+  }
+
+  let label = 'Install this extension'
+  if (state === 'installing') label = 'Installing…'
+  else if (state === 'ok') label = 'Installed ✓'
+  else if (typeof state === 'object') label = 'Install failed'
+
+  const title =
+    typeof state === 'object' ? state.error : 'Download and install this extension into Newbro'
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={state === 'installing'}
+      title={title}
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      className={`shrink-0 flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium transition-colors ${
+        typeof state === 'object'
+          ? 'bg-destructive text-destructive-foreground hover:opacity-90'
+          : state === 'ok'
+            ? 'bg-secondary text-secondary-foreground'
+            : 'bg-primary text-primary-foreground hover:bg-primary/80'
+      }`}
+    >
+      <Puzzle size={13} />
+      <span>{label}</span>
+    </button>
+  )
+}
+
 /** Render enabled extensions that declare `action` as clickable icons. */
 function ExtensionActions({ activeTabId }: { activeTabId: string | null }) {
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([])
@@ -921,6 +988,12 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         {/* Extension action icons (Chrome-style puzzle row). Rendered only
             when at least one enabled extension declares an `action`. */}
         <ExtensionActions activeTabId={activeTabId} />
+
+        {/* Install-from-store badge. Appears only when the active tab is a
+            CWS or Edge Add-ons detail page, giving users a one-click path
+            that doesn't rely on the stores' own install buttons (which
+            both stores block when the browser isn't Chrome/Edge). */}
+        <StoreInstallBadge activeTabUrl={activeTab?.url} />
 
         {/* URL bar with security indicator + tab title */}
         <div
