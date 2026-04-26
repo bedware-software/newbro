@@ -142,8 +142,12 @@ export function loadSettings(): Settings {
   const savedKeybindings = saved?.keybindings || {}
   const migratedKeybindings = normalizeAndFilterKeybindings(savedKeybindings)
   const mode = (() => {
-    if (savedProxy.mode === 'direct') return 'direct'
-    if (savedProxy.mode === 'custom' || savedProxy.mode === 'fixed_servers' || savedProxy.mode === 'pac_script') return 'custom'
+    // Older saves used Chromium's raw mode names ('fixed_servers', 'pac_script')
+    // before we normalized to 'system' | 'direct' | 'custom'. Cast through the
+    // legacy union so the comparisons type-check while we migrate them in.
+    const m = savedProxy.mode as string | undefined
+    if (m === 'direct') return 'direct'
+    if (m === 'custom' || m === 'fixed_servers' || m === 'pac_script') return 'custom'
     return 'system'
   })()
   // Merge with defaults so new keys are always present

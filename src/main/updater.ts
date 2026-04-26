@@ -15,6 +15,10 @@ export type UpdateStatus =
   | { phase: 'downloading'; version: string; percent: number; bytesPerSecond: number }
   | { phase: 'downloaded'; version: string; releaseNotes?: string | null }
   | { phase: 'error'; message: string }
+  // Unpacked / development build — electron-updater can't resolve an
+  // app-update.yml, so we don't pretend to check. UI uses this to disable
+  // the "check for updates" buttons and explain why.
+  | { phase: 'unsupported' }
 
 let latestStatus: UpdateStatus = { phase: 'idle' }
 let initialized = false
@@ -43,8 +47,11 @@ export function setupAutoUpdater(): void {
 
   // No-op in dev / non-packaged runs. electron-updater can't resolve an
   // app-update.yml outside of an installed build and would log warnings.
+  // Surface this to the UI so the "check for updates" affordances can be
+  // disabled instead of silently misleading the user.
   if (!app.isPackaged) {
     log.info('updater: skipped (app is not packaged)')
+    latestStatus = { phase: 'unsupported' }
     return
   }
 
@@ -117,13 +124,11 @@ export function setupAutoUpdater(): void {
 /** User-triggered explicit check (e.g. "Check for updates" menu item). */
 export async function checkForUpdatesNow(): Promise<UpdateStatus> {
   if (!app.isPackaged) {
-    // Dev mode: electron-updater is a no-op, but we still want the UI to
-    // acknowledge the click. Simulate a quick check → up-to-date flip so
-    // subscribers (banner, settings) can display feedback.
-    broadcast({ phase: 'checking' })
-    const v = app.getVersion()
-    const result: UpdateStatus = { phase: 'not-available', version: v }
-    setTimeout(() => broadcast(result), 400)
+    // Dev mode: electron-updater can't resolve update metadata. Don't
+    // pretend the check ran — return the 'unsupported' state so the UI
+    // can show why the action is disabled.
+    const result: UpdateStatus = { phase: 'unsupported' }
+    broadcast(result)
     return result
   }
   try {

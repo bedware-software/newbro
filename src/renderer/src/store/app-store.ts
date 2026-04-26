@@ -68,7 +68,7 @@ export function getSidebarOrder(w: Workspace): string[] {
   ]
 }
 
-function makeWorkspace(name = 'General'): Workspace {
+function makeWorkspace(name = 'Default'): Workspace {
   const tab = makeTab()
   return { id: uuid(), name, tabGroups: [], tabs: [tab], sidebarOrder: [tab.id] }
 }
@@ -84,7 +84,7 @@ function makeProfile(name = 'Default'): Profile {
 }
 
 function defaultState() {
-  const profile = makeProfile('Work')
+  const profile = makeProfile('Fun')
   const ws = profile.workspaces[0]
   const firstTab = ws.tabs?.[0] || ws.tabGroups[0]?.tabs[0]
   const firstGroup = ws.tabGroups[0] || null

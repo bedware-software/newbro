@@ -10,6 +10,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setTitleBarOverlay: (options: { color: string; symbolColor: string; height: number }): Promise<void> =>
     ipcRenderer.invoke('window:set-titlebar-overlay', options),
   closeWindow: (): Promise<void> => ipcRenderer.invoke('window:close'),
+  // Pull OS-level keyboard focus back to the renderer (away from any
+  // currently-focused WebContentsView tab). Call before .focus()-ing a
+  // renderer-side input so typed characters actually land there.
+  focusWindowRenderer: (): void => { ipcRenderer.send('window:focus-renderer') },
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),
   restoreWindow: (): Promise<void> => ipcRenderer.invoke('window:restore'),
@@ -46,15 +50,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Exit
   quit: (): void => { ipcRenderer.send('app:quit') },
 
-  // Context menu
-  showContextMenu: (items: any[]): Promise<string | null> => ipcRenderer.invoke('context-menu:show', items),
-
   // Auto-updater
   checkForUpdates: (): Promise<unknown> => ipcRenderer.invoke('updater:check'),
   downloadUpdate: (): Promise<void> => ipcRenderer.invoke('updater:download'),
   installUpdate: (): Promise<void> => ipcRenderer.invoke('updater:install'),
   getUpdaterStatus: (): Promise<unknown> => ipcRenderer.invoke('updater:get-status'),
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('updater:get-app-version'),
+  getAppPaths: (): Promise<{ userData: string; cache: string; logs: string; appName: string }> =>
+    ipcRenderer.invoke('app:get-paths'),
 
   // Tab hosting (WebContentsView in main). The renderer owns layout and
   // lifecycle *decisions*; main runs the actual page.
@@ -83,10 +86,33 @@ contextBridge.exposeInMainWorld('electronAPI', {
   uninstallExtension: (extensionId: string): Promise<unknown[]> => ipcRenderer.invoke('extensions:uninstall', extensionId),
   setExtensionEnabled: (extensionId: string, enabled: boolean): Promise<unknown[]> =>
     ipcRenderer.invoke('extensions:set-enabled', extensionId, enabled),
+  setExtensionPinned: (extensionId: string, pinned: boolean): Promise<unknown[]> =>
+    ipcRenderer.invoke('extensions:set-pinned', extensionId, pinned),
   openExtensionOptions: (extensionId: string): Promise<string | null> =>
     ipcRenderer.invoke('extensions:open-options', extensionId),
-  openExtensionAction: (extensionId: string, tabId: string | null): Promise<boolean> =>
-    ipcRenderer.invoke('extensions:open-action', extensionId, tabId),
+  openExtensionAction: (
+    extensionId: string,
+    tabId: string | null,
+    anchor: { x: number; y: number; width: number; height: number } | null
+  ): Promise<'opened' | 'closed' | 'no-popup'> =>
+    ipcRenderer.invoke('extensions:open-action', extensionId, tabId, anchor),
+  closeExtensionPopup: (): Promise<boolean> => ipcRenderer.invoke('extensions:close-popup'),
+  moveExtensionPopup: (
+    extensionId: string,
+    anchor: { x: number; y: number; width: number; height: number }
+  ): void => {
+    ipcRenderer.send('extensions:move-popup', extensionId, anchor)
+  },
+  onExtensionPopupOpened: (callback: (payload: { extensionId: string }) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, payload: { extensionId: string }) => callback(payload)
+    ipcRenderer.on('extension-popup-opened', handler)
+    return () => { ipcRenderer.removeListener('extension-popup-opened', handler) }
+  },
+  onExtensionPopupClosed: (callback: (payload: { extensionId: string }) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, payload: { extensionId: string }) => callback(payload)
+    ipcRenderer.on('extension-popup-closed', handler)
+    return () => { ipcRenderer.removeListener('extension-popup-closed', handler) }
+  },
 
   // Receive events from main process — return cleanup function
   onShortcut: (callback: (action: string) => void) => {
@@ -133,5 +159,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_e: Electron.IpcRendererEvent, query: string) => callback(query)
     ipcRenderer.on('tab-context-search', handler)
     return () => { ipcRenderer.removeListener('tab-context-search', handler) }
+  },
+
+  // ── Dropdown popup (separate transparent BrowserWindow) ──
+  // Parent renderer (Toolbar) calls openDropdown / closeDropdown and listens
+  // for onDropdownEvent. The popup renderer (dropdown.tsx) calls
+  // dropdownPopupEvent / dropdownPopupResize and listens for onDropdownPopupSpec.
+  // See src/main/dropdown-window.ts for the lifecycle.
+  openDropdown: (spec: unknown): void => { ipcRenderer.send('dropdown:open', spec) },
+  closeDropdown: (): void => { ipcRenderer.send('dropdown:close') },
+  onDropdownEvent: (callback: (evt: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, evt: unknown) => callback(evt)
+    ipcRenderer.on('dropdown:event', handler)
+    return () => { ipcRenderer.removeListener('dropdown:event', handler) }
+  },
+  // Popup-renderer-only methods (no-ops in the parent renderer).
+  dropdownPopupEvent: (evt: unknown): void => { ipcRenderer.send('dropdown:popup-event', evt) },
+  dropdownPopupResize: (size: { width: number; height: number }): void => {
+    ipcRenderer.send('dropdown:popup-resize', size)
+  },
+  onDropdownPopupSpec: (callback: (spec: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, spec: unknown) => callback(spec)
+    ipcRenderer.on('dropdown:popup-spec', handler)
+    return () => { ipcRenderer.removeListener('dropdown:popup-spec', handler) }
   },
 })

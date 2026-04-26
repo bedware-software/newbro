@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore, consumeNewTabUrlFocus } from '../store/app-store'
 import { log } from '../lib/log'
+import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
 
 // Tab rendering lives in the main process now, as a WebContentsView per tab
 // attached to the window's root contentView. This component is a thin layout
@@ -72,15 +73,6 @@ function applyScrollbarStyle(tabId: string): void {
 
 /** Focus + select the toolbar URL bar. Used when the user prefers the
  *  URL input to have focus after opening a new tab. */
-function focusAndSelectUrlBar(): void {
-  const urlBar = document.getElementById('url-bar') as HTMLInputElement | null
-  if (!urlBar) return
-  urlBar.focus()
-  setTimeout(() => {
-    if (document.activeElement !== urlBar) return
-    try { urlBar.select() } catch { /* select may throw on non-text inputs */ }
-  }, 0)
-}
 
 export function WebviewPanel() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -151,13 +143,11 @@ export function WebviewPanel() {
       const tab = currentTabs.find((t) => t.id === activeTabId)
       const url = tab?.url || 'about:blank'
       window.electronAPI.tabActivate?.(activeTabId, url)
-      if (!activatedTabsRef.current.has(activeTabId)) {
-        activatedTabsRef.current.add(activeTabId)
-        // Respect "Focus URL on new tab" — the store flag is consumed once.
-        if (consumeNewTabUrlFocus(activeTabId)) {
-          focusAndSelectUrlBar()
-        }
-      }
+      // The "Focus URL on new tab" override no longer fires here — running
+      // it pre-load gets clobbered when Electron auto-focuses the
+      // WebContentsView as the page settles. We wait for did-finish-load
+      // (handled in the tab-event listener below) so our focus call wins.
+      activatedTabsRef.current.add(activeTabId)
     }
   }, [profiles, activeTabId, activeWorkspaceId, activeProfileId])
 
@@ -276,6 +266,18 @@ export function WebviewPanel() {
         }
         case 'dom-ready': {
           applyScrollbarStyle(evt.tabId)
+          break
+        }
+        case 'did-finish-load': {
+          // "Focus URL on new tab" is delivered here, not at activation time
+          // — did-finish-load fires AFTER the page's onload event AND after
+          // any auto-focus Electron does on the WebContentsView, so our
+          // focus call sticks. consumeNewTabUrlFocus is single-shot per
+          // tab id, so subsequent navigations within the same tab don't
+          // re-grab focus to the URL bar.
+          if (consumeNewTabUrlFocus(evt.tabId)) {
+            focusAndSelectUrlBar()
+          }
           break
         }
         default:

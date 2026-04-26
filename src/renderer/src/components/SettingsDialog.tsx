@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
+import { useAppStore } from '../store/app-store'
 
 interface ProxySettings {
   mode: 'system' | 'direct' | 'custom'
@@ -37,6 +38,7 @@ type UpdateStatus =
   | { phase: 'downloading'; version: string; percent: number; bytesPerSecond: number }
   | { phase: 'downloaded'; version: string; releaseNotes?: string | null }
   | { phase: 'error'; message: string }
+  | { phase: 'unsupported' }
 
 const SEARCH_ENGINES: Record<string, string> = {
   Google: 'https://www.google.com/search?q=%s',
@@ -199,7 +201,7 @@ function formatAccelerator(accel: string): React.ReactNode {
   )
 }
 
-type Tab = 'general' | 'appearance' | 'shortcuts' | 'extensions'
+type Tab = 'general' | 'appearance' | 'shortcuts' | 'extensions' | 'about'
 
 interface ExtensionInfo {
   id: string
@@ -208,6 +210,7 @@ interface ExtensionInfo {
   version: string
   description?: string
   enabled: boolean
+  pinned: boolean
   path: string
   hostPermissions: string[]
   permissions: string[]
@@ -261,6 +264,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false)
   const [appVersion, setAppVersion] = useState<string>('')
+  const [appPaths, setAppPaths] = useState<{ userData: string; cache: string; logs: string; appName: string } | null>(null)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' })
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([])
   const [extInput, setExtInput] = useState('')
@@ -283,6 +287,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     const api = (window as any).electronAPI
     if (!api) return
     api.getAppVersion?.().then((v: string) => { if (v) setAppVersion(v) })
+    api.getAppPaths?.().then((p: typeof appPaths) => { if (p) setAppPaths(p) })
     api.getUpdaterStatus?.().then((s: UpdateStatus) => { if (s) setUpdateStatus(s) })
     const cleanup = api.onUpdaterStatus?.((s: UpdateStatus) => setUpdateStatus(s))
     return cleanup
@@ -340,6 +345,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     if (Array.isArray(updated)) setExtensions(updated)
   }, [])
 
+  const handleTogglePinned = useCallback(async (id: string, next: boolean) => {
+    const api = (window as any).electronAPI
+    const updated = await api.setExtensionPinned?.(id, next)
+    if (Array.isArray(updated)) setExtensions(updated)
+  }, [])
+
   const handleUninstallExtension = useCallback(async (id: string) => {
     const api = (window as any).electronAPI
     const updated = await api.uninstallExtension(id)
@@ -351,6 +362,15 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     await api.openExtensionOptions(id)
     // After opening a new tab with chrome-extension:// URL, close the
     // settings dialog so the tab is visible behind it.
+    onClose()
+  }, [onClose])
+
+  // Open an extension store URL as a new tab in the active workspace, then
+  // close Settings so the user lands on the freshly-opened page.
+  const handleOpenStoreUrl = useCallback((url: string) => {
+    const s = useAppStore.getState()
+    if (s.activeTabGroupId) s.addTab(s.activeTabGroupId, url)
+    else if (s.activeWorkspaceId) s.addUngroupedTab(s.activeWorkspaceId, url)
     onClose()
   }, [onClose])
 
@@ -528,6 +548,16 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
           >
             Extensions
           </button>
+          <button
+            onClick={() => setActiveTab('about')}
+            className={`px-5 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === 'about'
+                ? 'text-foreground border-b-2 border-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            About
+          </button>
         </div>
 
         {/* Content */}
@@ -641,72 +671,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
           {activeTab === 'general' && (
             <div className="space-y-6">
-              {/* Updates */}
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">Updates</label>
-                <div className="flex items-center gap-3 flex-wrap">
-                  <button
-                    onClick={handleCheckForUpdates}
-                    disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'}
-                    className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium transition-colors ${
-                      updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'
-                        ? 'bg-secondary text-muted-foreground cursor-default'
-                        : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                    }`}
-                  >
-                    {updateStatus.phase === 'checking' ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <Download size={12} />
-                    )}
-                    Check for updates
-                  </button>
-                  {updateStatus.phase === 'downloaded' && (
-                    <button
-                      onClick={handleInstallUpdate}
-                      className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground hover:bg-primary/80 text-xs font-medium"
-                    >
-                      <RotateCcw size={12} />
-                      Restart to install
-                    </button>
-                  )}
-                  <span className="text-[11px] text-muted-foreground">
-                    {appVersion ? `Current version: ${appVersion}` : ''}
-                  </span>
-                </div>
-                <div className="mt-2 text-[11px]">
-                  {updateStatus.phase === 'idle' && (
-                    <span className="text-muted-foreground">The app checks for updates automatically on startup.</span>
-                  )}
-                  {updateStatus.phase === 'checking' && (
-                    <span className="text-muted-foreground">Checking for updates…</span>
-                  )}
-                  {updateStatus.phase === 'not-available' && (
-                    <span className="text-muted-foreground flex items-center gap-1">
-                      <CheckCircle2 size={11} className="text-primary" />
-                      You're on the latest version.
-                    </span>
-                  )}
-                  {updateStatus.phase === 'available' && (
-                    <span className="text-foreground">Update v{updateStatus.version} available — downloading…</span>
-                  )}
-                  {updateStatus.phase === 'downloading' && (
-                    <span className="text-foreground">
-                      Downloading v{updateStatus.version} · {updateStatus.percent}%
-                    </span>
-                  )}
-                  {updateStatus.phase === 'downloaded' && (
-                    <span className="text-foreground">Update v{updateStatus.version} ready — restart to install.</span>
-                  )}
-                  {updateStatus.phase === 'error' && (
-                    <span className="text-destructive flex items-center gap-1">
-                      <AlertTriangle size={11} />
-                      Check failed: {updateStatus.message}
-                    </span>
-                  )}
-                </div>
-              </div>
-
               {/* Default page URL */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Default New Tab URL</label>
@@ -915,6 +879,27 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </p>
               </div>
 
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => handleOpenStoreUrl('https://chromewebstore.google.com/category/extensions')}
+                  className="h-8 px-3 flex items-center gap-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted border border-input"
+                  title="Open Chrome Web Store"
+                >
+                  <Globe size={13} />
+                  Chrome Web Store
+                  <ExternalLink size={11} className="text-muted-foreground" />
+                </button>
+                <button
+                  onClick={() => handleOpenStoreUrl('https://microsoftedge.microsoft.com/addons/Microsoft-Edge-Extensions-Home')}
+                  className="h-8 px-3 flex items-center gap-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted border border-input"
+                  title="Open Edge Add-ons store"
+                >
+                  <Puzzle size={13} />
+                  Edge Add-ons
+                  <ExternalLink size={11} className="text-muted-foreground" />
+                </button>
+              </div>
+
               <div className="flex items-stretch gap-2">
                 <input
                   type="text"
@@ -986,6 +971,17 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         )}
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
+                        {ext.hasAction && (
+                          <button
+                            onClick={() => handleTogglePinned(ext.id, !(ext.pinned ?? true))}
+                            className={`h-7 w-7 rounded-md flex items-center justify-center hover:bg-muted ${
+                              (ext.pinned ?? true) ? 'text-foreground' : 'text-muted-foreground'
+                            }`}
+                            title={(ext.pinned ?? true) ? 'Hide from toolbar (unpin)' : 'Show in toolbar (pin)'}
+                          >
+                            {(ext.pinned ?? true) ? <Pin size={12} /> : <PinOff size={12} />}
+                          </button>
+                        )}
                         {ext.hasOptionsPage && (
                           <button
                             onClick={() => handleOpenExtensionOptions(ext.id)}
@@ -1070,6 +1066,129 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     </div>
                   )
                 })}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'about' && (
+            <div className="space-y-6">
+              {/* App identity */}
+              <div className="flex flex-col items-center text-center py-2">
+                <h2 className="text-xl font-semibold text-foreground">
+                  {appPaths?.appName || 'Newbro'}
+                </h2>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {appVersion ? `Version ${appVersion}` : 'Version unknown'}
+                </p>
+              </div>
+
+              {/* Storage paths — useful for confirming dev vs stable
+                  installs end up in different folders. The user-data
+                  directory is where settings, the extensions store,
+                  cookies, and per-profile partitions live. */}
+              {appPaths && (
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-2">Storage</label>
+                  <div className="space-y-2">
+                    {[
+                      { label: 'User data', value: appPaths.userData },
+                      { label: 'Cache', value: appPaths.cache },
+                      { label: 'Logs', value: appPaths.logs },
+                    ].map((row) => (
+                      <div key={row.label} className="flex items-center gap-2">
+                        <span className="text-[11px] text-muted-foreground w-20 shrink-0">{row.label}</span>
+                        <code
+                          className="flex-1 text-[11px] font-mono px-2 py-1.5 rounded bg-secondary text-foreground truncate select-all"
+                          title={row.value}
+                        >
+                          {row.value}
+                        </code>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(row.value).catch(() => {}) }}
+                          className="h-7 px-2 rounded-md text-[11px] bg-secondary text-secondary-foreground hover:bg-muted shrink-0"
+                          title="Copy to clipboard"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Updates */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">Updates</label>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleCheckForUpdates}
+                    disabled={
+                      updateStatus.phase === 'checking' ||
+                      updateStatus.phase === 'downloading' ||
+                      updateStatus.phase === 'unsupported'
+                    }
+                    title={updateStatus.phase === 'unsupported' ? 'Updates are only available in installed builds.' : undefined}
+                    className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium transition-colors ${
+                      updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'
+                        ? 'bg-secondary text-muted-foreground cursor-default'
+                        : updateStatus.phase === 'unsupported'
+                          ? 'bg-secondary text-muted-foreground cursor-not-allowed opacity-60'
+                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
+                    }`}
+                  >
+                    {updateStatus.phase === 'checking' ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Download size={12} />
+                    )}
+                    Check for updates
+                  </button>
+                  {updateStatus.phase === 'downloaded' && (
+                    <button
+                      onClick={handleInstallUpdate}
+                      className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground hover:bg-primary/80 text-xs font-medium"
+                    >
+                      <RotateCcw size={12} />
+                      Restart to install
+                    </button>
+                  )}
+                </div>
+                <div className="mt-2 text-[11px]">
+                  {updateStatus.phase === 'idle' && (
+                    <span className="text-muted-foreground">The app checks for updates automatically on startup.</span>
+                  )}
+                  {updateStatus.phase === 'checking' && (
+                    <span className="text-muted-foreground">Checking for updates…</span>
+                  )}
+                  {updateStatus.phase === 'not-available' && (
+                    <span className="text-muted-foreground flex items-center gap-1">
+                      <CheckCircle2 size={11} className="text-primary" />
+                      You're on the latest version.
+                    </span>
+                  )}
+                  {updateStatus.phase === 'available' && (
+                    <span className="text-foreground">Update v{updateStatus.version} available — downloading…</span>
+                  )}
+                  {updateStatus.phase === 'downloading' && (
+                    <span className="text-foreground">
+                      Downloading v{updateStatus.version} · {updateStatus.percent}%
+                    </span>
+                  )}
+                  {updateStatus.phase === 'downloaded' && (
+                    <span className="text-foreground">Update v{updateStatus.version} ready — restart to install.</span>
+                  )}
+                  {updateStatus.phase === 'error' && (
+                    <span className="text-destructive flex items-center gap-1">
+                      <AlertTriangle size={11} />
+                      Check failed: {updateStatus.message}
+                    </span>
+                  )}
+                  {updateStatus.phase === 'unsupported' && (
+                    <span className="text-muted-foreground">
+                      Updates are unavailable in development builds. Install a packaged release to receive updates.
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           )}

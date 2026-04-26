@@ -2,10 +2,25 @@ import { Fragment, useState, useRef, useEffect, useCallback, useMemo } from 'rea
 import { useAppStore, getSidebarOrder } from '../store/app-store'
 import { log } from '../lib/log'
 import { InputDialog } from './InputDialog'
+import { MoveToGroupDialog } from './MoveToGroupDialog'
 import { TabFavicon } from './TabFavicon'
 import {
   ChevronRight, ChevronDown, Plus, X, FolderPlus, MessageSquareText,
 } from 'lucide-react'
+import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
+
+const isMacOS = navigator.platform.toLowerCase().includes('mac')
+
+// Read the parent's theme attributes so the popup window picks up the same
+// theme. The popup is its own BrowserWindow → its CSS variables must be
+// re-applied per spec rather than inherited.
+function readThemeAttrs(): { theme?: string; themeVariant?: string } {
+  const root = document.documentElement
+  return {
+    theme: root.getAttribute('data-theme') ?? undefined,
+    themeVariant: root.getAttribute('data-theme-variant') ?? undefined,
+  }
+}
 
 interface TabItem {
   id: string
@@ -123,6 +138,13 @@ export function Sidebar({ visible }: Props) {
   const [commentDialogOpen, setCommentDialogOpen] = useState(false)
   const [commentTabId, setCommentTabId] = useState<string | null>(null)
   const [commentDefault, setCommentDefault] = useState('')
+  // Move-to-group dialog state. We snapshot the candidate groups + the tab's
+  // title at right-click time so the dialog is self-contained and doesn't
+  // need to recompute as state evolves while it's open.
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false)
+  const [moveDialogTabId, setMoveDialogTabId] = useState<string | null>(null)
+  const [moveDialogGroups, setMoveDialogGroups] = useState<{ id: string; name: string; color: string }[]>([])
+  const [moveDialogTabTitle, setMoveDialogTabTitle] = useState<string | undefined>(undefined)
 
   // ── Drag & Drop (pointer-based, no library) ──
   const [dragging, setDragging] = useState<{ type: 'tab' | 'group'; id: string; ids: string[] } | null>(null)
@@ -376,66 +398,103 @@ export function Sidebar({ visible }: Props) {
     setEditingGroupId(null)
   }
 
-  const handleTabContextMenu = async (tabId: string, e: React.MouseEvent) => {
+  const handleTabContextMenu = async (tabId: string, e: React.MouseEvent): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
     const tabGroupId = findTabGroup(tabId)
     const isUngrouped = tabGroupId === null
-    const tab = workspace.tabs?.find((t) => t.id === tabId) || workspace.tabGroups.flatMap((g) => g.tabs).find((t) => t.id === tabId)
+    const tab = workspace.tabs?.find((t) => t.id === tabId)
+      || workspace.tabGroups.flatMap((g) => g.tabs).find((t) => t.id === tabId)
     const hasComment = !!tab?.comment
+    const closeShortcut = [isMacOS ? '⌘' : 'Ctrl', 'W']
 
-    const items: any[] = [
-      { id: 'close', label: 'Close Tab' },
+    // Header shows the tab's title (truncated by the popup) so the user has
+    // visual confirmation of WHICH tab they're acting on — useful when the
+    // sidebar is dense and right-click hit-targets are small.
+    const header = tab?.title?.trim() || (() => {
+      try { return new URL(tab?.url ?? '').host } catch { return undefined }
+    })()
+
+    const actions: DropdownAction[] = [
+      { id: 'close', label: 'Close Tab', iconName: 'X', shortcut: closeShortcut },
     ]
     if (!isUngrouped) {
-      items.push({ id: 'ungroup', label: 'Ungroup Tab' })
+      actions.push({ id: 'ungroup', label: 'Ungroup Tab', iconName: 'FolderMinus' })
     }
-    items.push({ id: 'new-group', label: 'Add to New Group...' })
-    items.push({ type: 'separator' })
-    items.push({ id: 'set-comment', label: hasComment ? 'Edit Comment...' : 'Set Comment...' })
+    actions.push({ id: 'new-group', label: 'Add to New Group…', iconName: 'FolderPlus' })
+    actions.push({
+      id: 'set-comment',
+      label: hasComment ? 'Edit Comment…' : 'Set Comment…',
+      iconName: 'MessageSquare',
+      divider: 'before',
+    })
     if (hasComment) {
-      items.push({ id: 'remove-comment', label: 'Remove Comment' })
+      actions.push({ id: 'remove-comment', label: 'Remove Comment', iconName: 'MessageSquareOff' })
     }
-    if (workspace.tabGroups.length > 0) {
-      const groups = workspace.tabGroups.filter((g) => g.id !== tabGroupId)
-      if (groups.length > 0) {
-        items.push({ type: 'separator' })
-        items.push({
-          id: 'move-to-group',
-          label: 'Move to Group',
-          submenu: groups.map((g) => ({ id: `move:${g.id}`, label: g.name })),
-        })
-      }
+    const otherGroups = workspace.tabGroups.filter((g) => g.id !== tabGroupId)
+    if (otherGroups.length > 0) {
+      actions.push({
+        id: 'move-to-group',
+        label: 'Move to Group…',
+        iconName: 'FolderInput',
+        divider: 'before',
+      })
     }
 
-    const api = (window as any).electronAPI
-    const action = await api.showContextMenu(items)
-    if (!action) return
+    const result = await openDropdownAsync({
+      kind: 'menu',
+      position: { x: e.clientX, y: e.clientY },
+      ...readThemeAttrs(),
+      header,
+      actions,
+    })
+    if (!result || result.type !== 'action') return
+    const action = result.actionId
     if (action === 'close') closeTab(tabId)
     else if (action === 'ungroup') ungroupTab(tabId)
     else if (action === 'new-group') { setContextTabForGroup(tabId); setGroupFromContextOpen(true) }
     else if (action === 'set-comment') { setCommentTabId(tabId); setCommentDefault(tab?.comment || ''); setCommentDialogOpen(true) }
     else if (action === 'remove-comment') setTabComment(tabId, '')
-    else if (action.startsWith('move:')) moveTabToGroup(tabId, action.slice(5))
+    else if (action === 'move-to-group') {
+      // Hand off to a real modal dialog (own BrowserWindow) so the picker has
+      // its own search field, scrollable list, and lifecycle independent of
+      // the context-menu popup. Snapshot the group list and tab title at
+      // open time — the dialog reads from these props, not live store state.
+      setMoveDialogTabId(tabId)
+      setMoveDialogGroups(otherGroups.map((g) => ({ id: g.id, name: g.name, color: g.color })))
+      setMoveDialogTabTitle(tab?.title)
+      setMoveDialogOpen(true)
+    }
   }
 
-  const handleGroupContextMenu = async (groupId: string, e: React.MouseEvent) => {
+  const handleGroupContextMenu = async (groupId: string, e: React.MouseEvent): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
     const group = workspace.tabGroups.find((g) => g.id === groupId)
     if (!group) return
 
-    const items = [
-      { id: 'rename', label: 'Rename Group' },
-      { id: 'add-tab', label: 'Add Tab to Group' },
-      { type: 'separator' },
-      { id: 'ungroup-all', label: 'Ungroup All Tabs' },
-      { id: 'close-group', label: `Close Group (${group.tabs.length} tabs)` },
+    const tabCount = group.tabs.length
+    const actions: DropdownAction[] = [
+      { id: 'rename', label: 'Rename Group', iconName: 'Pencil' },
+      { id: 'add-tab', label: 'Add Tab to Group', iconName: 'FilePlus' },
+      { id: 'ungroup-all', label: 'Ungroup All Tabs', iconName: 'FolderMinus', divider: 'before' },
+      {
+        id: 'close-group',
+        label: `Close Group (${tabCount} ${tabCount === 1 ? 'tab' : 'tabs'})`,
+        iconName: 'X',
+        destructive: true,
+      },
     ]
 
-    const api = (window as any).electronAPI
-    const action = await api.showContextMenu(items)
-    if (!action) return
+    const result = await openDropdownAsync({
+      kind: 'menu',
+      position: { x: e.clientX, y: e.clientY },
+      ...readThemeAttrs(),
+      header: group.name,
+      actions,
+    })
+    if (!result || result.type !== 'action') return
+    const action = result.actionId
     if (action === 'rename') handleGroupDoubleClick(groupId, group.name)
     else if (action === 'add-tab') addTab(groupId)
     else if (action === 'ungroup-all') ungroupAll(groupId)
@@ -535,9 +594,9 @@ export function Sidebar({ visible }: Props) {
             e.stopPropagation()
             closeTab(tab.id)
           }}
-          className={`h-5 w-5 flex items-center justify-center rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive shrink-0 ${active ? 'opacity-100' : 'opacity-0 group-hover/tab:opacity-100'}`}
+          className={`h-6 w-6 flex items-center justify-center rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive shrink-0 ${active ? 'opacity-100' : 'opacity-0 group-hover/tab:opacity-100'}`}
         >
-          <X size={12} />
+          <X size={14} />
         </button>
       </div>
     )
@@ -569,12 +628,16 @@ export function Sidebar({ visible }: Props) {
           if (e.button !== 0 || isEditing) return
           startDragStable('group', group.id, [group.id], e)
         }}
+        onClick={() => {
+          if (isEditing) return
+          toggleTabGroupCollapse(group.id)
+        }}
         onContextMenu={(e) => handleGroupContextMenu(group.id, e)}
       >
         {showGroupBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
-        <span className="text-muted-foreground" onClick={(e) => { e.stopPropagation(); toggleTabGroupCollapse(group.id) }}>
+        <span className="text-muted-foreground shrink-0">
           {group.isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
         </span>
         <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: group.color }} />
@@ -593,17 +656,11 @@ export function Sidebar({ visible }: Props) {
             autoFocus
           />
         ) : (
-          <span
-            className="flex-1 text-xs font-medium text-foreground truncate"
-            onClick={(e) => {
-              e.stopPropagation()
-              toggleTabGroupCollapse(group.id)
-            }}
-          >
+          <span className="flex-1 text-xs font-medium text-foreground truncate">
             {group.name}
           </span>
         )}
-        <span className="text-[10px] text-muted-foreground mr-0.5 opacity-0 group-hover:opacity-100 transition-opacity" title={`${group.tabs.length} tabs`}>
+        <span className="text-[10px] text-muted-foreground mr-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" title={`${group.tabs.length} tabs`}>
           {group.tabs.length}
         </span>
         <button
@@ -612,10 +669,10 @@ export function Sidebar({ visible }: Props) {
             e.stopPropagation()
             addTab(group.id)
           }}
-          className="h-5 w-5 items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground flex opacity-0 group-hover:opacity-100"
+          className="h-6 w-6 items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground flex shrink-0 opacity-0 group-hover:opacity-100"
           title="Add tab"
         >
-          <Plus size={12} />
+          <Plus size={14} />
         </button>
         <button
           onMouseDown={(e) => e.stopPropagation()}
@@ -623,10 +680,10 @@ export function Sidebar({ visible }: Props) {
             e.stopPropagation()
             closeGroup(group.id)
           }}
-          className="h-5 w-5 items-center justify-center rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive flex opacity-0 group-hover:opacity-100"
+          className="h-6 w-6 items-center justify-center rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive flex shrink-0 opacity-0 group-hover:opacity-100"
           title="Close group"
         >
-          <X size={12} />
+          <X size={14} />
         </button>
       </div>
     )
@@ -648,16 +705,16 @@ export function Sidebar({ visible }: Props) {
             <span className="text-[10px] text-muted-foreground flex-1">{selectedTabIds.size} selected</span>
             <button
               onClick={() => setGroupFromSelectionOpen(true)}
-              className="h-5 px-2 flex items-center gap-1 rounded text-[10px] font-medium bg-primary text-primary-foreground hover:opacity-90"
+              className="h-6 px-2 flex items-center gap-1 rounded text-[10px] font-medium bg-primary text-primary-foreground hover:opacity-90"
               title="Move to new group"
             >
-              <FolderPlus size={12} /> Group
+              <FolderPlus size={14} /> Group
             </button>
             <button
               onClick={() => setSelectedTabIds(new Set())}
-              className="h-5 w-5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
+              className="h-6 w-6 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
             >
-              <X size={12} />
+              <X size={14} />
             </button>
           </div>
         )}
@@ -749,6 +806,21 @@ export function Sidebar({ visible }: Props) {
         onCancel={() => {
           setCommentTabId(null)
           setCommentDialogOpen(false)
+        }}
+      />
+
+      <MoveToGroupDialog
+        open={moveDialogOpen}
+        tabTitle={moveDialogTabTitle}
+        groups={moveDialogGroups}
+        onConfirm={(groupId) => {
+          if (moveDialogTabId) moveTabToGroup(moveDialogTabId, groupId)
+          setMoveDialogOpen(false)
+          setMoveDialogTabId(null)
+        }}
+        onCancel={() => {
+          setMoveDialogOpen(false)
+          setMoveDialogTabId(null)
         }}
       />
     </>

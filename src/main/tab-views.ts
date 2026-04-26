@@ -23,6 +23,7 @@ import type { Session, WebContents } from 'electron'
 import { join } from 'path'
 import { log } from './log'
 import { setupPartitionSession } from './index'
+import { ensureExtensionInSession } from './extensions/manager'
 
 export interface TabBounds {
   x: number
@@ -50,6 +51,10 @@ export type TabEvent =
       isMainFrame: boolean
     }
   | { type: 'dom-ready'; tabId: string; url: string }
+  // Fires after the page's onload event (later than did-stop-loading and
+  // after Electron's own auto-focus of the WebContentsView). Use this — not
+  // did-stop-loading — when overriding focus on load completion.
+  | { type: 'did-finish-load'; tabId: string; url: string }
 
 interface TabRecord {
   tabId: string
@@ -123,12 +128,27 @@ function wireEvents(rec: TabRecord): void {
   // CertWarningOverlay is triggered by did-fail-load with an ERR_CERT_*
   // code, which is already covered by the did-fail-load handler above.
   wc.on('dom-ready', () => emit({ type: 'dom-ready', tabId: rec.tabId, url: wc.getURL() }))
+  wc.on('did-finish-load', () =>
+    emit({ type: 'did-finish-load', tabId: rec.tabId, url: wc.getURL() })
+  )
 
   // Route window.open() on the guest to the renderer as a new tab, matching
   // the legacy did-attach-webview behavior.
   wc.setWindowOpenHandler(({ url }) => {
     sendToWindowRenderer(rec.windowId, 'open-url-as-tab', url)
     return { action: 'deny' }
+  })
+
+  // Close any open extension popup when the user clicks the page. This is
+  // the second listener on input-event (the first lives a few lines up for
+  // focus-intent). We only react to the start of a click — fires once per
+  // press, even if the user drags. The icon button's own onClick handler
+  // takes care of the "click the icon while popup is open" case.
+  wc.on('input-event', (_e, input) => {
+    if (input.type !== 'mouseDown') return
+    if (extensionPopupByWindow.has(rec.windowId)) {
+      closeExtensionPopup(rec.windowId)
+    }
   })
 }
 
@@ -200,6 +220,15 @@ export function createTab(opts: {
   if (opts.active) {
     setActiveTab(opts.windowId, opts.tabId)
     loadIfNeeded(rec, opts.url)
+    // Hand OS keyboard focus to the new tab's webContents so the user can
+    // start typing into the page right away — this is the "focus site"
+    // default. The "focus URL on new tab" override fires later, on the
+    // tab's first did-finish-load (see WebviewPanel.tsx).
+    try {
+      rec.view.webContents.focus()
+    } catch {
+      /* ignore */
+    }
   } else {
     // Keep lazy: inactive tabs stay at about:blank until first activation.
     // We don't even call loadURL so the guest webContents is effectively
@@ -217,15 +246,25 @@ function loadIfNeeded(rec: TabRecord, url: string): void {
 }
 
 export function activateTab(windowId: number, tabId: string, url: string): void {
+  // Determine whether this is a real activation (different tab now active)
+  // or a no-op re-activation. WebviewPanel calls tabActivate from an effect
+  // that re-runs whenever `profiles` changes — and `profiles` changes any
+  // time another window broadcasts state via 'state:updated'. Focusing
+  // unconditionally would yank the OS focus to whichever window's effect
+  // ran last, even when the user is interacting with a different window.
+  const previouslyActive = activeTabByWindow.get(windowId)
+  const isNewActivation = previouslyActive !== tabId
   setActiveTab(windowId, tabId)
   const rec = tabs.get(tabId)
   if (!rec) return
   loadIfNeeded(rec, url)
-  // Take keyboard focus so typing lands in the page.
-  try {
-    rec.view.webContents.focus()
-  } catch {
-    /* ignore */
+  if (isNewActivation) {
+    // Take keyboard focus so typing lands in the page.
+    try {
+      rec.view.webContents.focus()
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -343,35 +382,227 @@ export function tabExecuteJS(tabId: string, code: string): Promise<unknown> {
   return rec.view.webContents.executeJavaScript(code, false).catch(() => null)
 }
 
-export function openExtensionPopup(
+// Extension popups are floating WebContentsViews layered onto the main
+// window's contentView (the same surface tabs render into). The earlier
+// implementation opened a separate BrowserWindow but Chromium kept blocking
+// chrome-extension://<id>/popup.html with ERR_BLOCKED_BY_CLIENT — top-level
+// frames in non-extension BrowserWindows don't enjoy the same privileges
+// the extension system grants WebContentsViews. Reusing the tab pipeline
+// sidesteps that entirely AND gives us a chrome-less floating panel for
+// free.
+interface ExtensionPopupRecord {
+  windowId: number
+  extensionId: string
+  view: WebContentsView
+  /** Anchor rect in window-relative CSS pixels. The renderer sends this so
+   *  the popup tracks the icon when the window resizes. Updated on each
+   *  toggle call. */
+  anchor: { x: number; y: number; width: number; height: number }
+  width: number
+  height: number
+  /** Stored so we can `removeListener` when the popup closes. Without
+   *  this, every open/close cycle leaked a window blur listener and
+   *  Node started warning at 11 popups (MaxListenersExceededWarning). */
+  onBlur: () => void
+}
+
+const extensionPopupByWindow = new Map<number, ExtensionPopupRecord>()
+
+const POPUP_DEFAULT_WIDTH = 360
+const POPUP_DEFAULT_HEIGHT = 520
+/** Padding between window edge and popup so the panel never butts up
+ *  against the sash. Matches Chrome's spacing. */
+const POPUP_VIEWPORT_MARGIN = 6
+
+function clampPopupBounds(
+  ownerWindow: BrowserWindow,
+  anchor: { x: number; y: number; width: number; height: number },
+  width: number,
+  height: number
+): TabBounds {
+  const [winW, winH] = ownerWindow.getContentSize()
+  // Right-align the popup with the anchor (icon's right edge), Chrome-style.
+  let x = Math.round(anchor.x + anchor.width - width)
+  // Drop directly below the anchor with a small gap.
+  let y = Math.round(anchor.y + anchor.height + 2)
+  x = Math.max(POPUP_VIEWPORT_MARGIN, Math.min(x, winW - width - POPUP_VIEWPORT_MARGIN))
+  y = Math.max(POPUP_VIEWPORT_MARGIN, Math.min(y, winH - height - POPUP_VIEWPORT_MARGIN))
+  return { x, y, width, height }
+}
+
+function destroyExtensionPopup(rec: ExtensionPopupRecord): void {
+  const win = BrowserWindow.fromId(rec.windowId)
+  if (win && !win.isDestroyed()) {
+    try {
+      win.removeListener('blur', rec.onBlur)
+    } catch {
+      /* ignore */
+    }
+    try {
+      win.contentView.removeChildView(rec.view)
+    } catch {
+      /* ignore */
+    }
+  }
+  try {
+    rec.view.webContents.close()
+  } catch {
+    try {
+      ;(rec.view.webContents as unknown as { destroy?: () => void }).destroy?.()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export function closeExtensionPopup(windowId: number): boolean {
+  const rec = extensionPopupByWindow.get(windowId)
+  if (!rec) return false
+  extensionPopupByWindow.delete(windowId)
+  destroyExtensionPopup(rec)
+  sendToWindowRenderer(windowId, 'extension-popup-closed', { extensionId: rec.extensionId })
+  return true
+}
+
+/** Toggle an extension's popup. If the same extension's popup is already
+ *  open, close it. If a different extension's popup is open, close it
+ *  and open the new one. Returns 'opened' | 'closed'. Async because we
+ *  may need to load the extension into the popup's session on demand. */
+export async function toggleExtensionPopup(
   windowId: number,
   extensionId: string,
-  popupPath: string
-): void {
+  popupPath: string,
+  anchor: { x: number; y: number; width: number; height: number }
+): Promise<'opened' | 'closed'> {
+  const existing = extensionPopupByWindow.get(windowId)
+  if (existing && existing.extensionId === extensionId) {
+    closeExtensionPopup(windowId)
+    return 'closed'
+  }
+  // Different extension already open — replace it.
+  if (existing) closeExtensionPopup(windowId)
+
   const ownerWindow = BrowserWindow.fromId(windowId)
-  if (!ownerWindow || ownerWindow.isDestroyed()) return
-  const popup = new BrowserWindow({
-    width: 360,
-    height: 520,
-    parent: ownerWindow,
-    modal: false,
-    frame: true,
-    resizable: true,
-    title: 'Extension',
-    useContentSize: true,
+  if (!ownerWindow || ownerWindow.isDestroyed()) return 'closed'
+
+  const partition = pickPartitionForWindow(windowId)
+  // The partition session may not have THIS extension loaded — the install
+  // loop iterates live BrowserWindows + their child views, but a session
+  // can drop an extension between sessions if Electron silently rejects
+  // the load (manifest quirk, MV2 webRequest, etc.) or if the partition
+  // wasn't live at install time. Force-load on demand: chrome-extension://
+  // navigations get ERR_BLOCKED_BY_CLIENT from Chromium when the session
+  // doesn't have the destination extension registered.
+  setupPartitionSession(partition)
+  const ses = session.fromPartition(partition)
+  const ok = await ensureExtensionInSession(ses, extensionId)
+  if (!ok) {
+    log.warn('extension popup: extension is not loadable in this session', {
+      partition,
+      extensionId,
+    })
+    return 'closed'
+  }
+
+  // Diagnostic: confirm post-load state in case the on-demand load above
+  // succeeds but Chromium still bounces. Useful when triaging future
+  // ERR_BLOCKED_BY_CLIENT reports.
+  try {
+    const all = ses.getAllExtensions?.() ?? []
+    log.info('extension popup: opening', {
+      partition,
+      extensionId,
+      loadedInSession: all.some((e) => e.id === extensionId),
+      sessionExtCount: all.length,
+    })
+  } catch (err) {
+    log.warn('extension popup: getAllExtensions failed', String(err))
+  }
+
+  // Match the webPreferences shape of regular tabs as closely as possible.
+  // chrome-extension:// loads succeed in tab WebContentsViews, so we copy
+  // the same surface — partition + session + stealth preload + sandbox
+  // off — to avoid hitting whatever subtle gate diverging settings trip.
+  const view = new WebContentsView({
     webPreferences: {
-      // Popup must run inside a session that has the extension registered.
-      // We pick the active tab's partition so the extension sees the same
-      // storage/cookies as the page it's acting on.
-      partition: pickPartitionForWindow(windowId),
+      partition,
+      session: ses,
+      preload: WEBVIEW_STEALTH_PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
     },
   })
+
+  const width = POPUP_DEFAULT_WIDTH
+  const height = POPUP_DEFAULT_HEIGHT
+  const bounds = clampPopupBounds(ownerWindow, anchor, width, height)
+  view.setBounds(bounds)
+  view.setBackgroundColor('#ffffff')
+  ownerWindow.contentView.addChildView(view)
+
+  // Tear down on owner-window blur. Listener is stored on the record so
+  // closeExtensionPopup can remove it — without this, every open/close
+  // cycle leaks a listener and Node hits MaxListenersExceeded after 11.
+  const onBlur = (): void => { closeExtensionPopup(windowId) }
+  ownerWindow.on('blur', onBlur)
+
+  const rec: ExtensionPopupRecord = {
+    windowId,
+    extensionId,
+    view,
+    anchor,
+    width,
+    height,
+    onBlur,
+  }
+  extensionPopupByWindow.set(windowId, rec)
+
   const url = `chrome-extension://${extensionId}/${popupPath.replace(/^\//, '')}`
-  popup.loadURL(url).catch((err) => {
+  view.webContents.loadURL(url).catch((err) => {
     log.warn('extension popup: loadURL failed', { url, err: String(err) })
+    closeExtensionPopup(windowId)
   })
+
+  // Pull keyboard focus into the popup once the page is rendered so typing
+  // (form fields, search boxes inside the popup) routes there without the
+  // user needing an extra click. Bail out if the popup was torn down before
+  // load completed.
+  view.webContents.once('did-finish-load', () => {
+    if (!extensionPopupByWindow.has(windowId)) return
+    try { view.webContents.focus() } catch { /* ignore */ }
+  })
+
+  // Tear down on owner-window destroy. Map cleanup happens here too in
+  // case the popup outlived our explicit close (shouldn't, but defensive).
+  ownerWindow.once('closed', () => {
+    extensionPopupByWindow.delete(windowId)
+  })
+
+  // Send opened notification so the renderer can update icon "active" state.
+  sendToWindowRenderer(windowId, 'extension-popup-opened', { extensionId })
+
+  return 'opened'
+}
+
+/** Reposition the open popup when the renderer reports the icon's anchor
+ *  rect has moved (sidebar toggle, window resize). No-op if no popup is
+ *  open or the extensionId doesn't match. */
+export function moveExtensionPopup(
+  windowId: number,
+  extensionId: string,
+  anchor: { x: number; y: number; width: number; height: number }
+): void {
+  const rec = extensionPopupByWindow.get(windowId)
+  if (!rec || rec.extensionId !== extensionId) return
+  const ownerWindow = BrowserWindow.fromId(windowId)
+  if (!ownerWindow || ownerWindow.isDestroyed()) return
+  rec.anchor = anchor
+  rec.view.setBounds(clampPopupBounds(ownerWindow, anchor, rec.width, rec.height))
+}
+
+export function getOpenExtensionPopupId(windowId: number): string | null {
+  return extensionPopupByWindow.get(windowId)?.extensionId ?? null
 }
 
 function pickPartitionForWindow(windowId: number): string {

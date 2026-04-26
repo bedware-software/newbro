@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getSidebarOrder, type NewTabFocus } from './store/app-store'
 import { normalizeURL, setSearchEngine } from './lib/url'
 import { log } from './lib/log'
+import { focusAndSelectUrlBar } from './lib/focus-url-bar'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
@@ -43,6 +44,7 @@ declare global {
       setWindowTitle: (title: string) => Promise<void>
       setTitleBarOverlay: (options: { color: string; symbolColor: string; height: number }) => Promise<void>
       closeWindow: () => Promise<void>
+      focusWindowRenderer: () => void
       minimizeWindow: () => Promise<void>
       maximizeWindow: () => Promise<void>
       restoreWindow: () => Promise<void>
@@ -58,7 +60,6 @@ declare global {
       saveSettings: (settings: Settings) => Promise<void>
       wipeAllData: () => Promise<void>
       openBookmarkFile: () => Promise<string | null>
-      showContextMenu: (items: unknown[]) => Promise<string | null>
       showAboutPanel: () => void
       detachedWindowShow: () => void
       onShortcut: (callback: (action: string) => void) => () => void
@@ -96,6 +97,14 @@ declare global {
       openExtensionAction?: (extensionId: string, tabId: string | null) => Promise<boolean>
       onExtensionsChanged?: (callback: (extensions: unknown[]) => void) => () => void
       onTabContextSearch?: (callback: (query: string) => void) => () => void
+
+      // Dropdown popup (separate transparent BrowserWindow)
+      openDropdown?: (spec: unknown) => void
+      closeDropdown?: () => void
+      onDropdownEvent?: (callback: (evt: unknown) => void) => () => void
+      dropdownPopupEvent?: (evt: unknown) => void
+      dropdownPopupResize?: (size: { width: number; height: number }) => void
+      onDropdownPopupSpec?: (callback: (spec: unknown) => void) => () => void
     }
   }
 }
@@ -108,6 +117,7 @@ type UpdateStatus =
   | { phase: 'downloading'; version: string; percent: number; bytesPerSecond: number }
   | { phase: 'downloaded'; version: string; releaseNotes?: string | null }
   | { phase: 'error'; message: string }
+  | { phase: 'unsupported' }
 
 function getWindowParams(): { profileId: string | null; workspaceId: string | null; tabId: string | null } {
   const params = new URLSearchParams(window.location.search)
@@ -356,8 +366,11 @@ export default function App() {
           if (s.activeTabId) s.closeTab(s.activeTabId)
           break
         case 'focus-url': {
-          const urlBar = document.querySelector('#url-bar') as HTMLInputElement
-          urlBar?.focus(); urlBar?.select()
+          // The shared helper also asks main to pull OS keyboard focus back
+          // to the parent webContents — necessary because tab pages live in
+          // sibling WebContentsViews that otherwise keep OS focus and
+          // intercept all typed characters.
+          focusAndSelectUrlBar()
           break
         }
         case 'search':

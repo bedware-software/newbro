@@ -1,14 +1,4 @@
 import { useState, useRef, useEffect } from 'react'
-import {
-  DndContext,
-  PointerSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from '@dnd-kit/core'
-import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
 import { useAppStore, saveStateNow, findWorkspaceCandidates } from '../store/app-store'
 import { normalizeURL } from '../lib/url'
 import { log } from '../lib/log'
@@ -17,11 +7,23 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { CertificatePopup } from './CertificatePopup'
 import { ImportWorkspaceDialog } from './ImportWorkspaceDialog'
 import type { WorkspaceCandidate } from '../store/types'
+import type { DropdownAction, DropdownEvent, DropdownSpec, IconName } from './dropdown-protocol'
+import { openDropdownAsync } from './dropdown-protocol'
 import {
-  ChevronLeft, ChevronRight, RotateCw, X, ChevronDown, Plus, Trash2, Pencil,
-  PanelLeftClose, PanelLeft, User, Layout, Lock, Unlock, ShieldAlert, Import,
-  Menu, Settings, Info, Globe, Copy, Check, LogOut, Search, Download, Puzzle,
+  ChevronLeft, ChevronRight, RotateCw, X, ChevronDown,
+  PanelLeftClose, PanelLeft, User, Layout, Lock, Unlock, ShieldAlert,
+  Menu, Globe, Copy, Check, Puzzle,
 } from 'lucide-react'
+
+// Trigger-side icon registry. Only the icons used on dropdown trigger
+// buttons appear here — row icons are resolved inside the popup window
+// (see ICONS in DropdownMenuContent.tsx).
+const TRIGGER_ICONS: Partial<Record<IconName, typeof User>> = {
+  User, Layout, Menu,
+}
+function resolveTriggerIcon(name: IconName): typeof User {
+  return TRIGGER_ICONS[name] ?? User
+}
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
@@ -34,223 +36,128 @@ interface Props {
   onOpenSearch: () => void
 }
 
-function SortableDropdownRow({
-  item,
-  selected,
-  icon: Icon,
-  sortable,
-  onSelect,
-  onEdit,
-  onDelete,
-  canDelete,
-}: {
-  item: { id: string; name: string }
-  selected: boolean
-  icon: typeof User
-  sortable: boolean
-  onSelect: (id: string) => void
-  onEdit?: (id: string, name: string) => void
-  onDelete?: (id: string, name: string) => void
-  canDelete?: boolean
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: item.id,
-    disabled: !sortable,
-  })
-
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
+// Stable opener id per Dropdown / AppMenu instance. Echoed back on every
+// dropdown event so multiple components can share the global event channel
+// (and the popup window) without listeners crossing wires. Falls back to a
+// non-crypto id when crypto.randomUUID isn't available.
+function useOpenerId(): string {
+  const ref = useRef<string>('')
+  if (!ref.current) {
+    ref.current = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2)
   }
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      {...(sortable ? attributes : {})}
-      {...(sortable ? listeners : {})}
-      className={`flex items-center gap-2 px-3 py-1.5 group/row transition-colors ${
-        selected
-          ? 'bg-accent text-accent-foreground'
-          : 'text-foreground hover:bg-accent/50'
-      } ${isDragging ? 'opacity-60' : ''} ${sortable ? 'cursor-grab active:cursor-grabbing' : ''}`}
-    >
-      <button
-        className="flex items-center gap-2 flex-1 min-w-0 text-left"
-        onClick={() => onSelect(item.id)}
-      >
-        <Icon size={12} className="text-muted-foreground shrink-0" />
-        <span className="truncate">{item.name}</span>
-      </button>
-      <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover/row:opacity-100 transition-all">
-        {onEdit && (
-          <button
-            data-row-action
-            onPointerDown={(e) => e.stopPropagation()}
-            className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-            onClick={(e) => {
-              e.stopPropagation()
-              onEdit(item.id, item.name)
-            }}
-            title={`Rename ${item.name}`}
-          >
-            <Pencil size={11} />
-          </button>
-        )}
-        {canDelete && onDelete && (
-          <button
-            data-row-action
-            onPointerDown={(e) => e.stopPropagation()}
-            className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-            onClick={(e) => {
-              e.stopPropagation()
-              onDelete(item.id, item.name)
-            }}
-            title={`Delete ${item.name}`}
-          >
-            <Trash2 size={11} />
-          </button>
-        )}
-      </div>
-    </div>
-  )
+  return ref.current
 }
 
-/** Custom dropdown with delete support */
-function Dropdown({ items, value, onChange, onDelete, onEdit, onReorder, icon: Icon, label, onNew, newLabel, canDelete, extraActions }: {
+// Subscribes to dropdown events and dispatches only the ones tagged with the
+// caller's opener id. Subscribes for the lifetime of the component (not just
+// while open) so the synthetic 'cancel' that arrives when our dropdown is
+// superseded by another can still update our state.
+function useDropdownEvents(openerId: string, handler: (evt: DropdownEvent) => void): void {
+  const handlerRef = useRef(handler)
+  handlerRef.current = handler
+  useEffect(() => {
+    const cleanup = window.electronAPI.onDropdownEvent?.((evt: unknown) => {
+      const e = evt as DropdownEvent
+      if (e.openerId !== openerId) return
+      handlerRef.current(e)
+    })
+    return cleanup
+  }, [openerId])
+}
+
+// Capture the parent renderer's current theme so the popup window can mirror
+// it on its own <html>. CSS variables live on the popup's document, not the
+// parent's, so they have to be re-applied per window.
+function readThemeAttrs(): { theme?: string; themeVariant?: string } {
+  const root = document.documentElement
+  return {
+    theme: root.getAttribute('data-theme') ?? undefined,
+    themeVariant: root.getAttribute('data-theme-variant') ?? undefined,
+  }
+}
+
+interface DropdownTriggerProps {
+  iconName: IconName
   items: { id: string; name: string }[]
   value: string | null
   onChange: (id: string) => void
   onDelete?: (id: string, name: string) => void
   onEdit?: (id: string, name: string) => void
   onReorder?: (sourceId: string, sourceIndex: number, targetIndex: number) => void
-  icon: typeof User
   label: string
   onNew?: () => void
   newLabel?: string
   canDelete?: boolean
-  extraActions?: { label: string; icon: typeof User; onClick: () => void }[]
-}) {
+  // Extra action rows shown below the items + "New" button. Each gets a
+  // stable id used to route the popup's 'action' event back to its onClick.
+  actions?: { id: string; label: string; iconName: IconName; onClick: () => void }[]
+}
+
+function Dropdown(props: DropdownTriggerProps) {
+  const { iconName, items, value, onChange, onDelete, onEdit, onReorder, label, onNew, newLabel, canDelete, actions } = props
+  const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLDivElement>(null)
+  const Icon = resolveTriggerIcon(iconName)
   const selected = items.find((i) => i.id === value)
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 6 },
-    }),
-  )
 
-  useEffect(() => {
-    if (!open) return
-    const handleClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+  useDropdownEvents(openerId, (evt) => {
+    switch (evt.type) {
+      case 'select': onChange(evt.id); break
+      case 'edit': onEdit?.(evt.id, evt.name); break
+      case 'delete': onDelete?.(evt.id, evt.name); break
+      case 'reorder': onReorder?.(evt.sourceId, evt.sourceIndex, evt.targetIndex); break
+      case 'new': onNew?.(); break
+      case 'action': {
+        const action = actions?.find((a) => a.id === evt.actionId)
+        action?.onClick()
+        break
+      }
+      case 'cancel': break
     }
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
-    document.addEventListener('mousedown', handleClick)
-    document.addEventListener('keydown', handleKey)
-    return () => {
-      document.removeEventListener('mousedown', handleClick)
-      document.removeEventListener('keydown', handleKey)
-    }
-  }, [open])
+    if (evt.type !== 'reorder') setOpen(false)
+  })
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    if (!onReorder) return
-    const { active, over } = event
-    if (!over) {
+  const handleToggle = (): void => {
+    if (open) {
+      window.electronAPI.closeDropdown?.()
+      setOpen(false)
       return
     }
-    const sourceId = String(active.id)
-    const targetId = String(over.id)
-    if (sourceId === targetId) {
-      return
+    const el = triggerRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const spec: DropdownSpec = {
+      openerId,
+      kind: 'list',
+      anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+      ...readThemeAttrs(),
+      iconName,
+      selectedId: value,
+      items,
+      reorder: !!onReorder,
+      editable: !!onEdit,
+      deletable: !!onDelete,
+      canDelete,
+      newAction: onNew ? { label: newLabel || 'Create New' } : undefined,
+      actions: actions?.map((a): DropdownAction => ({ id: a.id, label: a.label, iconName: a.iconName })),
     }
-    const sourceIndex = items.findIndex((item) => item.id === sourceId)
-    const targetIndex = items.findIndex((item) => item.id === targetId)
-    if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
-      return
-    }
-    onReorder(sourceId, sourceIndex, targetIndex)
+    window.electronAPI.openDropdown?.(spec)
+    setOpen(true)
   }
 
   return (
-    <div ref={ref} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+    <div ref={triggerRef} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <button
-        onClick={() => setOpen(!open)}
+        onClick={handleToggle}
         className="shrink-0 flex items-center gap-1.5 h-8 px-2.5 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium transition-colors"
       >
         <Icon size={13} className="text-muted-foreground" />
         <span className="max-w-[100px] truncate">{selected?.name || label}</span>
         <ChevronDown size={12} className={`text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-
-      {open && (
-        <div className="absolute top-full left-0 mt-1 z-50 min-w-[200px] bg-popover border border-border rounded-lg shadow-lg overflow-hidden text-xs">
-          {onReorder ? (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handleDragEnd}
-            >
-              <SortableContext items={items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
-                {items.map((item) => (
-                  <SortableDropdownRow
-                    key={item.id}
-                    item={item}
-                    selected={item.id === value}
-                    icon={Icon}
-                    sortable={true}
-                    onSelect={(id) => { onChange(id); setOpen(false) }}
-                    onEdit={onEdit ? (id, name) => { setOpen(false); onEdit(id, name) } : undefined}
-                    onDelete={onDelete ? (id, name) => { setOpen(false); onDelete(id, name) } : undefined}
-                    canDelete={canDelete}
-                  />
-                ))}
-              </SortableContext>
-            </DndContext>
-          ) : (
-            <>
-              {items.map((item) => (
-                <SortableDropdownRow
-                  key={item.id}
-                  item={item}
-                  selected={item.id === value}
-                  icon={Icon}
-                  sortable={false}
-                  onSelect={(id) => { onChange(id); setOpen(false) }}
-                  onEdit={onEdit ? (id, name) => { setOpen(false); onEdit(id, name) } : undefined}
-                  onDelete={onDelete ? (id, name) => { setOpen(false); onDelete(id, name) } : undefined}
-                  canDelete={canDelete}
-                />
-              ))}
-            </>
-          )}
-          {(onNew || extraActions) && (
-            <>
-              <div className="h-px bg-border" />
-              {onNew && (
-                <button
-                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-primary hover:bg-accent/50"
-                  onClick={() => { onNew(); setOpen(false) }}
-                >
-                  <Plus size={12} />
-                  {newLabel || 'Create New'}
-                </button>
-              )}
-              {extraActions?.map((action) => (
-                <button
-                  key={action.label}
-                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-primary hover:bg-accent/50"
-                  onClick={() => { action.onClick(); setOpen(false) }}
-                >
-                  <action.icon size={12} />
-                  {action.label}
-                </button>
-              ))}
-            </>
-          )}
-        </div>
-      )}
     </div>
   )
 }
@@ -260,7 +167,9 @@ interface ExtensionInfo {
   name: string
   version: string
   enabled: boolean
+  pinned: boolean
   hasAction: boolean
+  hasOptionsPage: boolean
   iconUrl?: string | null
   actionDefaultTitle?: string
 }
@@ -332,137 +241,259 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
   )
 }
 
-/** Render enabled extensions that declare `action` as clickable icons. */
-function ExtensionActions({ activeTabId }: { activeTabId: string | null }) {
+/** Render pinned, enabled extensions that declare `action` as clickable
+ *  icons. Click toggles the popup; right-click opens a Chrome-style context
+ *  menu (pin/unpin, disable, options, remove, manage). */
+function ExtensionActions({
+  activeTabId,
+  onOpenSettings,
+}: {
+  activeTabId: string | null
+  onOpenSettings: () => void
+}) {
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([])
+  // Which extension's popup is currently open (one per window). Tracked so
+  // the icon can render a pressed state and so a second click on the same
+  // icon hits the toggle path.
+  const [openPopupId, setOpenPopupId] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const buttonRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
 
   useEffect(() => {
     const api = (window as any).electronAPI
     if (!api?.listExtensions) return
     api.listExtensions().then((list: ExtensionInfo[]) => setExtensions(list || []))
-    const cleanup = api.onExtensionsChanged?.((list: ExtensionInfo[]) => setExtensions(list || []))
-    return cleanup
+    const cleanupChange = api.onExtensionsChanged?.((list: ExtensionInfo[]) => setExtensions(list || []))
+    const cleanupOpen = api.onExtensionPopupOpened?.((p: { extensionId: string }) =>
+      setOpenPopupId(p.extensionId)
+    )
+    const cleanupClose = api.onExtensionPopupClosed?.(() => setOpenPopupId(null))
+    return () => { cleanupChange?.(); cleanupOpen?.(); cleanupClose?.() }
   }, [])
 
-  const active = extensions.filter((e) => e.enabled && e.hasAction)
-  if (active.length === 0) return null
+  // When the open popup's extension gets unpinned/uninstalled/disabled, ask
+  // main to close it so the floating panel doesn't outlive its anchor.
+  useEffect(() => {
+    if (!openPopupId) return
+    const stillVisible = extensions.some(
+      (e) => e.id === openPopupId && e.enabled && e.pinned && e.hasAction
+    )
+    if (!stillVisible) {
+      const api = (window as any).electronAPI
+      api?.closeExtensionPopup?.()
+    }
+  }, [extensions, openPopupId])
+
+  // Close the popup on any mousedown in the renderer that isn't on the
+  // open icon's button (clicking the icon itself goes through the toggle
+  // path). Tab clicks are handled main-side via webContents 'input-event'.
+  useEffect(() => {
+    if (!openPopupId) return
+    const onMouseDown = (e: MouseEvent): void => {
+      const btn = buttonRefs.current.get(openPopupId)
+      if (btn && btn.contains(e.target as Node)) return
+      const api = (window as any).electronAPI
+      api?.closeExtensionPopup?.()
+    }
+    document.addEventListener('mousedown', onMouseDown, true)
+    return () => document.removeEventListener('mousedown', onMouseDown, true)
+  }, [openPopupId])
+
+  const visible = extensions.filter((e) => e.enabled && e.hasAction && (e.pinned ?? true))
+  if (visible.length === 0) return null
+
+  const buttonAnchor = (id: string): { x: number; y: number; width: number; height: number } => {
+    const btn = buttonRefs.current.get(id)
+    if (!btn) return { x: 0, y: 0, width: 0, height: 0 }
+    const r = btn.getBoundingClientRect()
+    return { x: r.left, y: r.top, width: r.width, height: r.height }
+  }
 
   const handleClick = (ext: ExtensionInfo): void => {
     const api = (window as any).electronAPI
-    api?.openExtensionAction?.(ext.id, activeTabId).then((ok: boolean) => {
-      if (!ok) {
-        // No popup declared — fall back to the options page, which is
-        // what Chrome does when `default_popup` is empty.
+    const anchor = buttonAnchor(ext.id)
+    api?.openExtensionAction?.(ext.id, activeTabId, anchor).then((result: string) => {
+      if (result === 'no-popup') {
+        // No popup declared — fall back to the options page, which is what
+        // Chrome does when `default_popup` is empty.
         api?.openExtensionOptions?.(ext.id)
       }
     })
   }
 
+  const handleContextMenu = async (ext: ExtensionInfo, e: React.MouseEvent): Promise<void> => {
+    e.preventDefault()
+    e.stopPropagation()
+    const api = (window as any).electronAPI
+    const isPinned = ext.pinned ?? true
+    const actions: DropdownAction[] = [
+      {
+        id: isPinned ? 'unpin' : 'pin',
+        label: isPinned ? 'Unpin from toolbar' : 'Pin to toolbar',
+        iconName: isPinned ? 'PinOff' : 'Pin',
+      },
+    ]
+    if (ext.hasOptionsPage) {
+      actions.push({ id: 'options', label: 'Options', iconName: 'Settings' })
+    }
+    actions.push({ id: 'disable', label: 'Disable extension', iconName: 'EyeOff', divider: 'before' })
+    actions.push({ id: 'remove', label: 'Remove from Newbro', iconName: 'Trash2', destructive: true })
+    actions.push({ id: 'manage', label: 'Manage extensions', iconName: 'Puzzle', divider: 'before' })
+
+    const result = await openDropdownAsync({
+      kind: 'menu',
+      position: { x: e.clientX, y: e.clientY },
+      ...readThemeAttrs(),
+      header: ext.name,
+      actions,
+    })
+    if (!result || result.type !== 'action') return
+    switch (result.actionId) {
+      case 'pin':
+        await api?.setExtensionPinned?.(ext.id, true)
+        break
+      case 'unpin':
+        await api?.setExtensionPinned?.(ext.id, false)
+        break
+      case 'options':
+        await api?.openExtensionOptions?.(ext.id)
+        break
+      case 'disable':
+        await api?.setExtensionEnabled?.(ext.id, false)
+        break
+      case 'remove':
+        await api?.uninstallExtension?.(ext.id)
+        break
+      case 'manage':
+        onOpenSettings()
+        break
+    }
+  }
+
   return (
-    <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-      {active.map((ext) => (
-        <button
-          key={ext.id}
-          onClick={() => handleClick(ext)}
-          title={ext.actionDefaultTitle || ext.name}
-          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md hover:bg-muted text-secondary-foreground overflow-hidden"
-        >
-          {ext.iconUrl ? (
-            <img
-              src={ext.iconUrl}
-              alt=""
-              className="w-5 h-5"
-              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-            />
-          ) : (
-            <Puzzle size={15} />
-          )}
-        </button>
-      ))}
+    <div
+      ref={containerRef}
+      className="flex items-center gap-1"
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+    >
+      {visible.map((ext) => {
+        const isOpen = openPopupId === ext.id
+        return (
+          <button
+            key={ext.id}
+            ref={(el) => {
+              if (el) buttonRefs.current.set(ext.id, el)
+              else buttonRefs.current.delete(ext.id)
+            }}
+            onClick={() => handleClick(ext)}
+            onContextMenu={(e) => handleContextMenu(ext, e)}
+            title={ext.actionDefaultTitle || ext.name}
+            className={`h-8 w-8 shrink-0 flex items-center justify-center rounded-md overflow-hidden transition-colors ${
+              isOpen ? 'bg-muted text-foreground' : 'hover:bg-muted text-secondary-foreground'
+            }`}
+          >
+            {ext.iconUrl ? (
+              <img
+                src={ext.iconUrl}
+                alt=""
+                className="w-5 h-5"
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+              />
+            ) : (
+              <Puzzle size={15} />
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }
 
 function AppMenu({ onOpenSettings, onOpenAbout, onOpenSearch }: { onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void }) {
+  const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const [updatesUnsupported, setUpdatesUnsupported] = useState(false)
+  const triggerRef = useRef<HTMLDivElement>(null)
 
+  // Track whether the running build supports auto-updates. The main process
+  // marks unpacked / dev builds with phase: 'unsupported'; we read it once
+  // at mount and stay subscribed for any later flip (won't happen in
+  // practice, but keeps the UI consistent if it ever does).
   useEffect(() => {
-    if (!open) return
-    const handleClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
-    document.addEventListener('mousedown', handleClick)
-    document.addEventListener('keydown', handleKey)
-    return () => {
-      document.removeEventListener('mousedown', handleClick)
-      document.removeEventListener('keydown', handleKey)
-    }
-  }, [open])
+    const api = (window as any).electronAPI
+    if (!api) return
+    api.getUpdaterStatus?.().then((s: { phase?: string } | null) => {
+      if (s?.phase === 'unsupported') setUpdatesUnsupported(true)
+    })
+    const cleanup = api.onUpdaterStatus?.((s: { phase?: string }) => {
+      setUpdatesUnsupported(s?.phase === 'unsupported')
+    })
+    return cleanup
+  }, [])
 
-  const settingsShortcut = isMacOS
-    ? <span className="inline-flex items-center gap-0.5"><kbd>⌘</kbd><kbd>,</kbd></span>
-    : <span className="inline-flex items-center gap-0.5"><kbd>Ctrl</kbd><kbd>,</kbd></span>
-  const searchShortcut = isMacOS
-    ? <span className="inline-flex items-center gap-0.5"><kbd>⌘</kbd><kbd>O</kbd></span>
-    : <span className="inline-flex items-center gap-0.5"><kbd>Ctrl</kbd><kbd>O</kbd></span>
+  // Action handlers keyed by id — same dispatch table the popup will route
+  // through via the 'action' event.
+  const ACTIONS: Record<string, () => void> = {
+    'search': onOpenSearch,
+    'settings': onOpenSettings,
+    'check-updates': () => { (window as any).electronAPI.checkForUpdates?.() },
+    'about': onOpenAbout,
+    'exit': () => window.electronAPI.quit(),
+  }
+
+  useDropdownEvents(openerId, (evt) => {
+    if (evt.type === 'action') {
+      ACTIONS[evt.actionId]?.()
+    }
+    setOpen(false)
+  })
+
+  const buildActions = (): DropdownAction[] => {
+    const modKey = isMacOS ? '⌘' : 'Ctrl'
+    return [
+      { id: 'search', label: 'Search Everything', iconName: 'Search', shortcut: [modKey, 'O'] },
+      { id: 'settings', label: 'Settings', iconName: 'Settings', shortcut: [modKey, ','] },
+      {
+        id: 'check-updates',
+        label: updatesUnsupported ? 'Updates Unavailable (Dev Build)' : 'Check for Updates…',
+        iconName: 'Download',
+        disabled: updatesUnsupported,
+        disabledTitle: 'Updates are only available in installed builds.',
+      },
+      { id: 'about', label: 'About', iconName: 'Info' },
+      { id: 'exit', label: 'Exit', iconName: 'LogOut', divider: 'before', destructive: true },
+    ]
+  }
+
+  const handleToggle = (): void => {
+    if (open) {
+      window.electronAPI.closeDropdown?.()
+      setOpen(false)
+      return
+    }
+    const el = triggerRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const spec: DropdownSpec = {
+      openerId,
+      kind: 'menu',
+      anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+      ...readThemeAttrs(),
+      actions: buildActions(),
+    }
+    window.electronAPI.openDropdown?.(spec)
+    setOpen(true)
+  }
 
   return (
-    <div ref={ref} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+    <div ref={triggerRef} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggle}
         className="h-8 px-2 shrink-0 flex items-center gap-1 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium"
       >
         <Menu size={15} />
         <span>Menu</span>
       </button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 w-48 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50 text-xs">
-          <button
-            onClick={() => { setOpen(false); onOpenSearch() }}
-            className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-accent text-left"
-          >
-            <span className="flex items-center gap-2">
-              <Search size={14} className="text-muted-foreground" />
-              <span>Search Everything</span>
-            </span>
-            <span className="text-muted-foreground">{searchShortcut}</span>
-          </button>
-          <button
-            onClick={() => { setOpen(false); onOpenSettings() }}
-            className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-accent text-left"
-          >
-            <span className="flex items-center gap-2">
-              <Settings size={14} className="text-muted-foreground" />
-              <span>Settings</span>
-            </span>
-            <span className="text-muted-foreground">{settingsShortcut}</span>
-          </button>
-          <button
-            onClick={() => { setOpen(false); (window as any).electronAPI.checkForUpdates?.() }}
-            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left"
-          >
-            <Download size={14} className="text-muted-foreground" />
-            <span>Check for Updates…</span>
-          </button>
-          <button
-            onClick={() => { setOpen(false); onOpenAbout() }}
-            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left"
-          >
-            <Info size={14} className="text-muted-foreground" />
-            <span>About</span>
-          </button>
-          <div className="border-t border-border" />
-          <button
-            onClick={() => { setOpen(false); window.electronAPI.quit() }}
-            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent text-left text-destructive"
-          >
-            <LogOut size={14} />
-            <span>Exit</span>
-          </button>
-        </div>
-      )}
     </div>
   )
 }
@@ -897,9 +928,6 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
       log.action('importWorkspace', { profileId: activeProfileId, wsId: ws.id, name: ws.name })
     }
     await saveStateNow()
-    for (const ws of created) {
-      window.electronAPI.openWorkspaceWindow(activeProfileId, ws.id, ws.name)
-    }
     setImportDialogOpen(false)
     setImportCandidates([])
   }
@@ -937,7 +965,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
           onDelete={handleDeleteProfile}
           onEdit={handleEditProfile}
           canDelete={profiles.length > 1}
-          icon={User}
+          iconName="User"
           label="Profile"
           onNew={openProfileDialog}
           newLabel="New Profile"
@@ -952,11 +980,11 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
           onDelete={handleDeleteWorkspace}
           onEdit={handleEditWorkspace}
           canDelete={(activeProfile?.workspaces.length || 0) > 1}
-          icon={Layout}
+          iconName="Layout"
           label="Workspace"
           onNew={openWorkspaceDialog}
           newLabel="New Workspace"
-          extraActions={[{ label: 'Import Workspace', icon: Import, onClick: handleImportWorkspace }]}
+          actions={[{ id: 'import-workspace', label: 'Import Workspace', iconName: 'Import', onClick: handleImportWorkspace }]}
         />
 
         <div className="w-px h-5 bg-border shrink-0" />
@@ -984,10 +1012,6 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         >
           {isLoading ? <X size={14} /> : <RotateCw size={14} />}
         </button>
-
-        {/* Extension action icons (Chrome-style puzzle row). Rendered only
-            when at least one enabled extension declares an `action`. */}
-        <ExtensionActions activeTabId={activeTabId} />
 
         {/* Install-from-store badge. Appears only when the active tab is a
             CWS or Edge Add-ons detail page, giving users a one-click path
@@ -1035,6 +1059,13 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
             value={urlValue}
             onChange={(e) => setUrlValue(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') handleNavigate() }}
+            onBlur={(e) => {
+              // Browsers keep the visual selection highlight on a blurred
+              // input (just dimmed). Collapse the selection to position 0
+              // so the URL bar reads as plain unselected text once focus
+              // moves away — matches typical address-bar behavior.
+              try { e.currentTarget.setSelectionRange(0, 0) } catch { /* ignore */ }
+            }}
             placeholder="Enter URL or search..."
             spellCheck={false}
             className="flex-1 h-full px-2.5 bg-transparent border-none text-sm text-foreground outline-none"
@@ -1046,6 +1077,12 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
           <div className="w-px h-5 bg-border shrink-0 hidden min-[1200px]:block" />
           <ActiveTabTitle title={activeTab.title} favicon={activeTab.favicon} comment={activeTab.comment} />
         </>)}
+
+        {/* Extension action icons sit at the far right of the toolbar
+            (after the tab-title chip) so they don't compete with the URL
+            bar for space. Click toggles the popup; right-click opens a
+            Chrome-style context menu. Pinned extensions only. */}
+        <ExtensionActions activeTabId={activeTabId} onOpenSettings={onOpenSettings} />
       </div>
 
       <InputDialog

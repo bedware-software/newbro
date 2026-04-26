@@ -12,7 +12,7 @@
 // `redirect: 'follow'` (the default) Electron follows automatically, so
 // the `response` event fires on the terminal 200.
 
-import { net } from 'electron'
+import { net, session, type Session } from 'electron'
 import { log } from '../log'
 
 const CHROME_VERSION = '125.0.0.0'
@@ -109,6 +109,48 @@ export async function fetchCrx(extensionId: string): Promise<Buffer> {
   }
 }
 
+// Dedicated, never-touched session for CRX downloads. The default session
+// has Chrome extensions loaded into and removed from it as the user installs
+// and uninstalls them; we observed that `net.request` against the default
+// session would silently fail with `net::ERR_FAILED` on the second install
+// after a remove (the first install always worked). Routing through a
+// session that nothing else mutates avoids whatever stale state the install
+// path leaves behind in the request layer.
+//
+// Note: this is an in-memory partition (no `persist:` prefix) so cookies
+// and HTTP cache from a previous fetch can't influence the next one — we
+// want a clean slate every time.
+const CRX_FETCH_PARTITION = 'crx-fetch'
+let crxFetchSession: Session | null = null
+
+function getCrxFetchSession(): Session {
+  if (crxFetchSession) return crxFetchSession
+  const ses = session.fromPartition(CRX_FETCH_PARTITION)
+  // Disable HTTP cache entirely so a stale 404/302 from a previous install
+  // attempt can't poison the next one.
+  ses.setUserAgent(`Mozilla/5.0 (X11; Linux x86_64) Chrome/${CHROME_VERSION}`)
+  crxFetchSession = ses
+  return ses
+}
+
+async function clearCrxFetchSession(): Promise<void> {
+  if (!crxFetchSession) return
+  // Belt-and-braces: clear cookies, cache, and storage between fetches so
+  // every download is independent of what came before. We only catch errors
+  // here because clearing is best-effort — a failed clear shouldn't block
+  // an install attempt.
+  try {
+    await Promise.all([
+      crxFetchSession.clearCache(),
+      crxFetchSession.clearStorageData({
+        storages: ['cookies', 'cachestorage', 'serviceworkers'],
+      }),
+    ])
+  } catch (err) {
+    log.warn('crx: failed to clear fetch session', String(err))
+  }
+}
+
 function fetchFrom(url: string, source: 'chrome' | 'edge'): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     // `redirect: 'follow'` (the default) makes Electron follow 3xx
@@ -116,8 +158,12 @@ function fetchFrom(url: string, source: 'chrome' | 'edge'): Promise<Buffer> {
     // terminal 200. Using 'manual' without `request.followRedirect()`
     // raises "Redirect was cancelled", which is what the first
     // implementation was doing wrong.
-    const request = net.request({ method: 'GET', url })
+    const ses = getCrxFetchSession()
+    const request = net.request({ method: 'GET', url, session: ses, useSessionCookies: false })
     request.setHeader('User-Agent', `Mozilla/5.0 (X11; Linux x86_64) Chrome/${CHROME_VERSION}`)
+    // Bypass any HTTP cache the request layer might consult.
+    request.setHeader('Cache-Control', 'no-cache')
+    request.setHeader('Pragma', 'no-cache')
 
     request.on('response', (response) => {
       const status = response.statusCode
@@ -140,3 +186,8 @@ function fetchFrom(url: string, source: 'chrome' | 'edge'): Promise<Buffer> {
     request.end()
   })
 }
+
+// Exported so installExtensionById can wipe state between attempts. Not
+// strictly necessary now that the fetch session is isolated from the rest
+// of the app, but cheap insurance against any other state surprise.
+export { clearCrxFetchSession }

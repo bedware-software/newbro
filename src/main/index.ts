@@ -1,3 +1,10 @@
+// Branding MUST run before any electron-store instance is constructed
+// (which happens transitively when './ipc' is imported below). The
+// side-effect import below calls app.setName so userData / appData /
+// cache directories pick up the dev-vs-stable split — otherwise every
+// store grabs the default name during the import cascade and we never
+// get a separate dev folder. Keep this as the FIRST internal import.
+import { APP_NAME } from './branding'
 import { app, BrowserWindow, session, Menu, nativeImage, screen } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
@@ -58,15 +65,22 @@ app.on('certificate-error', (event, _wc, url, _error, _cert, callback) => {
 })
 
 // ── Branding ──
-app.setName('Newbro')
+// `app.setName` runs in `./branding`, which is imported above before any
+// electron-store gets constructed. The APP_NAME constant comes from there
+// so visible-branding sites in this file (window titles, menus, About)
+// stay in sync with the chosen userData directory.
 
-// Remove "Electron/x.y.z" from the default user agent string
+// Remove "Electron/x.y.z" from the default user agent string. The "Newbro"
+// regex stays as-is — even in dev mode the UA token (when present) uses
+// the production product name; the dev suffix is purely for branding /
+// directory isolation.
 app.userAgentFallback = app.userAgentFallback
   .replace(/\s*Electron\/[\w.]+/, '')
   .replace(/\s*newbro-browser\/[\w.]+/, '')
   .replace(/\s*Newbro\/[\w.]+/, '')
 
-// In dev mode, patch the Electron binary's Info.plist so macOS menu bar shows "Newbro"
+// In dev mode, patch the Electron binary's Info.plist so macOS menu bar
+// shows the dev name instead of "Electron".
 if (is.dev && process.platform === 'darwin') {
   try {
     const plistPath = join(
@@ -74,9 +88,9 @@ if (is.dev && process.platform === 'darwin') {
     )
     const plist = readFileSync(plistPath, 'utf8')
     if (plist.includes('<string>Electron</string>')) {
-      const patched = plist.replace(/<string>Electron<\/string>/g, '<string>Newbro</string>')
+      const patched = plist.replace(/<string>Electron<\/string>/g, `<string>${APP_NAME}</string>`)
       writeFileSync(plistPath, patched, 'utf8')
-      log.info('patched Info.plist: Electron → Newbro (restart to take full effect)')
+      log.info(`patched Info.plist: Electron → ${APP_NAME} (restart to take full effect)`)
     }
   } catch (err) {
     log.warn('could not patch Info.plist for branding', err)
@@ -512,7 +526,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     height: savedBounds?.height ?? DEFAULT_WINDOW_HEIGHT,
     ...(useSavedPosition ? { x: savedBounds!.x, y: savedBounds!.y } : {}),
     minWidth: 800,
-    title: `${workspaceName} — Newbro`,
+    title: `${workspaceName} — ${APP_NAME}`,
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac
       ? { trafficLightPosition: { x: 14, y: 14 } }
@@ -528,7 +542,9 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
       // to page content — Electron's extension system does not inject into
       // <webview>, only into BrowserWindow / WebContentsView.
       webviewTag: false,
-      nativeWindowOpen: true,
+      // nativeWindowOpen used to be opt-in here; modern Electron makes it
+      // the only mode and removed the WebPreferences flag entirely. Drop
+      // the property to keep TypeScript happy with @types/electron 41+.
     },
   })
   if (!isMac) {
@@ -646,19 +662,28 @@ export function rebuildMenu(): void {
   buildMenu()
 }
 
+/** Menu click handlers receive `BaseWindow | undefined` per Electron 41+
+ *  types, but at runtime the focused window in our app is always a
+ *  BrowserWindow with a webContents. Narrowing helper used by every menu
+ *  item that fires a `shortcut` IPC. */
+function sendShortcutToWindow(win: Electron.BaseWindow | undefined, action: string): void {
+  const wc = (win as Electron.BrowserWindow | undefined)?.webContents
+  if (wc && !wc.isDestroyed()) wc.send('shortcut', action)
+}
+
 function buildMenu(): void {
   const settings = loadSettings()
   const kb = { ...DEFAULT_KEYBINDINGS, ...settings.keybindings }
 
   const template: Electron.MenuItemConstructorOptions[] = [
     {
-      label: 'Newbro',
+      label: APP_NAME,
       submenu: [
         {
-          label: 'About Newbro',
+          label: `About ${APP_NAME}`,
           click: () => {
             app.setAboutPanelOptions({
-              applicationName: 'Newbro',
+              applicationName: APP_NAME,
               applicationVersion: app.getVersion(),
               copyright: 'Newbro Browser',
               version: '',
@@ -670,14 +695,14 @@ function buildMenu(): void {
         {
           label: 'Settings...',
           accelerator: kb['settings'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'settings'),
+          click: (_item, win) => sendShortcutToWindow(win, 'settings'),
         },
         { type: 'separator' },
-        { label: 'Hide Newbro', role: 'hide' },
+        { label: `Hide ${APP_NAME}`, role: 'hide' },
         { role: 'hideOthers' },
         { role: 'unhide' },
         { type: 'separator' },
-        { label: 'Exit Newbro', role: 'quit' },
+        { label: `Exit ${APP_NAME}`, role: 'quit' },
       ],
     },
     {
@@ -686,12 +711,12 @@ function buildMenu(): void {
         {
           label: 'New Tab',
           accelerator: kb['new-tab'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'new-tab'),
+          click: (_item, win) => sendShortcutToWindow(win, 'new-tab'),
         },
         {
           label: 'Close Tab',
           accelerator: kb['close-tab'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'close-tab'),
+          click: (_item, win) => sendShortcutToWindow(win, 'close-tab'),
         },
         {
           label: 'Close Window',
@@ -704,7 +729,7 @@ function buildMenu(): void {
         {
           label: 'New Workspace',
           accelerator: kb['new-workspace'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'new-workspace'),
+          click: (_item, win) => sendShortcutToWindow(win, 'new-workspace'),
         },
       ],
     },
@@ -740,38 +765,38 @@ function buildMenu(): void {
         {
           label: 'Focus Address Bar',
           accelerator: kb['focus-url'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'focus-url'),
+          click: (_item, win) => sendShortcutToWindow(win, 'focus-url'),
         },
         {
           label: 'Search Everything',
           accelerator: kb['search'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'search'),
+          click: (_item, win) => sendShortcutToWindow(win, 'search'),
         },
         {
           label: 'Command Palette',
           accelerator: kb['command-palette'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'command-palette'),
+          click: (_item, win) => sendShortcutToWindow(win, 'command-palette'),
         },
         {
           label: 'Toggle Sidebar',
           accelerator: kb['toggle-sidebar'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'toggle-sidebar'),
+          click: (_item, win) => sendShortcutToWindow(win, 'toggle-sidebar'),
         },
         { type: 'separator' },
         {
           label: 'Back',
           accelerator: kb['back'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'back'),
+          click: (_item, win) => sendShortcutToWindow(win, 'back'),
         },
         {
           label: 'Forward',
           accelerator: kb['forward'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'forward'),
+          click: (_item, win) => sendShortcutToWindow(win, 'forward'),
         },
         {
           label: 'Reload Page',
           accelerator: kb['reload'],
-          click: (_item, win) => win?.webContents.send('shortcut', 'reload'),
+          click: (_item, win) => sendShortcutToWindow(win, 'reload'),
         },
       ],
     },
@@ -842,7 +867,7 @@ app.whenReady().then(() => {
 
   // ── About panel ──
   app.setAboutPanelOptions({
-    applicationName: 'Newbro',
+    applicationName: APP_NAME,
     applicationVersion: app.getVersion(),
     copyright: 'Newbro Browser',
     version: '',
@@ -864,14 +889,14 @@ app.whenReady().then(() => {
   openInitialWindows()
 
   if (BrowserWindow.getAllWindows().length === 0) {
-    createWorkspaceWindow('', '', 'General')
+    createWorkspaceWindow('', '', 'Default')
   }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       openInitialWindows()
       if (BrowserWindow.getAllWindows().length === 0) {
-        createWorkspaceWindow('', '', 'General')
+        createWorkspaceWindow('', '', 'Default')
       }
     }
   })

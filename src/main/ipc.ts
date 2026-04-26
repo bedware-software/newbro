@@ -12,7 +12,9 @@ import {
   activateTab,
   createTab,
   destroyTab,
-  openExtensionPopup,
+  toggleExtensionPopup,
+  closeExtensionPopup,
+  moveExtensionPopup,
   setWindowBounds,
   tabExecuteJS,
   tabGetState,
@@ -28,10 +30,12 @@ import {
   installExtensionById,
   uninstallExtension,
   setExtensionEnabled,
+  setExtensionPinned,
   openOptionsPageUrl,
   getActionPopupPathForTab,
   extractExtensionIdFromUrl,
 } from './extensions/manager'
+import { registerDropdownIpc } from './dropdown-window'
 
 interface CertInfo {
   subject: { CN?: string; O?: string; OU?: string }
@@ -56,9 +60,14 @@ function getCertificate(hostname: string, port = 443): Promise<CertInfo | null> 
       const cipher = socket.getCipher()
       const protocol = socket.getProtocol()
       if (!cert || !cert.subject) { socket.destroy(); resolve(null); return }
+      // X.509 subjects/issuers in newer @types/node may surface multi-value
+      // RDNs as `string[]`. We only display the first one — collapsing the
+      // array on the way out keeps CertInfo's existing string-only shape.
+      const flat = (v: string | string[] | undefined): string | undefined =>
+        Array.isArray(v) ? v[0] : v
       resolve({
-        subject: { CN: cert.subject.CN, O: cert.subject.O, OU: cert.subject.OU },
-        issuer: { CN: cert.issuer?.CN, O: cert.issuer?.O, OU: cert.issuer?.OU },
+        subject: { CN: flat(cert.subject.CN), O: flat(cert.subject.O), OU: flat(cert.subject.OU) },
+        issuer: { CN: flat(cert.issuer?.CN), O: flat(cert.issuer?.O), OU: flat(cert.issuer?.OU) },
         validFrom: cert.valid_from,
         validTo: cert.valid_to,
         serialNumber: cert.serialNumber || '',
@@ -215,6 +224,11 @@ export function registerIpcHandlers(): void {
     return listExtensions()
   })
 
+  ipcMain.handle('extensions:set-pinned', async (_e, extensionId: string, pinned: boolean) => {
+    await setExtensionPinned(extensionId, pinned)
+    return listExtensions()
+  })
+
   ipcMain.handle('extensions:open-options', (_e, extensionId: string) => {
     const url = openOptionsPageUrl(extensionId)
     if (!url) return null
@@ -225,14 +239,46 @@ export function registerIpcHandlers(): void {
     return url
   })
 
-  ipcMain.handle('extensions:open-action', (_e, extensionId: string, tabId: string | null) => {
-    const popupPath = getActionPopupPathForTab(extensionId, tabId)
-    if (!popupPath) return false
+  // Toggle the extension's popup. Pass the icon's bounding rect (in window-
+  // relative CSS pixels) so main can position the floating popup relative
+  // to it. Returns 'opened' | 'closed' | 'no-popup' so the renderer can
+  // update the icon's pressed state.
+  ipcMain.handle(
+    'extensions:open-action',
+    (
+      _e,
+      extensionId: string,
+      tabId: string | null,
+      anchor: { x: number; y: number; width: number; height: number } | null
+    ) => {
+      const popupPath = getActionPopupPathForTab(extensionId, tabId)
+      if (!popupPath) return 'no-popup'
+      const win = BrowserWindow.fromWebContents(_e.sender)
+      if (!win) return 'closed'
+      const a = anchor ?? { x: 0, y: 0, width: 0, height: 0 }
+      return toggleExtensionPopup(win.id, extensionId, popupPath, a)
+    }
+  )
+
+  ipcMain.handle('extensions:close-popup', (_e) => {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (!win) return false
-    openExtensionPopup(win.id, extensionId, popupPath)
-    return true
+    return closeExtensionPopup(win.id)
   })
+
+  // Fire-and-forget: high-frequency from ResizeObserver on the icon row.
+  ipcMain.on(
+    'extensions:move-popup',
+    (
+      e,
+      extensionId: string,
+      anchor: { x: number; y: number; width: number; height: number }
+    ) => {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      if (!win) return
+      moveExtensionPopup(win.id, extensionId, anchor)
+    }
+  )
 
   ipcMain.handle('workspace:open-window', (_e, profileId: string, workspaceId: string, workspaceName: string, targetTabId?: string) => {
     log.ipc('workspace:open-window', { profileId, workspaceId, workspaceName, targetTabId })
@@ -252,6 +298,18 @@ export function registerIpcHandlers(): void {
     if (win && !win.isDestroyed()) {
       win.setTitleBarOverlay(options)
     }
+  })
+
+  // Move OS-level keyboard focus from any active WebContentsView (a tab page)
+  // back to the parent window's main webContents (the renderer). DOM .focus()
+  // on a renderer-side input only sets DOM focus within its own webContents
+  // — it doesn't make that webContents the OS focus owner when a sibling
+  // WebContentsView currently is. Without this, e.g. Cmd+L visually selects
+  // the URL bar text but typed characters still go to the underlying page.
+  ipcMain.on('window:focus-renderer', (_e) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win || win.isDestroyed()) return
+    win.webContents.focus()
   })
 
   ipcMain.handle('window:close', (_e) => {
@@ -407,32 +465,6 @@ export function registerIpcHandlers(): void {
     return content
   })
 
-  ipcMain.handle('context-menu:show', (_e, items: { id: string; label: string; type?: string; enabled?: boolean; submenu?: { id: string; label: string }[] }[]) => {
-    const win = BrowserWindow.fromWebContents(_e.sender)
-    if (!win) return null
-    return new Promise<string | null>((resolve) => {
-      const template = items.map((item) => {
-        if (item.type === 'separator') return { type: 'separator' as const }
-        if (item.submenu) {
-          return {
-            label: item.label,
-            submenu: item.submenu.map((sub) => ({
-              label: sub.label,
-              click: () => resolve(sub.id),
-            })),
-          }
-        }
-        return {
-          label: item.label,
-          enabled: item.enabled !== false,
-          click: () => resolve(item.id),
-        }
-      })
-      const menu = Menu.buildFromTemplate(template)
-      menu.popup({ window: win, callback: () => resolve(null) })
-    })
-  })
-
   ipcMain.on('app:quit', () => {
     app.quit()
   })
@@ -445,6 +477,18 @@ export function registerIpcHandlers(): void {
       Menu.sendActionToFirstResponder('orderFrontStandardAboutPanel:')
     } else {
       app.showAboutPanel()
+    }
+  })
+
+  // Returns where the app keeps its mutable state on disk. Used by the
+  // About tab in Settings so users can verify they're running dev vs
+  // stable (each maps to a different folder once we set the app name).
+  ipcMain.handle('app:get-paths', () => {
+    return {
+      userData: app.getPath('userData'),
+      cache: app.getPath('cache'),
+      logs: app.getPath('logs'),
+      appName: app.getName(),
     }
   })
 
@@ -488,6 +532,14 @@ export function registerIpcHandlers(): void {
     // the process fully exits. The helper — not app.relaunch() — starts the
     // new instance so the relaunched app can't race with the wipe and
     // re-create files mid-delete.
+    //
+    // In dev mode we skip the relaunch: `electron-vite dev` (our parent
+    // wrapper) tears down the Vite dev server when its Electron child
+    // exits, so a relaunched Electron would point at a dead
+    // ELECTRON_RENDERER_URL and show a blank window. The developer just
+    // runs `npm run dev` again, which restarts both the dev server and
+    // the app cleanly.
+    const shouldRelaunch = app.isPackaged
     try {
       const pid = process.pid
       const tmpDir = app.getPath('temp')
@@ -513,6 +565,7 @@ const target = ${JSON.stringify(userDataDir)};
 const relaunchExec = ${JSON.stringify(relaunchExec)};
 const relaunchArgs = ${JSON.stringify(relaunchArgs)};
 const relaunchEnv = ${JSON.stringify(relaunchEnv)};
+const shouldRelaunch = ${JSON.stringify(shouldRelaunch)};
 
 function alive(p) {
   try { process.kill(p, 0); return true } catch { return false }
@@ -537,15 +590,17 @@ function alive(p) {
   }
   // Relaunch the app AFTER the wipe is fully done, so the fresh instance
   // sees an empty userData and re-creates it cleanly.
-  try {
-    const child = spawn(relaunchExec, relaunchArgs, {
-      detached: true,
-      stdio: 'ignore',
-      env: relaunchEnv,
-    })
-    child.unref()
-  } catch (err) {
-    // Best-effort — if relaunch fails the user can start the app manually.
+  if (shouldRelaunch) {
+    try {
+      const child = spawn(relaunchExec, relaunchArgs, {
+        detached: true,
+        stdio: 'ignore',
+        env: relaunchEnv,
+      })
+      child.unref()
+    } catch (err) {
+      // Best-effort — if relaunch fails the user can start the app manually.
+    }
   }
   try { fs.unlinkSync(__filename) } catch {}
 })()
@@ -558,7 +613,11 @@ function alive(p) {
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       })
       child.unref()
-      log.info('wipe-data: helper spawned', { pid: child.pid, scriptPath })
+      log.info('wipe-data: helper spawned', {
+        pid: child.pid,
+        scriptPath,
+        willRelaunch: shouldRelaunch,
+      })
     } catch (err) {
       log.error('wipe-data: failed to spawn helper', err)
     }
@@ -593,4 +652,6 @@ function alive(p) {
   ipcMain.handle('updater:get-app-version', () => {
     return app.getVersion()
   })
+
+  registerDropdownIpc()
 }

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Newbro Dropdown</title>
+  <style>
+    /* `html body` and `html #root` outrank the equivalent selectors in
+       globals.css (which the React bundle imports later) so we don't have to
+       use !important. Padding leaves room for the menu's CSS box-shadow on
+       every side; the main process sizes the window so the menu fills the
+       central area while the shadow paints into this transparent margin. */
+    html body {
+      background: transparent;
+      margin: 0;
+      padding: 16px;
+      box-sizing: border-box;
+      overflow: hidden;
+      height: 100vh;
+    }
+    html #root {
+      display: inline-block;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./src/dropdown.tsx"></script>
+</body>
+</html>
