@@ -309,6 +309,18 @@ export function WebviewPanel() {
   const showCertError = activeCertError !== null
   const showError = activeError !== null && !showCertError
 
+  // Hide the active tab's WebContentsView while an error overlay is up.
+  // The native view composites above the renderer DOM and would otherwise
+  // eat all clicks (Refresh button, text selection) even when the overlay
+  // is the only thing the user can see. Same trick the sidebar drag uses.
+  useEffect(() => {
+    if (showError || showCertError) {
+      window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+      return () => { window.dispatchEvent(new CustomEvent('newbro-tab-show')) }
+    }
+    return
+  }, [showError, showCertError])
+
   const failedHost = (() => {
     if (!activeError?.url) return ''
     try { return new URL(activeError.url).hostname } catch { return activeError.url }

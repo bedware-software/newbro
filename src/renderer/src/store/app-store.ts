@@ -4,7 +4,24 @@ import { v4 as uuid } from 'uuid'
 import type { Profile, Workspace, TabGroup, Tab, SearchableItem, WorkspaceCandidate } from './types'
 import { log } from '../lib/log'
 
-const GROUP_COLORS = ['#89b4fa', '#a6e3a1', '#f9e2af', '#f38ba8', '#cba6f7', '#94e2d5', '#fab387', '#74c7ec']
+// Edge-style palette: medium-saturation, medium-light hues spread around the
+// HSL wheel so dark text on top stays readable across the whole set. The
+// Catppuccin pastels we used before were too washed-out and forced light text
+// — these match the Microsoft Edge group palette pixel-for-pixel.
+const GROUP_COLORS = [
+  '#7AAFAF', // teal
+  '#9C9C9C', // gray
+  '#5681B8', // blue
+  '#D08866', // coral
+  '#C4A140', // mustard
+  '#B488C9', // pink-purple
+  '#8E81C9', // lavender
+  '#BD5E94', // magenta
+  '#7FB87F', // green
+  '#D6A87F', // peach
+  '#C46161', // red
+  '#7FA8D6', // sky
+]
 
 /** Default URL for new tabs — updated from settings */
 let defaultNewTabUrl = 'about:blank'

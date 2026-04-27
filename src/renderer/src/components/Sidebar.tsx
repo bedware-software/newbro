@@ -41,6 +41,16 @@ const MIN_WIDTH = 180
 const DEFAULT_WIDTH = 256
 const SIDEBAR_WIDTH_KEY = 'newbro-sidebar-width'
 
+// Group pill text is always dark — matches Edge's behavior across the whole
+// palette. The medium-light Edge colors (see GROUP_COLORS in app-store.ts)
+// are picked so dark text stays readable regardless of hue, so we don't need
+// to flip black/white per color anymore.
+const PILL_TEXT_COLOR = '#1a1a1a'
+// Horizontal alignment between the pill and the indent guide line that
+// hangs below it is owned by globals.css now (`[data-group-children]`
+// margin-left tracks the density-aware row padding-left). Nothing in JS
+// needs to know the pixel value.
+
 // ── Drop target: where a dragged item will land ──
 interface DropTarget {
   // For tabs: which container (null = ungrouped) and position
@@ -567,7 +577,7 @@ export function Sidebar({ visible }: Props) {
         data-drop-container={containerAttr}
         data-drop-index={index}
         {...(containerId === null ? { 'data-sidebar-block': index } : {})}
-        className={`relative flex items-center gap-1 px-1.5 py-1 cursor-pointer group/tab transition-colors ${
+        className={`relative flex items-center gap-1 px-1 py-1 cursor-pointer group/tab transition-colors ${
           selected ? 'bg-primary/20 text-foreground'
           : active ? 'bg-accent text-accent-foreground'
           : 'hover:bg-accent/50 text-muted-foreground hover:text-foreground'
@@ -588,16 +598,26 @@ export function Sidebar({ visible }: Props) {
         <TabFavicon favicon={tab.favicon} />
         {tab.comment && <MessageSquareText size={16} className="shrink-0 text-primary/60" />}
         <span className="flex-1 text-xs truncate">{tab.comment ? `${tab.comment} — ${tab.title}` : tab.title}</span>
-        <button
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation()
-            closeTab(tab.id)
-          }}
-          className={`h-6 w-6 flex items-center justify-center rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive shrink-0 ${active ? 'opacity-100' : 'opacity-0 group-hover/tab:opacity-100'}`}
+        {/* Close button: same overlay treatment as the group action buttons.
+            Floated above the row on the right so the title can use the
+            full row width without reserving a permanent 24px slot for
+            the X. Hover-only for every tab — active included — so the
+            row's right edge stays clean until the user actually mouses
+            over it. */}
+        <div
+          className="absolute right-1 top-0 bottom-0 flex items-center transition-opacity opacity-0 group-hover/tab:opacity-100 pointer-events-none group-hover/tab:pointer-events-auto"
         >
-          <X size={14} />
-        </button>
+          <button
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              closeTab(tab.id)
+            }}
+            className="h-6 w-6 flex items-center justify-center rounded bg-card/85 backdrop-blur-sm hover:bg-destructive/20 text-muted-foreground hover:text-destructive pointer-events-auto"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
     )
   }
@@ -612,9 +632,10 @@ export function Sidebar({ visible }: Props) {
     return (
       <div
         data-sidebar-row=""
+        data-sidebar-group-row=""
         data-drop-group-header={group.id}
         data-sidebar-index={sidebarIdx}
-        className={`relative flex items-center gap-1 px-1.5 py-1 cursor-pointer group ${
+        className={`relative flex items-center gap-1 px-1 py-1 cursor-pointer group ${
           isBeingDragged ? 'opacity-30' : ''
         } ${
           // During tab drag: suppress normal hover, show "drop into" highlight instead
@@ -637,54 +658,74 @@ export function Sidebar({ visible }: Props) {
         {showGroupBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
-        <span className="text-muted-foreground shrink-0">
-          {group.isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-        </span>
-        <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: group.color }} />
-        {isEditing ? (
-          <input
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onBlur={() => commitGroupRename(group.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commitGroupRename(group.id)
-              if (e.key === 'Escape') setEditingGroupId(null)
-            }}
-            onClick={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            className="flex-1 text-xs bg-transparent border-b border-ring outline-none text-foreground"
-            autoFocus
-          />
-        ) : (
-          <span className="flex-1 text-xs font-medium text-foreground truncate">
-            {group.name}
+        {/* Edge-style colored pill. SWALLOWS the chevron, content-sized
+            via inline-flex (no flex-1), with `max-w-full` letting it grow
+            up to the row's right edge for long names — at which point
+            the inner name truncates. Action buttons are floated above
+            the pill (see absolute overlay below) so the pill always has
+            the full row to use; we don't have to leave a fixed gap on
+            the right for them. */}
+        <span
+          data-group-pill=""
+          style={{ backgroundColor: group.color, color: PILL_TEXT_COLOR }}
+          className="inline-flex items-center gap-1 max-w-full pl-1.5 pr-3 py-1 rounded-md text-xs font-medium overflow-hidden"
+        >
+          <span className="shrink-0 inline-flex items-center">
+            {group.isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
           </span>
-        )}
-        <span className="text-[10px] text-muted-foreground mr-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" title={`${group.tabs.length} tabs`}>
-          {group.tabs.length}
+          {isEditing ? (
+            <input
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onBlur={() => commitGroupRename(group.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitGroupRename(group.id)
+                if (e.key === 'Escape') setEditingGroupId(null)
+              }}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              style={{ color: PILL_TEXT_COLOR }}
+              className="flex-1 min-w-0 bg-transparent outline-none placeholder:opacity-60"
+              autoFocus
+            />
+          ) : (
+            <span className="flex-1 min-w-0 truncate">{group.name}</span>
+          )}
         </span>
-        <button
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation()
-            addTab(group.id)
-          }}
-          className="h-6 w-6 items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground flex shrink-0 opacity-0 group-hover:opacity-100"
-          title="Add tab"
-        >
-          <Plus size={14} />
-        </button>
-        <button
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation()
-            closeGroup(group.id)
-          }}
-          className="h-6 w-6 items-center justify-center rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive flex shrink-0 opacity-0 group-hover:opacity-100"
-          title="Close group"
-        >
-          <X size={14} />
-        </button>
+        {/* Action overlay — absolute right, sits ON TOP of the pill on
+            hover so the pill underneath isn't squeezed by reserved button
+            space. Each button has a card-tone background so the icons
+            stay readable when they hover over the colored pill text. */}
+        <div className="absolute right-1 top-0 bottom-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto">
+          <span
+            className="text-[10px] text-muted-foreground bg-card/85 backdrop-blur-sm rounded px-1"
+            title={`${group.tabs.length} tabs`}
+          >
+            {group.tabs.length}
+          </span>
+          <button
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              addTab(group.id)
+            }}
+            className="h-6 w-6 items-center justify-center rounded bg-card/85 backdrop-blur-sm hover:bg-muted text-muted-foreground hover:text-foreground flex"
+            title="Add tab"
+          >
+            <Plus size={14} />
+          </button>
+          <button
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              closeGroup(group.id)
+            }}
+            className="h-6 w-6 items-center justify-center rounded bg-card/85 backdrop-blur-sm hover:bg-destructive/20 text-muted-foreground hover:text-destructive flex"
+            title="Close group"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
     )
   }
@@ -730,7 +771,18 @@ export function Sidebar({ visible }: Props) {
                 {renderGroupHeader(group as GroupItem, sidebarIdx)}
 
                 {!group.isCollapsed && (
-                  <div className="ml-3">
+                  // Edge-style indent guide: 2px colored line dropping out
+                  // of the bottom of the pill. Horizontal positioning is
+                  // owned by the `[data-group-children]` CSS rule in
+                  // globals.css, which keeps the line's left edge in sync
+                  // with the row's density-aware padding-left so the line
+                  // stays continuous with the pill above in both compact
+                  // and normal modes.
+                  <div
+                    data-group-children=""
+                    className="border-l-2"
+                    style={{ borderColor: group.color }}
+                  >
                     {group.tabs.map((tab, tabIndex) => renderTabRow(tab, group.id, tabIndex))}
                     {showAfterLastInGroup(group.id, group.tabs.length) && (
                       <div className="relative h-0">

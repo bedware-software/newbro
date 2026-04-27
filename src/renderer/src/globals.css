@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+/* Suppress Chromium's default :focus-visible ring everywhere. The default
+ * yellow outline shows up most visibly on right-click context menus and
+ * dropdown rows, and we already provide custom focus indication on the
+ * controls that need it (see `focus:border-ring focus:bg-background`
+ * patterns in InputDialog / SettingsDialog inputs). Off across the
+ * board keeps the chrome visually consistent. */
+*:focus,
+*:focus-visible {
+  outline: none !important;
+  box-shadow: none;
+}
+
 /* ── Dark theme — default ── */
 @theme {
   --color-background: oklch(0.21 0 0);
@@ -134,12 +146,48 @@
 /* ── Layout density ──
  * `normal` (default) gives sidebar rows toolbar-height padding so they
  * breathe like the top chrome. `compact` is the legacy tighter look.
- * Padding is bumped on the rows themselves — no vertical margin gaps
- * between rows, because the rest of the UI doesn't use gaps either.
+ * Both vertical AND horizontal padding scale together so tabs and tab
+ * groups gain the same amount of breathing room — they share the
+ * `[data-sidebar-row]` selector so a single rule covers both.
  */
 [data-density="normal"] [data-sidebar-row] {
   padding-top: 8px;
   padding-bottom: 8px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+/* Tab-group children container — the colored vertical guide line drops
+ * out of the bottom of the group pill. The line's left edge MUST track
+ * the row's padding-left so it stays vertically continuous with the
+ * pill's left edge in both densities. padding-left is 0: nested tab
+ * rows sit flush against the line, with their own row padding providing
+ * the small gap between the line and the favicon (so the tabs don't
+ * "drift" further from the line in normal mode either). */
+[data-group-children] {
+  margin-left: 4px;
+  padding-left: 0;
+}
+[data-density="normal"] [data-group-children] {
+  margin-left: 8px;
+}
+
+/* Group-header rows have a taller pill (it carries an internal py
+ * for its rounded look) so the row's content area is already a few
+ * pixels bigger than a tab row's. Strip the outer vertical padding on
+ * the group row so the pill becomes the row's full height and the
+ * total height of a group-header row equals a tab row's. Without this,
+ * group rows sit a noticeable strip above and below the pill, creating
+ * "big gaps" between the pill and the next tab. The selector outranks
+ * the generic `[data-density="normal"] [data-sidebar-row]` rule above
+ * because it matches two attributes on the same element. */
+[data-sidebar-row][data-sidebar-group-row] {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+[data-density="normal"] [data-sidebar-row][data-sidebar-group-row] {
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 
 /* ── kbd key caps ── */
