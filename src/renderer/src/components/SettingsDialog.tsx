@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
@@ -93,6 +94,8 @@ interface Props {
   settings: Settings | null
   onSave: (settings: Settings) => void
   onAppearancePreview?: (preview: AppearancePreview) => void
+  /** Versioned request to switch panes. See {@link SettingsTabRequest}. */
+  tabRequest?: SettingsTabRequest | null
 }
 
 /** Convert a KeyboardEvent into an Electron accelerator string */
@@ -201,7 +204,19 @@ function formatAccelerator(accel: string): React.ReactNode {
   )
 }
 
-type Tab = 'general' | 'appearance' | 'shortcuts' | 'extensions' | 'about'
+export type SettingsTab = 'general' | 'appearance' | 'shortcuts' | 'extensions' | 'about'
+type Tab = SettingsTab
+
+/**
+ * Versioned request from the parent to switch to a specific tab. The
+ * version bump is what fires the effect — re-issuing the same tab after a
+ * dismiss-and-reopen still triggers a switch. Used by the macOS app menu
+ * "About Newbro" entry to deep-link into the About pane.
+ */
+export interface SettingsTabRequest {
+  tab: SettingsTab
+  v: number
+}
 
 interface ExtensionInfo {
   id: string
@@ -249,8 +264,15 @@ function normalizeKnownKeybindings(raw: Record<string, string> | undefined): Rec
   return next
 }
 
-export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePreview }: Props) {
-  const [activeTab, setActiveTab] = useState<Tab>('general')
+export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePreview, tabRequest }: Props) {
+  const [activeTab, setActiveTab] = useState<Tab>(() => tabRequest?.tab ?? 'general')
+
+  // Switch to the parent-requested tab whenever a fresh request arrives —
+  // even if the dialog was already open, so re-clicking "About" in the
+  // macOS app menu always lands on About regardless of the previous tab.
+  useEffect(() => {
+    if (tabRequest) setActiveTab(tabRequest.tab)
+  }, [tabRequest?.v])
   const [theme, setTheme] = useState<ThemeChoice>('dark')
   const [lightVariant, setLightVariant] = useState<string>(LIGHT_VARIANTS[0].id)
   const [darkVariant, setDarkVariant] = useState<string>(DARK_VARIANTS[0].id)
@@ -506,62 +528,53 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
           </button>
         </div>
 
-        {/* Tab bar */}
-        <div className="flex border-b border-border">
-          <button
-            onClick={() => setActiveTab('general')}
-            className={`px-5 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === 'general'
-                ? 'text-foreground border-b-2 border-primary'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            General
-          </button>
-          <button
-            onClick={() => setActiveTab('appearance')}
-            className={`px-5 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === 'appearance'
-                ? 'text-foreground border-b-2 border-primary'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Appearance
-          </button>
-          <button
-            onClick={() => setActiveTab('shortcuts')}
-            className={`px-5 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === 'shortcuts'
-                ? 'text-foreground border-b-2 border-primary'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Keyboard Shortcuts
-          </button>
-          <button
-            onClick={() => setActiveTab('extensions')}
-            className={`px-5 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === 'extensions'
-                ? 'text-foreground border-b-2 border-primary'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Extensions
-          </button>
-          <button
-            onClick={() => setActiveTab('about')}
-            className={`px-5 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === 'about'
-                ? 'text-foreground border-b-2 border-primary'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            About
-          </button>
-        </div>
+        {/* Body: sidebar + content */}
+        <div className="flex-1 min-h-0 flex">
+          {/* Sidebar — top group for the main panes, About pinned to the
+              bottom under a separator (Edge / runwa-style). */}
+          <aside className="w-52 bg-card border-r border-border p-3 flex flex-col shrink-0">
+            <nav className="flex flex-col gap-1">
+              {(
+                [
+                  { id: 'general', label: 'General', icon: SlidersHorizontal },
+                  { id: 'appearance', label: 'Appearance', icon: Palette },
+                  { id: 'shortcuts', label: 'Keyboard Shortcuts', icon: Keyboard },
+                  { id: 'extensions', label: 'Extensions', icon: Puzzle },
+                ] as { id: Tab; label: string; icon: LucideIcon }[]
+              ).map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setActiveTab(id)}
+                  className={`flex items-center gap-2 h-8 px-2 rounded-md text-sm text-left transition-colors ${
+                    activeTab === id
+                      ? 'bg-accent text-accent-foreground'
+                      : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                  }`}
+                >
+                  <Icon size={14} className="shrink-0" />
+                  <span className="truncate">{label}</span>
+                </button>
+              ))}
+            </nav>
+            <nav className="mt-auto pt-3 border-t border-border flex flex-col gap-1">
+              <button
+                type="button"
+                onClick={() => setActiveTab('about')}
+                className={`flex items-center gap-2 h-8 px-2 rounded-md text-sm text-left transition-colors ${
+                  activeTab === 'about'
+                    ? 'bg-accent text-accent-foreground'
+                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                }`}
+              >
+                <Info size={14} className="shrink-0" />
+                About
+              </button>
+            </nav>
+          </aside>
 
-        {/* Content */}
-        <div className="px-6 py-5 flex-1 min-h-0 overflow-y-auto">
+          {/* Content */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
           {activeTab === 'appearance' && (
             <div className="space-y-8">
               {/* Theme */}
@@ -1071,127 +1084,179 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
           )}
 
           {activeTab === 'about' && (
-            <div className="space-y-6">
-              {/* App identity */}
-              <div className="flex flex-col items-center text-center py-2">
-                <h2 className="text-xl font-semibold text-foreground">
+            <div className="flex flex-col gap-8 max-w-2xl">
+              {/* App identity + version + storage paths in one divided card. */}
+              <section>
+                <h2 className="text-sm font-semibold text-foreground mb-1">
                   {appPaths?.appName || 'Newbro'}
                 </h2>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {appVersion ? `Version ${appVersion}` : 'Version unknown'}
+                <p className="text-xs text-muted-foreground mb-3">
+                  Workspace-based browser with profiles and tab groups.
                 </p>
-              </div>
-
-              {/* Storage paths — useful for confirming dev vs stable
-                  installs end up in different folders. The user-data
-                  directory is where settings, the extensions store,
-                  cookies, and per-profile partitions live. */}
-              {appPaths && (
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">Storage</label>
-                  <div className="space-y-2">
-                    {[
-                      { label: 'User data', value: appPaths.userData },
-                      { label: 'Cache', value: appPaths.cache },
-                      { label: 'Logs', value: appPaths.logs },
-                    ].map((row) => (
-                      <div key={row.label} className="flex items-center gap-2">
-                        <span className="text-[11px] text-muted-foreground w-20 shrink-0">{row.label}</span>
-                        <code
-                          className="flex-1 text-[11px] font-mono px-2 py-1.5 rounded bg-secondary text-foreground truncate select-all"
-                          title={row.value}
+                <div className="flex flex-col divide-y divide-border border border-input rounded-md bg-card overflow-hidden">
+                  <div className="flex items-center justify-between gap-4 px-4 py-3">
+                    <div className="text-sm font-medium text-foreground">Version</div>
+                    <div className="text-sm text-muted-foreground tabular-nums">
+                      {appVersion ? `v${appVersion}` : '…'}
+                    </div>
+                  </div>
+                  {appPaths &&
+                    (
+                      [
+                        { label: 'User data', value: appPaths.userData },
+                        { label: 'Cache', value: appPaths.cache },
+                        { label: 'Logs', value: appPaths.logs },
+                      ] as const
+                    ).map((row) => (
+                      <div
+                        key={row.label}
+                        className="flex items-center justify-between gap-4 px-4 py-3"
+                      >
+                        <div className="text-sm font-medium text-foreground shrink-0">
+                          {row.label}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { navigator.clipboard.writeText(row.value).catch(() => {}) }}
+                          title="Click to copy"
+                          className="text-xs text-muted-foreground font-mono truncate hover:text-foreground transition-colors text-right select-all"
                         >
                           {row.value}
-                        </code>
-                        <button
-                          onClick={() => { navigator.clipboard.writeText(row.value).catch(() => {}) }}
-                          className="h-7 px-2 rounded-md text-[11px] bg-secondary text-secondary-foreground hover:bg-muted shrink-0"
-                          title="Copy to clipboard"
-                        >
-                          Copy
                         </button>
                       </div>
                     ))}
-                  </div>
                 </div>
-              )}
+              </section>
 
-              {/* Updates */}
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">Updates</label>
-                <div className="flex items-center gap-3 flex-wrap">
-                  <button
-                    onClick={handleCheckForUpdates}
-                    disabled={
-                      updateStatus.phase === 'checking' ||
-                      updateStatus.phase === 'downloading' ||
-                      updateStatus.phase === 'unsupported'
-                    }
-                    title={updateStatus.phase === 'unsupported' ? 'Updates are only available in installed builds.' : undefined}
-                    className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium transition-colors ${
-                      updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'
-                        ? 'bg-secondary text-muted-foreground cursor-default'
-                        : updateStatus.phase === 'unsupported'
-                          ? 'bg-secondary text-muted-foreground cursor-not-allowed opacity-60'
-                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                    }`}
-                  >
-                    {updateStatus.phase === 'checking' ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <Download size={12} />
-                    )}
-                    Check for updates
-                  </button>
-                  {updateStatus.phase === 'downloaded' && (
+              {/* Updates — same card pattern as the identity block; the
+                  status line on the left, action button on the right. */}
+              <section>
+                <h2 className="text-sm font-semibold text-foreground mb-1">Updates</h2>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Newbro checks GitHub for new releases on launch and every few hours.
+                  The button below triggers a manual check.
+                </p>
+                <div className="flex items-start gap-4 px-4 py-3 border border-input rounded-md bg-card">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-foreground flex items-center gap-1.5">
+                      {updateStatus.phase === 'not-available' && (
+                        <CheckCircle2 size={12} className="text-primary shrink-0" />
+                      )}
+                      {updateStatus.phase === 'error' && (
+                        <AlertTriangle size={12} className="text-destructive shrink-0" />
+                      )}
+                      {(() => {
+                        switch (updateStatus.phase) {
+                          case 'idle':
+                            return 'Newbro is ready to check for updates'
+                          case 'checking':
+                            return 'Checking for updates…'
+                          case 'not-available':
+                            return `You're up to date — v${updateStatus.version}`
+                          case 'available':
+                            return `Update available — v${updateStatus.version}`
+                          case 'downloading':
+                            return `Downloading v${updateStatus.version}…`
+                          case 'downloaded':
+                            return `v${updateStatus.version} ready to install`
+                          case 'error':
+                            return 'Update check failed'
+                          case 'unsupported':
+                            return 'Auto-update disabled in dev builds'
+                        }
+                      })()}
+                    </p>
+                    {(() => {
+                      switch (updateStatus.phase) {
+                        case 'available':
+                          return (
+                            <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                              Downloading in the background.
+                            </p>
+                          )
+                        case 'downloading':
+                          return (
+                            <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                              {updateStatus.percent}% complete.
+                            </p>
+                          )
+                        case 'downloaded':
+                          return (
+                            <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                              Newbro will close, swap in the new version, and relaunch.
+                            </p>
+                          )
+                        case 'error':
+                          return (
+                            <p className="text-[11px] text-destructive mt-1 leading-relaxed">
+                              {updateStatus.message}
+                            </p>
+                          )
+                        case 'unsupported':
+                          return (
+                            <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                              Running from `npm run dev` — packaged releases get real auto-update.
+                            </p>
+                          )
+                        default:
+                          return null
+                      }
+                    })()}
+                  </div>
+                  {updateStatus.phase === 'downloaded' ? (
                     <button
                       onClick={handleInstallUpdate}
-                      className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground hover:bg-primary/80 text-xs font-medium"
+                      className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium border bg-primary text-primary-foreground border-primary hover:opacity-90"
                     >
-                      <RotateCcw size={12} />
-                      Restart to install
+                      <Download size={12} />
+                      Install now
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleCheckForUpdates}
+                      disabled={
+                        updateStatus.phase === 'checking' ||
+                        updateStatus.phase === 'downloading' ||
+                        updateStatus.phase === 'available' ||
+                        updateStatus.phase === 'unsupported'
+                      }
+                      title={updateStatus.phase === 'unsupported' ? 'Updates are only available in installed builds.' : undefined}
+                      className={`shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium border transition-colors ${
+                        updateStatus.phase === 'checking' ||
+                        updateStatus.phase === 'downloading' ||
+                        updateStatus.phase === 'available'
+                          ? 'bg-secondary text-secondary-foreground border-input opacity-60 cursor-not-allowed'
+                          : updateStatus.phase === 'unsupported'
+                            ? 'bg-secondary text-muted-foreground border-input opacity-60 cursor-not-allowed'
+                            : 'bg-secondary text-secondary-foreground border-input hover:bg-accent'
+                      }`}
+                    >
+                      <RotateCcw
+                        size={12}
+                        className={
+                          updateStatus.phase === 'checking' ||
+                          updateStatus.phase === 'downloading' ||
+                          updateStatus.phase === 'available'
+                            ? 'animate-spin'
+                            : ''
+                        }
+                      />
+                      {updateStatus.phase === 'checking'
+                        ? 'Checking…'
+                        : updateStatus.phase === 'downloading' || updateStatus.phase === 'available'
+                          ? 'Downloading…'
+                          : updateStatus.phase === 'error'
+                            ? 'Try again'
+                            : updateStatus.phase === 'unsupported'
+                              ? 'Unavailable'
+                              : 'Check for updates'}
                     </button>
                   )}
                 </div>
-                <div className="mt-2 text-[11px]">
-                  {updateStatus.phase === 'idle' && (
-                    <span className="text-muted-foreground">The app checks for updates automatically on startup.</span>
-                  )}
-                  {updateStatus.phase === 'checking' && (
-                    <span className="text-muted-foreground">Checking for updates…</span>
-                  )}
-                  {updateStatus.phase === 'not-available' && (
-                    <span className="text-muted-foreground flex items-center gap-1">
-                      <CheckCircle2 size={11} className="text-primary" />
-                      You're on the latest version.
-                    </span>
-                  )}
-                  {updateStatus.phase === 'available' && (
-                    <span className="text-foreground">Update v{updateStatus.version} available — downloading…</span>
-                  )}
-                  {updateStatus.phase === 'downloading' && (
-                    <span className="text-foreground">
-                      Downloading v{updateStatus.version} · {updateStatus.percent}%
-                    </span>
-                  )}
-                  {updateStatus.phase === 'downloaded' && (
-                    <span className="text-foreground">Update v{updateStatus.version} ready — restart to install.</span>
-                  )}
-                  {updateStatus.phase === 'error' && (
-                    <span className="text-destructive flex items-center gap-1">
-                      <AlertTriangle size={11} />
-                      Check failed: {updateStatus.message}
-                    </span>
-                  )}
-                  {updateStatus.phase === 'unsupported' && (
-                    <span className="text-muted-foreground">
-                      Updates are unavailable in development builds. Install a packaged release to receive updates.
-                    </span>
-                  )}
-                </div>
-              </div>
+              </section>
             </div>
           )}
+          </div>
         </div>
 
         {/* Footer */}

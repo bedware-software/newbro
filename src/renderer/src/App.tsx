@@ -7,7 +7,7 @@ import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
 import { SearchDialog } from './components/SearchDialog'
-import { SettingsDialog } from './components/SettingsDialog'
+import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { InputDialog } from './components/InputDialog'
 import { GroupPicker } from './components/GroupPicker'
@@ -60,7 +60,6 @@ declare global {
       saveSettings: (settings: Settings) => Promise<void>
       wipeAllData: () => Promise<void>
       openBookmarkFile: () => Promise<string | null>
-      showAboutPanel: () => void
       detachedWindowShow: () => void
       onShortcut: (callback: (action: string) => void) => () => void
       onStateUpdated: (callback: (state: unknown) => void) => () => void
@@ -183,6 +182,7 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTabRequest, setSettingsTabRequest] = useState<SettingsTabRequest | null>(null)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commentDialogOpen, setCommentDialogOpen] = useState(false)
   const [commentDefault, setCommentDefault] = useState('')
@@ -379,6 +379,15 @@ export default function App() {
         case 'settings':
           setSettingsOpen((v) => !v)
           break
+        case 'about':
+        case 'open-settings-about':
+          // Sent by the macOS app menu's "About Newbro" entry and the
+          // in-app About affordances. Opens the settings window (if not
+          // already open) and forces the About pane via a versioned
+          // request so re-clicking always lands there.
+          setSettingsTabRequest({ tab: 'about', v: Date.now() })
+          setSettingsOpen(true)
+          break
         case 'command-palette':
           setCommandPaletteOpen((v) => !v)
           break
@@ -411,9 +420,6 @@ export default function App() {
           cycleTab(-1)
           break
         case 'new-workspace':
-          break
-        case 'about':
-          (window as any).electronAPI.showAboutPanel()
           break
         case 'set-comment': {
           const tab = s.getActiveTab()
@@ -615,7 +621,7 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => (window as any).electronAPI.showAboutPanel()} onOpenSearch={() => setSearchOpen(true)} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar visible={sidebarVisible} />
         <WebviewPanel />
@@ -628,6 +634,7 @@ export default function App() {
         settings={settings}
         onSave={handleSaveSettings}
         onAppearancePreview={(p) => { applyTheme(p.theme, p.lightVariant, p.darkVariant); applyDensity(p.density) }}
+        tabRequest={settingsTabRequest}
       />
       <CommandPalette
         open={commandPaletteOpen}

@@ -44,9 +44,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Import
   openBookmarkFile: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-bookmark-file'),
 
-  // About
-  showAboutPanel: (): void => { ipcRenderer.send('show-about-panel') },
-
   // Exit
   quit: (): void => { ipcRenderer.send('app:quit') },
 

@@ -681,15 +681,7 @@ function buildMenu(): void {
       submenu: [
         {
           label: `About ${APP_NAME}`,
-          click: () => {
-            app.setAboutPanelOptions({
-              applicationName: APP_NAME,
-              applicationVersion: app.getVersion(),
-              copyright: 'Newbro Browser',
-              version: '',
-            })
-            app.showAboutPanel()
-          },
+          click: (_item, win) => sendShortcutToWindow(win, 'open-settings-about'),
         },
         { type: 'separator' },
         {

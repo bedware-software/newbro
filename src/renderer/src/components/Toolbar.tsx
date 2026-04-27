@@ -12,7 +12,7 @@ import { openDropdownAsync } from './dropdown-protocol'
 import {
   ChevronLeft, ChevronRight, RotateCw, X, ChevronDown,
   PanelLeftClose, PanelLeft, User, Layout, Lock, Unlock, ShieldAlert,
-  Menu, Globe, Copy, Check, Puzzle,
+  Menu, Globe, Copy, Check, Puzzle, Search,
 } from 'lucide-react'
 
 // Trigger-side icon registry. Only the icons used on dropdown trigger
@@ -952,6 +952,16 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
           title="Toggle Sidebar"
         >
           {sidebarVisible ? <PanelLeftClose size={15} /> : <PanelLeft size={15} />}
+        </button>
+
+        {/* Search Everything */}
+        <button
+          onClick={onOpenSearch}
+          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          title={`Search Everything (${isMac ? '⌘' : 'Ctrl'}+O)`}
+        >
+          <Search size={15} />
         </button>
 
         {/* App menu */}

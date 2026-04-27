@@ -469,17 +469,6 @@ export function registerIpcHandlers(): void {
     app.quit()
   })
 
-  ipcMain.on('show-about-panel', (_e) => {
-    const win = BrowserWindow.fromWebContents(_e.sender)
-    // On macOS the about panel can appear behind the window — use the menu item role approach
-    if (process.platform === 'darwin') {
-      const { Menu } = require('electron')
-      Menu.sendActionToFirstResponder('orderFrontStandardAboutPanel:')
-    } else {
-      app.showAboutPanel()
-    }
-  })
-
   // Returns where the app keeps its mutable state on disk. Used by the
   // About tab in Settings so users can verify they're running dev vs
   // stable (each maps to a different folder once we set the app name).
