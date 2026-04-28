@@ -56,19 +56,35 @@ function buildScrollbarCss(): string {
 
 /** Re-theme the scrollbar inside each tab's document. With <webview> we
  *  called executeJavaScript on the DOM element; now we route through IPC
- *  to the guest webContents in main. */
+ *  to the guest webContents in main.
+ *
+ *  Disabled for now: on macOS this injection makes Sheets' cell-iframe
+ *  scrollbars (and other apps inheriting the document-level
+ *  `scrollbar-color`) vanish at end-of-load — the inherited near-white-
+ *  on-white colors blend into the page background. macOS already renders
+ *  guest scrollbars with the OS-native overlay style, so the injection
+ *  buys us nothing there.
+ *
+ *  Windows / Linux are likely a different story: their default Chromium
+ *  scrollbar is a chunky light-gray bar that clashes with a dark-themed
+ *  app, which is why this code was added. Re-enable selectively (e.g.
+ *  `if (process.platform !== 'darwin')` via a preload-exposed flag, or
+ *  a higher-contrast palette) when verifying on those platforms. The
+ *  body is left in place so the fix is one paste away. */
 function applyScrollbarStyle(tabId: string): void {
-  const css = buildScrollbarCss()
-  const js = `(() => {
-    let s = document.getElementById('__newbro_scrollbar_style__');
-    if (!s) {
-      s = document.createElement('style');
-      s.id = '__newbro_scrollbar_style__';
-      (document.head || document.documentElement).appendChild(s);
-    }
-    s.textContent = ${JSON.stringify(css)};
-  })()`
-  window.electronAPI.tabExecuteJS?.(tabId, js)
+  void tabId
+  return
+  // const css = buildScrollbarCss()
+  // const js = `(() => {
+  //   let s = document.getElementById('__newbro_scrollbar_style__');
+  //   if (!s) {
+  //     s = document.createElement('style');
+  //     s.id = '__newbro_scrollbar_style__';
+  //     (document.head || document.documentElement).appendChild(s);
+  //   }
+  //   s.textContent = ${JSON.stringify(css)};
+  // })()`
+  // window.electronAPI.tabExecuteJS?.(tabId, js)
 }
 
 /** Focus + select the toolbar URL bar. Used when the user prefers the
