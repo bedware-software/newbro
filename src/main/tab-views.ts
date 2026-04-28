@@ -99,14 +99,51 @@ function wireEvents(rec: TabRecord): void {
   const wc: WebContents = rec.view.webContents
   const emit = (evt: TabEvent): void => sendToWindowRenderer(rec.windowId, 'tab-event', evt)
 
+  // Trackpad gesture begin/end — forwarded to the page preload so the
+  // in-page swipe-back/forward overlay can track finger-down state exactly
+  // (engages on gesture-begin, commits/cancels on gesture-end). Chromium
+  // synthesizes gestureScrollBegin/End from native NSEvent phases on
+  // macOS and from analogous touchpad events on other platforms; mouse
+  // wheels never produce them, which is exactly what we want.
+  wc.on('input-event', (_e, input) => {
+    if (input.type === 'gestureScrollBegin') {
+      if (!wc.isDestroyed()) wc.send('newbro-touch-begin')
+    } else if (input.type === 'gestureScrollEnd' || input.type === 'gestureFlingStart') {
+      // gestureScrollEnd is heavily delayed for trackpad gestures with
+      // momentum (Chromium waits for the momentum decay to finish before
+      // firing it — ~1s in practice, far past the actual finger lift).
+      // The preload commits eagerly when the threshold is crossed; this
+      // signal is now only a "tear down whatever's still showing" hint.
+      if (!wc.isDestroyed()) wc.send('newbro-touch-end')
+    }
+  })
+
+  // Push the navigation history bounds to the preload so the swipe gesture
+  // refuses to engage in a direction we can't actually navigate (and so
+  // the renderer can hide the forward toolbar button on a tail page). We
+  // emit on every navigation event because canGoBack/canGoForward only
+  // change when the entry list changes.
+  const emitNavState = (): void => {
+    if (wc.isDestroyed()) return
+    const nav = wc.navigationHistory
+    wc.send('newbro-nav-state', {
+      canGoBack: nav.canGoBack(),
+      canGoForward: nav.canGoForward(),
+    })
+  }
+
   wc.on('did-start-loading', () => emit({ type: 'did-start-loading', tabId: rec.tabId }))
   wc.on('did-stop-loading', () =>
     emit({ type: 'did-stop-loading', tabId: rec.tabId, url: wc.getURL() })
   )
-  wc.on('did-navigate', (_e, url) => emit({ type: 'did-navigate', tabId: rec.tabId, url }))
-  wc.on('did-navigate-in-page', (_e, url, isMainFrame) =>
+  wc.on('did-navigate', (_e, url) => {
+    emit({ type: 'did-navigate', tabId: rec.tabId, url })
+    emitNavState()
+  })
+  wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
     emit({ type: 'did-navigate-in-page', tabId: rec.tabId, url, isMainFrame })
-  )
+    emitNavState()
+  })
   wc.on('page-title-updated', (_e, title) =>
     emit({ type: 'page-title-updated', tabId: rec.tabId, title })
   )

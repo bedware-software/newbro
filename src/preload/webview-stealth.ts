@@ -293,6 +293,281 @@ try {
   console.log('[newbro-stealth] middle-click wiring failed:', err)
 }
 
+// ── Two-finger horizontal swipe → back/forward (Edge / Chrome style) ─────
+// Mechanics, matching Edge:
+//   - Finger touch-down on the trackpad starts the gesture (main forwards
+//     macOS NSEventPhaseBegan via 'newbro-touch-begin'; Chromium's standard
+//     wheel events don't expose phase from JS).
+//   - As fingers move, deltaX moves a *signed* position counter. The
+//     overlay slides in proportional to position — pull back and the
+//     overlay slides back out, no timers.
+//   - When position passes the commit threshold, the circle gets an
+//     accent ring, signalling "release now to navigate".
+//   - Touch-end ('newbro-touch-end' from main) is the *only* commit point:
+//     if past threshold at that instant, fire navigation immediately;
+//     otherwise just hide the overlay.
+// Because the overlay lives in the guest DOM, it stacks above the page
+// content without needing any cooperation from the main / workspace
+// renderer.
+try {
+  const TRIGGER_PX = 100      // overscroll distance to arm a navigation
+  const ENGAGE_PX = 6         // overscroll distance before we engage
+  const REST_INSET_PX = 28    // distance from viewport edge once fully in
+  const HIDDEN_OFFSET_PX = 64 // distance past viewport edge when invisible
+
+  // Touch state (from main).
+  let touchActive = false
+
+  // Engaged-gesture state.
+  let engaged = false
+  let committed = false // navigation already fired this touch session
+  let position = 0 // signed: positive once we've engaged; never negative
+  let direction: 'back' | 'forward' | null = null
+  let overlay: HTMLDivElement | null = null
+
+  // Navigation history bounds — pushed from main on every did-navigate so
+  // the gesture refuses to engage in a direction we can't actually go.
+  // Default to "neither", letting the page acquire history before the
+  // gesture starts working.
+  let canGoBack = false
+  let canGoForward = false
+  ipcRenderer.on('newbro-nav-state', (_e, state: unknown) => {
+    const s = state as { canGoBack?: unknown; canGoForward?: unknown } | null
+    canGoBack = s?.canGoBack === true
+    canGoForward = s?.canGoForward === true
+  })
+
+  const ICON_BACK =
+    '<svg width="33" height="33" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18 9 12l6-6"/></svg>'
+  const ICON_FORWARD =
+    '<svg width="33" height="33" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>'
+
+  const ensureOverlay = (): HTMLDivElement => {
+    if (overlay && overlay.isConnected) return overlay
+    const el = document.createElement('div')
+    el.setAttribute('data-newbro-swipe', '')
+    el.style.cssText = [
+      'position:fixed',
+      'top:50%',
+      'width:72px',
+      'height:72px',
+      'border-radius:9999px',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'pointer-events:none',
+      'z-index:2147483647',
+      'opacity:0',
+      'color:#fff',
+      'background:rgba(30,30,30,0.92)',
+      'box-shadow:0 4px 18px rgba(0,0,0,0.35)',
+      'border:2px solid transparent',
+      'box-sizing:border-box',
+      // No transitions: position must track fingers 1:1, not animate.
+    ].join(';')
+    ;(document.documentElement || document.body).appendChild(el)
+    overlay = el
+    return el
+  }
+
+  const renderOverlay = (): void => {
+    if (!direction) return
+    const el = ensureOverlay()
+    const progress = Math.min(1, position / TRIGGER_PX)
+    const armed = position >= TRIGGER_PX
+    // Position interpolates from -HIDDEN_OFFSET_PX (off-screen) to
+    // +REST_INSET_PX (resting just inside the edge) as progress goes 0→1.
+    const inset = -HIDDEN_OFFSET_PX + (HIDDEN_OFFSET_PX + REST_INSET_PX) * progress
+    if (direction === 'back') {
+      el.style.left = `${inset}px`
+      el.style.right = ''
+      el.innerHTML = ICON_BACK
+    } else {
+      el.style.right = `${inset}px`
+      el.style.left = ''
+      el.innerHTML = ICON_FORWARD
+    }
+    el.style.transform = 'translateY(-50%)'
+    el.style.opacity = position > 0 ? '1' : '0'
+    el.style.borderColor = armed ? 'rgba(96,165,250,1)' : 'transparent'
+    el.style.background = armed ? 'rgba(37,99,235,0.95)' : 'rgba(30,30,30,0.92)'
+  }
+
+  const hideOverlay = (): void => {
+    if (overlay) overlay.style.opacity = '0'
+  }
+
+  const resetGesture = (): void => {
+    engaged = false
+    position = 0
+    direction = null
+    hideOverlay()
+  }
+
+  // Touch begin: start of any two-finger trackpad scroll. We don't engage
+  // the overlay yet — only when the user actually overscrolls horizontally.
+  ipcRenderer.on('newbro-touch-begin', () => {
+    touchActive = true
+    engaged = false
+    committed = false
+    position = 0
+    direction = null
+  })
+
+  // Touch end: stale signal in this Electron build (delayed by Chromium's
+  // momentum-decay wait). We commit eagerly inside the wheel handler when
+  // the threshold is crossed; touch-end just tears down anything still
+  // showing if the user released without ever crossing.
+  ipcRenderer.on('newbro-touch-end', () => {
+    touchActive = false
+    resetGesture()
+  })
+
+  window.addEventListener(
+    'wheel',
+    (e: WheelEvent) => {
+      // Step aside whenever a page handler on the bubble path already
+      // claimed the wheel event for itself (Google Sheets' canvas grid is
+      // the canonical case — its page never scrolls horizontally, so to
+      // our edge-detection code it would always look like an overscroll
+      // and we'd freeze its scrollbars by preventDefault-ing). If the
+      // page didn't preventDefault, the event truly is unhandled and we
+      // can use it for the back/forward gesture.
+      if (e.defaultPrevented) {
+        if (engaged) resetGesture()
+        return
+      }
+
+      // ctrl/cmd+wheel is page zoom; alt/shift can be other tools. Never
+      // claim those for the gesture.
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) {
+        if (engaged) resetGesture()
+        return
+      }
+
+      // Without a finger-touch context (mouse wheel, or non-macOS) we
+      // never engage. macOS sends 'newbro-touch-begin' before the first
+      // wheel event of a trackpad gesture.
+      if (!touchActive) return
+
+      // After eager commit we keep eating the rest of this touch session's
+      // wheel events so any momentum scroll or trailing input can't bounce
+      // the page or re-engage the indicator.
+      if (committed) {
+        e.preventDefault()
+        return
+      }
+
+      const dx = e.deltaX
+      const dy = e.deltaY
+      if (Math.abs(dx) < 1) return
+      // Reject mostly-vertical gestures so vertical scrolling with tiny
+      // horizontal jitter doesn't engage.
+      if (!engaged && Math.abs(dx) < Math.abs(dy) * 1.5) return
+
+      // Defer to the nearest horizontally-scrollable ancestor of the
+      // cursor target (carousels, wide tables). If one exists under the
+      // cursor the user is scrolling it, not navigating history.
+      if (!engaged) {
+        let scope: HTMLElement | null = e.target as HTMLElement | null
+        while (scope && scope !== document.scrollingElement) {
+          if (scope.scrollWidth > scope.clientWidth + 1) {
+            const ox = window.getComputedStyle(scope).overflowX
+            if (ox === 'auto' || ox === 'scroll') return
+          }
+          scope = scope.parentElement
+        }
+      }
+
+      const el = document.scrollingElement as HTMLElement | null
+      if (!el) return
+      const scrollLeft = el.scrollLeft
+      const maxScrollLeft = el.scrollWidth - el.clientWidth
+
+      // Skip pages whose document has no scroll capability at all — those
+      // are typically full-screen "app" pages (Google Sheets, Figma,
+      // Discord, Slack web…) that handle scrolling internally via canvas
+      // or virtual lists. Engaging the gesture here would falsely fire on
+      // every horizontal wheel and freeze the page's own scroll handling.
+      if (
+        el.scrollHeight <= el.clientHeight + 1 &&
+        el.scrollWidth <= el.clientWidth + 1
+      ) {
+        if (engaged) resetGesture()
+        return
+      }
+
+      if (!engaged) {
+        // Engage only when actually past the document's scroll edge in the
+        // wheel direction. dx<0 = scrolling left further = back gesture;
+        // dx>0 = scrolling right further = forward gesture.
+        let dir: 'back' | 'forward' | null = null
+        if (dx < 0 && scrollLeft <= 0) dir = 'back'
+        else if (dx > 0 && scrollLeft >= maxScrollLeft - 1) dir = 'forward'
+        if (!dir) return
+        // Don't engage a direction the tab's history can't actually go.
+        if (dir === 'back' && !canGoBack) return
+        if (dir === 'forward' && !canGoForward) return
+        direction = dir
+        position = 0
+        engaged = true
+      }
+
+      e.preventDefault() // suppress Chromium's rubber-band
+
+      // 1:1 position tracking. dx in the gesture's "outward" direction
+      // grows position; reversing shrinks it. Floor at 0 — once you pull
+      // the indicator all the way back, the gesture disengages so a fresh
+      // overscroll can pick a (possibly different) direction.
+      const delta = direction === 'back' ? -dx : dx
+      position += delta
+      if (position <= 0) {
+        position = 0
+        // Disengage but stay touch-active: the next overscroll inside
+        // this same touch session can re-engage in either direction.
+        engaged = false
+        direction = null
+        hideOverlay()
+        // Quick growth past ENGAGE_PX hides the brief flicker before
+        // re-engagement; if we're still pulling out, fall through.
+        return
+      }
+
+      if (engaged && position < ENGAGE_PX) {
+        hideOverlay()
+        return
+      }
+
+      renderOverlay()
+
+      // Eager commit: as soon as the user pushes past the trigger, fire
+      // the navigation. We can't reliably observe the actual finger-lift
+      // moment in this Electron build (gestureScrollEnd is gated on
+      // momentum decay → ~1s late), so the threshold itself is the
+      // commit point. The cancel-by-pulling-back gesture still works for
+      // anything below the threshold; once you've pushed past it, the
+      // commit is irrevocable.
+      if (direction && position >= TRIGGER_PX) {
+        const dir = direction
+        committed = true
+        engaged = false
+        direction = null
+        hideOverlay()
+        ipcRenderer.send('newbro-nav', dir)
+      }
+    },
+    // Bubble phase + non-passive: page handlers run first and any that
+    // claim the event with preventDefault (Sheets, carousels, etc.) opt
+    // themselves out via the `e.defaultPrevented` guard above; we still
+    // need passive:false so we can preventDefault the rubber-band when
+    // we actually engage.
+    { passive: false, capture: false }
+  )
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.log('[newbro-stealth] swipe-gesture wiring failed:', err)
+}
+
 // ── Right-click on selected text → host context menu ──────────────────────
 // When the user right-clicks with text selected on the page, suppress the
 // guest page's own context menu and relay the selection to main so it can

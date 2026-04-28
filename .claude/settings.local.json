@@ -44,7 +44,8 @@
       "Bash(powershell -Command 'Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile\\('\\\\''C:\\\\Users\\\\dmitr\\\\Desktop\\\\newbro\\\\resources\\\\icon.png'\\\\''\\); Write-Host \"PNG size: $\\($img.Width\\)x$\\($img.Height\\)\"; $img.Dispose\\(\\)')",
       "Bash(grep -r \"ready-to-show\\\\|willFinishLaunching\\\\|show\\\\|visible\" /c/Users/dmitr/Desktop/newbro/src/main/*.ts)",
       "Bash(npx vite:*)",
-      "Bash(node -e \"const b = Buffer.from\\('Cr24'\\); console.log\\('LE uint32:', '0x' + b.readUInt32LE\\(0\\).toString\\(16\\)\\); console.log\\('Bytes:', [...b].map\\(x => '0x' + x.toString\\(16\\)\\)\\);\")"
+      "Bash(node -e \"const b = Buffer.from\\('Cr24'\\); console.log\\('LE uint32:', '0x' + b.readUInt32LE\\(0\\).toString\\(16\\)\\); console.log\\('Bytes:', [...b].map\\(x => '0x' + x.toString\\(16\\)\\)\\);\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(k,':',v\\) for k,v in d.get\\('scripts',{}\\).items\\(\\)]\")"
     ]
   }
 }

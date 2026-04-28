@@ -29,6 +29,8 @@ export type IconName =
   | 'PinOff'
   | 'EyeOff'
   | 'Puzzle'
+  | 'PanelLeft'
+  | 'PanelLeftClose'
 
 export interface DropdownItem {
   id: string

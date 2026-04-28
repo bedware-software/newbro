@@ -11,7 +11,7 @@ import type { DropdownAction, DropdownEvent, DropdownSpec, IconName } from './dr
 import { openDropdownAsync } from './dropdown-protocol'
 import {
   ChevronLeft, ChevronRight, RotateCw, X, ChevronDown,
-  PanelLeftClose, PanelLeft, User, Layout, Lock, Unlock, ShieldAlert,
+  User, Layout, Lock, Unlock, ShieldAlert,
   Menu, Globe, Copy, Check, Puzzle, Search,
 } from 'lucide-react'
 
@@ -409,7 +409,7 @@ function ExtensionActions({
   )
 }
 
-function AppMenu({ onOpenSettings, onOpenAbout, onOpenSearch }: { onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void }) {
+function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch }: { sidebarVisible: boolean; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void }) {
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
   const [updatesUnsupported, setUpdatesUnsupported] = useState(false)
@@ -434,6 +434,7 @@ function AppMenu({ onOpenSettings, onOpenAbout, onOpenSearch }: { onOpenSettings
   // Action handlers keyed by id — same dispatch table the popup will route
   // through via the 'action' event.
   const ACTIONS: Record<string, () => void> = {
+    'toggle-sidebar': onToggleSidebar,
     'search': onOpenSearch,
     'settings': onOpenSettings,
     'check-updates': () => { (window as any).electronAPI.checkForUpdates?.() },
@@ -451,6 +452,12 @@ function AppMenu({ onOpenSettings, onOpenAbout, onOpenSearch }: { onOpenSettings
   const buildActions = (): DropdownAction[] => {
     const modKey = isMacOS ? '⌘' : 'Ctrl'
     return [
+      {
+        id: 'toggle-sidebar',
+        label: sidebarVisible ? 'Hide Sidebar' : 'Show Sidebar',
+        iconName: sidebarVisible ? 'PanelLeftClose' : 'PanelLeft',
+        shortcut: [modKey, '\\'],
+      },
       { id: 'search', label: 'Search Everything', iconName: 'Search', shortcut: [modKey, 'O'] },
       { id: 'settings', label: 'Settings', iconName: 'Settings', shortcut: [modKey, ','] },
       {
@@ -603,6 +610,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   const [importCandidates, setImportCandidates] = useState<WorkspaceCandidate[]>([])
 
   const [isLoading, setIsLoading] = useState(false)
+  const [canGoForward, setCanGoForward] = useState(false)
   const [certPopupOpen, setCertPopupOpen] = useState(false)
 
   // Security state: 'secure' (valid HTTPS), 'insecure' (HTTP), 'warning' (cert error), 'internal' (about:, file:, etc.)
@@ -690,8 +698,16 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
     window.electronAPI.tabGetState?.(activeTabId).then((state) => {
       if (cancelled || !state) return
       setIsLoading(state.isLoading)
+      setCanGoForward(state.canGoForward)
       updateSecurity(state.url || activeTab?.url || '', activeTabId)
     })
+
+    const refreshNavState = (): void => {
+      window.electronAPI.tabGetState?.(activeTabId).then((state) => {
+        if (cancelled || !state) return
+        setCanGoForward(state.canGoForward)
+      })
+    }
 
     const cleanup = window.electronAPI.onTabEvent?.((raw) => {
       const evt = raw as {
@@ -711,6 +727,9 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         case 'did-navigate':
         case 'did-navigate-in-page':
           if (evt.url && !evt.url.startsWith('data:')) updateSecurity(evt.url, activeTabId)
+          // canGoForward only changes on real history mutations, but
+          // refreshing here covers both forward/back and brand-new loads.
+          refreshNavState()
           break
         case 'did-fail-load': {
           const full = raw as { errorCode?: number }
@@ -944,28 +963,8 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
           WebkitAppRegion: 'drag',
         } as React.CSSProperties}
       >
-        {/* Sidebar toggle */}
-        <button
-          onClick={onToggleSidebar}
-          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          title="Toggle Sidebar"
-        >
-          {sidebarVisible ? <PanelLeftClose size={15} /> : <PanelLeft size={15} />}
-        </button>
-
-        {/* Search Everything */}
-        <button
-          onClick={onOpenSearch}
-          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          title={`Search Everything (${isMac ? '⌘' : 'Ctrl'}+O)`}
-        >
-          <Search size={15} />
-        </button>
-
         {/* App menu */}
-        <AppMenu onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} />
+        <AppMenu sidebarVisible={sidebarVisible} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} />
 
         {/* Profile selector */}
         <Dropdown
@@ -999,6 +998,16 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
 
         <div className="w-px h-5 bg-border shrink-0" />
 
+        {/* Search Everything */}
+        <button
+          onClick={onOpenSearch}
+          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          title={`Search Everything (${isMac ? '⌘' : 'Ctrl'}+O)`}
+        >
+          <Search size={15} />
+        </button>
+
         {/* Nav buttons */}
         <button
           onClick={handleBack}
@@ -1007,13 +1016,16 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         >
           <ChevronLeft size={16} />
         </button>
-        <button
-          onClick={handleForward}
-          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-        >
-          <ChevronRight size={16} />
-        </button>
+        {canGoForward && (
+          <button
+            onClick={handleForward}
+            className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            title="Forward"
+          >
+            <ChevronRight size={16} />
+          </button>
+        )}
         <button
           onClick={handleReloadOrStop}
           className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"

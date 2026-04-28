@@ -11,6 +11,20 @@ import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
+/** Format an Electron accelerator string for display in a tooltip / hint.
+ *  Shown next to the bottom "New Tab" affordance. */
+function formatAccel(accel: string): string {
+  if (isMacOS) {
+    return accel
+      .replace(/CmdOrCtrl\+?/g, '⌘')
+      .replace(/Shift\+?/g, '⇧')
+      .replace(/Alt\+?/g, '⌥')
+      .replace(/Ctrl\+?/g, '⌃')
+      .replace(/\+/g, '')
+  }
+  return accel.replace(/CmdOrCtrl/g, 'Ctrl')
+}
+
 // Read the parent's theme attributes so the popup window picks up the same
 // theme. The popup is its own BrowserWindow → its CSS variables must be
 // re-applied per spec rather than inherited.
@@ -71,12 +85,14 @@ interface Props {
 
 export function Sidebar({ visible }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
+  const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
   const profiles = useAppStore((s) => s.profiles)
   const renameTabGroup = useAppStore((s) => s.renameTabGroup)
   const toggleTabGroupCollapse = useAppStore((s) => s.toggleTabGroupCollapse)
   const addTab = useAppStore((s) => s.addTab)
+  const addUngroupedTab = useAppStore((s) => s.addUngroupedTab)
   const closeTab = useAppStore((s) => s.closeTab)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
   const moveTabs = useAppStore((s) => s.moveTabs)
@@ -87,6 +103,29 @@ export function Sidebar({ visible }: Props) {
   const ungroupAll = useAppStore((s) => s.ungroupAll)
   const closeGroup = useAppStore((s) => s.closeGroup)
   const setTabComment = useAppStore((s) => s.setTabComment)
+
+  // Current "new tab" keybinding, mirrored from main so the bottom-pinned
+  // affordance can show the accelerator the user actually has bound.
+  const [newTabAccel, setNewTabAccel] = useState<string>('CmdOrCtrl+T')
+  useEffect(() => {
+    let cancelled = false
+    const api = (window as any).electronAPI
+    void api?.loadSettings?.().then((s: any) => {
+      if (cancelled) return
+      const k = s?.keybindings?.['new-tab']
+      if (typeof k === 'string' && k) setNewTabAccel(k)
+    })
+    const cleanup = api?.onSettingsUpdated?.((s: any) => {
+      const k = s?.keybindings?.['new-tab']
+      if (typeof k === 'string' && k) setNewTabAccel(k)
+    })
+    return () => { cancelled = true; cleanup?.() }
+  }, [])
+
+  const handleNewTab = useCallback(() => {
+    if (activeTabGroupId) addTab(activeTabGroupId)
+    else if (activeWorkspaceId) addUngroupedTab(activeWorkspaceId)
+  }, [activeTabGroupId, activeWorkspaceId, addTab, addUngroupedTab])
 
   const workspace = (() => {
     const profile = profiles.find((p) => p.id === activeProfileId)
@@ -808,6 +847,24 @@ export function Sidebar({ visible }: Props) {
               <div className="absolute left-1 right-1 top-0 h-[3px] bg-primary rounded-full z-10" />
             </div>
           )}
+
+          {/* "New Tab" row — rendered inside the scroll area as the
+              always-last item, so it sits right under the user's last
+              tab/group and floats up to the top when the workspace has no
+              tabs yet. Tooltip + inline accelerator surface the user's
+              bound shortcut. */}
+          <button
+            type="button"
+            onClick={handleNewTab}
+            title={`New Tab (${formatAccel(newTabAccel)})`}
+            className="w-full flex items-center gap-1 px-1 py-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+          >
+            <Plus size={16} className="shrink-0" />
+            <span className="flex-1 text-left text-xs truncate">New Tab</span>
+            <span className="text-[10px] text-muted-foreground/70 font-mono shrink-0 pr-1">
+              {formatAccel(newTabAccel)}
+            </span>
+          </button>
         </div>
 
         <div

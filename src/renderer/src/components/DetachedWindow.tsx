@@ -12,6 +12,10 @@ interface Props {
   height: number
   resizable?: boolean
   closeOnEscape?: boolean
+  // Close the popup when its window loses focus (e.g. user clicks back to the
+  // parent window or another app). Armed only after the popup first gains
+  // focus, so the show-sequence's transient blurs don't dismiss it.
+  closeOnBlur?: boolean
   onClose: () => void
   onWindowChange?: (popup: Window | null) => void
   children: ReactNode
@@ -40,6 +44,7 @@ export function DetachedWindow({
   height,
   resizable = true,
   closeOnEscape = true,
+  closeOnBlur = false,
   onClose,
   onWindowChange,
   children,
@@ -177,12 +182,20 @@ export function DetachedWindow({
       attributeFilter: ['data-theme', 'data-theme-variant'],
     })
 
+    let closeOnBlurArmed = false
+    const handleFocus = () => { closeOnBlurArmed = true }
+    const handleBlurClose = () => {
+      if (closeOnBlur && closeOnBlurArmed) onCloseRef.current()
+    }
+
     popup.addEventListener('beforeunload', handleBeforeUnload)
     popup.addEventListener('keydown', handleKeyDown)
     popup.document.addEventListener('mousedown', handleMouseDown)
     popup.document.addEventListener('mousemove', handleMouseMove)
     popup.document.addEventListener('mouseup', stopDragging)
     popup.addEventListener('blur', stopDragging)
+    popup.addEventListener('focus', handleFocus)
+    popup.addEventListener('blur', handleBlurClose)
 
     return () => {
       themeObserver.disconnect()
@@ -192,6 +205,8 @@ export function DetachedWindow({
       popup.document.removeEventListener('mousemove', handleMouseMove)
       popup.document.removeEventListener('mouseup', stopDragging)
       popup.removeEventListener('blur', stopDragging)
+      popup.removeEventListener('focus', handleFocus)
+      popup.removeEventListener('blur', handleBlurClose)
       stopDragging()
       onWindowChangeRef.current?.(null)
       setContainerEl(null)
@@ -202,7 +217,7 @@ export function DetachedWindow({
         suppressBeforeUnloadRef.current = false
       }
     }
-  }, [open, width, height, resizable, closeOnEscape])
+  }, [open, width, height, resizable, closeOnEscape, closeOnBlur])
 
   // Show the popup window once React has rendered content into the portal.
   // Double-rAF ensures the browser has committed the paint before we reveal.
