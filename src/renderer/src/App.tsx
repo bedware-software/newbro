@@ -10,7 +10,8 @@ import { SearchDialog } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { InputDialog } from './components/InputDialog'
-import { GroupPicker } from './components/GroupPicker'
+import { MoveCopyTabDialog } from './components/MoveCopyTabDialog'
+import { MoveCopyGroupDialog } from './components/MoveCopyGroupDialog'
 import { UpdateBanner } from './components/UpdateBanner'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 
@@ -188,7 +189,16 @@ export default function App() {
   const [commentDefault, setCommentDefault] = useState('')
   const [newGroupDialogOpen, setNewGroupDialogOpen] = useState(false)
   const [newGroupForTabId, setNewGroupForTabId] = useState<string | null>(null)
+  // Move/Copy Tab and Move/Copy Group dialogs. The pickers are fully
+  // controlled — App owns the open state plus the source id, and resets
+  // both on close so a fresh invocation always opens against the *current*
+  // active tab/group rather than a stale one.
+  const [tabPickerOpen, setTabPickerOpen] = useState(false)
+  const [tabPickerMode, setTabPickerMode] = useState<'move' | 'copy'>('move')
+  const [tabPickerTabId, setTabPickerTabId] = useState<string | null>(null)
   const [groupPickerOpen, setGroupPickerOpen] = useState(false)
+  const [groupPickerMode, setGroupPickerMode] = useState<'move' | 'copy'>('move')
+  const [groupPickerGroupId, setGroupPickerGroupId] = useState<string | null>(null)
   const shortcutHandlerRef = useRef<((action: string) => void) | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(() => {
@@ -308,6 +318,7 @@ export default function App() {
   }, [hydrate, windowProfileId, windowWorkspaceId, windowTabId, loadAndApplySettings])
 
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
+  const activeProfileId = useAppStore((s) => s.activeProfileId)
   const getActiveWorkspace = useAppStore((s) => s.getActiveWorkspace)
   const getActiveProfile = useAppStore((s) => s.getActiveProfile)
 
@@ -432,8 +443,31 @@ export default function App() {
         case 'remove-comment':
           if (s.activeTabId) s.setTabComment(s.activeTabId, '')
           break
-        case 'move-to-group':
+        case 'move-tab':
           if (s.activeTabId) {
+            setTabPickerMode('move')
+            setTabPickerTabId(s.activeTabId)
+            setTabPickerOpen(true)
+          }
+          break
+        case 'copy-tab':
+          if (s.activeTabId) {
+            setTabPickerMode('copy')
+            setTabPickerTabId(s.activeTabId)
+            setTabPickerOpen(true)
+          }
+          break
+        case 'move-group':
+          if (s.activeTabGroupId) {
+            setGroupPickerMode('move')
+            setGroupPickerGroupId(s.activeTabGroupId)
+            setGroupPickerOpen(true)
+          }
+          break
+        case 'copy-group':
+          if (s.activeTabGroupId) {
+            setGroupPickerMode('copy')
+            setGroupPickerGroupId(s.activeTabGroupId)
             setGroupPickerOpen(true)
           }
           break
@@ -551,6 +585,27 @@ export default function App() {
       else if (s.activeWorkspaceId) s.addUngroupedTab(s.activeWorkspaceId, searchUrl)
     })
 
+    // Open Move/Copy pickers in response to context-menu choices in the
+    // sidebar. The Sidebar dispatches a CustomEvent rather than reaching
+    // into App's setters directly so the cross-component contract stays
+    // narrow — App is the sole owner of the dialogs' open/source state.
+    const handleOpenMoveCopyTab = (e: Event): void => {
+      const detail = (e as CustomEvent<{ mode: 'move' | 'copy'; tabId: string }>).detail
+      if (!detail?.tabId) return
+      setTabPickerMode(detail.mode)
+      setTabPickerTabId(detail.tabId)
+      setTabPickerOpen(true)
+    }
+    const handleOpenMoveCopyGroup = (e: Event): void => {
+      const detail = (e as CustomEvent<{ mode: 'move' | 'copy'; groupId: string }>).detail
+      if (!detail?.groupId) return
+      setGroupPickerMode(detail.mode)
+      setGroupPickerGroupId(detail.groupId)
+      setGroupPickerOpen(true)
+    }
+    window.addEventListener('newbro:open-move-copy-tab', handleOpenMoveCopyTab)
+    window.addEventListener('newbro:open-move-copy-group', handleOpenMoveCopyGroup)
+
     return () => {
       cleanupShortcut()
       cleanupState()
@@ -558,6 +613,8 @@ export default function App() {
       cleanupSettings()
       cleanupActivateTab()
       cleanupContextSearch?.()
+      window.removeEventListener('newbro:open-move-copy-tab', handleOpenMoveCopyTab)
+      window.removeEventListener('newbro:open-move-copy-group', handleOpenMoveCopyGroup)
     }
   }, [hydrate, windowWorkspaceId, toggleSidebar])
 
@@ -677,21 +734,24 @@ export default function App() {
           setNewGroupDialogOpen(false)
         }}
       />
-      <GroupPicker
-        open={groupPickerOpen}
-        onClose={() => setGroupPickerOpen(false)}
-        onSelect={(groupId) => {
-          const s = useAppStore.getState()
-          if (s.activeTabId) s.moveTabToGroup(s.activeTabId, groupId)
-          setGroupPickerOpen(false)
+      <MoveCopyTabDialog
+        open={tabPickerOpen}
+        mode={tabPickerMode}
+        tabId={tabPickerTabId}
+        currentWorkspaceId={activeWorkspaceId}
+        onClose={() => {
+          setTabPickerOpen(false)
+          setTabPickerTabId(null)
         }}
-        onNewGroup={() => {
+      />
+      <MoveCopyGroupDialog
+        open={groupPickerOpen}
+        mode={groupPickerMode}
+        groupId={groupPickerGroupId}
+        currentProfileId={activeProfileId}
+        onClose={() => {
           setGroupPickerOpen(false)
-          const s = useAppStore.getState()
-          if (s.activeTabId) {
-            setNewGroupForTabId(s.activeTabId)
-            setNewGroupDialogOpen(true)
-          }
+          setGroupPickerGroupId(null)
         }}
       />
     </>

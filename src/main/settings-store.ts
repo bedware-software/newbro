@@ -50,6 +50,14 @@ export const DEFAULT_KEYBINDINGS: Record<string, string> = {
   'forward': 'CmdOrCtrl+]',
   'reload': 'CmdOrCtrl+R',
   'settings': 'CmdOrCtrl+,',
+  // Move/Copy actions ship without a default accelerator — they're driven
+  // primarily through context menus and the command palette. The keys must
+  // still be present so normalizeAndFilterKeybindings preserves any user-
+  // recorded binding (it iterates Object.keys(DEFAULT_KEYBINDINGS)).
+  'move-tab': '',
+  'copy-tab': '',
+  'move-group': '',
+  'copy-group': '',
 }
 
 export const DEFAULT_SETTINGS: Settings = {
