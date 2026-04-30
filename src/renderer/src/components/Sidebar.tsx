@@ -103,19 +103,26 @@ export function Sidebar({ visible }: Props) {
   const setTabComment = useAppStore((s) => s.setTabComment)
 
   // Current "new tab" keybinding, mirrored from main so the bottom-pinned
-  // affordance can show the accelerator the user actually has bound.
+  // affordance can show the accelerator the user actually has bound. Each
+  // action carries up to two bindings — the affordance has room for one
+  // hint, so we surface the first slot.
   const [newTabAccel, setNewTabAccel] = useState<string>('CmdOrCtrl+T')
   useEffect(() => {
     let cancelled = false
     const api = (window as any).electronAPI
+    const pickFirst = (raw: unknown): string | null => {
+      if (typeof raw === 'string' && raw) return raw
+      if (Array.isArray(raw) && typeof raw[0] === 'string' && raw[0]) return raw[0]
+      return null
+    }
     void api?.loadSettings?.().then((s: any) => {
       if (cancelled) return
-      const k = s?.keybindings?.['new-tab']
-      if (typeof k === 'string' && k) setNewTabAccel(k)
+      const k = pickFirst(s?.keybindings?.['new-tab'])
+      if (k) setNewTabAccel(k)
     })
     const cleanup = api?.onSettingsUpdated?.((s: any) => {
-      const k = s?.keybindings?.['new-tab']
-      if (typeof k === 'string' && k) setNewTabAccel(k)
+      const k = pickFirst(s?.keybindings?.['new-tab'])
+      if (k) setNewTabAccel(k)
     })
     return () => { cancelled = true; cleanup?.() }
   }, [])
@@ -698,6 +705,19 @@ export function Sidebar({ visible }: Props) {
         {showGroupBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
+        {/* Count badge — leading-edge column. Sized to match a tab row's
+            favicon (w-4 h-4) so the leftmost glyph in every sidebar row
+            sits on the same vertical axis. Colored with the group's hue
+            so it visually pairs with the pill that follows. Always
+            visible (not hover-only) so collapsed groups always advertise
+            their tab count. */}
+        <span
+          className="shrink-0 w-4 h-4 inline-flex items-center justify-center rounded text-[10px] font-semibold tabular-nums leading-none"
+          style={{ backgroundColor: group.color, color: PILL_TEXT_COLOR }}
+          title={`${group.tabs.length} ${group.tabs.length === 1 ? 'tab' : 'tabs'}`}
+        >
+          {group.tabs.length}
+        </span>
         {/* Edge-style colored pill. SWALLOWS the chevron, content-sized
             via inline-flex (no flex-1), with `max-w-full` letting it grow
             up to the row's right edge for long names — at which point
@@ -708,7 +728,7 @@ export function Sidebar({ visible }: Props) {
         <span
           data-group-pill=""
           style={{ backgroundColor: group.color, color: PILL_TEXT_COLOR }}
-          className="inline-flex items-center gap-1 max-w-full pl-1.5 pr-3 py-1 rounded-md text-xs font-medium overflow-hidden"
+          className="inline-flex items-center gap-1 min-w-0 pl-1.5 pr-3 py-1 rounded-md text-xs font-medium overflow-hidden"
         >
           <span className="shrink-0 inline-flex items-center">
             {group.isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
@@ -737,12 +757,6 @@ export function Sidebar({ visible }: Props) {
             space. Each button has a card-tone background so the icons
             stay readable when they hover over the colored pill text. */}
         <div className="absolute right-1 top-0 bottom-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto">
-          <span
-            className="text-[10px] text-muted-foreground bg-card/85 backdrop-blur-sm rounded px-1"
-            title={`${group.tabs.length} tabs`}
-          >
-            {group.tabs.length}
-          </span>
           <button
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
@@ -856,6 +870,7 @@ export function Sidebar({ visible }: Props) {
               bound shortcut. */}
           <button
             type="button"
+            data-sidebar-row=""
             onClick={handleNewTab}
             title={`New Tab (${formatAccel(newTabAccel)})`}
             className="w-full flex items-center gap-1 px-1 py-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"

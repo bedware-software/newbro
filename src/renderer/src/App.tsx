@@ -28,7 +28,9 @@ interface Settings {
   newTabFocus: NewTabFocus
   defaultPageUrl: string
   searchEngine: string
-  keybindings: Record<string, string>
+  /** Each action accepts up to two accelerator strings. Pre-dual-binding
+   *  saves are migrated to one-element arrays in the main process. */
+  keybindings: Record<string, string[]>
 }
 
 function normalizeNewTabFocus(value: string | undefined): NewTabFocus {
@@ -435,6 +437,10 @@ export default function App() {
           cycleTab(-1)
           break
         case 'new-workspace':
+          // Workspace creation needs a name from a dialog; the Toolbar already
+          // owns that dialog (it's used by the New Workspace button), so we
+          // just ping it via a window event rather than duplicating the UI.
+          window.dispatchEvent(new Event('newbro-open-new-workspace-dialog'))
           break
         case 'set-comment': {
           const tab = s.getActiveTab()

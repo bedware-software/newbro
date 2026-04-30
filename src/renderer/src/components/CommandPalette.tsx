@@ -97,7 +97,7 @@ function formatKeybinding(binding: string): React.ReactNode {
 export function CommandPalette({ open, onOpenChange, onAction }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const [keybindings, setKeybindings] = useState<Record<string, string>>({})
+  const [keybindings, setKeybindings] = useState<Record<string, string[]>>({})
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const activeTab = useAppStore((s) => s.getActiveTab())
@@ -223,7 +223,15 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
               {group.items.map((cmd) => {
                 const idx = flatIdx++
                 const isSelected = idx === selectedIndex
-                const binding = keybindings[cmd.id] || getDefaultBinding(cmd.id)
+                // The palette has room for one shortcut hint per row, so we
+                // surface only the first binding. The second binding still
+                // works — it just doesn't get advertised here. An explicit
+                // empty array (user cleared every binding) suppresses the
+                // hint so we don't lie about a shortcut that won't fire.
+                const userBindings = keybindings[cmd.id]
+                const binding = userBindings === undefined
+                  ? getDefaultBinding(cmd.id)
+                  : (userBindings.length > 0 ? userBindings[0] : undefined)
                 return (
                   <div
                     key={cmd.id}

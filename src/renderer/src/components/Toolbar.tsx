@@ -619,6 +619,22 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   const [certInfo, setCertInfo] = useState('')
   const certErrorTabs = useRef(new Set<string>())
 
+  // Listen for the renderer-wide "new workspace" shortcut dispatched from
+  // App.tsx so the keyboard shortcut (CmdOrCtrl+Shift+N) reuses the same
+  // input dialog as the toolbar's New Workspace button. State setters are
+  // stable, so no deps are needed.
+  useEffect(() => {
+    const handler = () => {
+      setDialogTitle('New Workspace')
+      setDialogPlaceholder('Workspace name (e.g. Tasks, Research)')
+      setDialogDefault('')
+      setDialogAction('workspace')
+      setDialogOpen(true)
+    }
+    window.addEventListener('newbro-open-new-workspace-dialog', handler)
+    return () => window.removeEventListener('newbro-open-new-workspace-dialog', handler)
+  }, [])
+
   useEffect(() => {
     const url = activeTab?.url || ''
     // Preserve the "select-all" state across a value sync. When the user

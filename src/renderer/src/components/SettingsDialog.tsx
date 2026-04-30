@@ -21,8 +21,11 @@ interface Settings {
   defaultPageUrl: string
   searchEngine: string
   proxy: ProxySettings
-  keybindings: Record<string, string>
+  /** Each action accepts up to {@link MAX_BINDINGS_PER_ACTION} accelerators. */
+  keybindings: Record<string, string[]>
 }
+
+const MAX_BINDINGS_PER_ACTION = 2
 
 interface AppearancePreview {
   theme: ThemeChoice
@@ -54,30 +57,49 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   proxyBypassRules: '<-loopback>',
 }
 
-const DEFAULT_KEYBINDINGS: Record<string, string> = {
-  'new-tab': 'CmdOrCtrl+T',
-  'close-tab': 'CmdOrCtrl+W',
-  'close-window': 'CmdOrCtrl+Shift+W',
-  'new-workspace': 'CmdOrCtrl+Shift+N',
-  'next-tab': 'CmdOrCtrl+Tab',
-  'prev-tab': 'CmdOrCtrl+Shift+Tab',
-  'toggle-sidebar': 'CmdOrCtrl+\\',
-  'focus-url': 'CmdOrCtrl+L',
-  search: 'CmdOrCtrl+O',
-  'command-palette': 'CmdOrCtrl+P',
-  back: 'CmdOrCtrl+[',
-  forward: 'CmdOrCtrl+]',
-  reload: 'CmdOrCtrl+R',
-  settings: 'CmdOrCtrl+,',
-  'page-devtools': 'CmdOrCtrl+Shift+I',
+const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
+  'new-tab': ['CmdOrCtrl+T'],
+  'close-tab': ['CmdOrCtrl+W'],
+  'close-window': ['CmdOrCtrl+Shift+W'],
+  'new-workspace': ['CmdOrCtrl+Shift+N'],
+  'next-tab': ['CmdOrCtrl+Tab'],
+  'prev-tab': ['CmdOrCtrl+Shift+Tab'],
+  'toggle-sidebar': ['CmdOrCtrl+\\'],
+  'focus-url': ['CmdOrCtrl+L'],
+  search: ['CmdOrCtrl+O'],
+  'command-palette': ['CmdOrCtrl+P'],
+  back: ['CmdOrCtrl+['],
+  forward: ['CmdOrCtrl+]'],
+  reload: ['CmdOrCtrl+R'],
+  settings: ['CmdOrCtrl+,'],
+  'page-devtools': ['CmdOrCtrl+Shift+I'],
   // Move/Copy actions ship unbound — they're surfaced through context menus
-  // and the command palette by default. The empty string keeps the parsing
+  // and the command palette by default. An empty array keeps the parsing
   // path in main/index.ts a no-op (parseAcceleratorShortcut returns null)
   // until the user records a binding here.
-  'move-tab': '',
-  'copy-tab': '',
-  'move-group': '',
-  'copy-group': '',
+  'move-tab': [],
+  'copy-tab': [],
+  'move-group': [],
+  'copy-group': [],
+}
+
+function cloneDefaultKeybindings(): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const [key, list] of Object.entries(DEFAULT_KEYBINDINGS)) {
+    out[key] = [...list]
+  }
+  return out
+}
+
+/** True when the action's current bindings differ from the defaults — used
+ *  to decide whether to show the per-row "reset to default" affordance. */
+function isCustomBinding(action: string, current: string[]): boolean {
+  const defaults = DEFAULT_KEYBINDINGS[action] || []
+  if (current.length !== defaults.length) return true
+  for (let i = 0; i < current.length; i++) {
+    if (current[i] !== defaults[i]) return true
+  }
+  return false
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -266,16 +288,52 @@ function normalizeKeybindingValue(raw: string): string {
   return value
 }
 
-function normalizeKnownKeybindings(raw: Record<string, string> | undefined): Record<string, string> {
-  const next: Record<string, string> = { ...DEFAULT_KEYBINDINGS }
+function readBindingList(value: unknown): string[] {
+  if (typeof value === 'string') return value ? [value] : []
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string')
+}
+
+/** Normalize and dedupe the user's keybindings into a Record<string, string[]>.
+ *  Tolerates legacy single-string values (one-element array on output) and
+ *  fills in defaults for any action absent from the input — matching the
+ *  shape we send back to main on save. */
+function normalizeKnownKeybindings(
+  raw: Record<string, unknown> | undefined,
+): Record<string, string[]> {
+  const next: Record<string, string[]> = cloneDefaultKeybindings()
   if (!raw) return next
   for (const key of Object.keys(DEFAULT_KEYBINDINGS)) {
-    const value = raw[key]
-    if (typeof value !== 'string' || !value.trim()) continue
-    const normalized = normalizeKeybindingValue(value)
-    if (normalized) next[key] = normalized
+    if (!(key in raw)) continue
+    const list: string[] = []
+    for (const candidate of readBindingList(raw[key])) {
+      const normalized = normalizeKeybindingValue(candidate)
+      if (!normalized) continue
+      if (list.includes(normalized)) continue
+      list.push(normalized)
+      if (list.length >= MAX_BINDINGS_PER_ACTION) break
+    }
+    next[key] = list
   }
   return next
+}
+
+/** When the user records a new accelerator, refuse it if it's already bound
+ *  to a different action (or to a different slot of the SAME action). The
+ *  caller surfaces the returned conflict in an inline error. */
+function findBindingConflict(
+  bindings: Record<string, string[]>,
+  action: string,
+  slot: number,
+  accel: string,
+): { action: string; slot: number } | null {
+  for (const [otherAction, list] of Object.entries(bindings)) {
+    for (let i = 0; i < list.length; i++) {
+      if (otherAction === action && i === slot) continue
+      if (list[i] === accel) return { action: otherAction, slot: i }
+    }
+  }
+  return null
 }
 
 export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePreview, tabRequest }: Props) {
@@ -295,8 +353,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
   const [proxy, setProxy] = useState<ProxySettings>({ ...DEFAULT_PROXY_SETTINGS })
-  const [keybindings, setKeybindings] = useState<Record<string, string>>({ ...DEFAULT_KEYBINDINGS })
-  const [recordingAction, setRecordingAction] = useState<string | null>(null)
+  const [keybindings, setKeybindings] = useState<Record<string, string[]>>(() => cloneDefaultKeybindings())
+  const [recordingTarget, setRecordingTarget] = useState<{ action: string; slot: number } | null>(null)
+  const [conflictError, setConflictError] = useState<string | null>(null)
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false)
   const [appVersion, setAppVersion] = useState<string>('')
@@ -306,7 +365,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [extInput, setExtInput] = useState('')
   const [extInstalling, setExtInstalling] = useState(false)
   const [extError, setExtError] = useState<string | null>(null)
-  const recordingRef = useRef<string | null>(null)
+  const recordingRef = useRef<{ action: string; slot: number } | null>(null)
   const pendingTabChordRef = useRef(false)
   const originalAppearanceRef = useRef<AppearancePreview>({
     theme: 'dark',
@@ -314,7 +373,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     darkVariant: DARK_VARIANTS[0].id,
     density: DEFAULT_DENSITY,
   })
-  recordingRef.current = recordingAction
+  recordingRef.current = recordingTarget
 
   // Subscribe to updater status while the dialog is open so the
   // General → Updates section reflects live download / install events.
@@ -429,15 +488,36 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     }
   }, [open, settings])
 
+  // Apply a recorded accelerator into a specific (action, slot). Rejects
+  // and surfaces an inline error if the new combo is already bound to a
+  // DIFFERENT action — or to a DIFFERENT slot of the same action — so the
+  // user can't accidentally collide two commands on the same key.
+  const commitRecordedAccel = useCallback((action: string, slot: number, accel: string) => {
+    setKeybindings((prev) => {
+      const conflict = findBindingConflict(prev, action, slot, accel)
+      if (conflict) {
+        const otherLabel = ACTION_LABELS[conflict.action] || conflict.action
+        setConflictError(`That shortcut is already bound to "${otherLabel}". Clear it there first.`)
+        return prev
+      }
+      setConflictError(null)
+      const list = [...(prev[action] || [])]
+      if (slot < list.length) list[slot] = accel
+      else list.push(accel)
+      return { ...prev, [action]: list.slice(0, MAX_BINDINGS_PER_ACTION) }
+    })
+  }, [])
+
   // Record keybinding
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (!recordingRef.current) return
+    const target = recordingRef.current
+    if (!target) return
     e.preventDefault()
     e.stopPropagation()
 
     if (e.key === 'Escape') {
       pendingTabChordRef.current = false
-      setRecordingAction(null)
+      setRecordingTarget(null)
       return
     }
 
@@ -452,28 +532,47 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       pendingTabChordRef.current = false
       const key = eventToKeyToken(e)
       if (key && key !== 'Tab') {
-        setKeybindings((prev) => ({ ...prev, [recordingRef.current!]: `Tab+${key}` }))
-        setRecordingAction(null)
+        commitRecordedAccel(target.action, target.slot, `Tab+${key}`)
+        setRecordingTarget(null)
       }
       return
     }
 
     const accel = eventToAccelerator(e)
     if (accel) {
-      setKeybindings((prev) => ({ ...prev, [recordingRef.current!]: accel }))
-      setRecordingAction(null)
+      commitRecordedAccel(target.action, target.slot, accel)
+      setRecordingTarget(null)
     }
-  }, [])
+  }, [commitRecordedAccel])
 
   useEffect(() => {
-    if (!recordingAction) pendingTabChordRef.current = false
-  }, [recordingAction])
+    if (!recordingTarget) pendingTabChordRef.current = false
+  }, [recordingTarget])
 
   useEffect(() => {
-    if (!recordingAction || !hostWindow) return
+    if (!recordingTarget || !hostWindow) return
     hostWindow.addEventListener('keydown', handleKeyDown, true)
     return () => hostWindow.removeEventListener('keydown', handleKeyDown, true)
-  }, [recordingAction, handleKeyDown, hostWindow])
+  }, [recordingTarget, handleKeyDown, hostWindow])
+
+  // Clear a specific slot for an action. Compacts the array so a cleared
+  // slot 0 + filled slot 1 collapses to a single binding at index 0 — the
+  // simplest rule that keeps storage and the UI consistent.
+  const clearBindingSlot = useCallback((action: string, slot: number) => {
+    setKeybindings((prev) => {
+      const list = [...(prev[action] || [])]
+      if (slot < list.length) list.splice(slot, 1)
+      setConflictError(null)
+      return { ...prev, [action]: list }
+    })
+  }, [])
+
+  const startRecording = useCallback((action: string, slot: number) => {
+    setConflictError(null)
+    setRecordingTarget((prev) =>
+      prev && prev.action === action && prev.slot === slot ? null : { action, slot },
+    )
+  }, [])
 
   const handleSave = () => {
     const normalizedProxy: ProxySettings = {
@@ -506,7 +605,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   }
 
   const handleResetKeybindings = () => {
-    setKeybindings({ ...DEFAULT_KEYBINDINGS })
+    setKeybindings(cloneDefaultKeybindings())
+    setConflictError(null)
   }
 
   const handleWipeAllData = () => {
@@ -1046,7 +1146,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
             <div>
               <div className="flex items-center justify-between mb-4">
                 <p className="text-sm text-muted-foreground">
-                  Click on a shortcut to reassign it. Press Escape to cancel.
+                  Click on a shortcut to reassign it. Each command supports up
+                  to {MAX_BINDINGS_PER_ACTION} bindings. Press Escape to cancel.
                 </p>
                 <button
                   onClick={handleResetKeybindings}
@@ -1057,10 +1158,16 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </button>
               </div>
 
+              {conflictError && (
+                <div className="mb-3 px-3 py-2 rounded-md border border-destructive/40 bg-destructive/10 text-xs text-destructive">
+                  {conflictError}
+                </div>
+              )}
+
               <div className="flex flex-col divide-y divide-border border border-input rounded-md bg-card overflow-hidden">
                 {Object.keys(ACTION_LABELS).map((action) => {
-                  const isRecording = recordingAction === action
-                  const isCustom = keybindings[action] !== DEFAULT_KEYBINDINGS[action]
+                  const bindings = keybindings[action] || []
+                  const isCustom = isCustomBinding(action, bindings)
                   return (
                     <div
                       key={action}
@@ -1070,29 +1177,63 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       <div className="flex items-center gap-2">
                         {isCustom && (
                           <button
-                            onClick={() => setKeybindings((prev) => ({ ...prev, [action]: DEFAULT_KEYBINDINGS[action] }))}
+                            onClick={() => {
+                              setKeybindings((prev) => ({
+                                ...prev,
+                                [action]: [...(DEFAULT_KEYBINDINGS[action] || [])],
+                              }))
+                              setConflictError(null)
+                            }}
                             className="h-5 w-5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
                             title="Reset to default"
                           >
                             <RotateCcw size={10} />
                           </button>
                         )}
-                        <button
-                          onClick={() => setRecordingAction(isRecording ? null : action)}
-                          className={`min-w-[120px] h-8 px-3 rounded-md text-xs flex items-center justify-center transition-colors ${
-                            isRecording
-                              ? 'bg-background border border-ring text-primary'
-                              : 'bg-card border border-input text-foreground'
-                          }`}
-                        >
-                          {isRecording
-                            ? 'Press keys...'
-                            : (() => {
-                                const accel = keybindings[action] || DEFAULT_KEYBINDINGS[action]
-                                if (!accel) return <span className="text-muted-foreground italic">Unbound</span>
-                                return formatAccelerator(accel)
-                              })()}
-                        </button>
+                        {Array.from({ length: MAX_BINDINGS_PER_ACTION }).map((_, slot) => {
+                          const isRecording =
+                            recordingTarget?.action === action && recordingTarget.slot === slot
+                          const binding = bindings[slot]
+                          // Don't let the user start in a slot that's "ahead"
+                          // of any empty slot to its left — keeps storage
+                          // compact (no holes) and matches what the user
+                          // sees: filling slot 1 only makes sense once
+                          // slot 0 has something.
+                          const disabled = !binding && !isRecording && slot > bindings.length
+                          return (
+                            <div key={slot} className="relative inline-flex items-center">
+                              <button
+                                onClick={() => !disabled && startRecording(action, slot)}
+                                disabled={disabled}
+                                className={`min-w-[120px] h-8 px-3 ${binding && !isRecording ? 'pr-7' : ''} rounded-md text-xs flex items-center justify-center transition-colors ${
+                                  isRecording
+                                    ? 'bg-background border border-ring text-primary'
+                                    : binding
+                                      ? 'bg-card border border-input text-foreground hover:bg-accent/40'
+                                      : 'bg-card border border-dashed border-input text-muted-foreground/70 hover:bg-accent/30'
+                                } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              >
+                                {isRecording
+                                  ? 'Press keys...'
+                                  : binding
+                                    ? formatAccelerator(binding)
+                                    : 'Add shortcut'}
+                              </button>
+                              {binding && !isRecording && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    clearBindingSlot(action, slot)
+                                  }}
+                                  className="absolute right-1 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
+                                  title="Clear this shortcut"
+                                >
+                                  <X size={10} />
+                                </button>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
                   )

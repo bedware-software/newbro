@@ -213,17 +213,24 @@ function parseAcceleratorShortcut(binding: string | undefined): ParsedAccelerato
   return { key, shift, alt, cmdOrCtrl }
 }
 
-function resolveTabCycleBinding(
-  keybindings: Record<string, string>,
+function resolveTabCycleBindings(
+  keybindings: Record<string, string[]>,
   action: 'next-tab' | 'prev-tab',
   fallback: string,
-): string {
-  const candidate = (keybindings[action] || '').trim()
-  if (!candidate) return fallback
-  if (parseTabLeaderShortcut(candidate) || parseAcceleratorShortcut(candidate)) {
-    return candidate
+): string[] {
+  const stored = keybindings[action]
+  // An empty array means the user explicitly cleared all bindings; respect
+  // that. Only a missing key falls back to the platform default.
+  const candidates = Array.isArray(stored) ? stored : [fallback]
+  const out: string[] = []
+  for (const raw of candidates) {
+    const trimmed = (raw || '').trim()
+    if (!trimmed) continue
+    if (parseTabLeaderShortcut(trimmed) || parseAcceleratorShortcut(trimmed)) {
+      out.push(trimmed)
+    }
   }
-  return fallback
+  return out
 }
 
 function matchesAccelerator(input: Electron.Input, shortcut: ParsedAccelerator | null): boolean {
@@ -272,32 +279,38 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
     const keybindings = { ...DEFAULT_KEYBINDINGS, ...settings.keybindings }
 
     // Tab-leader chord support (e.g. "Tab+J" for next-tab): resolved separately
-    // because parseAcceleratorShortcut rejects Tab-as-leader bindings.
-    const nextBinding = resolveTabCycleBinding(keybindings, 'next-tab', 'CmdOrCtrl+Tab')
-    const prevBinding = resolveTabCycleBinding(keybindings, 'prev-tab', 'CmdOrCtrl+Shift+Tab')
-    const nextLeaderKey = parseTabLeaderShortcut(nextBinding)
-    const prevLeaderKey = parseTabLeaderShortcut(prevBinding)
+    // because parseAcceleratorShortcut rejects Tab-as-leader bindings. Each
+    // action may carry up to two bindings; collect every Tab-leader from
+    // both slots so either fires the chord.
+    const nextBindings = resolveTabCycleBindings(keybindings, 'next-tab', 'CmdOrCtrl+Tab')
+    const prevBindings = resolveTabCycleBindings(keybindings, 'prev-tab', 'CmdOrCtrl+Shift+Tab')
+    const nextLeaderKeys = nextBindings
+      .map(parseTabLeaderShortcut)
+      .filter((k): k is string => !!k)
+    const prevLeaderKeys = prevBindings
+      .map(parseTabLeaderShortcut)
+      .filter((k): k is string => !!k)
 
     // Plain Tab: arm the chord if the user has a Tab-leader binding configured.
     if (key === 'tab' && noOtherModifiers) {
-      if (nextLeaderKey || prevLeaderKey) {
+      if (nextLeaderKeys.length > 0 || prevLeaderKeys.length > 0) {
         armTabState()
         // Prevent native focus traversal so Tab+J/K remains reliable.
         event.preventDefault()
-        log.info('tab-chord: armed', { nextLeaderKey, prevLeaderKey })
+        log.info('tab-chord: armed', { nextLeaderKeys, prevLeaderKeys })
       }
       return
     }
 
     // Second key in an armed Tab-leader chord.
     if (tabDown && noOtherModifiers) {
-      if (nextLeaderKey && key === nextLeaderKey) {
+      if (key && nextLeaderKeys.includes(key)) {
         event.preventDefault()
         if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', 'next-tab')
         clearTabState()
         return
       }
-      if (prevLeaderKey && key === prevLeaderKey) {
+      if (key && prevLeaderKeys.includes(key)) {
         event.preventDefault()
         if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', 'prev-tab')
         clearTabState()
@@ -315,14 +328,18 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
     // Ctrl+P to jump to a matching parenthesis. Intercepting at
     // before-input-event runs BEFORE any page script sees the key, and
     // calling event.preventDefault() here cancels both the page keydown
-    // AND the menu shortcut, so there's no double dispatch.
+    // AND the menu shortcut, so there's no double dispatch. Each action
+    // may have up to two bindings; either should fire.
     for (const action of Object.keys(keybindings)) {
-      const parsed = parseAcceleratorShortcut(keybindings[action])
-      if (!parsed) continue
-      if (matchesAccelerator(input, parsed)) {
-        event.preventDefault()
-        if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', action)
-        return
+      const bindings = keybindings[action] || []
+      for (const binding of bindings) {
+        const parsed = parseAcceleratorShortcut(binding)
+        if (!parsed) continue
+        if (matchesAccelerator(input, parsed)) {
+          event.preventDefault()
+          if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', action)
+          return
+        }
       }
     }
   })
@@ -758,7 +775,16 @@ function sendShortcutToWindow(win: Electron.BaseWindow | undefined, action: stri
 
 function buildMenu(): void {
   const settings = loadSettings()
-  const kb = { ...DEFAULT_KEYBINDINGS, ...settings.keybindings }
+  const merged = { ...DEFAULT_KEYBINDINGS, ...settings.keybindings }
+  // Electron menu items take a single accelerator string; with up-to-two
+  // bindings per action we surface the FIRST one in the menu UI. The
+  // second binding still fires via the before-input-event interceptor —
+  // the menu just doesn't have a second column to advertise it.
+  const kb: Record<string, string | undefined> = {}
+  for (const key of Object.keys(merged)) {
+    const list = merged[key]
+    kb[key] = Array.isArray(list) && list.length > 0 ? list[0] : undefined
+  }
 
   const template: Electron.MenuItemConstructorOptions[] = [
     {

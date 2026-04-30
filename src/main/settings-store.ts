@@ -14,8 +14,14 @@ export interface Settings {
   defaultPageUrl: string
   searchEngine: string
   proxy: ProxySettings
-  keybindings: Record<string, string>
+  /** Each action accepts up to {@link MAX_BINDINGS_PER_ACTION} accelerators.
+   *  An empty array means the action has no keyboard binding. The shape is
+   *  always an array — pre-dual-binding saves (single string per action)
+   *  are migrated on load by {@link normalizeAndFilterKeybindings}. */
+  keybindings: Record<string, string[]>
 }
+
+export const MAX_BINDINGS_PER_ACTION = 2
 
 const KNOWN_LIGHT_VARIANTS = new Set(['light-default', 'light-bright', 'light-soft'])
 const KNOWN_DARK_VARIANTS = new Set(['dark-default', 'dark-deep', 'dark-soft'])
@@ -35,33 +41,41 @@ export const SEARCH_ENGINES: Record<string, string> = {
   'Unduck': 'https://unduck.link?q=%s',
 }
 
-export const DEFAULT_KEYBINDINGS: Record<string, string> = {
-  'new-tab': 'CmdOrCtrl+T',
-  'close-tab': 'CmdOrCtrl+W',
-  'close-window': 'CmdOrCtrl+Shift+W',
-  'new-workspace': 'CmdOrCtrl+Shift+N',
-  'next-tab': 'CmdOrCtrl+Tab',
-  'prev-tab': 'CmdOrCtrl+Shift+Tab',
-  'toggle-sidebar': 'CmdOrCtrl+\\',
-  'focus-url': 'CmdOrCtrl+L',
-  'search': 'CmdOrCtrl+O',
-  'command-palette': 'CmdOrCtrl+P',
-  'back': 'CmdOrCtrl+[',
-  'forward': 'CmdOrCtrl+]',
-  'reload': 'CmdOrCtrl+R',
-  'settings': 'CmdOrCtrl+,',
+export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
+  'new-tab': ['CmdOrCtrl+T'],
+  'close-tab': ['CmdOrCtrl+W'],
+  'close-window': ['CmdOrCtrl+Shift+W'],
+  'new-workspace': ['CmdOrCtrl+Shift+N'],
+  'next-tab': ['CmdOrCtrl+Tab'],
+  'prev-tab': ['CmdOrCtrl+Shift+Tab'],
+  'toggle-sidebar': ['CmdOrCtrl+\\'],
+  'focus-url': ['CmdOrCtrl+L'],
+  'search': ['CmdOrCtrl+O'],
+  'command-palette': ['CmdOrCtrl+P'],
+  'back': ['CmdOrCtrl+['],
+  'forward': ['CmdOrCtrl+]'],
+  'reload': ['CmdOrCtrl+R'],
+  'settings': ['CmdOrCtrl+,'],
   // Standard Chromium shortcut for inspecting the active page. Targets the
   // tab's WebContents (the View menu's other DevTools item targets the
   // chrome renderer instead).
-  'page-devtools': 'CmdOrCtrl+Shift+I',
+  'page-devtools': ['CmdOrCtrl+Shift+I'],
   // Move/Copy actions ship without a default accelerator — they're driven
   // primarily through context menus and the command palette. The keys must
   // still be present so normalizeAndFilterKeybindings preserves any user-
   // recorded binding (it iterates Object.keys(DEFAULT_KEYBINDINGS)).
-  'move-tab': '',
-  'copy-tab': '',
-  'move-group': '',
-  'copy-group': '',
+  'move-tab': [],
+  'copy-tab': [],
+  'move-group': [],
+  'copy-group': [],
+}
+
+function cloneDefaultKeybindings(): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const [key, list] of Object.entries(DEFAULT_KEYBINDINGS)) {
+    out[key] = [...list]
+  }
+  return out
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -77,7 +91,7 @@ export const DEFAULT_SETTINGS: Settings = {
     proxyRules: '',
     proxyBypassRules: '<-loopback>',
   },
-  keybindings: { ...DEFAULT_KEYBINDINGS },
+  keybindings: cloneDefaultKeybindings(),
 }
 
 const LEGACY_KEYBINDING_KEYS: Record<string, string[]> = {
@@ -121,22 +135,43 @@ function isValidShortcut(binding: string): boolean {
   return keyCount === 1
 }
 
+/** Pull a list of accelerator strings from a stored value that may be either
+ *  a single string (legacy single-binding shape) or an array of strings
+ *  (current dual-binding shape). Unknown shapes return an empty list. */
+function readBindingList(value: unknown): string[] {
+  if (typeof value === 'string') return [value]
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string')
+}
+
 function normalizeAndFilterKeybindings(
   raw: Record<string, unknown> | undefined,
-): Record<string, string> {
-  const next: Record<string, string> = {}
+): Record<string, string[]> {
+  const next: Record<string, string[]> = {}
   const source = raw || {}
   for (const key of Object.keys(DEFAULT_KEYBINDINGS)) {
-    const directValue = typeof source[key] === 'string' ? source[key] : ''
-    const aliasValue = (LEGACY_KEYBINDING_KEYS[key] || [])
-      .map((legacyKey) => source[legacyKey])
-      .find((v) => typeof v === 'string')
-    const rawValue = directValue || (typeof aliasValue === 'string' ? aliasValue : '')
-    if (!rawValue) continue
-    const normalized = normalizeKeybindingValue(rawValue)
-    if (normalized && isValidShortcut(normalized)) {
-      next[key] = normalized
+    // Pull the user's saved value first, then any legacy aliases. Each may
+    // be either a single string (pre-dual-binding shape) or an array.
+    const candidates = [
+      ...readBindingList(source[key]),
+      ...(LEGACY_KEYBINDING_KEYS[key] || []).flatMap((legacyKey) => readBindingList(source[legacyKey])),
+    ]
+    const list: string[] = []
+    for (const candidate of candidates) {
+      const normalized = normalizeKeybindingValue(candidate)
+      if (!normalized) continue
+      if (!isValidShortcut(normalized)) continue
+      if (list.includes(normalized)) continue
+      list.push(normalized)
+      if (list.length >= MAX_BINDINGS_PER_ACTION) break
     }
+    // If the key is present in source (even with no surviving entries),
+    // preserve the user's intent — they may have explicitly cleared the
+    // binding. Keys absent from source fall back to defaults via the outer
+    // merge in loadSettings / saveSettings.
+    const keyExplicitlyPresent =
+      key in source || (LEGACY_KEYBINDING_KEYS[key] || []).some((legacy) => legacy in source)
+    if (list.length > 0 || keyExplicitlyPresent) next[key] = list
   }
   return next
 }
@@ -183,7 +218,7 @@ export function loadSettings(): Settings {
       ...savedProxy,
       mode,
     },
-    keybindings: { ...DEFAULT_KEYBINDINGS, ...migratedKeybindings },
+    keybindings: { ...cloneDefaultKeybindings(), ...migratedKeybindings },
   }
 }
 
@@ -208,7 +243,7 @@ export function saveSettings(settings: Settings): void {
       ...settings.proxy,
     },
     keybindings: {
-      ...DEFAULT_KEYBINDINGS,
+      ...cloneDefaultKeybindings(),
       ...normalizeAndFilterKeybindings(settings.keybindings as Record<string, unknown>),
     },
   }
