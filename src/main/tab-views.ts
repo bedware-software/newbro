@@ -56,6 +56,28 @@ export type TabEvent =
   // did-stop-loading — when overriding focus on load completion.
   | { type: 'did-finish-load'; tabId: string; url: string }
 
+/** Per-tab state machine for the two-finger horizontal swipe gesture.
+ *  Lives in main so detection is fully independent of page content —
+ *  see wireGestureDetection() for the rationale. */
+interface GestureState {
+  /** Touch session is active (between gestureScrollBegin and end). */
+  touchActive: boolean
+  /** We've decided this is a horizontal swipe and a direction is locked. */
+  engaged: boolean
+  /** Direction once engaged. */
+  direction: 'back' | 'forward' | null
+  /** Accumulated outward position (0…∞). 0 = overlay hidden,
+   *  TRIGGER_PX = armed, past TRIGGER_PX commits eagerly. */
+  position: number
+  /** Already fired the navigation in this session — ignore further
+   *  wheel input until the touch ends. */
+  committed: boolean
+  /** Last navigation history bounds so we don't engage a direction
+   *  the tab can't actually go. */
+  canGoBack: boolean
+  canGoForward: boolean
+}
+
 interface TabRecord {
   tabId: string
   windowId: number
@@ -65,6 +87,7 @@ interface TabRecord {
   /** The last bounds assigned by the renderer. Cached so we can
    *  restore them when re-activating after hide (width=0 trick). */
   lastBounds: TabBounds
+  gesture: GestureState
 }
 
 const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
@@ -99,37 +122,15 @@ function wireEvents(rec: TabRecord): void {
   const wc: WebContents = rec.view.webContents
   const emit = (evt: TabEvent): void => sendToWindowRenderer(rec.windowId, 'tab-event', evt)
 
-  // Trackpad gesture begin/end — forwarded to the page preload so the
-  // in-page swipe-back/forward overlay can track finger-down state exactly
-  // (engages on gesture-begin, commits/cancels on gesture-end). Chromium
-  // synthesizes gestureScrollBegin/End from native NSEvent phases on
-  // macOS and from analogous touchpad events on other platforms; mouse
-  // wheels never produce them, which is exactly what we want.
-  wc.on('input-event', (_e, input) => {
-    if (input.type === 'gestureScrollBegin') {
-      if (!wc.isDestroyed()) wc.send('newbro-touch-begin')
-    } else if (input.type === 'gestureScrollEnd' || input.type === 'gestureFlingStart') {
-      // gestureScrollEnd is heavily delayed for trackpad gestures with
-      // momentum (Chromium waits for the momentum decay to finish before
-      // firing it — ~1s in practice, far past the actual finger lift).
-      // The preload commits eagerly when the threshold is crossed; this
-      // signal is now only a "tear down whatever's still showing" hint.
-      if (!wc.isDestroyed()) wc.send('newbro-touch-end')
-    }
-  })
+  wireGestureDetection(rec)
 
-  // Push the navigation history bounds to the preload so the swipe gesture
-  // refuses to engage in a direction we can't actually navigate (and so
-  // the renderer can hide the forward toolbar button on a tail page). We
-  // emit on every navigation event because canGoBack/canGoForward only
-  // change when the entry list changes.
+  // Push the navigation history bounds onto the gesture state so the
+  // swipe refuses to engage in a direction we can't actually go.
   const emitNavState = (): void => {
     if (wc.isDestroyed()) return
     const nav = wc.navigationHistory
-    wc.send('newbro-nav-state', {
-      canGoBack: nav.canGoBack(),
-      canGoForward: nav.canGoForward(),
-    })
+    rec.gesture.canGoBack = nav.canGoBack()
+    rec.gesture.canGoForward = nav.canGoForward()
   }
 
   wc.on('did-start-loading', () => emit({ type: 'did-start-loading', tabId: rec.tabId }))
@@ -176,15 +177,204 @@ function wireEvents(rec: TabRecord): void {
     return { action: 'deny' }
   })
 
-  // Close any open extension popup when the user clicks the page. This is
-  // the second listener on input-event (the first lives a few lines up for
-  // focus-intent). We only react to the start of a click — fires once per
-  // press, even if the user drags. The icon button's own onClick handler
-  // takes care of the "click the icon while popup is open" case.
+  // Close any open extension popup when the user clicks the page. Second
+  // input-event listener on this tab — wireGestureDetection() owns the
+  // first one. We only react to the start of a click; the icon button's
+  // own onClick handler takes care of the "click the icon while popup is
+  // open" case.
   wc.on('input-event', (_e, input) => {
     if (input.type !== 'mouseDown') return
     if (extensionPopupByWindow.has(rec.windowId)) {
       closeExtensionPopup(rec.windowId)
+    }
+  })
+}
+
+// ── Two-finger horizontal swipe → back/forward ─────────────────────────
+// All gesture state and detection lives here, in main, rather than in a
+// page-level wheel listener inside the preload. The preload-based version
+// broke on sites that aggressively claim wheel events (Confluence, Jira,
+// GitLab, anything with a custom virtual-scroll app shell): those pages
+// either preventDefault() the wheel before our isolated-world handler
+// runs, or have non-document scroll containers that make the
+// document.scrollingElement.scrollLeft "overscroll edge" check meaningless.
+//
+// `webContents.on('input-event')` is observed BEFORE the event reaches
+// the page renderer, so site JS cannot suppress or steer it. The preload
+// is now a thin overlay-rendering surface driven by IPC from here.
+//
+// Engagement rules (intentionally site-content-independent):
+//   1. The wheel must come from a real touch (gestureScrollBegin seen,
+//      gestureScrollEnd / gestureFlingStart not yet). Mouse wheels never
+//      synthesize gestureScrollBegin, so they can't engage.
+//   2. The first few pixels must be dominantly horizontal (dx vs dy
+//      ratio); rejects vertical scrolls with tiny horizontal jitter.
+//   3. Modifier keys (ctrl/cmd/alt/shift) disqualify — those are
+//      page-zoom or alternate-tool gestures.
+//   4. The chosen direction must be one the tab's history can actually
+//      go in — bounds pushed from main on every navigation.
+//
+// Once engaged, position accumulates outward; pulling back to 0
+// disengages and lets a fresh overscroll pick a different direction
+// inside the same touch session. Past TRIGGER_PX, we commit eagerly
+// (gestureScrollEnd is delayed by Chromium's momentum-decay wait, so we
+// can't reliably commit on touch-up). After commit, every remaining
+// wheel event in the session is preventDefault()-ed so neither the page
+// nor Chromium's rubber-band animation reacts to the trailing momentum.
+
+const GESTURE_TRIGGER_PX = 100  // overscroll distance to fire navigation
+const GESTURE_ENGAGE_PX = 6     // minimum cumulative dx before we engage
+
+function makeInitialGestureState(): GestureState {
+  return {
+    touchActive: false,
+    engaged: false,
+    direction: null,
+    position: 0,
+    committed: false,
+    canGoBack: false,
+    canGoForward: false,
+  }
+}
+
+function resetGestureSession(rec: TabRecord, sendUpdate = true): void {
+  rec.gesture.engaged = false
+  rec.gesture.direction = null
+  rec.gesture.position = 0
+  if (sendUpdate) sendGestureUpdate(rec, false)
+}
+
+function sendGestureUpdate(rec: TabRecord, visible: boolean): void {
+  const wc = rec.view.webContents
+  if (wc.isDestroyed()) return
+  if (!visible) {
+    wc.send('newbro-gesture-update', { visible: false })
+    return
+  }
+  if (!rec.gesture.direction) return
+  wc.send('newbro-gesture-update', {
+    visible: true,
+    direction: rec.gesture.direction,
+    progress: Math.min(1, rec.gesture.position / GESTURE_TRIGGER_PX),
+    armed: rec.gesture.position >= GESTURE_TRIGGER_PX,
+  })
+}
+
+function wireGestureDetection(rec: TabRecord): void {
+  const wc: WebContents = rec.view.webContents
+
+  wc.on('input-event', (event, input) => {
+    const g = rec.gesture
+
+    if (input.type === 'gestureScrollBegin') {
+      g.touchActive = true
+      g.committed = false
+      resetGestureSession(rec, false)
+      return
+    }
+
+    if (input.type === 'gestureScrollEnd' || input.type === 'gestureFlingStart') {
+      // End-of-touch hint. Chromium delays gestureScrollEnd until momentum
+      // decays (~1s on macOS), so we don't rely on it for commit timing —
+      // we commit eagerly when the threshold is crossed below. This is
+      // just the "tear down anything still showing" cleanup. We leave
+      // `committed` as-is so post-commit momentum wheel events keep being
+      // suppressed until the next gestureScrollBegin clears it.
+      g.touchActive = false
+      resetGestureSession(rec, true)
+      return
+    }
+
+    if (input.type !== 'mouseWheel') return
+
+    // Cast for the wheel-specific fields. Electron's listener signature
+    // surfaces only the base InputEvent; the doc-level structure for
+    // mouseWheel events carries deltaX/deltaY/hasPreciseScrollingDeltas.
+    const wheel = input as unknown as {
+      type: 'mouseWheel'
+      deltaX?: number
+      deltaY?: number
+      hasPreciseScrollingDeltas?: boolean
+    }
+
+    // Already committed in this gesture — keep eating wheels (including
+    // any post-touch momentum events) so the page doesn't bounce and our
+    // overlay doesn't reappear. Cleared on the next gestureScrollBegin.
+    if (g.committed) {
+      event.preventDefault()
+      return
+    }
+
+    // Mouse wheels (ticked, no precise deltas) and any wheel outside a
+    // touch session can never trigger this gesture.
+    if (!g.touchActive) return
+    if (wheel.hasPreciseScrollingDeltas === false) return
+
+    // Modifier keys hijack the wheel for zoom / alt-tools — never claim
+    // those.
+    const mods = input.modifiers ?? []
+    if (mods.some((m) => m === 'control' || m === 'ctrl' || m === 'meta' || m === 'cmd' || m === 'command' || m === 'alt' || m === 'shift')) {
+      if (g.engaged) resetGestureSession(rec, true)
+      return
+    }
+
+    const dx = wheel.deltaX ?? 0
+    const dy = wheel.deltaY ?? 0
+    if (Math.abs(dx) < 1) return
+
+    // Reject mostly-vertical gestures: vertical scrolling with tiny
+    // horizontal jitter shouldn't engage.
+    if (!g.engaged && Math.abs(dx) < Math.abs(dy) * 1.5) return
+
+    if (!g.engaged) {
+      // dx<0 = swiping right-to-left (content moves left) = "back" gesture.
+      // dx>0 = swiping left-to-right = "forward" gesture.
+      const dir: 'back' | 'forward' = dx < 0 ? 'back' : 'forward'
+      if (dir === 'back' && !g.canGoBack) return
+      if (dir === 'forward' && !g.canGoForward) return
+      g.direction = dir
+      g.position = 0
+      g.engaged = true
+    }
+
+    // Suppress page delivery for engaged-gesture wheels so Chromium's
+    // own rubber-band animation and any page-level scroll listener stay
+    // quiet while our overlay tracks the finger.
+    event.preventDefault()
+
+    // 1:1 outward-position tracking. Reversing the swipe (pulling back)
+    // shrinks position; once it hits 0 we disengage so the next overscroll
+    // can pick a (possibly different) direction within the same touch.
+    const delta = g.direction === 'back' ? -dx : dx
+    g.position += delta
+    if (g.position <= 0) {
+      g.position = 0
+      g.engaged = false
+      g.direction = null
+      sendGestureUpdate(rec, false)
+      return
+    }
+
+    if (g.position < GESTURE_ENGAGE_PX) {
+      sendGestureUpdate(rec, false)
+      return
+    }
+
+    sendGestureUpdate(rec, true)
+
+    // Eager commit: the moment the user crosses the trigger threshold,
+    // fire the navigation. We can't observe true finger-lift in time
+    // (gestureScrollEnd is delayed by Chromium momentum), so the
+    // threshold itself is the commit point. Pull-back-to-cancel still
+    // works for anything below the threshold.
+    if (g.position >= GESTURE_TRIGGER_PX && g.direction) {
+      const dir = g.direction
+      g.committed = true
+      g.engaged = false
+      g.direction = null
+      sendGestureUpdate(rec, false)
+      if (dir === 'back') tabGoBack(rec.tabId)
+      else tabGoForward(rec.tabId)
     }
   })
 }
@@ -244,6 +434,7 @@ export function createTab(opts: {
     view,
     activated: false,
     lastBounds: HIDDEN_BOUNDS,
+    gesture: makeInitialGestureState(),
   }
   tabs.set(opts.tabId, rec)
   wcIdToTabId.set(view.webContents.id, opts.tabId)
