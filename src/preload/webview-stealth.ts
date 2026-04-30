@@ -361,9 +361,12 @@ try {
       'color:#fff',
       'background:rgba(30,30,30,0.92)',
       'box-shadow:0 4px 18px rgba(0,0,0,0.35)',
-      'border:2px solid transparent',
+      // Border tracks the icon color so the ring around the circle
+      // always reads as part of the same shape.
+      'border:2px solid #fff',
       'box-sizing:border-box',
-      // No transitions: position must track fingers 1:1, not animate.
+      // No transitions: position, opacity, and background must all
+      // track fingers 1:1 — any easing makes the indicator lag.
     ].join(';')
     ;(document.documentElement || document.body).appendChild(el)
     overlay = el
@@ -389,7 +392,6 @@ try {
     }
     el.style.transform = 'translateY(-50%)'
     el.style.opacity = position > 0 ? '1' : '0'
-    el.style.borderColor = armed ? 'rgba(96,165,250,1)' : 'transparent'
     el.style.background = armed ? 'rgba(37,99,235,0.95)' : 'rgba(30,30,30,0.92)'
   }
 
@@ -483,19 +485,6 @@ try {
       if (!el) return
       const scrollLeft = el.scrollLeft
       const maxScrollLeft = el.scrollWidth - el.clientWidth
-
-      // Skip pages whose document has no scroll capability at all — those
-      // are typically full-screen "app" pages (Google Sheets, Figma,
-      // Discord, Slack web…) that handle scrolling internally via canvas
-      // or virtual lists. Engaging the gesture here would falsely fire on
-      // every horizontal wheel and freeze the page's own scroll handling.
-      if (
-        el.scrollHeight <= el.clientHeight + 1 &&
-        el.scrollWidth <= el.clientWidth + 1
-      ) {
-        if (engaged) resetGesture()
-        return
-      }
 
       if (!engaged) {
         // Engage only when actually past the document's scroll edge in the
