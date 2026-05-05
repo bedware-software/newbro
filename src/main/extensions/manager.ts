@@ -403,29 +403,40 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>): boolea
   }
   // Already on the current shim version — no work to do.
   if (original.startsWith(SW_SHIM_MAGIC)) return false
-  // Strip an older shim version so we don't stack them. We look for the
-  // legacy MAGIC line at the start, walk to the next FOOTER line, drop
-  // everything in between, and prepend the new V2 source above the
-  // remainder. If we can't find the footer (corrupted file?), bail out
-  // and keep the original verbatim — better an unshimmed extension than
-  // a half-deleted background.js.
+  // Strip an older shim version so we don't stack them. V2 ships a
+  // dedicated footer marker we can match exactly. V1 didn't — its
+  // outer IIFE closed with `\n})();\n` on its own line and there are
+  // no other `})();` sequences inside the V1 source, so we search for
+  // the FIRST occurrence after the V1 marker. Either way, body is
+  // everything that follows the shim's closing line.
   let body = original
   if (original.startsWith(SW_SHIM_LEGACY_MAGIC)) {
-    const footerIdx = original.indexOf(SW_SHIM_FOOTER)
-    if (footerIdx === -1) {
-      // V1 shim didn't ship a footer marker. Strip up to the first blank
-      // line that follows the closing IIFE — heuristic, but the V1
-      // source we emitted ends with `})();\n` followed by a backtick.
-      // Conservative fallback: leave the original alone and warn.
-      log.warn('extensions: SW shim — found legacy V1 marker without footer; not migrating', {
+    const v1Close = '\n})();\n'
+    const closeIdx = original.indexOf(v1Close, SW_SHIM_LEGACY_MAGIC.length)
+    if (closeIdx === -1) {
+      log.warn('extensions: SW shim — found legacy V1 marker without recognisable IIFE close; not migrating', {
         extDir,
         swRel,
       })
       return false
     }
-    const afterFooter = original.indexOf('\n', footerIdx)
-    body = afterFooter === -1 ? '' : original.slice(afterFooter + 1)
+    body = original.slice(closeIdx + v1Close.length)
     log.info('extensions: SW shim — migrating V1 → V2', { extDir, swRel })
+  } else {
+    // V2+ shim with footer (future versions). When the marker doesn't
+    // match the current MAGIC, we walk to the FOOTER line and strip
+    // everything before it.
+    const footerIdx = original.indexOf(SW_SHIM_FOOTER)
+    if (footerIdx !== -1 && original.indexOf(SW_SHIM_MAGIC) !== 0) {
+      // The file starts with SOME shim header (not our current MAGIC and
+      // not V1). Strip up to the line after the footer.
+      const startsWithSomeShim = original.startsWith('// __NEWBRO_SW_SHIM_')
+      if (startsWithSomeShim) {
+        const afterFooter = original.indexOf('\n', footerIdx)
+        body = afterFooter === -1 ? '' : original.slice(afterFooter + 1)
+        log.info('extensions: SW shim — replacing older shim header', { extDir, swRel })
+      }
+    }
   }
   try {
     writeFileSync(swPath, SW_SHIM_SOURCE + '\n' + body)
