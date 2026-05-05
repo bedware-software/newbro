@@ -121,6 +121,15 @@ function parsePopupFeatures(features: string): {
   return out
 }
 
+// Minimum size for OAuth-style popups. Providers (Figma, Google, GitHub) ask
+// for window dimensions tuned to a stripped-down browser frame; in our app
+// the popup BrowserWindow has the OS title bar plus app chrome on Windows
+// and a default frame on macOS, so the requested width leaves the actual
+// content frame too narrow — text wraps awkwardly, the "Continue" button
+// gets pushed off-screen on Windows. Clamp up to a comfortable floor.
+const POPUP_MIN_WIDTH = 560
+const POPUP_MIN_HEIGHT = 640
+
 const tabs = new Map<string, TabRecord>()
 /** windowId -> latest bounds reported by the renderer, applied to the
  *  active tab when it is shown. */
@@ -271,12 +280,14 @@ function wireEvents(rec: TabRecord): void {
     if (disposition === 'new-window') {
       log.info('tab window-open: allowing popup', { tabId: rec.tabId, url, features })
       const dims = parsePopupFeatures(features)
+      const width = Math.max(dims.width ?? POPUP_MIN_WIDTH, POPUP_MIN_WIDTH)
+      const height = Math.max(dims.height ?? POPUP_MIN_HEIGHT, POPUP_MIN_HEIGHT)
       return {
         action: 'allow',
         outlivesOpener: false,
         overrideBrowserWindowOptions: {
-          ...(dims.width ? { width: dims.width } : {}),
-          ...(dims.height ? { height: dims.height } : {}),
+          width,
+          height,
           ...(dims.left !== undefined ? { x: dims.left } : {}),
           ...(dims.top !== undefined ? { y: dims.top } : {}),
           autoHideMenuBar: true,
