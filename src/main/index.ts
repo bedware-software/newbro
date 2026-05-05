@@ -981,15 +981,6 @@ app.whenReady().then(() => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWorkspaceWindow('', '', 'Default')
   }
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      openInitialWindows()
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createWorkspaceWindow('', '', 'Default')
-      }
-    }
-  })
 })
 
 app.on('before-quit', () => {
@@ -1005,5 +996,5 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  app.quit()
 })
