@@ -37,6 +37,7 @@ import { log } from '../log'
 import { parseCrx, extractCrxPublicKey, deriveExtensionIdFromPublicKey } from './crx'
 import { fetchCrx, extractExtensionIdFromUrl as _extract, clearCrxFetchSession } from './store'
 import { unzipTo } from './zip'
+import { SW_SHIM_SOURCE, SW_SHIM_MAGIC } from './sw-shim'
 
 export interface ExtensionInfo {
   id: string
@@ -362,6 +363,53 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
     }
   }
   return modified
+}
+
+/** Prepend our chrome.tabs.create / chrome.windows.create /
+ *  chrome.runtime.openOptionsPage shim into the manifest's MV3 service
+ *  worker file (typically `background.js`). Idempotent: a re-install
+ *  over an already-shimmed file sees the magic comment and skips.
+ *
+ *  WHY this exists despite us also registering a session-level
+ *  type='service-worker' preload: in Electron 41 that registration
+ *  doesn't actually inject into chrome-extension service workers
+ *  (verified empirically by the absence of a shim "preload-start" log
+ *  line for the SW context). Patching the file on disk is the only
+ *  reliable injection point we have right now. The session-level
+ *  preload still does useful work for FRAME contexts (popup,
+ *  options.html), so we keep both code paths.
+ *
+ *  Returns true if the file was modified — used by callers that want
+ *  to log "we patched in the SW shim". MV2 background pages and
+ *  extensions without `background.service_worker` are no-ops. */
+function injectSwShim(extDir: string, manifest: Record<string, unknown>): boolean {
+  if (manifest.manifest_version !== 3) return false
+  const bg = manifest.background as { service_worker?: string } | undefined
+  if (!bg || typeof bg.service_worker !== 'string' || bg.service_worker.length === 0) return false
+  // Strip any leading slashes to keep the join inside the extension dir.
+  const swRel = bg.service_worker.replace(/^\/+/, '')
+  if (swRel.includes('..')) return false
+  const swPath = join(extDir, swRel)
+  let original: string
+  try {
+    original = readFileSync(swPath, 'utf8')
+  } catch (err) {
+    log.warn('extensions: SW shim — service worker file missing', {
+      extDir,
+      swRel,
+      err: String(err),
+    })
+    return false
+  }
+  if (original.startsWith(SW_SHIM_MAGIC)) return false
+  try {
+    writeFileSync(swPath, SW_SHIM_SOURCE + '\n' + original)
+    log.info('extensions: SW shim injected', { extDir, swRel })
+    return true
+  } catch (err) {
+    log.warn('extensions: SW shim — write failed', { extDir, swRel, err: String(err) })
+    return false
+  }
 }
 
 /** Pick the best icon path declared in the manifest. We prefer ≤48 (the
@@ -750,6 +798,12 @@ export async function installExtensionById(extensionId: string): Promise<Extensi
     // (and what loadExtension sees) matches the patched version.
     patchManifest(tmpDir, publicKey)
     const manifest = readManifest(tmpDir)
+    // Inject our chrome.tabs.create polyfill into the MV3 service
+    // worker file. Has to happen here — Electron 41's
+    // registerPreloadScript({ type: 'service-worker' }) doesn't actually
+    // fire for chrome-extension service workers, so patching the SW
+    // file on disk is our only reliable injection point.
+    injectSwShim(tmpDir, manifest)
     const version =
       typeof manifest.version === 'string' ? (manifest.version as string) : 'unknown'
     const finalDir = join(root, extensionId, version)
@@ -939,6 +993,14 @@ export async function rehydrateExtensionsOnStartup(): Promise<void> {
       patchManifest(entry.path, null)
     } catch (err) {
       log.warn('extensions: rehydrate manifest patch failed', { id, err: String(err) })
+    }
+    // Re-inject the SW shim. Idempotent — installs already shimmed by
+    // a prior boot detect the magic-comment header and skip the write.
+    try {
+      const m = readManifest(entry.path)
+      injectSwShim(entry.path, m)
+    } catch (err) {
+      log.warn('extensions: rehydrate SW shim inject failed', { id, err: String(err) })
     }
     // Re-derive the persisted entry so localized fields (name,
     // description, default_title) refresh retroactively for extensions

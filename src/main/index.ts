@@ -21,7 +21,7 @@ import {
 } from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { log } from './log'
-import { registerWorkspaceWindowForTabs, installTabPreloadListeners } from './tab-views'
+import { registerWorkspaceWindowForTabs, installTabPreloadListeners, closeExtensionPopup } from './tab-views'
 import { loadEnabledExtensionsInto, rehydrateExtensionsOnStartup } from './extensions/manager'
 
 // ── Chromium flags ──
@@ -450,6 +450,42 @@ function configureSession(ses: Electron.Session): void {
     delete headers['X-Electron-Version']
     callback({ requestHeaders: headers })
   })
+
+  // SW → main IPC channel. The shim we prepend into MV3 service workers
+  // can't import { ipcRenderer } from 'electron' (no preload bridge in
+  // an extension's own JS world), so it talks to us by sending a
+  // fetch() to a sentinel host. We intercept that fetch before any
+  // network resolution happens, drive the requested action, and cancel
+  // the request — the .test TLD never reaches DNS even if the cancel
+  // races. Pattern stays narrow (one host) so legitimate requests are
+  // untouched.
+  ses.webRequest.onBeforeRequest(
+    { urls: ['https://newbro-ext-ipc.test/*', 'http://newbro-ext-ipc.test/*'] },
+    (details, callback) => {
+      try {
+        const u = new URL(details.url)
+        const action = u.pathname.replace(/^\/+/, '')
+        if (action === 'open-tab') {
+          const url = u.searchParams.get('url')
+          if (typeof url === 'string' && url.length > 0) {
+            const focused = BrowserWindow.getFocusedWindow()
+            const target =
+              focused && !focused.isDestroyed()
+                ? focused
+                : BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null
+            if (target) {
+              try { closeExtensionPopup(target.id) } catch { /* ignore */ }
+              target.webContents.send('open-url-as-tab', url)
+              log.info('extensions: SW shim opened tab', { url })
+            }
+          }
+        }
+      } catch (err) {
+        log.warn('extensions: SW shim ipc parse failed', { url: details.url, err: String(err) })
+      }
+      callback({ cancel: true })
+    },
+  )
 }
 
 export function setupPartitionSession(partition: string): void {
