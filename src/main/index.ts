@@ -463,11 +463,10 @@ export function setupPartitionSession(partition: string): void {
   ses.setPreloads([WEBVIEW_STEALTH_PRELOAD, EXTENSION_SHIM_PRELOAD])
   // The shim ALSO needs to run inside MV3 service workers, where most
   // extensions (Tampermonkey's icon-click handler in particular) host
-  // their chrome.tabs.create calls. setPreloads only covers frames in
-  // older Electrons; registerPreloadScript with type='service-worker'
-  // is the modern API for the SW context. Wrapped in try/catch because
-  // the registerPreloadScript signature has shifted across Electron
-  // versions and we don't want a missing API to break the partition.
+  // their chrome.tabs.create calls. registerPreloadScript with
+  // type='service-worker' is the API for that. Wrapped in try/catch
+  // because the option name has shifted across Electron versions and we
+  // don't want a missing API to break the partition.
   try {
     const ext = (ses as unknown as {
       registerPreloadScript?: (spec: {
@@ -482,9 +481,36 @@ export function setupPartitionSession(partition: string): void {
         filePath: EXTENSION_SHIM_PRELOAD,
         id: 'newbro-extension-shim-sw',
       })
+      log.info('extensions: registered SW shim preload', { partition })
+    } else {
+      log.warn('extensions: ses.registerPreloadScript missing — SW shim won\'t inject', { partition })
     }
   } catch (err) {
     log.warn('extensions: registerPreloadScript(service-worker) failed', { partition, err: String(err) })
+  }
+  // Mirror chrome-extension service-worker console messages into the
+  // main log. Without this the only signal that something went wrong in
+  // an extension's MV3 background script is a Chromium-internal stderr
+  // line; our app log lost it. This is also where we'd see "[ext-shim]"
+  // diagnostics from the polyfill running inside the SW context.
+  try {
+    const sw = (ses as unknown as { serviceWorkers?: { on?: Function } }).serviceWorkers
+    if (sw && typeof sw.on === 'function') {
+      sw.on(
+        'console-message',
+        (
+          _e: unknown,
+          details: { message?: string; sourceUrl?: string; level?: number },
+        ) => {
+          const msg = String(details?.message ?? '')
+          const url = String(details?.sourceUrl ?? '')
+          if (!msg.startsWith('[newbro-ext-shim]') && (details?.level ?? 0) < 2) return
+          log.info('ext sw console', { partition, level: details?.level, url, msg })
+        },
+      )
+    }
+  } catch (err) {
+    log.warn('extensions: failed to wire SW console-message listener', { partition, err: String(err) })
   }
   configuredPartitions.add(partition)
   // Load every user-installed, enabled extension into the partition so

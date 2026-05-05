@@ -16,11 +16,43 @@
 //     listener in the SW is what actually calls chrome.tabs.create.
 //     Tampermonkey 5.4.x is exactly this shape.
 //
+// Timing: this preload runs BEFORE any extension code, but Chromium
+// installs the chrome.* binding on the same context lazily (chrome.tabs
+// is a host object filled in C++). We can't synchronously patch a thing
+// that doesn't exist yet, so we use a getter/setter trap on
+// `globalThis.chrome` that re-applies our patches every time Chromium
+// (re-)assigns the namespace. Polling / microtasks proved unreliable in
+// the MV3 service-worker context — Tampermonkey's background script
+// imports its own scripts very early and bound `chrome.tabs` to a local
+// closure variable BEFORE any deferred patching could land.
+//
 // We can't `contextBridge`-expose anything here because the shim runs in
 // the extension's own JS world (chrome.* lives there). ipcRenderer is
 // available in both Electron preload contexts, so we use it directly.
 
 import { ipcRenderer } from 'electron'
+
+// Diagnostic: tell main we ran. The user-visible bug-report flow is "I
+// installed Tampermonkey, clicked X, here's the log" — so loud
+// confirmation of "shim loaded in SW for this extension" makes it easy
+// to tell whether registerPreloadScript({ type: 'service-worker' })
+// actually delivered the bytes.
+function reportLoaded(stage: string): void {
+  try {
+    ipcRenderer.send('newbro-ext-shim-loaded', {
+      stage,
+      href: typeof location !== 'undefined' ? location?.href : null,
+      hasChrome: typeof (globalThis as { chrome?: unknown }).chrome !== 'undefined',
+      hasTabs:
+        typeof (globalThis as { chrome?: { tabs?: unknown } }).chrome?.tabs !== 'undefined',
+      hasTabsCreate:
+        typeof (globalThis as { chrome?: { tabs?: { create?: unknown } } }).chrome?.tabs
+          ?.create === 'function',
+    })
+  } catch {
+    /* ipcRenderer can be torn down in some contexts; best-effort */
+  }
+}
 
 // Skip the shim outside extension contexts. Frames load with location.protocol
 // available; service workers load with self.location populated to the
@@ -38,7 +70,9 @@ const proto = (() => {
 })()
 
 if (proto === 'chrome-extension:') {
+  reportLoaded('preload-start')
   install()
+  reportLoaded('preload-end')
 }
 
 interface CreateProperties {
@@ -48,14 +82,6 @@ interface CreateProperties {
   index?: number
   pinned?: boolean
   openerTabId?: number
-}
-
-interface UpdateProperties {
-  url?: string
-  active?: boolean
-  highlighted?: boolean
-  pinned?: boolean
-  muted?: boolean
 }
 
 interface FakeTab {
@@ -84,26 +110,21 @@ function fakeTab(url: string, active: boolean): FakeTab {
   }
 }
 
-function install(): void {
-  const w = globalThis as unknown as { chrome?: Record<string, unknown> }
-  const chrome = (w.chrome ?? (w.chrome = {})) as Record<string, unknown>
+function applyPatches(chrome: Record<string, unknown>): void {
+  if (!chrome || typeof chrome !== 'object') return
 
   // chrome.tabs ── the gap we ACTUALLY hit. Tampermonkey calls .create
   // from background.js; Unhook calls it from popup.js. Electron 41
   // exposes a partial chrome.tabs (query / update / reload / sendMessage
   // / executeScript) but no `create`.
   const tabs = (chrome.tabs ?? (chrome.tabs = {})) as Record<string, unknown>
-
   if (typeof tabs.create !== 'function') {
     tabs.create = (props: CreateProperties, callback?: (tab: FakeTab) => void) => {
       const url = typeof props?.url === 'string' ? props.url : ''
       const active = props?.active !== false
-      ipcRenderer.send('newbro-ext-open-tab', { url, active })
+      try { ipcRenderer.send('newbro-ext-open-tab', { url, active }) } catch { /* ignore */ }
       const tab = fakeTab(url, active)
       if (typeof callback === 'function') {
-        // Asynchronous to match the real chrome.tabs.create contract —
-        // some callers depend on the callback firing in a microtask
-        // rather than synchronously.
         Promise.resolve().then(() => callback(tab))
       }
       return Promise.resolve(tab)
@@ -122,7 +143,7 @@ function install(): void {
     ) => {
       const urls = Array.isArray(props?.url) ? props!.url : props?.url ? [props.url as string] : []
       for (const u of urls) {
-        ipcRenderer.send('newbro-ext-open-tab', { url: u, active: props?.focused !== false })
+        try { ipcRenderer.send('newbro-ext-open-tab', { url: u, active: props?.focused !== false }) } catch { /* ignore */ }
       }
       const win = { id: -1, tabs: urls.map((u) => fakeTab(u, true)) }
       if (typeof callback === 'function') Promise.resolve().then(() => callback(win))
@@ -156,3 +177,45 @@ function install(): void {
     }
   }
 }
+
+function install(): void {
+  const w = globalThis as unknown as { chrome?: Record<string, unknown> }
+
+  // Patch whatever's already there now …
+  if (w.chrome) applyPatches(w.chrome)
+
+  // … AND keep patching every time Chromium replaces the chrome object.
+  // The MV3 service worker observed in practice has Chromium initialise
+  // chrome AFTER the preload returns — patches we wrote to a placeholder
+  // {} get clobbered when Chromium assigns the real namespace. The trap
+  // below re-applies our patches at every assignment point so the gap is
+  // closed regardless of timing.
+  let backing: Record<string, unknown> | undefined = w.chrome
+  try {
+    Object.defineProperty(globalThis, 'chrome', {
+      configurable: true,
+      enumerable: true,
+      get() { return backing },
+      set(v: Record<string, unknown> | undefined) {
+        backing = v
+        if (v) applyPatches(v)
+      },
+    })
+  } catch {
+    // Some Chromium builds make `chrome` non-configurable on the worker
+    // global; defineProperty throws in that case. Fall back to polling
+    // for a short window so we still patch once Chromium is done
+    // initialising. Six attempts × 1ms covers the common races; bail
+    // out after that to avoid an infinite microtask churn.
+    let tries = 0
+    const tick = (): void => {
+      if (w.chrome && typeof w.chrome === 'object') {
+        applyPatches(w.chrome)
+        return
+      }
+      if (tries++ < 6) Promise.resolve().then(tick)
+    }
+    tick()
+  }
+}
+

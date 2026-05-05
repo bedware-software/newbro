@@ -1148,6 +1148,14 @@ export function installTabPreloadListeners(): void {
     sendToWindowRenderer(target.id, 'open-url-as-tab', url)
   })
 
+  // Diagnostic counterpart to extension-shim's reportLoaded(). Lets us
+  // confirm in the main log that the shim actually ran in the SW and
+  // that chrome.tabs.create was missing at the time we patched (i.e.
+  // the polyfill is doing useful work, not duplicating Electron's API).
+  ipcMain.on('newbro-ext-shim-loaded', (_event, info: unknown) => {
+    log.info('extension shim loaded', info)
+  })
+
   ipcMain.on('newbro-open-in-new-tab', (event, url: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     if (!tabId) return
