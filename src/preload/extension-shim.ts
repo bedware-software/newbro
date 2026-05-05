@@ -176,6 +176,37 @@ function applyPatches(chrome: Record<string, unknown>): void {
       return Promise.resolve()
     }
   }
+
+  // chrome.userScripts ── stubbed so popup-side detection
+  // (Tampermonkey reads chrome.userScripts to decide whether to show
+  // the "developer mode" warning) sees a real-looking namespace.
+  // Persistence and injection live in the SW context's stub; this
+  // frame-side stub just answers calls with empty results so the popup
+  // doesn't blow up if it queries here.
+  const userScripts = (chrome.userScripts ?? (chrome.userScripts = {})) as Record<string, unknown>
+  const noopAsync = (_args?: unknown, callback?: (...a: unknown[]) => void) => {
+    if (typeof callback === 'function') Promise.resolve().then(() => callback())
+    return Promise.resolve()
+  }
+  if (typeof userScripts.register !== 'function') userScripts.register = noopAsync
+  if (typeof userScripts.unregister !== 'function') userScripts.unregister = noopAsync
+  if (typeof userScripts.update !== 'function') userScripts.update = noopAsync
+  if (typeof userScripts.getScripts !== 'function') {
+    userScripts.getScripts = (_filter?: unknown, callback?: (s: unknown[]) => void) => {
+      if (typeof callback === 'function') Promise.resolve().then(() => callback([]))
+      return Promise.resolve([])
+    }
+  }
+  if (typeof userScripts.configureWorld !== 'function') userScripts.configureWorld = noopAsync
+  if (typeof userScripts.getWorldConfigurations !== 'function') {
+    userScripts.getWorldConfigurations = (callback?: (s: unknown[]) => void) => {
+      if (typeof callback === 'function') Promise.resolve().then(() => callback([]))
+      return Promise.resolve([])
+    }
+  }
+  if (typeof userScripts.resetWorldConfiguration !== 'function') {
+    userScripts.resetWorldConfiguration = noopAsync
+  }
 }
 
 function install(): void {

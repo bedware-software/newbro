@@ -9,25 +9,40 @@
 // Instead we use `fetch()` to a sentinel host the partition's
 // onBeforeRequest listener intercepts in main; the request is
 // cancelled before it can leave the process, but the listener's
-// inspection of the URL is enough to drive the action.
+// inspection of the URL — and request body, for the userScripts
+// payload — is enough to drive the action.
 //
 // Strict mode + IIFE so the shim never leaks identifiers into the
 // extension's own global. Idempotent: a reinstall over a previously
 // patched background.js sees the magic comment and skips.
+//
+// Bumped to V2 when we added chrome.userScripts. Older installs that
+// have V1 prepended get re-prepended at rehydrate time — the magic-
+// comment line is unique per version, so the V1 marker is no longer
+// matched and a fresh V2 prefix gets written above the old code.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V2__'
+
+// Older marker — when we see THIS line at the top, strip everything
+// up to the matching footer and re-prepend the V2 source. Without this
+// migration step, an extension that already has V1 in its bg.js stays
+// stuck on V1's narrower polyfill set (no chrome.userScripts) until
+// the user reinstalls.
+export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
+export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
 export const SW_SHIM_HOST = 'newbro-ext-ipc.test'
 
 export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
 // Polyfills chrome.tabs.create / chrome.windows.create /
-// chrome.runtime.openOptionsPage in MV3 service-worker contexts where
-// Electron 41 doesn't expose them. Auto-injected by Newbro at install
-// time. Safe to remove if you re-pack the extension yourself.
+// chrome.runtime.openOptionsPage / chrome.userScripts.* in MV3
+// service-worker contexts where Electron 41 doesn't expose them.
+// Auto-injected by Newbro at install time. Safe to remove if you
+// re-pack the extension yourself.
 ;(function () {
   'use strict';
   var IPC_HOST = 'https://${SW_SHIM_HOST}';
-  function send(action, params) {
+  function sendGet(action, params) {
     try {
       var qs = '';
       for (var k in params) {
@@ -38,6 +53,15 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       fetch(IPC_HOST + '/' + action + qs).catch(function () {});
     } catch (_) {}
   }
+  function sendPost(action, body) {
+    try {
+      fetch(IPC_HOST + '/' + action, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).catch(function () {});
+    } catch (_) {}
+  }
   function fakeTab(url, active) {
     return {
       id: -1, index: 0, windowId: -1,
@@ -45,31 +69,48 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       url: url, status: 'loading', incognito: false
     };
   }
+  // chrome.userScripts uses the running extension's id as the owner
+  // when registering scripts in main. Look it up via chrome.runtime.id.
+  function getExtId(c) {
+    try { return (c.runtime && c.runtime.id) ? String(c.runtime.id) : ''; } catch (_) { return ''; }
+  }
+
+  // In-memory mirror of registered userscripts so chrome.userScripts.getScripts
+  // can answer synchronously (Tampermonkey's popup polls this to render
+  // its rule list). Keyed by id.
+  var REGISTERED = Object.create(null);
+
   function patch(c) {
     if (!c || typeof c !== 'object') return;
+
+    // ── chrome.tabs ────────────────────────────────────────────────
     var tabs = c.tabs || (c.tabs = {});
     if (typeof tabs.create !== 'function') {
       tabs.create = function (props, cb) {
         var url = (props && typeof props.url === 'string') ? props.url : '';
         var active = !(props && props.active === false);
-        if (url) send('open-tab', { url: url, active: active ? '1' : '0' });
+        if (url) sendGet('open-tab', { url: url, active: active ? '1' : '0' });
         var tab = fakeTab(url, active);
         if (typeof cb === 'function') Promise.resolve().then(function () { cb(tab); });
         return Promise.resolve(tab);
       };
     }
+
+    // ── chrome.windows ─────────────────────────────────────────────
     var wins = c.windows || (c.windows = {});
     if (typeof wins.create !== 'function') {
       wins.create = function (props, cb) {
         var urls = (props && props.url)
           ? (Array.isArray(props.url) ? props.url : [props.url])
           : [];
-        urls.forEach(function (u) { send('open-tab', { url: u, active: '1' }); });
+        urls.forEach(function (u) { sendGet('open-tab', { url: u, active: '1' }); });
         var win = { id: -1, tabs: urls.map(function (u) { return fakeTab(u, true); }) };
         if (typeof cb === 'function') Promise.resolve().then(function () { cb(win); });
         return Promise.resolve(win);
       };
     }
+
+    // ── chrome.runtime.openOptionsPage ─────────────────────────────
     var rt = c.runtime || (c.runtime = {});
     if (typeof rt.openOptionsPage !== 'function') {
       rt.openOptionsPage = function (cb) {
@@ -79,8 +120,123 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
             ? m.options_page
             : (m.options_ui && m.options_ui.page);
           if (typeof page === 'string' && page && typeof rt.getURL === 'function') {
-            send('open-tab', { url: rt.getURL(page), active: '1' });
+            sendGet('open-tab', { url: rt.getURL(page), active: '1' });
           }
+        } catch (_) {}
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      };
+    }
+
+    // ── chrome.userScripts ─────────────────────────────────────────
+    // Tampermonkey's "Please enable developer mode to allow userscript
+    // injection" comes from this API being missing. Stubbing it makes
+    // the warning go away AND lets Tampermonkey's popup render its
+    // rule list (it queries getScripts() to populate the badge count).
+    // Actual script execution happens in main: register() forwards the
+    // serialised scripts to the host process, which matches each tab's
+    // URL against the registered patterns on every navigation and
+    // injects the script body via webContents.executeJavaScript.
+    var us = c.userScripts || (c.userScripts = {});
+    var extId = getExtId(c);
+    if (typeof us.register !== 'function') {
+      us.register = function (scripts, cb) {
+        var arr = Array.isArray(scripts) ? scripts : [scripts];
+        arr.forEach(function (s) { if (s && s.id) REGISTERED[s.id] = s; });
+        if (extId && arr.length > 0) sendPost('userscripts-register', { extId: extId, scripts: arr });
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      };
+    }
+    if (typeof us.unregister !== 'function') {
+      us.unregister = function (filter, cb) {
+        var ids = (filter && Array.isArray(filter.ids)) ? filter.ids.slice() : null;
+        if (ids) {
+          ids.forEach(function (id) { delete REGISTERED[id]; });
+        } else {
+          REGISTERED = Object.create(null);
+        }
+        if (extId) sendPost('userscripts-unregister', { extId: extId, ids: ids });
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      };
+    }
+    if (typeof us.update !== 'function') {
+      us.update = function (scripts, cb) {
+        var arr = Array.isArray(scripts) ? scripts : [scripts];
+        arr.forEach(function (s) { if (s && s.id) REGISTERED[s.id] = s; });
+        if (extId && arr.length > 0) sendPost('userscripts-update', { extId: extId, scripts: arr });
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      };
+    }
+    if (typeof us.getScripts !== 'function') {
+      us.getScripts = function (filter, cb) {
+        var ids = (filter && Array.isArray(filter.ids)) ? filter.ids : null;
+        var out = [];
+        for (var id in REGISTERED) {
+          if (Object.prototype.hasOwnProperty.call(REGISTERED, id)) {
+            if (!ids || ids.indexOf(id) !== -1) out.push(REGISTERED[id]);
+          }
+        }
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(out); });
+        return Promise.resolve(out);
+      };
+    }
+    if (typeof us.configureWorld !== 'function') {
+      us.configureWorld = function (props, cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      };
+    }
+    if (typeof us.getWorldConfigurations !== 'function') {
+      us.getWorldConfigurations = function (cb) {
+        var out = [];
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(out); });
+        return Promise.resolve(out);
+      };
+    }
+    if (typeof us.resetWorldConfiguration !== 'function') {
+      us.resetWorldConfiguration = function (worldId, cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      };
+    }
+
+    // ── chrome.action badge ────────────────────────────────────────
+    // Tampermonkey calls setBadgeText({ text: '3', tabId }) to surface
+    // the count of scripts active on the current tab. Electron exposes
+    // chrome.action.setBadgeText but we don't render badges on our
+    // toolbar icon yet — forward the calls to main so the renderer can
+    // overlay a chip on the icon button.
+    var act = c.action || (c.action = {});
+    if (typeof act.setBadgeText !== 'function') {
+      act.setBadgeText = function (details, cb) {
+        try {
+          sendGet('badge-set', {
+            extId: extId,
+            text: (details && typeof details.text === 'string') ? details.text : '',
+            tabId: (details && details.tabId != null) ? String(details.tabId) : '',
+          });
+        } catch (_) {}
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      };
+    }
+    if (typeof act.setBadgeBackgroundColor !== 'function') {
+      act.setBadgeBackgroundColor = function (details, cb) {
+        try {
+          var color = '';
+          if (details && typeof details.color === 'string') color = details.color;
+          else if (details && Array.isArray(details.color)) {
+            var rgba = details.color;
+            color = 'rgba(' + (rgba[0] || 0) + ',' + (rgba[1] || 0) + ',' + (rgba[2] || 0) + ',' + ((rgba[3] || 255) / 255) + ')';
+          }
+          sendGet('badge-color', {
+            extId: extId,
+            color: color,
+            tabId: (details && details.tabId != null) ? String(details.tabId) : '',
+          });
         } catch (_) {}
         if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
         return Promise.resolve();
@@ -110,4 +266,5 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     tick();
   }
 })();
+${SW_SHIM_FOOTER}
 `

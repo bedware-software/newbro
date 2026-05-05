@@ -23,6 +23,11 @@ import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } 
 import { log } from './log'
 import { registerWorkspaceWindowForTabs, installTabPreloadListeners, closeExtensionPopup } from './tab-views'
 import { loadEnabledExtensionsInto, rehydrateExtensionsOnStartup } from './extensions/manager'
+import {
+  registerUserScripts,
+  unregisterUserScripts,
+  type RegisteredUserScript,
+} from './extensions/userscripts'
 
 // ── Chromium flags ──
 
@@ -479,6 +484,38 @@ function configureSession(ses: Electron.Session): void {
               log.info('extensions: SW shim opened tab', { url })
             }
           }
+        } else if (action === 'userscripts-register' || action === 'userscripts-update') {
+          const body = readUploadBody(details)
+          const parsed = body ? safeJsonParse(body) : null
+          if (parsed && typeof parsed === 'object') {
+            const p = parsed as { extId?: unknown; scripts?: unknown }
+            const extId = typeof p.extId === 'string' ? p.extId : ''
+            const scripts = Array.isArray(p.scripts) ? (p.scripts as RegisteredUserScript[]) : []
+            if (extId && scripts.length > 0) {
+              registerUserScripts(getPartitionForSession(ses), extId, scripts)
+            }
+          }
+        } else if (action === 'userscripts-unregister') {
+          const body = readUploadBody(details)
+          const parsed = body ? safeJsonParse(body) : null
+          if (parsed && typeof parsed === 'object') {
+            const p = parsed as { extId?: unknown; ids?: unknown }
+            const extId = typeof p.extId === 'string' ? p.extId : ''
+            const ids = Array.isArray(p.ids) ? (p.ids as string[]) : null
+            if (extId) unregisterUserScripts(getPartitionForSession(ses), extId, ids)
+          }
+        } else if (action === 'badge-set' || action === 'badge-color') {
+          // Forward to every workspace renderer so it can update its
+          // toolbar icon overlay. Renderer-side rendering ships in a
+          // follow-up commit; for now we just log + broadcast.
+          const extId = u.searchParams.get('extId') ?? ''
+          const text = u.searchParams.get('text') ?? ''
+          const color = u.searchParams.get('color') ?? ''
+          for (const w of BrowserWindow.getAllWindows()) {
+            if (!w.isDestroyed()) {
+              w.webContents.send('extensions:badge', { extId, text, color, action })
+            }
+          }
         }
       } catch (err) {
         log.warn('extensions: SW shim ipc parse failed', { url: details.url, err: String(err) })
@@ -486,6 +523,28 @@ function configureSession(ses: Electron.Session): void {
       callback({ cancel: true })
     },
   )
+}
+
+function readUploadBody(details: Electron.OnBeforeRequestListenerDetails): string | null {
+  const data = details.uploadData
+  if (!Array.isArray(data) || data.length === 0) return null
+  let out = ''
+  for (const part of data) {
+    const bytes = (part as { bytes?: Buffer }).bytes
+    if (bytes && Buffer.isBuffer(bytes)) out += bytes.toString('utf8')
+  }
+  return out.length > 0 ? out : null
+}
+
+function safeJsonParse(s: string): unknown {
+  try { return JSON.parse(s) } catch { return null }
+}
+
+function getPartitionForSession(ses: Electron.Session): string {
+  for (const partition of configuredPartitions) {
+    if (session.fromPartition(partition) === ses) return partition
+  }
+  return 'persist:default'
 }
 
 export function setupPartitionSession(partition: string): void {

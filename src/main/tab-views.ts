@@ -24,6 +24,7 @@ import { join } from 'path'
 import { log } from './log'
 import { setupPartitionSession } from './index'
 import { ensureExtensionInSession } from './extensions/manager'
+import { injectMatchingUserScripts } from './extensions/userscripts'
 
 export interface TabBounds {
   x: number
@@ -225,6 +226,32 @@ function wireEvents(rec: TabRecord): void {
   wc.on('did-stop-loading', () =>
     emit({ type: 'did-stop-loading', tabId: rec.tabId, url: wc.getURL() })
   )
+
+  // chrome.userScripts injection. The SW shim forwards register() calls
+  // to main where they're stored per partition; here we run any that
+  // match the current page URL at the right Chrome runAt phase.
+  // - document_start: fire on did-frame-finish-load for the main frame's
+  //   first navigation (best proxy we have for "before scripts run").
+  //   Electron exposes did-start-navigation but the JS context isn't
+  //   ready there, so executeJavaScript would silently no-op.
+  // - document_end: dom-ready (DOM parsed, before subresources finish).
+  // - document_idle: did-finish-load.
+  // We don't separate document_start from document_end yet because the
+  // event ordering in Electron doesn't always give us a usable hook
+  // BEFORE DOMContentLoaded; document_end via dom-ready covers both for
+  // the practical-effects case. Tampermonkey's wrapper handles its own
+  // run-at semantics inside the user script anyway.
+  wc.on('dom-ready', () => {
+    const url = (() => { try { return wc.getURL() } catch { return '' } })()
+    if (!url) return
+    injectMatchingUserScripts(rec.partition, url, 'document_start', wc)
+    injectMatchingUserScripts(rec.partition, url, 'document_end', wc)
+  })
+  wc.on('did-finish-load', () => {
+    const url = (() => { try { return wc.getURL() } catch { return '' } })()
+    if (!url) return
+    injectMatchingUserScripts(rec.partition, url, 'document_idle', wc)
+  })
   wc.on('did-navigate', (_e, url) => {
     emit({ type: 'did-navigate', tabId: rec.tabId, url })
     emitNavState()

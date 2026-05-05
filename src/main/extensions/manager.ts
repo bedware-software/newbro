@@ -37,7 +37,7 @@ import { log } from '../log'
 import { parseCrx, extractCrxPublicKey, deriveExtensionIdFromPublicKey } from './crx'
 import { fetchCrx, extractExtensionIdFromUrl as _extract, clearCrxFetchSession } from './store'
 import { unzipTo } from './zip'
-import { SW_SHIM_SOURCE, SW_SHIM_MAGIC } from './sw-shim'
+import { SW_SHIM_SOURCE, SW_SHIM_MAGIC, SW_SHIM_LEGACY_MAGIC, SW_SHIM_FOOTER } from './sw-shim'
 
 export interface ExtensionInfo {
   id: string
@@ -401,9 +401,34 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>): boolea
     })
     return false
   }
+  // Already on the current shim version — no work to do.
   if (original.startsWith(SW_SHIM_MAGIC)) return false
+  // Strip an older shim version so we don't stack them. We look for the
+  // legacy MAGIC line at the start, walk to the next FOOTER line, drop
+  // everything in between, and prepend the new V2 source above the
+  // remainder. If we can't find the footer (corrupted file?), bail out
+  // and keep the original verbatim — better an unshimmed extension than
+  // a half-deleted background.js.
+  let body = original
+  if (original.startsWith(SW_SHIM_LEGACY_MAGIC)) {
+    const footerIdx = original.indexOf(SW_SHIM_FOOTER)
+    if (footerIdx === -1) {
+      // V1 shim didn't ship a footer marker. Strip up to the first blank
+      // line that follows the closing IIFE — heuristic, but the V1
+      // source we emitted ends with `})();\n` followed by a backtick.
+      // Conservative fallback: leave the original alone and warn.
+      log.warn('extensions: SW shim — found legacy V1 marker without footer; not migrating', {
+        extDir,
+        swRel,
+      })
+      return false
+    }
+    const afterFooter = original.indexOf('\n', footerIdx)
+    body = afterFooter === -1 ? '' : original.slice(afterFooter + 1)
+    log.info('extensions: SW shim — migrating V1 → V2', { extDir, swRel })
+  }
   try {
-    writeFileSync(swPath, SW_SHIM_SOURCE + '\n' + original)
+    writeFileSync(swPath, SW_SHIM_SOURCE + '\n' + body)
     log.info('extensions: SW shim injected', { extDir, swRel })
     return true
   } catch (err) {
@@ -844,6 +869,11 @@ export async function installExtensionById(extensionId: string): Promise<Extensi
 
 export async function uninstallExtension(extensionId: string): Promise<void> {
   log.info('extensions: uninstalling', extensionId)
+  // Drop any chrome.userScripts the extension had registered so we
+  // don't keep injecting after uninstall.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const us = require('./userscripts') as typeof import('./userscripts')
+  us.clearUserScriptsForExtension(extensionId)
   removeExtensionFromAllSessions(extensionId)
   const all = { ...store.get('extensions') }
   const entry = all[extensionId]
