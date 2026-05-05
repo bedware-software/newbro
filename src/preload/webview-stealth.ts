@@ -211,25 +211,28 @@ const STEALTH_SCRIPT = `
     }
   } catch (e) { log('userAgentData override failed', e); }
 
-  // 8. window.close() neutering. Pages call this to dismiss themselves when
-  //    they were originally opened as popups (OAuth flows are the canonical
-  //    case — Figma's /finish_google_sso, GitHub's device-auth callback,
-  //    etc.). Real Chrome lets a "self-opened" window close itself; in our
-  //    browser the page is loaded inside a tab (a WebContentsView child of
-  //    the workspace BrowserWindow) and the close call has been observed to
-  //    take down the parent BrowserWindow, costing the user every other
-  //    tab in the workspace. Replace it with a no-op so the page stays put
-  //    and the workspace window stays alive — the user closes the tab from
-  //    the sidebar like any other tab.
+  // 8. window.close() — only neuter for tabs, NOT popups. Pages call
+  //    window.close() to dismiss themselves when they were opened as
+  //    popups (OAuth callbacks are the canonical case: Figma's
+  //    /finish_google_sso, GitHub's device-auth handoff, etc.). For a
+  //    real popup BrowserWindow that's the right behavior — let it close.
+  //    But when the same page lands in a regular tab (e.g. user navigated
+  //    there directly), window.close() in our setup has been observed to
+  //    take down the parent workspace BrowserWindow with it, costing the
+  //    user every other tab. We detect "regular tab" by window.opener
+  //    being null — popups always have an opener, tabs don't.
   try {
-    const noopClose = function () {
-      try { console.log('[newbro-stealth] window.close intercepted'); } catch (_) {}
-    };
-    Object.defineProperty(window, 'close', {
-      value: noopClose,
-      writable: false,
-      configurable: false,
-    });
+    const isPopup = window.opener != null;
+    if (!isPopup) {
+      const noopClose = function () {
+        try { console.log('[newbro-stealth] window.close intercepted (tab, no opener)'); } catch (_) {}
+      };
+      Object.defineProperty(window, 'close', {
+        value: noopClose,
+        writable: false,
+        configurable: false,
+      });
+    }
   } catch (e) { log('window.close override failed', e); }
 
   log('main-world injection complete');

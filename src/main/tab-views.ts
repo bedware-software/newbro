@@ -94,6 +94,33 @@ const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
 
 const HIDDEN_BOUNDS: TabBounds = { x: 0, y: 0, width: 0, height: 0 }
 
+/** Parse the comma-separated `features` string from window.open into the
+ *  numeric subset BrowserWindow understands. Anything unrecognized is
+ *  ignored — we only consume width/height/left/top so OAuth popups land
+ *  near the dimensions the calling page asked for. */
+function parsePopupFeatures(features: string): {
+  width?: number
+  height?: number
+  left?: number
+  top?: number
+} {
+  const out: { width?: number; height?: number; left?: number; top?: number } = {}
+  if (!features) return out
+  for (const part of features.split(',')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    const key = part.slice(0, eq).trim().toLowerCase()
+    const raw = part.slice(eq + 1).trim()
+    const num = parseInt(raw, 10)
+    if (!Number.isFinite(num)) continue
+    if (key === 'width' || key === 'innerwidth') out.width = num
+    else if (key === 'height' || key === 'innerheight') out.height = num
+    else if (key === 'left' || key === 'screenx') out.left = num
+    else if (key === 'top' || key === 'screeny') out.top = num
+  }
+  return out
+}
+
 const tabs = new Map<string, TabRecord>()
 /** windowId -> latest bounds reported by the renderer, applied to the
  *  active tab when it is shown. */
@@ -222,11 +249,95 @@ function wireEvents(rec: TabRecord): void {
     emit({ type: 'did-finish-load', tabId: rec.tabId, url: wc.getURL() })
   )
 
-  // Route window.open() on the guest to the renderer as a new tab, matching
-  // the legacy did-attach-webview behavior.
-  wc.setWindowOpenHandler(({ url }) => {
+  // window.open() handler. Two paths:
+  //
+  //   * `disposition: 'new-window'` — the page passed feature flags
+  //     ("popup=yes,width=...,height=..."). This is the OAuth-popup
+  //     contract: Figma / Google / GitHub providers spawn a popup whose
+  //     `window.opener` they `postMessage` back to, and which closes itself
+  //     once the handoff is done. We allow these as real BrowserWindows,
+  //     re-using the tab's partition so cookies / localStorage are shared
+  //     and the auth flow can complete.
+  //
+  //   * everything else — `_blank`, target=name, no features — becomes a
+  //     new tab in the workspace, matching Edge-style "all popups are
+  //     tabs" behavior. Most sites that do `window.open(url)` without
+  //     features actually want a tab.
+  wc.setWindowOpenHandler((details) => {
+    const url = details.url
+    const disposition = details.disposition
+    const features = (details as { features?: string }).features ?? ''
+
+    if (disposition === 'new-window') {
+      log.info('tab window-open: allowing popup', { tabId: rec.tabId, url, features })
+      const dims = parsePopupFeatures(features)
+      return {
+        action: 'allow',
+        outlivesOpener: false,
+        overrideBrowserWindowOptions: {
+          ...(dims.width ? { width: dims.width } : {}),
+          ...(dims.height ? { height: dims.height } : {}),
+          ...(dims.left !== undefined ? { x: dims.left } : {}),
+          ...(dims.top !== undefined ? { y: dims.top } : {}),
+          autoHideMenuBar: true,
+          minimizable: false,
+          maximizable: false,
+          fullscreenable: false,
+          webPreferences: {
+            partition: rec.partition,
+            session: session.fromPartition(rec.partition),
+            preload: WEBVIEW_STEALTH_PRELOAD,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: false,
+          },
+        },
+      }
+    }
+
+    log.info('tab window-open: routing as new tab', { tabId: rec.tabId, url, disposition })
     sendToWindowRenderer(rec.windowId, 'open-url-as-tab', url)
     return { action: 'deny' }
+  })
+
+  // Track popups created from this tab so nested window.open calls inside
+  // the popup follow the same partition + preload contract, and so we can
+  // log lifecycle events for OAuth-flow triage.
+  wc.on('did-create-window', (childWindow, eventDetails) => {
+    log.info('tab did-create-window', {
+      tabId: rec.tabId,
+      childId: childWindow.id,
+      url: eventDetails?.url,
+    })
+    // Pin the popup's webContents to the tab's partition so any further
+    // window.open inside the popup can be routed back through the same
+    // session — same overrideBrowserWindowOptions shape as the parent
+    // handler above, just without the dimensions (the inner popup picks
+    // its own).
+    childWindow.webContents.setWindowOpenHandler((d) => {
+      if (d.disposition === 'new-window') {
+        return {
+          action: 'allow',
+          outlivesOpener: false,
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            webPreferences: {
+              partition: rec.partition,
+              session: session.fromPartition(rec.partition),
+              preload: WEBVIEW_STEALTH_PRELOAD,
+              contextIsolation: true,
+              nodeIntegration: false,
+              sandbox: false,
+            },
+          },
+        }
+      }
+      sendToWindowRenderer(rec.windowId, 'open-url-as-tab', d.url)
+      return { action: 'deny' }
+    })
+    childWindow.once('closed', () => {
+      log.info('tab popup closed', { tabId: rec.tabId, childId: childWindow.id })
+    })
   })
 
   // Close any open extension popup when the user clicks the page. Second
