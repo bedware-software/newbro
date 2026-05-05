@@ -18,6 +18,7 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'src/preload/index.ts'),
           'webview-stealth': resolve(__dirname, 'src/preload/webview-stealth.ts'),
+          'extension-shim': resolve(__dirname, 'src/preload/extension-shim.ts'),
         }
       }
     }

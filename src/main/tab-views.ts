@@ -1121,6 +1121,33 @@ export function installTabPreloadListeners(): void {
     else if (direction === 'forward') tabGoForward(tabId)
   })
 
+  // chrome.tabs.create / chrome.windows.create / chrome.runtime.openOptionsPage
+  // polyfill. The extension-shim preload runs inside chrome-extension://
+  // frames AND in MV3 service workers, where it intercepts the missing
+  // chrome.* tab-opening calls and forwards the URL here. Sender can be
+  // any webContents (popup view, background SW, options page) — we
+  // don't try to map it to a specific tab; we just open the URL in the
+  // currently-focused workspace window. That matches how Chrome routes
+  // chrome.tabs.create from a background page when it doesn't carry a
+  // tabs.windowId.
+  ipcMain.on('newbro-ext-open-tab', (_event, payload: unknown) => {
+    const p = (typeof payload === 'object' && payload !== null
+      ? (payload as Record<string, unknown>)
+      : {})
+    const url = typeof p.url === 'string' ? p.url : ''
+    if (!url) return
+    // Close any open extension popup so it doesn't outlive its anchor
+    // when the user clicks "Dashboard" or "Open settings" inside it.
+    const focused = BrowserWindow.getFocusedWindow()
+    const target =
+      focused && !focused.isDestroyed()
+        ? focused
+        : BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null
+    if (!target) return
+    if (extensionPopupByWindow.has(target.id)) closeExtensionPopup(target.id)
+    sendToWindowRenderer(target.id, 'open-url-as-tab', url)
+  })
+
   ipcMain.on('newbro-open-in-new-tab', (event, url: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     if (!tabId) return

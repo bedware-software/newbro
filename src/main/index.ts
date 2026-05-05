@@ -401,6 +401,14 @@ export function applyProxySettingsToAllSessions(settings: Settings): void {
  *  navigator/chrome fingerprint overrides run before any page script. */
 const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
 
+/** Absolute path to the extension shim — a small chrome.* polyfill (mainly
+ *  chrome.tabs.create / chrome.windows.create / chrome.runtime.openOptionsPage)
+ *  that fills the gaps Electron 41 leaves. Self-disables outside
+ *  chrome-extension:// contexts; registered on every partition session
+ *  for both frames and MV3 service workers (the latter is where
+ *  Tampermonkey's Dashboard-button click handler runs). */
+const EXTENSION_SHIM_PRELOAD = join(__dirname, '../preload/extension-shim.js')
+
 /** Configure a session: strip Electron branding from the UA, allow permissions,
  *  apply proxy settings. Applied to both the default session and partitioned
  *  webview sessions. */
@@ -450,8 +458,34 @@ export function setupPartitionSession(partition: string): void {
   configureSession(ses)
   // Only partitioned tab sessions get the stealth preload — the default
   // session belongs to the main renderer which doesn't need (and shouldn't
-  // have) page-fingerprint overrides.
-  ses.setPreloads([WEBVIEW_STEALTH_PRELOAD])
+  // have) page-fingerprint overrides. The extension shim runs alongside
+  // it; both self-disable on URLs outside their target scheme.
+  ses.setPreloads([WEBVIEW_STEALTH_PRELOAD, EXTENSION_SHIM_PRELOAD])
+  // The shim ALSO needs to run inside MV3 service workers, where most
+  // extensions (Tampermonkey's icon-click handler in particular) host
+  // their chrome.tabs.create calls. setPreloads only covers frames in
+  // older Electrons; registerPreloadScript with type='service-worker'
+  // is the modern API for the SW context. Wrapped in try/catch because
+  // the registerPreloadScript signature has shifted across Electron
+  // versions and we don't want a missing API to break the partition.
+  try {
+    const ext = (ses as unknown as {
+      registerPreloadScript?: (spec: {
+        type: 'service-worker' | 'frame'
+        filePath: string
+        id?: string
+      }) => string | void
+    }).registerPreloadScript
+    if (typeof ext === 'function') {
+      ext.call(ses, {
+        type: 'service-worker',
+        filePath: EXTENSION_SHIM_PRELOAD,
+        id: 'newbro-extension-shim-sw',
+      })
+    }
+  } catch (err) {
+    log.warn('extensions: registerPreloadScript(service-worker) failed', { partition, err: String(err) })
+  }
   configuredPartitions.add(partition)
   // Load every user-installed, enabled extension into the partition so
   // content scripts / declarativeNetRequest rules / MV3 service workers
