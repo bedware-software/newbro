@@ -16,18 +16,20 @@
 // extension's own global. Idempotent: a reinstall over a previously
 // patched background.js sees the magic comment and skips.
 //
-// Bumped to V2 when we added chrome.userScripts. Older installs that
-// have V1 prepended get re-prepended at rehydrate time — the magic-
-// comment line is unique per version, so the V1 marker is no longer
-// matched and a fresh V2 prefix gets written above the old code.
+// Version is bumped on every meaningful change to the source so that
+// `injectSwShim` sees the older marker, strips up to the footer line,
+// and re-prepends. Without this, an extension that already has e.g.
+// V2 in its bg.js stays stuck on V2's polyfill set until reinstall.
+//   V1 — chrome.tabs.create / windows.create / runtime.openOptionsPage
+//   V2 — added chrome.userScripts and chrome.action badge stubs
+//   V3 — added chrome.permissions stub (the dev-mode message went
+//        away with V2 but Tampermonkey still refused to inject because
+//        chrome.permissions.contains() returned undefined)
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V2__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V3__'
 
-// Older marker — when we see THIS line at the top, strip everything
-// up to the matching footer and re-prepend the V2 source. Without this
-// migration step, an extension that already has V1 in its bg.js stays
-// stuck on V1's narrower polyfill set (no chrome.userScripts) until
-// the user reinstalls.
+// Markers we know about. Anything matching one of these gets stripped
+// and replaced with the current version's source.
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -202,6 +204,44 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
         return Promise.resolve();
       };
     }
+
+    // ── chrome.permissions ─────────────────────────────────────────
+    // Electron 41 doesn't expose chrome.permissions. Tampermonkey calls
+    // chrome.permissions.contains({ origins: ['*://yandex.ru/*'] })
+    // before deciding whether to inject; without the API it assumes
+    // "no access" and shows the warning + refuses to register
+    // userscripts. We stub everything to grant-all because our app
+    // doesn't have a per-site grant UX yet — extensions live in
+    // partitioned sessions the user explicitly created, so coarse
+    // grant is reasonable here.
+    var perms = c.permissions || (c.permissions = {});
+    if (typeof perms.contains !== 'function') {
+      perms.contains = function (_p, cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(true); });
+        return Promise.resolve(true);
+      };
+    }
+    if (typeof perms.request !== 'function') {
+      perms.request = function (_p, cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(true); });
+        return Promise.resolve(true);
+      };
+    }
+    if (typeof perms.remove !== 'function') {
+      perms.remove = function (_p, cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(true); });
+        return Promise.resolve(true);
+      };
+    }
+    if (typeof perms.getAll !== 'function') {
+      perms.getAll = function (cb) {
+        var all = { permissions: [], origins: ['<all_urls>'] };
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(all); });
+        return Promise.resolve(all);
+      };
+    }
+    if (!perms.onAdded) perms.onAdded = { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } };
+    if (!perms.onRemoved) perms.onRemoved = { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } };
 
     // ── chrome.action badge ────────────────────────────────────────
     // Tampermonkey calls setBadgeText({ text: '3', tabId }) to surface

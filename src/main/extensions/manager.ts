@@ -337,6 +337,22 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
   if (filterPerms('permissions')) modified = true
   if (filterPerms('optional_permissions')) modified = true
 
+  // ── Patch 3.5: ensure host_permissions includes <all_urls> so the
+  //    extension can run content scripts on every site without a
+  //    per-origin grant prompt. We don't have a per-site grant UX, and
+  //    the partitioned session boundary already isolates extension
+  //    state per profile — so the coarse grant is appropriate. This
+  //    also keeps Tampermonkey's chrome.permissions.contains() check
+  //    happy (it queries before injecting userscripts).
+  const hp = Array.isArray(manifest.host_permissions)
+    ? (manifest.host_permissions as string[]).slice()
+    : []
+  if (!hp.includes('<all_urls>')) {
+    hp.push('<all_urls>')
+    manifest.host_permissions = hp
+    modified = true
+  }
+
   // ── Patch 4: when an extension declares `options_ui.open_in_tab=false`
   //    (the default), Chrome embeds the options page inside chrome://extensions
   //    in an iframe. We don't have a chrome://extensions surface, so flip

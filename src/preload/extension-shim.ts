@@ -207,6 +207,29 @@ function applyPatches(chrome: Record<string, unknown>): void {
   if (typeof userScripts.resetWorldConfiguration !== 'function') {
     userScripts.resetWorldConfiguration = noopAsync
   }
+
+  // chrome.permissions ── grant-all stub. Same reasoning as the SW
+  // shim: Electron 41 doesn't expose this API and Tampermonkey gates
+  // injection on chrome.permissions.contains() returning true. Return
+  // true so the popup's "I have access to this site" check passes.
+  const permissions = (chrome.permissions ?? (chrome.permissions = {})) as Record<string, unknown>
+  const grantTrue = (_args?: unknown, callback?: (b: boolean) => void) => {
+    if (typeof callback === 'function') Promise.resolve().then(() => callback(true))
+    return Promise.resolve(true)
+  }
+  if (typeof permissions.contains !== 'function') permissions.contains = grantTrue
+  if (typeof permissions.request !== 'function') permissions.request = grantTrue
+  if (typeof permissions.remove !== 'function') permissions.remove = grantTrue
+  if (typeof permissions.getAll !== 'function') {
+    permissions.getAll = (callback?: (p: { permissions: string[]; origins: string[] }) => void) => {
+      const all = { permissions: [], origins: ['<all_urls>'] }
+      if (typeof callback === 'function') Promise.resolve().then(() => callback(all))
+      return Promise.resolve(all)
+    }
+  }
+  const noopEvent = { addListener: () => {}, removeListener: () => {}, hasListener: () => false }
+  if (!permissions.onAdded) permissions.onAdded = noopEvent
+  if (!permissions.onRemoved) permissions.onRemoved = noopEvent
 }
 
 function install(): void {

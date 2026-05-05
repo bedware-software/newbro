@@ -163,7 +163,28 @@ function matchesAny(patterns: string[] | undefined, url: string): boolean {
  *  Called from tab-views once the tab's WebContents is in the right
  *  state for the requested runAt. We don't support per-frame injection
  *  yet (allFrames is honoured only for the main frame); adding that
- *  needs a stable iframe-hosting story which we don't have today. */
+ *  needs a stable iframe-hosting story which we don't have today.
+ *
+ *  Injection world: we use executeJavaScriptInIsolatedWorld with a
+ *  unique world id derived from the extension id so each extension's
+ *  scripts run in a dedicated isolated context per page — the same
+ *  shape Chrome's USER_SCRIPT world has. This avoids polluting the
+ *  page's main world AND keeps two different extensions' scripts from
+ *  trampling each other's globals. The world id is the lower 32 bits
+ *  of a hash of the extension id, capped well above 100 (Electron
+ *  reserves the low ids for content_scripts). */
+function worldIdForExtension(extensionId: string): number {
+  // Cheap deterministic hash. Doesn't need to be cryptographic — just
+  // collision-resistant across the handful of extensions a user has.
+  let h = 0
+  for (let i = 0; i < extensionId.length; i++) {
+    h = ((h << 5) - h + extensionId.charCodeAt(i)) | 0
+  }
+  // Map into [1000, 1_000_999]. Worlds 0–99 are reserved by Chromium
+  // for content scripts; staying high above that avoids any clash.
+  return 1000 + Math.abs(h) % 1000
+}
+
 export function injectMatchingUserScripts(
   partition: string,
   url: string,
@@ -186,21 +207,43 @@ export function injectMatchingUserScripts(
         .filter((s) => s.length > 0)
         .join('\n;\n')
       if (!code) continue
-      // Wrap in an IIFE so the script's top-level vars don't leak into
-      // the page's main world. Tampermonkey already wraps each user
-      // script in its own GM_* sandbox before passing it to register(),
-      // so this is belt-and-braces — but cheap insurance against a
-      // malformed inputs.
+      // Wrap in an IIFE so the script's top-level vars stay scoped to
+      // this invocation. Tampermonkey already wraps each user script
+      // in its own GM_* sandbox before passing it to register(), so
+      // this is belt-and-braces — but cheap insurance.
       const wrapped = '(function(){' + code + '\n;})();'
-      wc.executeJavaScript(wrapped, true).catch((err) => {
-        log.warn('userscripts: injection failed', {
-          partition,
-          extensionId,
-          id: script.id,
-          url,
-          err: String(err),
-        })
+      const world = script.world === 'MAIN' ? 0 : worldIdForExtension(extensionId)
+      log.info('userscripts: injecting', {
+        partition,
+        extensionId,
+        id: script.id,
+        url,
+        runAt,
+        world,
       })
+      try {
+        if (world === 0) {
+          wc.executeJavaScript(wrapped, true).catch((err) => {
+            log.warn('userscripts: injection failed', {
+              partition, extensionId, id: script.id, url, err: String(err),
+            })
+          })
+        } else {
+          // executeJavaScriptInIsolatedWorld is sync-style — takes an
+          // array of scripts, no Promise return on every Electron
+          // version, so wrap in try/catch.
+          ;(wc as unknown as {
+            executeJavaScriptInIsolatedWorld: (
+              worldId: number,
+              scripts: { code: string }[],
+            ) => Promise<unknown> | void
+          }).executeJavaScriptInIsolatedWorld(world, [{ code: wrapped }])
+        }
+      } catch (err) {
+        log.warn('userscripts: injection failed', {
+          partition, extensionId, id: script.id, url, err: String(err),
+        })
+      }
     }
   }
 }
