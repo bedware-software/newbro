@@ -38,6 +38,7 @@ import { parseCrx, extractCrxPublicKey, deriveExtensionIdFromPublicKey } from '.
 import { fetchCrx, extractExtensionIdFromUrl as _extract, clearCrxFetchSession } from './store'
 import { unzipTo } from './zip'
 import { SW_SHIM_SOURCE, SW_SHIM_MAGIC, SW_SHIM_LEGACY_MAGIC, SW_SHIM_FOOTER } from './sw-shim'
+import { clearUserScriptsForExtension } from './userscripts'
 
 export interface ExtensionInfo {
   id: string
@@ -881,10 +882,11 @@ export async function installExtensionById(extensionId: string): Promise<Extensi
 export async function uninstallExtension(extensionId: string): Promise<void> {
   log.info('extensions: uninstalling', extensionId)
   // Drop any chrome.userScripts the extension had registered so we
-  // don't keep injecting after uninstall.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const us = require('./userscripts') as typeof import('./userscripts')
-  us.clearUserScriptsForExtension(extensionId)
+  // don't keep injecting after uninstall. Static import — main is
+  // bundled by electron-vite into a single out/main/index.js, so the
+  // earlier runtime require('./userscripts') resolved against that
+  // bundled file and threw MODULE_NOT_FOUND.
+  clearUserScriptsForExtension(extensionId)
   removeExtensionFromAllSessions(extensionId)
   const all = { ...store.get('extensions') }
   const entry = all[extensionId]
