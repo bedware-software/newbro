@@ -37,6 +37,7 @@ import {
   extractExtensionIdFromUrl,
 } from './extensions/manager'
 import { registerDropdownIpc } from './dropdown-window'
+import { registerDefaultBrowserIpc } from './default-browser'
 
 interface CertInfo {
   subject: { CN?: string; O?: string; OU?: string }
@@ -649,4 +650,5 @@ function alive(p) {
   })
 
   registerDropdownIpc()
+  registerDefaultBrowserIpc()
 }

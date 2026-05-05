@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -254,6 +254,22 @@ export interface SettingsTabRequest {
   v: number
 }
 
+interface DefaultBrowserStatus {
+  platform: string
+  isDefault: boolean
+  isDefaultHttp: boolean
+  isDefaultHttps: boolean
+  /** False on Windows: changing the default needs a manual confirm step in
+   *  Settings → Default Apps, so the renderer surfaces a different button
+   *  label and an extra hint when the system pane has just been opened. */
+  canSetProgrammatically: boolean
+}
+
+interface SetAsDefaultBrowserResult {
+  status: DefaultBrowserStatus
+  openedSystemPane: boolean
+}
+
 interface ExtensionInfo {
   id: string
   name: string
@@ -365,6 +381,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [extInput, setExtInput] = useState('')
   const [extInstalling, setExtInstalling] = useState(false)
   const [extError, setExtError] = useState<string | null>(null)
+  const [defaultBrowserStatus, setDefaultBrowserStatus] = useState<DefaultBrowserStatus | null>(null)
+  const [defaultBrowserBusy, setDefaultBrowserBusy] = useState(false)
+  // Set after the user clicks "Make default" on Windows — the OS pane has
+  // been opened and we want to remind them to actually pick Newbro there
+  // until the next status refresh confirms the change took effect.
+  const [defaultBrowserSystemPaneOpened, setDefaultBrowserSystemPaneOpened] = useState(false)
   const recordingRef = useRef<{ action: string; slot: number } | null>(null)
   const pendingTabChordRef = useRef(false)
   const originalAppearanceRef = useRef<AppearancePreview>({
@@ -403,6 +425,41 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const handleInstallUpdate = useCallback(() => {
     const api = (window as any).electronAPI
     api?.installUpdate?.()
+  }, [])
+
+  // Load the default-browser status whenever the Settings dialog opens. The
+  // value is cheap to query — Electron just reads the OS handler registry —
+  // so refreshing every open keeps the UI honest if the user picked a
+  // different default in System Settings between sessions.
+  useEffect(() => {
+    if (!open) return
+    const api = (window as any).electronAPI
+    if (!api?.getDefaultBrowserStatus) return
+    api.getDefaultBrowserStatus().then((s: DefaultBrowserStatus) => {
+      if (s) setDefaultBrowserStatus(s)
+    })
+    setDefaultBrowserSystemPaneOpened(false)
+  }, [open])
+
+  const handleMakeDefaultBrowser = useCallback(async () => {
+    const api = (window as any).electronAPI
+    if (!api?.setAsDefaultBrowser) return
+    setDefaultBrowserBusy(true)
+    try {
+      const result: SetAsDefaultBrowserResult = await api.setAsDefaultBrowser()
+      if (result?.status) setDefaultBrowserStatus(result.status)
+      setDefaultBrowserSystemPaneOpened(!!result?.openedSystemPane)
+    } finally {
+      setDefaultBrowserBusy(false)
+    }
+  }, [])
+
+  const handleRefreshDefaultBrowser = useCallback(async () => {
+    const api = (window as any).electronAPI
+    if (!api?.getDefaultBrowserStatus) return
+    const s: DefaultBrowserStatus = await api.getDefaultBrowserStatus()
+    if (s) setDefaultBrowserStatus(s)
+    if (s?.isDefault) setDefaultBrowserSystemPaneOpened(false)
   }, [])
 
   // ── Extensions ──
@@ -893,6 +950,71 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     </>
                   )
                 })()}
+              </div>
+
+              {/* Default browser */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">Default browser</label>
+                <div className="flex items-start gap-4 px-4 py-3 border border-input rounded-md bg-card">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-foreground flex items-center gap-1.5">
+                      {defaultBrowserStatus?.isDefault ? (
+                        <>
+                          <CheckCircle2 size={12} className="text-primary shrink-0" />
+                          Newbro is your default browser
+                        </>
+                      ) : (
+                        <>
+                          <Compass size={12} className="text-muted-foreground shrink-0" />
+                          {defaultBrowserStatus
+                            ? "Newbro isn't your default browser"
+                            : 'Checking default browser status…'}
+                        </>
+                      )}
+                    </p>
+                    {defaultBrowserStatus && !defaultBrowserStatus.isDefault && (
+                      <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                        {defaultBrowserStatus.platform === 'darwin'
+                          ? 'macOS will ask you to confirm the change.'
+                          : defaultBrowserStatus.platform === 'win32'
+                            ? 'Windows opens its Default Apps page; pick Newbro for HTTP and HTTPS there.'
+                            : 'Best effort via xdg-mime — your desktop environment may still prompt or ignore the change.'}
+                      </p>
+                    )}
+                    {defaultBrowserSystemPaneOpened && !defaultBrowserStatus?.isDefault && (
+                      <p className="text-[11px] text-foreground/80 mt-1 leading-relaxed">
+                        Settings opened. After picking Newbro for HTTP and HTTPS, click Refresh.
+                      </p>
+                    )}
+                  </div>
+                  {defaultBrowserStatus?.isDefault ? null : defaultBrowserSystemPaneOpened ? (
+                    <button
+                      onClick={handleRefreshDefaultBrowser}
+                      disabled={defaultBrowserBusy}
+                      className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium border bg-secondary text-secondary-foreground border-input hover:bg-accent disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      <RotateCcw size={12} />
+                      Refresh
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleMakeDefaultBrowser}
+                      disabled={defaultBrowserBusy || !defaultBrowserStatus}
+                      className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium border bg-primary text-primary-foreground border-primary hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {defaultBrowserBusy ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : defaultBrowserStatus?.canSetProgrammatically ? (
+                        <Compass size={12} />
+                      ) : (
+                        <ExternalLink size={12} />
+                      )}
+                      {defaultBrowserStatus?.canSetProgrammatically === false
+                        ? 'Open Default Apps'
+                        : 'Make default'}
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Proxy */}

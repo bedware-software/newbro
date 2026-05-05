@@ -41,6 +41,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Danger zone: wipe the entire userData directory and relaunch.
   wipeAllData: (): Promise<void> => ipcRenderer.invoke('app:wipe-data'),
 
+  // Default-browser registration. `getDefaultBrowserStatus` returns a snapshot
+  // including whether one click can complete the change on this OS — on
+  // Windows it can't, and `setAsDefaultBrowser` opens Settings → Default Apps
+  // instead, signalled via `openedSystemPane` in the result.
+  getDefaultBrowserStatus: (): Promise<unknown> => ipcRenderer.invoke('default-browser:get-status'),
+  setAsDefaultBrowser: (): Promise<unknown> => ipcRenderer.invoke('default-browser:set-default'),
+
   // Import
   openBookmarkFile: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-bookmark-file'),
 

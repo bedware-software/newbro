@@ -62,6 +62,8 @@ declare global {
       loadSettings: () => Promise<Settings>
       saveSettings: (settings: Settings) => Promise<void>
       wipeAllData: () => Promise<void>
+      getDefaultBrowserStatus: () => Promise<DefaultBrowserStatus>
+      setAsDefaultBrowser: () => Promise<SetAsDefaultBrowserResult>
       openBookmarkFile: () => Promise<string | null>
       detachedWindowShow: () => void
       onShortcut: (callback: (action: string) => void) => () => void
@@ -110,6 +112,19 @@ declare global {
       onDropdownPopupSpec?: (callback: (spec: unknown) => void) => () => void
     }
   }
+}
+
+interface DefaultBrowserStatus {
+  platform: string
+  isDefault: boolean
+  isDefaultHttp: boolean
+  isDefaultHttps: boolean
+  canSetProgrammatically: boolean
+}
+
+interface SetAsDefaultBrowserResult {
+  status: DefaultBrowserStatus
+  openedSystemPane: boolean
 }
 
 type UpdateStatus =
