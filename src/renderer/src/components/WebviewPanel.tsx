@@ -39,6 +39,7 @@ type TabEvent =
   | { type: 'page-favicon-updated'; tabId: string; favicons: string[] }
   | { type: 'did-fail-load'; tabId: string; url: string; errorCode: number; errorDescription: string; isMainFrame: boolean }
   | { type: 'dom-ready'; tabId: string; url: string }
+  | { type: 'did-finish-load'; tabId: string; url: string }
 
 function resolveTheme(): 'dark' | 'light' {
   const attr = document.documentElement.getAttribute('data-theme')

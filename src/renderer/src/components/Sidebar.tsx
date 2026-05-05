@@ -441,6 +441,7 @@ export function Sidebar({ visible }: Props) {
   const handleTabContextMenu = async (tabId: string, e: React.MouseEvent): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
+    if (!workspace) return
     const tabGroupId = findTabGroup(tabId)
     const isUngrouped = tabGroupId === null
     const tab = workspace.tabs?.find((t) => t.id === tabId)
@@ -509,6 +510,7 @@ export function Sidebar({ visible }: Props) {
   const handleGroupContextMenu = async (groupId: string, e: React.MouseEvent): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
+    if (!workspace) return
     const group = workspace.tabGroups.find((g) => g.id === groupId)
     if (!group) return
 
