@@ -17,6 +17,17 @@
 //     MV3 migration. Ad blockers that still require the MV2 blocking
 //     webRequest API will register but won't block. We surface this in
 //     the UI as a best-effort warning.
+//
+// Why we never load extensions into `session.defaultSession`:
+//   The workspace BrowserWindow's main webContents (the React UI) runs on
+//   the default session. If we registered a content-script-bearing
+//   extension (Tampermonkey, AdBlock, Unhook, …) there, its content
+//   scripts would inject into our renderer's `localhost:5173` /
+//   `file://…/index.html` page and break the chrome UI. We saw the
+//   characteristic "white window after restart" symptom from Tampermonkey
+//   doing exactly this. Extensions live ONLY in partitioned sessions
+//   (the per-profile `persist:profile-<id>` ones used for tabs and
+//   extension popups).
 
 import { app, BrowserWindow, session, type Session } from 'electron'
 import Store from 'electron-store'
@@ -92,6 +103,104 @@ function readManifest(extDir: string): Record<string, unknown> {
   // Chrome allows comments in manifest.json; strip them conservatively.
   const withoutComments = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
   return JSON.parse(withoutComments)
+}
+
+/** Read the extension's localized messages.json for the given locale. The
+ *  `_locales/<lang>` directory may be missing entirely, the JSON may be
+ *  malformed, or messages.json may simply not declare the message we need —
+ *  we treat every failure mode as "no localization" and let the caller
+ *  fall back to the next candidate (or the raw __MSG_…__ token). Comments
+ *  are not allowed in messages.json per the spec but we strip /* … *\/ and
+ *  // … blocks just in case so a single bad authoring choice doesn't
+ *  flip the entire extension's name to its raw placeholder. */
+function readLocaleMessages(extDir: string, locale: string): Record<string, { message?: string }> | null {
+  if (!locale) return null
+  const safeLocale = locale.replace(/[^A-Za-z0-9_-]/g, '')
+  if (!safeLocale) return null
+  const path = join(extDir, '_locales', safeLocale, 'messages.json')
+  try {
+    if (!existsSync(path)) return null
+    const text = readFileSync(path, 'utf8')
+    const cleaned = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+    const parsed = JSON.parse(cleaned)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, { message?: string }>) : null
+  } catch {
+    return null
+  }
+}
+
+/** Resolve a single `__MSG_<name>__` token. Lookup is case-insensitive
+ *  per the Chrome i18n spec. Returns the original token unchanged when no
+ *  locale catalog (or the specific message) is available — that matches
+ *  what Chrome surfaces in the dev-tools "extension management" UI when
+ *  a translation goes missing, and is far better than the empty string. */
+function resolveMessageToken(
+  token: string,
+  primary: Record<string, { message?: string }> | null,
+  fallback: Record<string, { message?: string }> | null
+): string {
+  const m = token.match(/^__MSG_([A-Za-z0-9_@]+)__$/)
+  if (!m) return token
+  const name = m[1].toLowerCase()
+  const lookup = (cat: Record<string, { message?: string }> | null): string | null => {
+    if (!cat) return null
+    for (const key of Object.keys(cat)) {
+      if (key.toLowerCase() === name) {
+        const msg = cat[key]?.message
+        if (typeof msg === 'string' && msg.length > 0) return msg
+      }
+    }
+    return null
+  }
+  return lookup(primary) ?? lookup(fallback) ?? token
+}
+
+/** Replace every `__MSG_xxx__` placeholder in `value` with its localized
+ *  string. Chrome itself only resolves placeholders in known manifest
+ *  fields (name, short_name, description, default_title, etc.) but we
+ *  apply it broadly because every value we surface through `ExtensionInfo`
+ *  is a manifest field that Chrome would localize. */
+function localizeString(
+  value: string,
+  primary: Record<string, { message?: string }> | null,
+  fallback: Record<string, { message?: string }> | null
+): string {
+  if (!value.includes('__MSG_')) return value
+  return value.replace(/__MSG_[A-Za-z0-9_@]+__/g, (token) =>
+    resolveMessageToken(token, primary, fallback)
+  )
+}
+
+/** Pre-load the locale catalogs for an extension. Returns `[primary, fallback]`
+ *  where `primary` is the catalog matching `app.getLocale()` (best effort)
+ *  and `fallback` is the manifest's `default_locale`. Either may be null. */
+function loadLocaleCatalogs(
+  extDir: string,
+  manifest: Record<string, unknown>
+): [Record<string, { message?: string }> | null, Record<string, { message?: string }> | null] {
+  const defaultLocale = typeof manifest.default_locale === 'string' ? (manifest.default_locale as string) : ''
+  if (!defaultLocale) return [null, null]
+  let userLocale = ''
+  try { userLocale = app.getLocale() } catch { /* before-ready */ }
+  // Chrome i18n resolution: try the user's exact locale first
+  // (e.g. en_GB), then the language-only fallback (en), then the
+  // manifest's default_locale. We collapse hyphenated BCP-47 (en-GB) into
+  // underscored Chrome-style (en_GB) so the directory lookup matches.
+  const candidates: string[] = []
+  if (userLocale) {
+    const norm = userLocale.replace('-', '_')
+    candidates.push(norm)
+    const lang = norm.split('_')[0]
+    if (lang && lang !== norm) candidates.push(lang)
+  }
+  candidates.push(defaultLocale)
+  let primary: Record<string, { message?: string }> | null = null
+  for (const c of candidates) {
+    primary = readLocaleMessages(extDir, c)
+    if (primary) break
+  }
+  const fallback = readLocaleMessages(extDir, defaultLocale)
+  return [primary, fallback]
 }
 
 /** Apply our two install-time manifest patches:
@@ -187,6 +296,58 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
     }
   }
 
+  // ── Patch 3: strip permissions Electron 41 doesn't recognise.
+  //    Chromium's extension loader prints `Permission '<name>' is unknown`
+  //    for each one, but more importantly some Electron builds outright
+  //    REJECT the load when a single bogus permission is present
+  //    (electron/electron#22175 — webRequestBlocking historically
+  //    short-circuited the entire load on MV3). We can't add functionality
+  //    by stripping permissions, but we CAN keep the rest of the extension
+  //    alive so popup, options, and any chrome.* APIs Electron does
+  //    support continue to function. The list mirrors what Electron 41
+  //    surfaces as warnings against Tampermonkey 5.4, plus the always-
+  //    deprecated `chrome://favicon/` pseudo-host.
+  const isMv3 = manifest.manifest_version === 3
+  const UNSUPPORTED_PERMISSIONS = new Set<string>([
+    'notifications',
+    'webNavigation',
+    'contextMenus',
+    'cookies',
+    'downloads',
+    'chrome://favicon/',
+    'management',
+  ])
+  // `webRequestBlocking` is MV2-only on real Chrome; in MV3 Electron will
+  // refuse the load. For MV2 extensions we leave it alone — our build
+  // does support the blocking variant on MV2.
+  if (isMv3) UNSUPPORTED_PERMISSIONS.add('webRequestBlocking')
+
+  const filterPerms = (key: 'permissions' | 'optional_permissions'): boolean => {
+    const list = manifest[key]
+    if (!Array.isArray(list)) return false
+    const next = (list as unknown[]).filter(
+      (p) => typeof p !== 'string' || !UNSUPPORTED_PERMISSIONS.has(p)
+    )
+    if (next.length === list.length) return false
+    manifest[key] = next
+    return true
+  }
+  if (filterPerms('permissions')) modified = true
+  if (filterPerms('optional_permissions')) modified = true
+
+  // ── Patch 4: when an extension declares `options_ui.open_in_tab=false`
+  //    (the default), Chrome embeds the options page inside chrome://extensions
+  //    in an iframe. We don't have a chrome://extensions surface, so flip
+  //    the flag to true and surface options.html as a regular tab. Without
+  //    this, choosing "Options" from the right-click menu opens nothing
+  //    visible to the user.
+  const optionsUi = manifest.options_ui as Record<string, unknown> | undefined
+  if (optionsUi && typeof optionsUi === 'object' && optionsUi.open_in_tab !== true) {
+    optionsUi.open_in_tab = true
+    manifest.options_ui = optionsUi
+    modified = true
+  }
+
   if (modified) {
     try {
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
@@ -265,10 +426,20 @@ function derivePersistedEntry(
   pinned: boolean = true
 ): PersistedEntry {
   const manifest = readManifest(extDir)
-  const name = typeof manifest.name === 'string' ? (manifest.name as string) : id
-  const shortName = typeof manifest.short_name === 'string' ? (manifest.short_name as string) : undefined
+  // Resolve __MSG_xxx__ tokens so Settings → Extensions and the toolbar's
+  // right-click menu show the actual extension name (e.g. "Tampermonkey")
+  // instead of the raw `__MSG_extName__` placeholder. Tampermonkey, Unhook,
+  // uBlock Origin, and most internationalised extensions ship every visible
+  // string as a placeholder backed by `_locales/<lang>/messages.json`.
+  const [primary, fallback] = loadLocaleCatalogs(extDir, manifest)
+  const localize = (s: string): string => localizeString(s, primary, fallback)
+  const rawName = typeof manifest.name === 'string' ? (manifest.name as string) : id
+  const name = localize(rawName)
+  const shortName =
+    typeof manifest.short_name === 'string' ? localize(manifest.short_name as string) : undefined
   const version = typeof manifest.version === 'string' ? (manifest.version as string) : '0.0.0'
-  const description = typeof manifest.description === 'string' ? (manifest.description as string) : undefined
+  const description =
+    typeof manifest.description === 'string' ? localize(manifest.description as string) : undefined
   const permissions = Array.isArray(manifest.permissions) ? (manifest.permissions as string[]) : []
   const hostPermissions = Array.isArray(manifest.host_permissions)
     ? (manifest.host_permissions as string[])
@@ -282,7 +453,7 @@ function derivePersistedEntry(
     | undefined
   const hasAction = Boolean(action)
   const actionDefaultTitle =
-    action && typeof action.default_title === 'string' ? (action.default_title as string) : undefined
+    action && typeof action.default_title === 'string' ? localize(action.default_title as string) : undefined
   const iconUrl = resolveIcon(manifest, extDir)
   return {
     id,
@@ -303,20 +474,32 @@ function derivePersistedEntry(
   }
 }
 
+/** Every partition session that should host extensions. We DELIBERATELY
+ *  exclude `session.defaultSession`: the workspace BrowserWindow's main
+ *  webContents (the React UI) runs there, and registering an extension
+ *  on it would let content scripts (`<all_urls>` matches are typical)
+ *  inject into our chrome page. The white-window-after-restart
+ *  regression with Tampermonkey installed was Tampermonkey's content
+ *  scripts crashing the renderer's own bundle on `localhost:5173` /
+ *  `file:///…/index.html`. Tab WebContentsViews and extension-popup
+ *  WebContentsViews use partitioned sessions instead, and extensions
+ *  live there. */
 function getAllSessions(): Session[] {
-  // Include default + every partitioned session we've configured so far.
-  // A freshly created partition will pick up its extensions via
-  // setupPartitionSession → loadEnabledExtensionsInto.
-  const sessions = new Set<Session>([session.defaultSession])
-  // Inspect every live BrowserWindow / WebContents session as a
-  // best-effort fallback — these always mirror configuredPartitions but
-  // we don't want a circular import to pull that in.
+  const sessions = new Set<Session>()
+  // Inspect every live BrowserWindow / WebContents session and pick up
+  // anything that ISN'T the default session. These always mirror the
+  // partitions configured by setupPartitionSession but doing it via
+  // window inspection lets us avoid a circular import on
+  // `getConfiguredPartitions`.
   for (const win of BrowserWindow.getAllWindows()) {
     try {
-      sessions.add(win.webContents.session)
+      const winSes = win.webContents.session
+      if (winSes !== session.defaultSession) sessions.add(winSes)
       for (const view of win.contentView.children) {
         const wc = (view as unknown as { webContents?: Electron.WebContents }).webContents
-        if (wc && !wc.isDestroyed()) sessions.add(wc.session)
+        if (wc && !wc.isDestroyed() && wc.session !== session.defaultSession) {
+          sessions.add(wc.session)
+        }
       }
     } catch {
       /* ignore */
@@ -656,8 +839,31 @@ export async function loadEnabledExtensionsInto(ses: Session): Promise<void> {
 
 /** Called once during app.whenReady. Reconciles on-disk state with the
  *  store: any entry whose directory disappeared is removed from the store;
- *  loading into sessions happens lazily as setupPartitionSession runs. */
+ *  loading into sessions happens lazily as setupPartitionSession runs.
+ *
+ *  Why we DON'T load into `session.defaultSession` here: see
+ *  `getAllSessions()` for the full rationale — content scripts would
+ *  bleed into our React UI and break the renderer (this is the
+ *  "white-window-after-restart" regression with Tampermonkey installed).
+ *  Earlier builds also DID register on defaultSession, so we clear
+ *  anything the previous run left behind on every startup. */
 export async function rehydrateExtensionsOnStartup(): Promise<void> {
+  // Clear any stale extensions left on the default session by older
+  // builds of Newbro. No-op when nothing was registered.
+  try {
+    const stale = session.defaultSession.getAllExtensions?.() ?? []
+    for (const e of stale) {
+      try {
+        session.defaultSession.removeExtension(e.id)
+        log.info('extensions: cleared stale default-session registration', { id: e.id })
+      } catch (err) {
+        log.warn('extensions: failed to clear default-session entry', { id: e.id, err: String(err) })
+      }
+    }
+  } catch {
+    /* ignore — getAllExtensions might not exist on older builds */
+  }
+
   const all = { ...store.get('extensions') }
   let changed = false
   for (const [id, entry] of Object.entries(all)) {
@@ -678,9 +884,29 @@ export async function rehydrateExtensionsOnStartup(): Promise<void> {
     } catch (err) {
       log.warn('extensions: rehydrate manifest patch failed', { id, err: String(err) })
     }
+    // Re-derive the persisted entry so localized fields (name,
+    // description, default_title) refresh retroactively for extensions
+    // installed before __MSG_*__ resolution shipped. Preserve the user's
+    // enabled / pinned / installedAt choices.
+    try {
+      const fresh = derivePersistedEntry(
+        id,
+        entry.path,
+        entry.enabled ?? true,
+        entry.installedAt ?? Date.now(),
+        entry.pinned ?? true
+      )
+      const next: PersistedEntry = { ...fresh, enabled: entry.enabled ?? true, pinned: entry.pinned ?? true }
+      // Avoid an unnecessary write when nothing actually changed.
+      if (JSON.stringify(next) !== JSON.stringify(entry)) {
+        all[id] = next
+        changed = true
+      }
+    } catch (err) {
+      log.warn('extensions: rehydrate derive failed', { id, err: String(err) })
+    }
   }
   if (changed) store.set('extensions', all)
-  // Load into the default session now, so popup BrowserWindows that use
-  // the default session can resolve chrome-extension:// URLs too.
-  await loadEnabledExtensionsInto(session.defaultSession)
+  // Loading into partition sessions happens via setupPartitionSession in
+  // index.ts — there's no work to do here for the default session.
 }

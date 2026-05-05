@@ -638,13 +638,36 @@ export function createTab(opts: {
   }
 }
 
+/** Match a `chrome-extension://<id>/...` URL and return the extension id.
+ *  Returns null for non-extension URLs. Used to gate any tab navigation
+ *  that targets an extension's own page on a "session has the extension
+ *  loaded" check — Chromium's navigation throttle 403s the load with
+ *  `ERR_BLOCKED_BY_CLIENT (-20)` if the extension isn't registered for
+ *  the navigating session, even when the resource is web-accessible. */
+function extractExtensionIdFromExtUrl(url: string): string | null {
+  const m = url.match(/^chrome-extension:\/\/([a-p]{32})\//i)
+  return m ? m[1] : null
+}
+
+async function startTabNavigation(rec: TabRecord, url: string): Promise<void> {
+  const extId = extractExtensionIdFromExtUrl(url)
+  if (extId) {
+    // Extension is supposed to already be loaded into this partition
+    // (setupPartitionSession → loadEnabledExtensionsInto), but on a fresh
+    // partition the load is fire-and-forget. Awaiting here closes the
+    // race with the loadURL below.
+    await ensureExtensionInSession(rec.view.webContents.session, extId).catch(() => false)
+  }
+  rec.view.webContents.loadURL(url).catch((err) => {
+    log.warn('tab-views: loadURL failed', { tabId: rec.tabId, url, err: String(err) })
+  })
+}
+
 function loadIfNeeded(rec: TabRecord, url: string): void {
   if (rec.activated) return
   rec.activated = true
   if (!url || url === 'about:blank') return
-  rec.view.webContents.loadURL(url).catch((err) => {
-    log.warn('tab-views: loadURL failed', { tabId: rec.tabId, url, err: String(err) })
-  })
+  void startTabNavigation(rec, url)
 }
 
 export function activateTab(windowId: number, tabId: string, url: string): void {
@@ -731,9 +754,7 @@ export function tabNavigate(tabId: string, url: string): void {
   const rec = tabs.get(tabId)
   if (!rec) return
   rec.activated = true
-  rec.view.webContents.loadURL(url).catch((err) => {
-    log.warn('tab-views: navigate failed', { tabId, url, err: String(err) })
-  })
+  void startTabNavigation(rec, url)
 }
 
 export function tabGoBack(tabId: string): void {
@@ -923,8 +944,11 @@ export async function toggleExtensionPopup(
 
   // Match the webPreferences shape of regular tabs as closely as possible.
   // chrome-extension:// loads succeed in tab WebContentsViews, so we copy
-  // the same surface — partition + session + stealth preload + sandbox
-  // off — to avoid hitting whatever subtle gate diverging settings trip.
+  // the same surface — partition + session + sandbox off. The session-level
+  // stealth preload is registered via `setPreloads` and runs here too, but
+  // it self-disables on `chrome-extension://` URLs (see
+  // src/preload/webview-stealth.ts STEALTH_ENABLED guard) so it doesn't
+  // shadow the extension's `chrome.*` API surface or neuter window.close.
   const view = new WebContentsView({
     webPreferences: {
       partition,
@@ -949,6 +973,31 @@ export async function toggleExtensionPopup(
   const onBlur = (): void => { closeExtensionPopup(windowId) }
   ownerWindow.on('blur', onBlur)
 
+  // Diagnose silent popup failures: a renderer crash, hang, or aborted
+  // load all surface as "click did nothing" / "blank white panel" to the
+  // user. Logging the cause makes triage tractable.
+  view.webContents.on('render-process-gone', (_e, details) => {
+    log.error('extension popup: renderer gone', { extensionId, details })
+  })
+  view.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return
+    log.warn('extension popup: did-fail-load', {
+      extensionId,
+      url: validatedURL,
+      errorCode,
+      errorDescription,
+    })
+  })
+  // Open extension-page links inside the popup as new tabs. Without this,
+  // an extension's "Open dashboard" link inside the popup tries to navigate
+  // the popup view itself, which we don't want — the popup should stay
+  // small and the dashboard belongs in a regular tab.
+  view.webContents.setWindowOpenHandler((details) => {
+    sendToWindowRenderer(windowId, 'open-url-as-tab', details.url)
+    closeExtensionPopup(windowId)
+    return { action: 'deny' }
+  })
+
   const rec: ExtensionPopupRecord = {
     windowId,
     extensionId,
@@ -962,8 +1011,12 @@ export async function toggleExtensionPopup(
 
   const url = `chrome-extension://${extensionId}/${popupPath.replace(/^\//, '')}`
   view.webContents.loadURL(url).catch((err) => {
+    // Don't tear down the popup on initial load failure — the white panel
+    // is at least visible feedback that the click landed, and the
+    // did-fail-load listener above logs the cause for triage. Tearing down
+    // here used to make Tampermonkey's icon-click look like a no-op when
+    // the chrome-extension:// load was bouncing on a navigation throttle.
     log.warn('extension popup: loadURL failed', { url, err: String(err) })
-    closeExtensionPopup(windowId)
   })
 
   // Pull keyboard focus into the popup once the page is rendered so typing
