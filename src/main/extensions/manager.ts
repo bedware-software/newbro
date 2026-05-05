@@ -34,7 +34,7 @@ import Store from 'electron-store'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { log } from '../log'
-import { parseCrx, extractCrxPublicKey } from './crx'
+import { parseCrx, extractCrxPublicKey, deriveExtensionIdFromPublicKey } from './crx'
 import { fetchCrx, extractExtensionIdFromUrl as _extract, clearCrxFetchSession } from './store'
 import { unzipTo } from './zip'
 
@@ -533,7 +533,20 @@ async function loadExtensionInto(ses: Session, entry: PersistedEntry): Promise<v
     try { ses.removeExtension(entry.id) } catch { /* not loaded */ }
   }
   try {
-    await ses.loadExtension(entry.path, { allowFileAccess: false })
+    const ext = await ses.loadExtension(entry.path, { allowFileAccess: false })
+    // The resolved id is what Electron derived from manifest.key (or the
+    // path hash when key was missing). If it disagrees with the id the
+    // user installed under, every chrome-extension://<entry.id>/… URL
+    // we hand to Chromium will hit ERR_BLOCKED_BY_CLIENT — the
+    // extension is registered, just under a different id. Surface this
+    // loudly so the regression doesn't silently rebroke popups again.
+    if (ext && ext.id !== entry.id) {
+      log.error('extensions: id mismatch — loadExtension resolved a different id', {
+        persistedId: entry.id,
+        resolvedId: ext.id,
+        path: entry.path,
+      })
+    }
   } catch (err) {
     log.warn('extensions: loadExtension failed', { id: entry.id, path: entry.path, err: String(err) })
   }
@@ -710,7 +723,15 @@ export async function installExtensionById(extensionId: string): Promise<Extensi
   // forget about it — it's the only way Electron can reproduce the same
   // extension id Chrome Web Store assigned, instead of hashing the on-disk
   // path and inventing a new one.
-  const publicKey = extractCrxPublicKey(crxBuf)
+  //
+  // Pass the expected id so extractCrxPublicKey can pick the publisher's
+  // proof out of CRX3's repeated sha256_with_rsa[]. Without the id we
+  // returned the first proof, which on a Chrome Web Store CRX is Google's
+  // CWS enrollment key — every extension we installed ended up with the
+  // same Google-derived id and the chrome-extension://<real-id>/popup
+  // load got `ERR_BLOCKED_BY_CLIENT (-20)` because no extension with the
+  // real id was registered.
+  const publicKey = extractCrxPublicKey(crxBuf, extensionId)
   if (!publicKey) {
     log.warn('extensions: no public key found in CRX header', { extensionId })
   }
@@ -872,6 +893,41 @@ export async function rehydrateExtensionsOnStartup(): Promise<void> {
       delete all[id]
       changed = true
       continue
+    }
+    // Detect installs from the broken-CRX-key build (≤1.1.37): those
+    // wrote Google's CWS enrollment key into manifest.key instead of the
+    // publisher's, so Electron derived the wrong extension id at load
+    // time and every chrome-extension://<expected-id>/… URL bounced
+    // with ERR_BLOCKED_BY_CLIENT. Auto-uninstall those entries; the user
+    // will see them disappear from Settings → Extensions and can
+    // reinstall under the now-fixed code path.
+    try {
+      const manifestRaw = JSON.parse(
+        readFileSync(join(entry.path, 'manifest.json'), 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/(^|[^:])\/\/.*$/gm, '$1')
+      ) as Record<string, unknown>
+      const key = typeof manifestRaw.key === 'string' ? manifestRaw.key : null
+      if (key) {
+        const derived = deriveExtensionIdFromPublicKey(Buffer.from(key, 'base64'))
+        if (derived && derived !== id) {
+          log.warn('extensions: rehydrate dropping mis-keyed install (reinstall required)', {
+            id,
+            derivedFromManifestKey: derived,
+            path: entry.path,
+          })
+          try {
+            rmSync(join(extensionsRoot(), id), { recursive: true, force: true })
+          } catch (rmErr) {
+            log.warn('extensions: failed to remove mis-keyed dir', { id, err: String(rmErr) })
+          }
+          delete all[id]
+          changed = true
+          continue
+        }
+      }
+    } catch (err) {
+      log.warn('extensions: rehydrate key check failed', { id, err: String(err) })
     }
     // Re-apply manifest patches to extensions installed before we shipped
     // them. The CRX is long gone, so we can only fix the
