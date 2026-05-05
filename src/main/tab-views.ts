@@ -1183,6 +1183,14 @@ export function installTabPreloadListeners(): void {
     log.info('extension shim loaded', info)
   })
 
+  // Permission/management call traces from the frame shim. SW-context
+  // calls go via the webRequest 'permission-check' action handled in
+  // main/index.ts. Both surface here so we can see exactly which APIs
+  // an extension is hitting when it decides "no access to this page".
+  ipcMain.on('newbro-ext-shim-trace', (_event, info: unknown) => {
+    log.info('extension shim trace (frame)', info)
+  })
+
   ipcMain.on('newbro-open-in-new-tab', (event, url: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     if (!tabId) return

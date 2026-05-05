@@ -208,28 +208,82 @@ function applyPatches(chrome: Record<string, unknown>): void {
     userScripts.resetWorldConfiguration = noopAsync
   }
 
-  // chrome.permissions ── grant-all stub. Same reasoning as the SW
-  // shim: Electron 41 doesn't expose this API and Tampermonkey gates
-  // injection on chrome.permissions.contains() returning true. Return
-  // true so the popup's "I have access to this site" check passes.
+  // chrome.permissions ── grant-all stub. Force-overwrite (don't gate
+  // on `typeof === 'function'`) — Electron 41 ships a partial
+  // chrome.permissions.contains that returns false when the API isn't
+  // backed by real permission storage, which is exactly the path that
+  // makes Tampermonkey's popup show "no access to this page" even
+  // after we declared <all_urls> in host_permissions.
   const permissions = (chrome.permissions ?? (chrome.permissions = {})) as Record<string, unknown>
+  permissions.contains = (args: unknown, callback?: (b: boolean) => void) => {
+    try {
+      ipcRenderer.send('newbro-ext-shim-trace', { kind: 'permissions.contains', args })
+    } catch { /* ignore */ }
+    if (typeof callback === 'function') Promise.resolve().then(() => callback(true))
+    return Promise.resolve(true)
+  }
   const grantTrue = (_args?: unknown, callback?: (b: boolean) => void) => {
     if (typeof callback === 'function') Promise.resolve().then(() => callback(true))
     return Promise.resolve(true)
   }
-  if (typeof permissions.contains !== 'function') permissions.contains = grantTrue
-  if (typeof permissions.request !== 'function') permissions.request = grantTrue
-  if (typeof permissions.remove !== 'function') permissions.remove = grantTrue
-  if (typeof permissions.getAll !== 'function') {
-    permissions.getAll = (callback?: (p: { permissions: string[]; origins: string[] }) => void) => {
-      const all = { permissions: [], origins: ['<all_urls>'] }
-      if (typeof callback === 'function') Promise.resolve().then(() => callback(all))
-      return Promise.resolve(all)
-    }
+  permissions.request = grantTrue
+  permissions.remove = grantTrue
+  permissions.getAll = (callback?: (p: { permissions: string[]; origins: string[] }) => void) => {
+    const all = { permissions: [], origins: ['<all_urls>'] }
+    if (typeof callback === 'function') Promise.resolve().then(() => callback(all))
+    return Promise.resolve(all)
   }
   const noopEvent = { addListener: () => {}, removeListener: () => {}, hasListener: () => false }
   if (!permissions.onAdded) permissions.onAdded = noopEvent
   if (!permissions.onRemoved) permissions.onRemoved = noopEvent
+
+  // chrome.management.getSelf ── decorate whatever Electron returns
+  // (or fabricate from scratch) so host_permissions includes
+  // '<all_urls>'. Tampermonkey reads its own ExtensionInfo on the
+  // popup-access path on some builds.
+  const management = (chrome.management ?? (chrome.management = {})) as Record<string, unknown>
+  const origGetSelf =
+    typeof management.getSelf === 'function'
+      ? (management.getSelf as (cb?: (info: unknown) => void) => Promise<unknown> | void).bind(management)
+      : null
+  management.getSelf = (callback?: (info: unknown) => void) => {
+    const manifest =
+      typeof runtime.getManifest === 'function'
+        ? (runtime.getManifest as () => Record<string, unknown>)()
+        : {}
+    const decorate = (info: Record<string, unknown> | null | undefined): Record<string, unknown> => {
+      const out = { ...(info ?? {}) } as Record<string, unknown>
+      out.hostPermissions = ['<all_urls>']
+      if (Array.isArray((manifest as Record<string, unknown>).permissions)) {
+        out.permissions = ((manifest as Record<string, unknown>).permissions as string[]).slice()
+      } else if (!Array.isArray(out.permissions)) {
+        out.permissions = []
+      }
+      out.enabled = true
+      out.mayDisable = true
+      return out
+    }
+    if (origGetSelf) {
+      try {
+        const maybe = origGetSelf((info: unknown) => {
+          if (typeof callback === 'function') {
+            Promise.resolve().then(() => callback(decorate(info as Record<string, unknown>)))
+          }
+        })
+        if (maybe && typeof (maybe as Promise<unknown>).then === 'function') {
+          return (maybe as Promise<unknown>).then(
+            (info) => decorate(info as Record<string, unknown>),
+            () => decorate({}),
+          )
+        }
+      } catch {
+        /* fall through to synthetic */
+      }
+    }
+    const synth = decorate({})
+    if (typeof callback === 'function') Promise.resolve().then(() => callback(synth))
+    return Promise.resolve(synth)
+  }
 }
 
 function install(): void {

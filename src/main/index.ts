@@ -504,6 +504,13 @@ function configureSession(ses: Electron.Session): void {
             const ids = Array.isArray(p.ids) ? (p.ids as string[]) : null
             if (extId) unregisterUserScripts(getPartitionForSession(ses), extId, ids)
           }
+        } else if (action === 'permission-check') {
+          // Diagnostic from the SW shim's chrome.permissions.contains.
+          // Surfaces what URL/permissions Tampermonkey is gating on.
+          log.info('extensions: permission-check (SW)', {
+            origins: u.searchParams.get('origins') ?? '',
+            permissions: u.searchParams.get('permissions') ?? '',
+          })
         } else if (action === 'badge-set' || action === 'badge-color') {
           // Forward to every workspace renderer so it can update its
           // toolbar icon overlay. Renderer-side rendering ships in a

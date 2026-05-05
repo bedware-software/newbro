@@ -25,8 +25,14 @@
 //   V3 — added chrome.permissions stub (the dev-mode message went
 //        away with V2 but Tampermonkey still refused to inject because
 //        chrome.permissions.contains() returned undefined)
+//   V4 — force-overwrite chrome.permissions.* (Electron 41 ships a
+//        contains() that returns false; the typeof guard was skipping
+//        our grant-all stub) and decorated chrome.management.getSelf
+//        with hostPermissions: ['<all_urls>'] so Tampermonkey's
+//        popup-side access check passes regardless of which API path
+//        it takes.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V3__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V4__'
 
 // Markers we know about. Anything matching one of these gets stripped
 // and replaced with the current version's source.
@@ -206,42 +212,86 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     }
 
     // ── chrome.permissions ─────────────────────────────────────────
-    // Electron 41 doesn't expose chrome.permissions. Tampermonkey calls
-    // chrome.permissions.contains({ origins: ['*://yandex.ru/*'] })
-    // before deciding whether to inject; without the API it assumes
-    // "no access" and shows the warning + refuses to register
-    // userscripts. We stub everything to grant-all because our app
-    // doesn't have a per-site grant UX yet — extensions live in
-    // partitioned sessions the user explicitly created, so coarse
-    // grant is reasonable here.
+    // Tampermonkey calls chrome.permissions.contains({ origins: [url] })
+    // before deciding whether to inject; the popup's "no access to
+    // this page" message is gated on the result. Force-overwrite —
+    // Electron 41 ships a stub for some chrome.permissions methods
+    // that returns false, and a typeof-function guard would skip our
+    // grant-all and leave Tampermonkey thinking there's no access.
+    // Coarse grant-all is appropriate here: extensions live in
+    // partitioned sessions the user explicitly chose, and we don't
+    // have a per-site grant UX.
     var perms = c.permissions || (c.permissions = {});
-    if (typeof perms.contains !== 'function') {
-      perms.contains = function (_p, cb) {
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb(true); });
-        return Promise.resolve(true);
-      };
-    }
-    if (typeof perms.request !== 'function') {
-      perms.request = function (_p, cb) {
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb(true); });
-        return Promise.resolve(true);
-      };
-    }
-    if (typeof perms.remove !== 'function') {
-      perms.remove = function (_p, cb) {
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb(true); });
-        return Promise.resolve(true);
-      };
-    }
-    if (typeof perms.getAll !== 'function') {
-      perms.getAll = function (cb) {
-        var all = { permissions: [], origins: ['<all_urls>'] };
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb(all); });
-        return Promise.resolve(all);
-      };
-    }
+    perms.contains = function (p, cb) {
+      try {
+        sendGet('permission-check', {
+          origins: (p && p.origins) ? p.origins.join(',') : '',
+          permissions: (p && p.permissions) ? p.permissions.join(',') : '',
+        });
+      } catch (_) {}
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(true); });
+      return Promise.resolve(true);
+    };
+    perms.request = function (_p, cb) {
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(true); });
+      return Promise.resolve(true);
+    };
+    perms.remove = function (_p, cb) {
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(true); });
+      return Promise.resolve(true);
+    };
+    perms.getAll = function (cb) {
+      var all = { permissions: [], origins: ['<all_urls>'] };
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(all); });
+      return Promise.resolve(all);
+    };
     if (!perms.onAdded) perms.onAdded = { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } };
     if (!perms.onRemoved) perms.onRemoved = { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } };
+
+    // ── chrome.management.getSelf ──────────────────────────────────
+    // Tampermonkey reads management.getSelf to populate the
+    // Enabled/Disabled pill in the popup AND to inspect its own
+    // host_permissions for the no-access check on some code paths.
+    // Electron 41 has a chrome.management surface but getSelf may not
+    // include host_permissions; ensure it does so the access check
+    // passes.
+    var mgmt = c.management || (c.management = {});
+    var origGetSelf = (typeof mgmt.getSelf === 'function') ? mgmt.getSelf.bind(mgmt) : null;
+    mgmt.getSelf = function (cb) {
+      var manifest = (typeof rt.getManifest === 'function') ? rt.getManifest() : {};
+      function decorate(info) {
+        info = info || {};
+        info.id = extId || info.id || '';
+        info.name = info.name || (manifest && manifest.name) || '';
+        info.version = info.version || (manifest && manifest.version) || '';
+        info.enabled = true;
+        info.installType = info.installType || 'normal';
+        info.type = info.type || 'extension';
+        info.permissions = (manifest && Array.isArray(manifest.permissions)) ? manifest.permissions.slice() : (info.permissions || []);
+        info.hostPermissions = ['<all_urls>'];
+        info.shortName = info.shortName || (manifest && manifest.short_name) || info.name;
+        info.description = info.description || (manifest && manifest.description) || '';
+        info.mayDisable = true;
+        return info;
+      }
+      if (origGetSelf) {
+        try {
+          var maybe = origGetSelf(function (info) {
+            if (typeof cb === 'function') Promise.resolve().then(function () { cb(decorate(info)); });
+          });
+          if (maybe && typeof maybe.then === 'function') {
+            return maybe.then(decorate, function () { return decorate({}); });
+          }
+        } catch (_) {
+          var info = decorate({});
+          if (typeof cb === 'function') Promise.resolve().then(function () { cb(info); });
+          return Promise.resolve(info);
+        }
+      }
+      var info2 = decorate({});
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(info2); });
+      return Promise.resolve(info2);
+    };
 
     // ── chrome.action badge ────────────────────────────────────────
     // Tampermonkey calls setBadgeText({ text: '3', tabId }) to surface
