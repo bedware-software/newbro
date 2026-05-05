@@ -118,6 +118,32 @@ function applyPatches(chrome: Record<string, unknown>): void {
   // exposes a partial chrome.tabs (query / update / reload / sendMessage
   // / executeScript) but no `create`.
   const tabs = (chrome.tabs ?? (chrome.tabs = {})) as Record<string, unknown>
+
+  // Diagnostic: wrap whatever chrome.tabs.query Electron provided so
+  // we can see what Tampermonkey's popup queries with and what it
+  // gets back. The popup's "no access to this page" check often
+  // hinges on this — if Electron returns no tabs (or a tab without a
+  // url), Tampermonkey can't decide and shows the warning.
+  const origQuery = typeof tabs.query === 'function' ? (tabs.query as (q: unknown, cb?: (r: unknown[]) => void) => unknown).bind(tabs) : null
+  if (origQuery) {
+    tabs.query = (queryInfo: unknown, callback?: (results: unknown[]) => void) => {
+      const trace = (results: unknown): void => {
+        try {
+          ipcRenderer.send('newbro-ext-shim-trace', { kind: 'tabs.query', args: queryInfo, results })
+        } catch { /* ignore */ }
+      }
+      if (typeof callback === 'function') {
+        return origQuery(queryInfo, (results: unknown[]) => { trace(results); callback(results) })
+      }
+      const maybe = origQuery(queryInfo)
+      if (maybe && typeof (maybe as Promise<unknown>).then === 'function') {
+        return (maybe as Promise<unknown>).then((r) => { trace(r); return r })
+      }
+      trace(maybe)
+      return maybe
+    }
+  }
+
   if (typeof tabs.create !== 'function') {
     tabs.create = (props: CreateProperties, callback?: (tab: FakeTab) => void) => {
       const url = typeof props?.url === 'string' ? props.url : ''
