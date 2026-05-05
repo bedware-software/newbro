@@ -21,8 +21,11 @@ const COMMANDS: CommandItem[] = [
   { id: 'close-tab', label: 'Close', category: 'Active Tab' },
   { id: 'set-comment', label: 'Set Comment', category: 'Active Tab' },
   { id: 'remove-comment', label: 'Remove Comment', category: 'Active Tab' },
-  { id: 'move-to-group', label: 'Move to Group...', category: 'Active Tab' },
+  { id: 'move-tab', label: 'Move Tab...', category: 'Active Tab' },
+  { id: 'copy-tab', label: 'Copy Tab...', category: 'Active Tab' },
   { id: 'add-to-new-group', label: 'Add to New Group...', category: 'Active Tab' },
+  { id: 'move-group', label: 'Move Group...', category: 'Active Group' },
+  { id: 'copy-group', label: 'Copy Group...', category: 'Active Group' },
   { id: 'new-tab', label: 'New Tab', category: 'Tabs' },
   { id: 'next-tab', label: 'Next Tab', category: 'Tabs' },
   { id: 'prev-tab', label: 'Previous Tab', category: 'Tabs' },
@@ -34,6 +37,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'back', label: 'Navigate Back', category: 'Navigation' },
   { id: 'forward', label: 'Navigate Forward', category: 'Navigation' },
   { id: 'reload', label: 'Reload Page', category: 'Navigation' },
+  { id: 'page-devtools', label: 'Toggle Page Developer Tools', category: 'Navigation' },
   { id: 'search', label: 'Search Everything', category: 'General' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'View' },
   { id: 'settings', label: 'Open Settings', category: 'General' },
@@ -97,13 +101,17 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const activeTab = useAppStore((s) => s.getActiveTab())
+  // Group-scoped commands need a real group to operate on. The active tab
+  // group can be null when the user is on an ungrouped (Root) tab.
+  const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
 
   const availableCommands = useMemo(() => {
     return COMMANDS.filter((cmd) => {
       if (cmd.id === 'remove-comment') return !!activeTab?.comment
+      if (cmd.id === 'move-group' || cmd.id === 'copy-group') return !!activeTabGroupId
       return true
     })
-  }, [activeTab?.comment])
+  }, [activeTab?.comment, activeTabGroupId])
 
   useEffect(() => {
     if (open) {
@@ -274,6 +282,7 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   'forward': 'CmdOrCtrl+]',
   'reload': 'CmdOrCtrl+R',
   'settings': 'CmdOrCtrl+,',
+  'page-devtools': 'CmdOrCtrl+Shift+I',
 }
 
 function getDefaultBinding(id: string): string | undefined {

@@ -69,6 +69,15 @@ const DEFAULT_KEYBINDINGS: Record<string, string> = {
   forward: 'CmdOrCtrl+]',
   reload: 'CmdOrCtrl+R',
   settings: 'CmdOrCtrl+,',
+  'page-devtools': 'CmdOrCtrl+Shift+I',
+  // Move/Copy actions ship unbound — they're surfaced through context menus
+  // and the command palette by default. The empty string keeps the parsing
+  // path in main/index.ts a no-op (parseAcceleratorShortcut returns null)
+  // until the user records a binding here.
+  'move-tab': '',
+  'copy-tab': '',
+  'move-group': '',
+  'copy-group': '',
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -86,6 +95,11 @@ const ACTION_LABELS: Record<string, string> = {
   forward: 'Navigate Forward',
   reload: 'Reload Page',
   settings: 'Open Settings',
+  'page-devtools': 'Toggle Page Developer Tools',
+  'move-tab': 'Move Tab',
+  'copy-tab': 'Copy Tab',
+  'move-group': 'Move Group',
+  'copy-group': 'Copy Group',
 }
 
 interface Props {
@@ -1073,7 +1087,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         >
                           {isRecording
                             ? 'Press keys...'
-                            : formatAccelerator(keybindings[action] || DEFAULT_KEYBINDINGS[action])}
+                            : (() => {
+                                const accel = keybindings[action] || DEFAULT_KEYBINDINGS[action]
+                                if (!accel) return <span className="text-muted-foreground italic">Unbound</span>
+                                return formatAccelerator(accel)
+                              })()}
                         </button>
                       </div>
                     </div>

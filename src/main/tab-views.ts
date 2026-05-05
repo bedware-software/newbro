@@ -94,6 +94,42 @@ const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
 
 const HIDDEN_BOUNDS: TabBounds = { x: 0, y: 0, width: 0, height: 0 }
 
+/** Parse the comma-separated `features` string from window.open into the
+ *  numeric subset BrowserWindow understands. Anything unrecognized is
+ *  ignored — we only consume width/height/left/top so OAuth popups land
+ *  near the dimensions the calling page asked for. */
+function parsePopupFeatures(features: string): {
+  width?: number
+  height?: number
+  left?: number
+  top?: number
+} {
+  const out: { width?: number; height?: number; left?: number; top?: number } = {}
+  if (!features) return out
+  for (const part of features.split(',')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    const key = part.slice(0, eq).trim().toLowerCase()
+    const raw = part.slice(eq + 1).trim()
+    const num = parseInt(raw, 10)
+    if (!Number.isFinite(num)) continue
+    if (key === 'width' || key === 'innerwidth') out.width = num
+    else if (key === 'height' || key === 'innerheight') out.height = num
+    else if (key === 'left' || key === 'screenx') out.left = num
+    else if (key === 'top' || key === 'screeny') out.top = num
+  }
+  return out
+}
+
+// Minimum size for OAuth-style popups. Providers (Figma, Google, GitHub) ask
+// for window dimensions tuned to a stripped-down browser frame; in our app
+// the popup BrowserWindow has the OS title bar plus app chrome on Windows
+// and a default frame on macOS, so the requested width leaves the actual
+// content frame too narrow — text wraps awkwardly, the "Continue" button
+// gets pushed off-screen on Windows. Clamp up to a comfortable floor.
+const POPUP_MIN_WIDTH = 560
+const POPUP_MIN_HEIGHT = 640
+
 const tabs = new Map<string, TabRecord>()
 /** windowId -> latest bounds reported by the renderer, applied to the
  *  active tab when it is shown. */
@@ -123,6 +159,58 @@ function wireEvents(rec: TabRecord): void {
   const emit = (evt: TabEvent): void => sendToWindowRenderer(rec.windowId, 'tab-event', evt)
 
   wireGestureDetection(rec)
+
+  // Diagnostic: log tab renderer crashes / hangs. Sites with heavy WebGL or
+  // WASM (Figma in particular) have been observed to silently die under
+  // memory pressure — without this listener the only signal would be the
+  // tab's WebContentsView vanishing from the window.
+  wc.on('render-process-gone', (_e, details) => {
+    log.error('tab render-process-gone', {
+      tabId: rec.tabId,
+      windowId: rec.windowId,
+      url: (() => { try { return wc.getURL() } catch { return '' } })(),
+      reason: details.reason,
+      exitCode: details.exitCode,
+    })
+  })
+
+  // Diagnostic: track every "the page wants to close itself" signal. The
+  // reported case is Figma's Google-SSO callback page (`/finish_google_sso`)
+  // appearing to close the entire workspace window instead of just dropping
+  // the tab. We don't know yet whether Electron is propagating window.close()
+  // from a child WebContentsView up to the parent BrowserWindow or whether
+  // some other code path is involved — these logs let us tell.
+  wc.on('close', () => {
+    log.info('tab wc close', {
+      tabId: rec.tabId,
+      windowId: rec.windowId,
+      url: (() => { try { return wc.getURL() } catch { return '' } })(),
+    })
+  })
+  wc.on('destroyed', () => {
+    log.info('tab wc destroyed', {
+      tabId: rec.tabId,
+      windowId: rec.windowId,
+    })
+  })
+  wc.on('will-prevent-unload', (event) => {
+    log.info('tab will-prevent-unload', {
+      tabId: rec.tabId,
+      url: (() => { try { return wc.getURL() } catch { return '' } })(),
+    })
+    // Don't preventDefault — let the page's beforeunload prompt run if the
+    // user has unsaved input. This listener is purely for visibility.
+    void event
+  })
+  wc.on('unresponsive', () => {
+    log.warn('tab unresponsive', {
+      tabId: rec.tabId,
+      url: (() => { try { return wc.getURL() } catch { return '' } })(),
+    })
+  })
+  wc.on('responsive', () => {
+    log.info('tab responsive again', { tabId: rec.tabId })
+  })
 
   // Push the navigation history bounds onto the gesture state so the
   // swipe refuses to engage in a direction we can't actually go.
@@ -170,11 +258,97 @@ function wireEvents(rec: TabRecord): void {
     emit({ type: 'did-finish-load', tabId: rec.tabId, url: wc.getURL() })
   )
 
-  // Route window.open() on the guest to the renderer as a new tab, matching
-  // the legacy did-attach-webview behavior.
-  wc.setWindowOpenHandler(({ url }) => {
+  // window.open() handler. Two paths:
+  //
+  //   * `disposition: 'new-window'` — the page passed feature flags
+  //     ("popup=yes,width=...,height=..."). This is the OAuth-popup
+  //     contract: Figma / Google / GitHub providers spawn a popup whose
+  //     `window.opener` they `postMessage` back to, and which closes itself
+  //     once the handoff is done. We allow these as real BrowserWindows,
+  //     re-using the tab's partition so cookies / localStorage are shared
+  //     and the auth flow can complete.
+  //
+  //   * everything else — `_blank`, target=name, no features — becomes a
+  //     new tab in the workspace, matching Edge-style "all popups are
+  //     tabs" behavior. Most sites that do `window.open(url)` without
+  //     features actually want a tab.
+  wc.setWindowOpenHandler((details) => {
+    const url = details.url
+    const disposition = details.disposition
+    const features = (details as { features?: string }).features ?? ''
+
+    if (disposition === 'new-window') {
+      log.info('tab window-open: allowing popup', { tabId: rec.tabId, url, features })
+      const dims = parsePopupFeatures(features)
+      const width = Math.max(dims.width ?? POPUP_MIN_WIDTH, POPUP_MIN_WIDTH)
+      const height = Math.max(dims.height ?? POPUP_MIN_HEIGHT, POPUP_MIN_HEIGHT)
+      return {
+        action: 'allow',
+        outlivesOpener: false,
+        overrideBrowserWindowOptions: {
+          width,
+          height,
+          ...(dims.left !== undefined ? { x: dims.left } : {}),
+          ...(dims.top !== undefined ? { y: dims.top } : {}),
+          autoHideMenuBar: true,
+          minimizable: false,
+          maximizable: false,
+          fullscreenable: false,
+          webPreferences: {
+            partition: rec.partition,
+            session: session.fromPartition(rec.partition),
+            preload: WEBVIEW_STEALTH_PRELOAD,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: false,
+          },
+        },
+      }
+    }
+
+    log.info('tab window-open: routing as new tab', { tabId: rec.tabId, url, disposition })
     sendToWindowRenderer(rec.windowId, 'open-url-as-tab', url)
     return { action: 'deny' }
+  })
+
+  // Track popups created from this tab so nested window.open calls inside
+  // the popup follow the same partition + preload contract, and so we can
+  // log lifecycle events for OAuth-flow triage.
+  wc.on('did-create-window', (childWindow, eventDetails) => {
+    log.info('tab did-create-window', {
+      tabId: rec.tabId,
+      childId: childWindow.id,
+      url: eventDetails?.url,
+    })
+    // Pin the popup's webContents to the tab's partition so any further
+    // window.open inside the popup can be routed back through the same
+    // session — same overrideBrowserWindowOptions shape as the parent
+    // handler above, just without the dimensions (the inner popup picks
+    // its own).
+    childWindow.webContents.setWindowOpenHandler((d) => {
+      if (d.disposition === 'new-window') {
+        return {
+          action: 'allow',
+          outlivesOpener: false,
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            webPreferences: {
+              partition: rec.partition,
+              session: session.fromPartition(rec.partition),
+              preload: WEBVIEW_STEALTH_PRELOAD,
+              contextIsolation: true,
+              nodeIntegration: false,
+              sandbox: false,
+            },
+          },
+        }
+      }
+      sendToWindowRenderer(rec.windowId, 'open-url-as-tab', d.url)
+      return { action: 'deny' }
+    })
+    childWindow.once('closed', () => {
+      log.info('tab popup closed', { tabId: rec.tabId, childId: childWindow.id })
+    })
   })
 
   // Close any open extension popup when the user clicks the page. Second
@@ -903,44 +1077,122 @@ export function installTabPreloadListeners(): void {
     sendToWindowRenderer(rec.windowId, 'open-url-as-tab', url)
   })
 
-  ipcMain.on('newbro-context-menu', async (event, payload: unknown) => {
+  ipcMain.on('newbro-context-menu', (event, payload: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     if (!tabId) return
     const rec = tabs.get(tabId)
     if (!rec) return
     const win = BrowserWindow.fromId(rec.windowId)
     if (!win || win.isDestroyed()) return
-    const selection =
-      typeof payload === 'object' && payload !== null && typeof (payload as { selection?: unknown }).selection === 'string'
-        ? (payload as { selection: string }).selection.trim()
-        : ''
-    if (!selection) return
 
-    // Show a native menu anchored to the owner window. The renderer then
-    // decides whether to copy or copy-and-search — we delegate the search
-    // URL construction to the renderer so the user's configured search
-    // engine is respected without main needing to know about settings.
-    const chosen = await new Promise<'copy' | 'copy-and-search' | null>((resolve) => {
-      const menu = Menu.buildFromTemplate([
-        { label: 'Copy', click: () => resolve('copy') },
-        { label: 'Copy and search', click: () => resolve('copy-and-search') },
-      ])
-      menu.popup({ window: win, callback: () => resolve(null) })
+    // Defensive payload unpack — preload sends a plain object but we still
+    // gate on the shape to avoid crashing main on a malformed message.
+    const p = (typeof payload === 'object' && payload !== null
+      ? (payload as Record<string, unknown>)
+      : {})
+    const selection = typeof p.selection === 'string' ? p.selection.trim() : ''
+    const x = typeof p.x === 'number' ? p.x : 0
+    const y = typeof p.y === 'number' ? p.y : 0
+    const linkUrl = typeof p.linkUrl === 'string' ? p.linkUrl : null
+    const imgUrl = typeof p.imgUrl === 'string' ? p.imgUrl : null
+
+    const wc = rec.view.webContents
+    const nav = wc.navigationHistory
+    const items: Electron.MenuItemConstructorOptions[] = []
+
+    if (linkUrl) {
+      items.push({
+        label: 'Open Link in New Tab',
+        click: () => sendToWindowRenderer(rec.windowId, 'open-url-as-tab', linkUrl),
+      })
+      items.push({
+        label: 'Copy Link Address',
+        click: () => {
+          try { clipboard.writeText(linkUrl) } catch { /* ignore */ }
+        },
+      })
+      items.push({ type: 'separator' })
+    }
+
+    if (imgUrl) {
+      items.push({
+        label: 'Copy Image Address',
+        click: () => {
+          try { clipboard.writeText(imgUrl) } catch { /* ignore */ }
+        },
+      })
+      items.push({ type: 'separator' })
+    }
+
+    if (selection) {
+      items.push({
+        label: 'Copy',
+        click: () => {
+          try { clipboard.writeText(selection) } catch (err) {
+            log.warn('context-menu: clipboard write failed', String(err))
+          }
+        },
+      })
+      items.push({
+        label: 'Copy and search',
+        click: () => {
+          try { clipboard.writeText(selection) } catch { /* ignore */ }
+          // Renderer owns the search-engine template; send the raw query.
+          win.webContents.send('tab-context-search', selection)
+        },
+      })
+      items.push({ type: 'separator' })
+    }
+
+    items.push({
+      label: 'Back',
+      enabled: nav.canGoBack(),
+      click: () => tabGoBack(tabId),
     })
-    if (!chosen) return
+    items.push({
+      label: 'Forward',
+      enabled: nav.canGoForward(),
+      click: () => tabGoForward(tabId),
+    })
+    items.push({
+      label: 'Reload',
+      click: () => tabReload(tabId, /* ignoreCache */ false),
+    })
+    items.push({ type: 'separator' })
+    items.push({
+      label: 'Inspect',
+      // openDevTools first makes inspectElement actually highlight when the
+      // panel was previously closed — calling inspectElement alone on a
+      // closed devtools is silently a no-op on some Electron builds.
+      click: () => {
+        try {
+          if (!wc.isDevToolsOpened()) wc.openDevTools({ mode: 'detach' })
+          wc.inspectElement(x, y)
+        } catch (err) {
+          log.warn('context-menu: inspectElement failed', String(err))
+        }
+      },
+    })
 
-    try {
-      clipboard.writeText(selection)
-    } catch (err) {
-      log.warn('context-menu: clipboard write failed', String(err))
-    }
-    if (chosen === 'copy-and-search') {
-      // Hand the renderer the raw query; the renderer already knows how
-      // to normalise → search URL and open a new tab (mirrors the flow
-      // the pre-merge <webview> path used).
-      win.webContents.send('tab-context-search', selection)
-    }
+    const menu = Menu.buildFromTemplate(items)
+    menu.popup({ window: win })
   })
+}
+
+/** Toggle DevTools for a specific tab's WebContents. Used by the View menu's
+ *  "Page Developer Tools" item — Electron's `role: 'toggleDevTools'` only
+ *  reaches the focused webContents, which is almost always the chrome
+ *  renderer, so the user couldn't otherwise inspect a real page. */
+export function tabToggleDevTools(tabId: string): void {
+  const rec = tabs.get(tabId)
+  if (!rec) return
+  const wc = rec.view.webContents
+  try {
+    if (wc.isDevToolsOpened()) wc.closeDevTools()
+    else wc.openDevTools({ mode: 'detach' })
+  } catch (err) {
+    log.warn('tab-views: toggleDevTools failed', { tabId, err: String(err) })
+  }
 }
 
 // Silence unused-app warning on some bundlers — `app` is used indirectly

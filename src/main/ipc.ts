@@ -23,6 +23,7 @@ import {
   tabNavigate,
   tabReload,
   tabStop,
+  tabToggleDevTools,
   type TabBounds,
 } from './tab-views'
 import {
@@ -203,6 +204,10 @@ export function registerIpcHandlers(): void {
     return tabExecuteJS(tabId, code)
   })
 
+  ipcMain.handle('tab:toggle-devtools', (_e, tabId: string) => {
+    tabToggleDevTools(tabId)
+  })
+
   // ── Extensions ──
   ipcMain.handle('extensions:list', () => {
     return listExtensions()
@@ -315,6 +320,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('window:close', (_e) => {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (win && !win.isDestroyed()) {
+      log.ipc('window:close', { windowId: win.id, senderWcId: _e.sender.id })
       win.close()
     }
   })

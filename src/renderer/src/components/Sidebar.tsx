@@ -2,7 +2,6 @@ import { Fragment, useState, useRef, useEffect, useCallback, useMemo } from 'rea
 import { useAppStore, getSidebarOrder } from '../store/app-store'
 import { log } from '../lib/log'
 import { InputDialog } from './InputDialog'
-import { MoveToGroupDialog } from './MoveToGroupDialog'
 import { TabFavicon } from './TabFavicon'
 import {
   ChevronRight, ChevronDown, Plus, X, FolderPlus, MessageSquareText,
@@ -97,7 +96,6 @@ export function Sidebar({ visible }: Props) {
   const setActiveTab = useAppStore((s) => s.setActiveTab)
   const moveTabs = useAppStore((s) => s.moveTabs)
   const moveTabGroup = useAppStore((s) => s.moveTabGroup)
-  const moveTabToGroup = useAppStore((s) => s.moveTabToGroup)
   const moveTabsToNewGroup = useAppStore((s) => s.moveTabsToNewGroup)
   const ungroupTab = useAppStore((s) => s.ungroupTab)
   const ungroupAll = useAppStore((s) => s.ungroupAll)
@@ -187,13 +185,6 @@ export function Sidebar({ visible }: Props) {
   const [commentDialogOpen, setCommentDialogOpen] = useState(false)
   const [commentTabId, setCommentTabId] = useState<string | null>(null)
   const [commentDefault, setCommentDefault] = useState('')
-  // Move-to-group dialog state. We snapshot the candidate groups + the tab's
-  // title at right-click time so the dialog is self-contained and doesn't
-  // need to recompute as state evolves while it's open.
-  const [moveDialogOpen, setMoveDialogOpen] = useState(false)
-  const [moveDialogTabId, setMoveDialogTabId] = useState<string | null>(null)
-  const [moveDialogGroups, setMoveDialogGroups] = useState<{ id: string; name: string; color: string }[]>([])
-  const [moveDialogTabTitle, setMoveDialogTabTitle] = useState<string | undefined>(undefined)
 
   // ── Drag & Drop (pointer-based, no library) ──
   const [dragging, setDragging] = useState<{ type: 'tab' | 'group'; id: string; ids: string[] } | null>(null)
@@ -450,6 +441,7 @@ export function Sidebar({ visible }: Props) {
   const handleTabContextMenu = async (tabId: string, e: React.MouseEvent): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
+    if (!workspace) return
     const tabGroupId = findTabGroup(tabId)
     const isUngrouped = tabGroupId === null
     const tab = workspace.tabs?.find((t) => t.id === tabId)
@@ -480,15 +472,13 @@ export function Sidebar({ visible }: Props) {
     if (hasComment) {
       actions.push({ id: 'remove-comment', label: 'Remove Comment', iconName: 'MessageSquareOff' })
     }
-    const otherGroups = workspace.tabGroups.filter((g) => g.id !== tabGroupId)
-    if (otherGroups.length > 0) {
-      actions.push({
-        id: 'move-to-group',
-        label: 'Move to Group…',
-        iconName: 'FolderInput',
-        divider: 'before',
-      })
-    }
+    actions.push({
+      id: 'move-tab',
+      label: 'Move Tab…',
+      iconName: 'FolderInput',
+      divider: 'before',
+    })
+    actions.push({ id: 'copy-tab', label: 'Copy Tab…', iconName: 'Copy' })
 
     const result = await openDropdownAsync({
       kind: 'menu',
@@ -504,21 +494,23 @@ export function Sidebar({ visible }: Props) {
     else if (action === 'new-group') { setContextTabForGroup(tabId); setGroupFromContextOpen(true) }
     else if (action === 'set-comment') { setCommentTabId(tabId); setCommentDefault(tab?.comment || ''); setCommentDialogOpen(true) }
     else if (action === 'remove-comment') setTabComment(tabId, '')
-    else if (action === 'move-to-group') {
-      // Hand off to a real modal dialog (own BrowserWindow) so the picker has
-      // its own search field, scrollable list, and lifecycle independent of
-      // the context-menu popup. Snapshot the group list and tab title at
-      // open time — the dialog reads from these props, not live store state.
-      setMoveDialogTabId(tabId)
-      setMoveDialogGroups(otherGroups.map((g) => ({ id: g.id, name: g.name, color: g.color })))
-      setMoveDialogTabTitle(tab?.title)
-      setMoveDialogOpen(true)
+    else if (action === 'move-tab' || action === 'copy-tab') {
+      // App owns the picker dialog state. We forward the right-clicked tab
+      // id via a CustomEvent so App can open the dialog targeting THIS tab
+      // — the keyboard shortcut path always targets the active tab, but
+      // context menu lets the user act on any tab.
+      window.dispatchEvent(
+        new CustomEvent('newbro:open-move-copy-tab', {
+          detail: { mode: action === 'move-tab' ? 'move' : 'copy', tabId },
+        }),
+      )
     }
   }
 
   const handleGroupContextMenu = async (groupId: string, e: React.MouseEvent): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
+    if (!workspace) return
     const group = workspace.tabGroups.find((g) => g.id === groupId)
     if (!group) return
 
@@ -526,6 +518,8 @@ export function Sidebar({ visible }: Props) {
     const actions: DropdownAction[] = [
       { id: 'rename', label: 'Rename Group', iconName: 'Pencil' },
       { id: 'add-tab', label: 'Add Tab to Group', iconName: 'FilePlus' },
+      { id: 'move-group', label: 'Move Group…', iconName: 'FolderInput', divider: 'before' },
+      { id: 'copy-group', label: 'Copy Group…', iconName: 'Copy' },
       { id: 'ungroup-all', label: 'Ungroup All Tabs', iconName: 'FolderMinus', divider: 'before' },
       {
         id: 'close-group',
@@ -548,6 +542,13 @@ export function Sidebar({ visible }: Props) {
     else if (action === 'add-tab') addTab(groupId)
     else if (action === 'ungroup-all') ungroupAll(groupId)
     else if (action === 'close-group') closeGroup(groupId)
+    else if (action === 'move-group' || action === 'copy-group') {
+      window.dispatchEvent(
+        new CustomEvent('newbro:open-move-copy-group', {
+          detail: { mode: action === 'move-group' ? 'move' : 'copy', groupId },
+        }),
+      )
+    }
   }
 
   const findTabGroup = (tabId: string): string | null => {
@@ -915,21 +916,6 @@ export function Sidebar({ visible }: Props) {
         onCancel={() => {
           setCommentTabId(null)
           setCommentDialogOpen(false)
-        }}
-      />
-
-      <MoveToGroupDialog
-        open={moveDialogOpen}
-        tabTitle={moveDialogTabTitle}
-        groups={moveDialogGroups}
-        onConfirm={(groupId) => {
-          if (moveDialogTabId) moveTabToGroup(moveDialogTabId, groupId)
-          setMoveDialogOpen(false)
-          setMoveDialogTabId(null)
-        }}
-        onCancel={() => {
-          setMoveDialogOpen(false)
-          setMoveDialogTabId(null)
         }}
       />
     </>

@@ -76,6 +76,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('tab:get-state', tabId),
   tabExecuteJS: (tabId: string, code: string): Promise<unknown> =>
     ipcRenderer.invoke('tab:execute-js', tabId, code),
+  tabToggleDevTools: (tabId: string): Promise<void> =>
+    ipcRenderer.invoke('tab:toggle-devtools', tabId),
 
   // Extensions
   listExtensions: (): Promise<unknown[]> => ipcRenderer.invoke('extensions:list'),

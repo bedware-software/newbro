@@ -211,6 +211,30 @@ const STEALTH_SCRIPT = `
     }
   } catch (e) { log('userAgentData override failed', e); }
 
+  // 8. window.close() — only neuter for tabs, NOT popups. Pages call
+  //    window.close() to dismiss themselves when they were opened as
+  //    popups (OAuth callbacks are the canonical case: Figma's
+  //    /finish_google_sso, GitHub's device-auth handoff, etc.). For a
+  //    real popup BrowserWindow that's the right behavior — let it close.
+  //    But when the same page lands in a regular tab (e.g. user navigated
+  //    there directly), window.close() in our setup has been observed to
+  //    take down the parent workspace BrowserWindow with it, costing the
+  //    user every other tab. We detect "regular tab" by window.opener
+  //    being null — popups always have an opener, tabs don't.
+  try {
+    const isPopup = window.opener != null;
+    if (!isPopup) {
+      const noopClose = function () {
+        try { console.log('[newbro-stealth] window.close intercepted (tab, no opener)'); } catch (_) {}
+      };
+      Object.defineProperty(window, 'close', {
+        value: noopClose,
+        writable: false,
+        configurable: false,
+      });
+    }
+  } catch (e) { log('window.close override failed', e); }
+
   log('main-world injection complete');
 })();
 `
@@ -382,18 +406,36 @@ try {
   console.log('[newbro-stealth] swipe-overlay wiring failed:', err)
 }
 
-// ── Right-click on selected text → host context menu ──────────────────────
-// When the user right-clicks with text selected on the page, suppress the
-// guest page's own context menu and relay the selection to main so it can
-// show a native Electron context menu with Copy / Copy and search.
-// Right-click without a selection is left to the page.
+// ── Right-click → host context menu ──────────────────────────────────
+// We always show our own context menu rather than the page's. Click
+// position is captured so main can ask Chromium to inspect the element
+// at that point; selection (if any) drives the Copy / Copy-and-search
+// rows; nearest <a> / <img> ancestor lights up "Open link in new tab" /
+// "Copy image address". The page's own contextmenu handlers (e.g.
+// Figma's custom menu) are suppressed via capture-phase preventDefault.
 try {
   window.addEventListener('contextmenu', (e: MouseEvent) => {
-    const selection = (window.getSelection?.()?.toString() ?? '').trim()
-    if (!selection) return
     e.preventDefault()
     e.stopPropagation()
-    ipcRenderer.send('newbro-context-menu', { selection })
+    const selection = (window.getSelection?.()?.toString() ?? '').trim()
+    const target = e.target as Element | null
+    let linkUrl: string | null = null
+    let imgUrl: string | null = null
+    try {
+      const a = (target?.closest?.('a') as HTMLAnchorElement | null) ?? null
+      if (a?.href) linkUrl = a.href
+    } catch (_) { /* ignore */ }
+    try {
+      const img = (target?.closest?.('img') as HTMLImageElement | null) ?? null
+      if (img?.currentSrc || img?.src) imgUrl = img.currentSrc || img.src
+    } catch (_) { /* ignore */ }
+    ipcRenderer.send('newbro-context-menu', {
+      selection,
+      x: Math.round(e.clientX),
+      y: Math.round(e.clientY),
+      linkUrl,
+      imgUrl,
+    })
   }, true)
 } catch (err) {
   // eslint-disable-next-line no-console

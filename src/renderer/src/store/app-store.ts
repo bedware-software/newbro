@@ -85,6 +85,159 @@ export function getSidebarOrder(w: Workspace): string[] {
   ]
 }
 
+// ── Helpers for cross-workspace move/copy (used inside immer produce) ──
+
+/** Read-only lookup of a tab by id, scanning every profile and workspace. */
+function findTabById(s: AppState, tabId: string): Tab | undefined {
+  for (const p of s.profiles) {
+    for (const w of p.workspaces) {
+      const ut = w.tabs?.find((t) => t.id === tabId)
+      if (ut) return ut
+      for (const g of w.tabGroups) {
+        const t = g.tabs.find((t) => t.id === tabId)
+        if (t) return t
+      }
+    }
+  }
+  return undefined
+}
+
+/** Read-only lookup of a tab group by id. */
+function findGroupById(s: AppState, groupId: string): TabGroup | undefined {
+  for (const p of s.profiles) {
+    for (const w of p.workspaces) {
+      const g = w.tabGroups.find((g) => g.id === groupId)
+      if (g) return g
+    }
+  }
+  return undefined
+}
+
+/** Read-only lookup of a workspace by id. */
+function findWorkspaceById(s: AppState, workspaceId: string): Workspace | undefined {
+  for (const p of s.profiles) {
+    const w = p.workspaces.find((w) => w.id === workspaceId)
+    if (w) return w
+  }
+  return undefined
+}
+
+/** Splice a tab out of state, returning the tab plus the workspace it came
+ *  from. Also collapses an emptied source group. Mutates the draft passed
+ *  in — caller is responsible for invoking inside `produce`. */
+function locateAndExtractTab(
+  s: AppState,
+  tabId: string,
+): { tab: Tab; sourceWorkspaceId: string } | null {
+  for (const p of s.profiles) {
+    for (const w of p.workspaces) {
+      const ui = w.tabs?.findIndex((t) => t.id === tabId) ?? -1
+      if (ui !== -1 && w.tabs) {
+        const tab = { ...w.tabs[ui] }
+        w.tabs.splice(ui, 1)
+        if (w.sidebarOrder) {
+          const oi = w.sidebarOrder.indexOf(tabId)
+          if (oi !== -1) w.sidebarOrder.splice(oi, 1)
+        }
+        return { tab, sourceWorkspaceId: w.id }
+      }
+      for (const g of w.tabGroups) {
+        const gi = g.tabs.findIndex((t) => t.id === tabId)
+        if (gi !== -1) {
+          const tab = { ...g.tabs[gi] }
+          g.tabs.splice(gi, 1)
+          if (g.tabs.length === 0) {
+            const gIdx = w.tabGroups.indexOf(g)
+            if (gIdx !== -1) w.tabGroups.splice(gIdx, 1)
+            if (w.sidebarOrder) {
+              const oi = w.sidebarOrder.indexOf(g.id)
+              if (oi !== -1) w.sidebarOrder.splice(oi, 1)
+            }
+          }
+          return { tab, sourceWorkspaceId: w.id }
+        }
+      }
+    }
+  }
+  return null
+}
+
+/** Splice a group (with all its tabs intact) out of state. Mutates draft. */
+function locateAndExtractGroup(
+  s: AppState,
+  groupId: string,
+): { group: TabGroup; sourceWorkspaceId: string } | null {
+  for (const p of s.profiles) {
+    for (const w of p.workspaces) {
+      const idx = w.tabGroups.findIndex((g) => g.id === groupId)
+      if (idx === -1) continue
+      const group = w.tabGroups[idx]
+      // Take a structured copy: the splice would otherwise leave Immer with
+      // a draft node parented to the old workspace, and re-parenting it via
+      // push() to a different workspace's array confuses the proxy.
+      const detached: TabGroup = {
+        id: group.id,
+        name: group.name,
+        color: group.color,
+        isCollapsed: group.isCollapsed,
+        tabs: group.tabs.map((t) => ({ ...t })),
+      }
+      w.tabGroups.splice(idx, 1)
+      if (w.sidebarOrder) {
+        const oi = w.sidebarOrder.indexOf(groupId)
+        if (oi !== -1) w.sidebarOrder.splice(oi, 1)
+      }
+      return { group: detached, sourceWorkspaceId: w.id }
+    }
+  }
+  return null
+}
+
+/** Append a tab into a destination workspace, either into a specific group
+ *  or at the workspace's Root (ungrouped). Mutates draft. */
+function insertTabIntoTarget(
+  dst: Workspace,
+  tab: Tab,
+  targetGroupId: string | null,
+): void {
+  if (targetGroupId) {
+    const group = dst.tabGroups.find((g) => g.id === targetGroupId)
+    if (group) {
+      group.tabs.push(tab)
+      group.isCollapsed = false
+      return
+    }
+    // Group disappeared mid-flight — fall through to Root so the tab is
+    // never silently dropped.
+  }
+  if (!dst.tabs) dst.tabs = []
+  dst.tabs.push(tab)
+  ensureSidebarOrder(dst).push(tab.id)
+}
+
+/** When the active tab/group has been moved away from the workspace shown
+ *  in the current window, fall back to whatever remains there. */
+function adoptFallbackActiveInWorkspace(s: AppState, sourceWorkspaceId: string): void {
+  const ws = findWorkspaceById(s, sourceWorkspaceId)
+  if (!ws) {
+    s.activeTabId = null
+    s.activeTabGroupId = null
+    return
+  }
+  const fallback = ws.tabs?.[0] || ws.tabGroups[0]?.tabs[0] || null
+  s.activeTabId = fallback?.id ?? null
+  if (!fallback) {
+    s.activeTabGroupId = null
+    return
+  }
+  if (ws.tabs?.some((t) => t.id === fallback.id)) {
+    s.activeTabGroupId = null
+  } else {
+    const owner = ws.tabGroups.find((g) => g.tabs.some((t) => t.id === fallback.id))
+    s.activeTabGroupId = owner?.id ?? null
+  }
+}
+
 function makeWorkspace(name = 'Default'): Workspace {
   const tab = makeTab()
   return { id: uuid(), name, tabGroups: [], tabs: [tab], sidebarOrder: [tab.id] }
@@ -170,8 +323,23 @@ export interface AppState {
   moveTab: (tabId: string, targetGroupId: string | null, targetIndex: number) => void
   moveTabs: (tabIds: string[], targetGroupId: string | null, targetIndex: number) => void
   moveTabGroup: (groupId: string, targetIndex: number) => void
-  moveTabToGroup: (tabId: string, targetGroupId: string) => void
   moveTabsToNewGroup: (tabIds: string[], groupName: string) => void
+
+  // Cross-workspace / cross-profile move & copy. The Move/Copy Tab and
+  // Move/Copy Group dialogs route through these.
+  //
+  // For tab variants, `targetGroupId === null` means "Root" (ungrouped) of
+  // the destination workspace. The destination workspace can live in any
+  // profile; cross-profile moves leave the tab's id stable but the
+  // destination window's WebviewPanel will recreate the WebContentsView
+  // under the new partition automatically when it reconciles.
+  //
+  // Copy variants always assign fresh ids so the source and destination
+  // tabs/groups are independent — including their WebContentsViews.
+  moveTabAcross: (tabId: string, targetWorkspaceId: string, targetGroupId: string | null) => void
+  copyTabAcross: (tabId: string, targetWorkspaceId: string, targetGroupId: string | null) => void
+  moveGroupAcross: (groupId: string, targetWorkspaceId: string) => void
+  copyGroupAcross: (groupId: string, targetWorkspaceId: string) => void
 
   // Navigate to a specific item
   navigateTo: (profileId: string, workspaceId?: string, tabGroupId?: string, tabId?: string) => void
@@ -969,21 +1137,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   })),
 
-  moveTabToGroup: (tabId, targetGroupId) => {
-    const { profiles, moveTab } = get()
-    let targetLength = 0
-    for (const p of profiles) {
-      for (const w of p.workspaces) {
-        const g = w.tabGroups.find((tg) => tg.id === targetGroupId)
-        if (g) {
-          targetLength = g.tabs.length
-          break
-        }
-      }
-    }
-    moveTab(tabId, targetGroupId, targetLength)
-  },
-
   moveTabsToNewGroup: (tabIds, groupName) => set(produce((s: AppState) => {
     const tabs: Tab[] = []
     let targetWorkspace: Workspace | undefined
@@ -1056,6 +1209,99 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
     }
+  })),
+
+  // ── Cross-workspace move & copy ──
+  // Source can be in any workspace/profile; destination is identified by
+  // workspaceId alone (workspaceIds are globally unique). Group target is
+  // null for "Root" (ungrouped) of the destination workspace. After a move,
+  // the WebContentsView for the moved tab is destroyed by the source
+  // window's WebviewPanel (the tab is no longer in its active workspace's
+  // tab list) and re-created under the destination workspace's profile
+  // partition by the destination window's WebviewPanel — so cross-profile
+  // moves end up with a fresh session/cookie context automatically.
+  moveTabAcross: (tabId, targetWorkspaceId, targetGroupId) => set(produce((s: AppState) => {
+    const located = locateAndExtractTab(s, tabId)
+    if (!located) return
+    const dst = findWorkspaceById(s, targetWorkspaceId)
+    if (!dst) {
+      // Destination workspace vanished mid-flight (rare race: dialog open
+      // when the user closes the workspace from a different window). Put
+      // the tab back where we found it so we never silently lose data.
+      const src = findWorkspaceById(s, located.sourceWorkspaceId)
+      if (src) insertTabIntoTarget(src, located.tab, null)
+      return
+    }
+    insertTabIntoTarget(dst, located.tab, targetGroupId)
+    // If the moved tab was active anywhere, fall back to a remaining tab in
+    // the source workspace so the source window has something to show.
+    if (s.activeTabId === tabId) {
+      adoptFallbackActiveInWorkspace(s, located.sourceWorkspaceId)
+    }
+  })),
+
+  copyTabAcross: (tabId, targetWorkspaceId, targetGroupId) => set(produce((s: AppState) => {
+    const original = findTabById(s, tabId)
+    if (!original) return
+    const dst = findWorkspaceById(s, targetWorkspaceId)
+    if (!dst) return
+    const clone: Tab = {
+      id: uuid(),
+      title: original.title,
+      url: original.url,
+      favicon: original.favicon,
+      ...(original.comment ? { comment: original.comment } : {}),
+    }
+    insertTabIntoTarget(dst, clone, targetGroupId)
+  })),
+
+  moveGroupAcross: (groupId, targetWorkspaceId) => set(produce((s: AppState) => {
+    const located = locateAndExtractGroup(s, groupId)
+    if (!located) return
+    const dst = findWorkspaceById(s, targetWorkspaceId)
+    if (!dst) {
+      // Destination disappeared. Re-attach to the source so we don't orphan
+      // the group; conservative recovery rather than losing user data.
+      const src = findWorkspaceById(s, located.sourceWorkspaceId)
+      if (src) {
+        src.tabGroups.push(located.group)
+        ensureSidebarOrder(src).push(located.group.id)
+      }
+      return
+    }
+    dst.tabGroups.push(located.group)
+    ensureSidebarOrder(dst).push(located.group.id)
+    // If the moved group was active in the source workspace, re-pick a
+    // fallback tab there.
+    const movedTabIds = new Set(located.group.tabs.map((t) => t.id))
+    const wasActiveHere =
+      s.activeTabGroupId === groupId ||
+      (s.activeTabId !== null && movedTabIds.has(s.activeTabId))
+    if (wasActiveHere) {
+      adoptFallbackActiveInWorkspace(s, located.sourceWorkspaceId)
+    }
+  })),
+
+  copyGroupAcross: (groupId, targetWorkspaceId) => set(produce((s: AppState) => {
+    const original = findGroupById(s, groupId)
+    if (!original) return
+    const dst = findWorkspaceById(s, targetWorkspaceId)
+    if (!dst) return
+    const clone: TabGroup = {
+      id: uuid(),
+      name: original.name,
+      color: original.color,
+      isCollapsed: original.isCollapsed,
+      tabs: original.tabs.map((t) => ({
+        id: uuid(),
+        title: t.title,
+        url: t.url,
+        favicon: t.favicon,
+        ...(t.comment ? { comment: t.comment } : {}),
+      })),
+    }
+    dst.tabGroups.push(clone)
+    ensureSidebarOrder(dst).push(clone.id)
   })),
 
   importSelectedWorkspaces: (profileId, candidates) => {
