@@ -69,6 +69,7 @@ const DEFAULT_KEYBINDINGS: Record<string, string> = {
   forward: 'CmdOrCtrl+]',
   reload: 'CmdOrCtrl+R',
   settings: 'CmdOrCtrl+,',
+  'page-devtools': 'CmdOrCtrl+Shift+I',
   // Move/Copy actions ship unbound — they're surfaced through context menus
   // and the command palette by default. The empty string keeps the parsing
   // path in main/index.ts a no-op (parseAcceleratorShortcut returns null)
@@ -94,6 +95,7 @@ const ACTION_LABELS: Record<string, string> = {
   forward: 'Navigate Forward',
   reload: 'Reload Page',
   settings: 'Open Settings',
+  'page-devtools': 'Toggle Page Developer Tools',
   'move-tab': 'Move Tab',
   'copy-tab': 'Copy Tab',
   'move-group': 'Move Group',

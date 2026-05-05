@@ -50,6 +50,10 @@ export const DEFAULT_KEYBINDINGS: Record<string, string> = {
   'forward': 'CmdOrCtrl+]',
   'reload': 'CmdOrCtrl+R',
   'settings': 'CmdOrCtrl+,',
+  // Standard Chromium shortcut for inspecting the active page. Targets the
+  // tab's WebContents (the View menu's other DevTools item targets the
+  // chrome renderer instead).
+  'page-devtools': 'CmdOrCtrl+Shift+I',
   // Move/Copy actions ship without a default accelerator — they're driven
   // primarily through context menus and the command palette. The keys must
   // still be present so normalizeAndFilterKeybindings preserves any user-

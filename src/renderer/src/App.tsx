@@ -86,6 +86,7 @@ declare global {
       tabStop?: (tabId: string) => Promise<void>
       tabGetState?: (tabId: string) => Promise<{ isLoading: boolean; url: string; canGoBack: boolean; canGoForward: boolean } | null>
       tabExecuteJS?: (tabId: string, code: string) => Promise<unknown>
+      tabToggleDevTools?: (tabId: string) => Promise<void>
       onTabEvent?: (callback: (evt: unknown) => void) => () => void
 
       // Extensions
@@ -424,6 +425,9 @@ export default function App() {
           }
           break
         }
+        case 'page-devtools':
+          if (s.activeTabId) window.electronAPI.tabToggleDevTools?.(s.activeTabId)
+          break
         case 'next-tab':
           cycleTab(1)
           break

@@ -955,44 +955,122 @@ export function installTabPreloadListeners(): void {
     sendToWindowRenderer(rec.windowId, 'open-url-as-tab', url)
   })
 
-  ipcMain.on('newbro-context-menu', async (event, payload: unknown) => {
+  ipcMain.on('newbro-context-menu', (event, payload: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     if (!tabId) return
     const rec = tabs.get(tabId)
     if (!rec) return
     const win = BrowserWindow.fromId(rec.windowId)
     if (!win || win.isDestroyed()) return
-    const selection =
-      typeof payload === 'object' && payload !== null && typeof (payload as { selection?: unknown }).selection === 'string'
-        ? (payload as { selection: string }).selection.trim()
-        : ''
-    if (!selection) return
 
-    // Show a native menu anchored to the owner window. The renderer then
-    // decides whether to copy or copy-and-search — we delegate the search
-    // URL construction to the renderer so the user's configured search
-    // engine is respected without main needing to know about settings.
-    const chosen = await new Promise<'copy' | 'copy-and-search' | null>((resolve) => {
-      const menu = Menu.buildFromTemplate([
-        { label: 'Copy', click: () => resolve('copy') },
-        { label: 'Copy and search', click: () => resolve('copy-and-search') },
-      ])
-      menu.popup({ window: win, callback: () => resolve(null) })
+    // Defensive payload unpack — preload sends a plain object but we still
+    // gate on the shape to avoid crashing main on a malformed message.
+    const p = (typeof payload === 'object' && payload !== null
+      ? (payload as Record<string, unknown>)
+      : {})
+    const selection = typeof p.selection === 'string' ? p.selection.trim() : ''
+    const x = typeof p.x === 'number' ? p.x : 0
+    const y = typeof p.y === 'number' ? p.y : 0
+    const linkUrl = typeof p.linkUrl === 'string' ? p.linkUrl : null
+    const imgUrl = typeof p.imgUrl === 'string' ? p.imgUrl : null
+
+    const wc = rec.view.webContents
+    const nav = wc.navigationHistory
+    const items: Electron.MenuItemConstructorOptions[] = []
+
+    if (linkUrl) {
+      items.push({
+        label: 'Open Link in New Tab',
+        click: () => sendToWindowRenderer(rec.windowId, 'open-url-as-tab', linkUrl),
+      })
+      items.push({
+        label: 'Copy Link Address',
+        click: () => {
+          try { clipboard.writeText(linkUrl) } catch { /* ignore */ }
+        },
+      })
+      items.push({ type: 'separator' })
+    }
+
+    if (imgUrl) {
+      items.push({
+        label: 'Copy Image Address',
+        click: () => {
+          try { clipboard.writeText(imgUrl) } catch { /* ignore */ }
+        },
+      })
+      items.push({ type: 'separator' })
+    }
+
+    if (selection) {
+      items.push({
+        label: 'Copy',
+        click: () => {
+          try { clipboard.writeText(selection) } catch (err) {
+            log.warn('context-menu: clipboard write failed', String(err))
+          }
+        },
+      })
+      items.push({
+        label: 'Copy and search',
+        click: () => {
+          try { clipboard.writeText(selection) } catch { /* ignore */ }
+          // Renderer owns the search-engine template; send the raw query.
+          win.webContents.send('tab-context-search', selection)
+        },
+      })
+      items.push({ type: 'separator' })
+    }
+
+    items.push({
+      label: 'Back',
+      enabled: nav.canGoBack(),
+      click: () => tabGoBack(tabId),
     })
-    if (!chosen) return
+    items.push({
+      label: 'Forward',
+      enabled: nav.canGoForward(),
+      click: () => tabGoForward(tabId),
+    })
+    items.push({
+      label: 'Reload',
+      click: () => tabReload(tabId, /* ignoreCache */ false),
+    })
+    items.push({ type: 'separator' })
+    items.push({
+      label: 'Inspect',
+      // openDevTools first makes inspectElement actually highlight when the
+      // panel was previously closed — calling inspectElement alone on a
+      // closed devtools is silently a no-op on some Electron builds.
+      click: () => {
+        try {
+          if (!wc.isDevToolsOpened()) wc.openDevTools({ mode: 'detach' })
+          wc.inspectElement(x, y)
+        } catch (err) {
+          log.warn('context-menu: inspectElement failed', String(err))
+        }
+      },
+    })
 
-    try {
-      clipboard.writeText(selection)
-    } catch (err) {
-      log.warn('context-menu: clipboard write failed', String(err))
-    }
-    if (chosen === 'copy-and-search') {
-      // Hand the renderer the raw query; the renderer already knows how
-      // to normalise → search URL and open a new tab (mirrors the flow
-      // the pre-merge <webview> path used).
-      win.webContents.send('tab-context-search', selection)
-    }
+    const menu = Menu.buildFromTemplate(items)
+    menu.popup({ window: win })
   })
+}
+
+/** Toggle DevTools for a specific tab's WebContents. Used by the View menu's
+ *  "Page Developer Tools" item — Electron's `role: 'toggleDevTools'` only
+ *  reaches the focused webContents, which is almost always the chrome
+ *  renderer, so the user couldn't otherwise inspect a real page. */
+export function tabToggleDevTools(tabId: string): void {
+  const rec = tabs.get(tabId)
+  if (!rec) return
+  const wc = rec.view.webContents
+  try {
+    if (wc.isDevToolsOpened()) wc.closeDevTools()
+    else wc.openDevTools({ mode: 'detach' })
+  } catch (err) {
+    log.warn('tab-views: toggleDevTools failed', { tabId, err: String(err) })
+  }
 }
 
 // Silence unused-app warning on some bundlers — `app` is used indirectly

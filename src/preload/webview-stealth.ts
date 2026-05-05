@@ -403,18 +403,36 @@ try {
   console.log('[newbro-stealth] swipe-overlay wiring failed:', err)
 }
 
-// ── Right-click on selected text → host context menu ──────────────────────
-// When the user right-clicks with text selected on the page, suppress the
-// guest page's own context menu and relay the selection to main so it can
-// show a native Electron context menu with Copy / Copy and search.
-// Right-click without a selection is left to the page.
+// ── Right-click → host context menu ──────────────────────────────────
+// We always show our own context menu rather than the page's. Click
+// position is captured so main can ask Chromium to inspect the element
+// at that point; selection (if any) drives the Copy / Copy-and-search
+// rows; nearest <a> / <img> ancestor lights up "Open link in new tab" /
+// "Copy image address". The page's own contextmenu handlers (e.g.
+// Figma's custom menu) are suppressed via capture-phase preventDefault.
 try {
   window.addEventListener('contextmenu', (e: MouseEvent) => {
-    const selection = (window.getSelection?.()?.toString() ?? '').trim()
-    if (!selection) return
     e.preventDefault()
     e.stopPropagation()
-    ipcRenderer.send('newbro-context-menu', { selection })
+    const selection = (window.getSelection?.()?.toString() ?? '').trim()
+    const target = e.target as Element | null
+    let linkUrl: string | null = null
+    let imgUrl: string | null = null
+    try {
+      const a = (target?.closest?.('a') as HTMLAnchorElement | null) ?? null
+      if (a?.href) linkUrl = a.href
+    } catch (_) { /* ignore */ }
+    try {
+      const img = (target?.closest?.('img') as HTMLImageElement | null) ?? null
+      if (img?.currentSrc || img?.src) imgUrl = img.currentSrc || img.src
+    } catch (_) { /* ignore */ }
+    ipcRenderer.send('newbro-context-menu', {
+      selection,
+      x: Math.round(e.clientX),
+      y: Math.round(e.clientY),
+      linkUrl,
+      imgUrl,
+    })
   }, true)
 } catch (err) {
   // eslint-disable-next-line no-console

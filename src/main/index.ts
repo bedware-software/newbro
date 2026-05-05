@@ -830,7 +830,17 @@ function buildMenu(): void {
       submenu: [
         { role: 'reload' },
         { role: 'forceReload' },
-        { role: 'toggleDevTools' },
+        // toggleDevTools targets the focused webContents — in practice that
+        // is the workspace's chrome renderer. Keep it for debugging the UI.
+        { label: 'Toggle UI Developer Tools', role: 'toggleDevTools' },
+        // The active tab is rendered by a sibling WebContentsView, which
+        // toggleDevTools never reaches. Route through the renderer's
+        // shortcut handler so the active-tab id is resolved on its side.
+        {
+          label: 'Toggle Page Developer Tools',
+          accelerator: kb['page-devtools'],
+          click: (_item, win) => sendShortcutToWindow(win, 'page-devtools'),
+        },
         { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },

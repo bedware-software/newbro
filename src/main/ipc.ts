@@ -23,6 +23,7 @@ import {
   tabNavigate,
   tabReload,
   tabStop,
+  tabToggleDevTools,
   type TabBounds,
 } from './tab-views'
 import {
@@ -201,6 +202,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('tab:execute-js', (_e, tabId: string, code: string) => {
     return tabExecuteJS(tabId, code)
+  })
+
+  ipcMain.handle('tab:toggle-devtools', (_e, tabId: string) => {
+    tabToggleDevTools(tabId)
   })
 
   // ── Extensions ──
