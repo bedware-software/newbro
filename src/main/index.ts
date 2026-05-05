@@ -503,7 +503,7 @@ function flushPendingBoundsCapture(workspaceId: string): void {
 export function closeWorkspaceWindow(workspaceId: string): void {
   const win = workspaceWindows.get(workspaceId)
   if (win && !win.isDestroyed()) {
-    log.window('closeWorkspaceWindow', workspaceId)
+    log.window('closeWorkspaceWindow', workspaceId, { stack: new Error().stack })
     win.close()
   }
   workspaceWindows.delete(workspaceId)
@@ -696,6 +696,21 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   win.webContents.on('responsive', () => {
     log.info('main webContents responsive again', { windowId: win.id, workspaceId })
   })
+  // The page-level 'close' on the BrowserWindow's MAIN webContents is what
+  // fires when the workspace renderer or some script tied to it requests
+  // the window to be closed (e.g. an Electron quirk where window.close()
+  // from a child WebContentsView bubbles up). Surfacing it explicitly tells
+  // us whether the BrowserWindow's close is renderer-driven or coming from
+  // somewhere else in the main process.
+  win.webContents.on('close', () => {
+    log.info('main wc close', { windowId: win.id, workspaceId })
+  })
+  win.webContents.on('destroyed', () => {
+    log.info('main wc destroyed', { windowId: win.id, workspaceId })
+  })
+  win.webContents.on('will-prevent-unload', () => {
+    log.info('main will-prevent-unload', { windowId: win.id, workspaceId })
+  })
 
   // Track detached popups so the drag IPC handlers can identify them when the
   // renderer requests a move. The popup is created synchronously after the
@@ -784,7 +799,10 @@ function buildMenu(): void {
           label: 'Close Window',
           accelerator: kb['close-window'],
           click: (_item, win) => {
-            if (win && !win.isDestroyed()) win.close()
+            if (win && !win.isDestroyed()) {
+              log.info('menu Close Window clicked', { windowId: (win as Electron.BrowserWindow).id })
+              win.close()
+            }
           },
         },
         { type: 'separator' },

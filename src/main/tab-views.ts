@@ -137,6 +137,35 @@ function wireEvents(rec: TabRecord): void {
       exitCode: details.exitCode,
     })
   })
+
+  // Diagnostic: track every "the page wants to close itself" signal. The
+  // reported case is Figma's Google-SSO callback page (`/finish_google_sso`)
+  // appearing to close the entire workspace window instead of just dropping
+  // the tab. We don't know yet whether Electron is propagating window.close()
+  // from a child WebContentsView up to the parent BrowserWindow or whether
+  // some other code path is involved — these logs let us tell.
+  wc.on('close', () => {
+    log.info('tab wc close', {
+      tabId: rec.tabId,
+      windowId: rec.windowId,
+      url: (() => { try { return wc.getURL() } catch { return '' } })(),
+    })
+  })
+  wc.on('destroyed', () => {
+    log.info('tab wc destroyed', {
+      tabId: rec.tabId,
+      windowId: rec.windowId,
+    })
+  })
+  wc.on('will-prevent-unload', (event) => {
+    log.info('tab will-prevent-unload', {
+      tabId: rec.tabId,
+      url: (() => { try { return wc.getURL() } catch { return '' } })(),
+    })
+    // Don't preventDefault — let the page's beforeunload prompt run if the
+    // user has unsaved input. This listener is purely for visibility.
+    void event
+  })
   wc.on('unresponsive', () => {
     log.warn('tab unresponsive', {
       tabId: rec.tabId,

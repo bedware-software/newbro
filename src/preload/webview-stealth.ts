@@ -211,6 +211,27 @@ const STEALTH_SCRIPT = `
     }
   } catch (e) { log('userAgentData override failed', e); }
 
+  // 8. window.close() neutering. Pages call this to dismiss themselves when
+  //    they were originally opened as popups (OAuth flows are the canonical
+  //    case — Figma's /finish_google_sso, GitHub's device-auth callback,
+  //    etc.). Real Chrome lets a "self-opened" window close itself; in our
+  //    browser the page is loaded inside a tab (a WebContentsView child of
+  //    the workspace BrowserWindow) and the close call has been observed to
+  //    take down the parent BrowserWindow, costing the user every other
+  //    tab in the workspace. Replace it with a no-op so the page stays put
+  //    and the workspace window stays alive — the user closes the tab from
+  //    the sidebar like any other tab.
+  try {
+    const noopClose = function () {
+      try { console.log('[newbro-stealth] window.close intercepted'); } catch (_) {}
+    };
+    Object.defineProperty(window, 'close', {
+      value: noopClose,
+      writable: false,
+      configurable: false,
+    });
+  } catch (e) { log('window.close override failed', e); }
+
   log('main-world injection complete');
 })();
 `

@@ -315,6 +315,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('window:close', (_e) => {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (win && !win.isDestroyed()) {
+      log.ipc('window:close', { windowId: win.id, senderWcId: _e.sender.id })
       win.close()
     }
   })
