@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { log } from '../lib/log'
 
 const DRAG_HANDLE_SELECTOR = '[data-detached-drag-handle]'
 const DRAG_CANCEL_SELECTOR = '[data-detached-no-drag]'
@@ -88,6 +89,12 @@ export function DetachedWindow({
     )
 
     if (!popup) {
+      // window.open returning null usually means setWindowOpenHandler in
+      // main rejected the request (URL mismatch) or the popup blocker
+      // tripped. Either case is a silent failure for the user — no dialog
+      // appears, no console error. Log it so the userData/newbro.log file
+      // shows the failure when the user reports "the dialog didn't open".
+      log.warn('detached-window: window.open returned null', { title })
       return
     }
 

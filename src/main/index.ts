@@ -51,6 +51,32 @@ export function addBypassedCertOrigin(url: string): void {
   }
 }
 
+// Diagnostic: log any child-process crash. Each tab is its own renderer,
+// each profile has a session-process, GPU + utility helpers run separately.
+// When a heavy site (Figma is the reported case) takes one of these down,
+// the symptom is a workspace window that disappears with no error in the
+// console — these listeners give us at least the reason code to triage on.
+app.on('child-process-gone', (_e, details) => {
+  log.error('child-process-gone', {
+    type: details.type,
+    name: (details as { name?: string }).name ?? null,
+    serviceName: (details as { serviceName?: string }).serviceName ?? null,
+    reason: details.reason,
+    exitCode: details.exitCode,
+  })
+})
+app.on('render-process-gone', (_e, wc, details) => {
+  let url = ''
+  try { url = wc.getURL() } catch { /* ignore */ }
+  log.error('app-level render-process-gone', {
+    wcId: wc.id,
+    type: wc.getType(),
+    url,
+    reason: details.reason,
+    exitCode: details.exitCode,
+  })
+})
+
 app.on('certificate-error', (event, _wc, url, _error, _cert, callback) => {
   try {
     if (bypassedCertOrigins.has(new URL(url).origin)) {
@@ -588,6 +614,23 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     flushPendingBoundsCapture(workspaceId)
     captureWorkspaceBounds(workspaceId, win)
 
+    // The 'close' event fires for both user-initiated closes (button, ⌘W,
+    // app quit) and renderer-driven closes (renderer crash, win.close()
+    // from the renderer). Capture the renderer state at the moment of
+    // close so a Figma-style "window vanished mid-load" report has at
+    // least something to triage from.
+    const wc = win.webContents
+    let crashed = false
+    let activeUrl = ''
+    try { crashed = wc.isCrashed() } catch { /* ignore */ }
+    try { activeUrl = wc.getURL() } catch { /* ignore */ }
+    log.info('window close', {
+      workspaceId,
+      windowId: win.id,
+      crashed,
+      activeUrl,
+    })
+
     const allIds = [...workspaceWindows.keys()]
     const remainingIds = allIds.filter(id => id !== workspaceId)
     const toEntries = (ids: string[]) => ids.map(id => ({ profileId: workspaceProfiles.get(id)!, workspaceId: id }))
@@ -602,13 +645,20 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   })
 
   win.on('closed', () => {
+    log.info('window closed', { workspaceId, windowId: win.id })
     workspaceWindows.delete(workspaceId)
     workspaceProfiles.delete(workspaceId)
   })
 
   // Allow renderer-created detached dialog windows and hide their native header.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url === 'about:blank') {
+    // Accept both `'about:blank'` and the empty string. `window.open('')`
+    // and `window.open(undefined)` can surface here as either, depending on
+    // the Chromium / Electron version, and treating only the literal
+    // `'about:blank'` as openable made dialogs intermittently fail to
+    // appear — the renderer-side React state would flip to "open" but the
+    // native popup never spawned.
+    if (url === 'about:blank' || url === '') {
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
@@ -624,7 +674,27 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
         },
       }
     }
+    log.warn('setWindowOpenHandler: denying non-blank popup', { url })
     return { action: 'deny' }
+  })
+
+  // Diagnostic: log when the workspace window's MAIN renderer goes down.
+  // Without this, a renderer crash on the main webContents looks identical
+  // to a normal window close — we'd see only the BrowserWindow's `close`
+  // event with no clue why the user lost their window.
+  win.webContents.on('render-process-gone', (_e, details) => {
+    log.error('main webContents render-process-gone', {
+      windowId: win.id,
+      workspaceId,
+      reason: details.reason,
+      exitCode: details.exitCode,
+    })
+  })
+  win.webContents.on('unresponsive', () => {
+    log.warn('main webContents unresponsive', { windowId: win.id, workspaceId })
+  })
+  win.webContents.on('responsive', () => {
+    log.info('main webContents responsive again', { windowId: win.id, workspaceId })
   })
 
   // Track detached popups so the drag IPC handlers can identify them when the

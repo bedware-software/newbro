@@ -124,6 +124,29 @@ function wireEvents(rec: TabRecord): void {
 
   wireGestureDetection(rec)
 
+  // Diagnostic: log tab renderer crashes / hangs. Sites with heavy WebGL or
+  // WASM (Figma in particular) have been observed to silently die under
+  // memory pressure — without this listener the only signal would be the
+  // tab's WebContentsView vanishing from the window.
+  wc.on('render-process-gone', (_e, details) => {
+    log.error('tab render-process-gone', {
+      tabId: rec.tabId,
+      windowId: rec.windowId,
+      url: (() => { try { return wc.getURL() } catch { return '' } })(),
+      reason: details.reason,
+      exitCode: details.exitCode,
+    })
+  })
+  wc.on('unresponsive', () => {
+    log.warn('tab unresponsive', {
+      tabId: rec.tabId,
+      url: (() => { try { return wc.getURL() } catch { return '' } })(),
+    })
+  })
+  wc.on('responsive', () => {
+    log.info('tab responsive again', { tabId: rec.tabId })
+  })
+
   // Push the navigation history bounds onto the gesture state so the
   // swipe refuses to engage in a direction we can't actually go.
   const emitNavState = (): void => {
