@@ -1191,6 +1191,43 @@ export function installTabPreloadListeners(): void {
     log.info('extension shim trace (frame)', info)
   })
 
+  // Popup → main: "what's the URL of the user's active tab in the
+  // workspace that owns this popup?" Tampermonkey calls
+  // chrome.tabs.query({active:true,currentWindow:true}) on popup
+  // open, then matches that URL against host_permissions /
+  // userscript matches to decide whether to show "no access to this
+  // page". Electron's chrome.tabs.query returns the popup view itself
+  // (URL = chrome-extension://…/action.html) so the match always
+  // fails. The frame shim invokes this handler instead.
+  ipcMain.handle('newbro-ext-active-tab-info', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win || win.isDestroyed()) return null
+    const activeTabId = activeTabByWindow.get(win.id)
+    if (!activeTabId) return null
+    const rec = tabs.get(activeTabId)
+    if (!rec) return null
+    let url = ''
+    let title = ''
+    try { url = rec.view.webContents.getURL() } catch { /* ignore */ }
+    try { title = rec.view.webContents.getTitle() } catch { /* ignore */ }
+    return {
+      // chrome.tabs expects a numeric id. Hash the UUID to a stable
+      // positive integer; collisions are vanishingly unlikely across
+      // the handful of tabs a workspace holds.
+      id: hashStringToInt(rec.tabId),
+      url,
+      title,
+      active: true,
+      highlighted: true,
+      pinned: false,
+      windowId: win.id,
+      index: 0,
+      status: 'complete',
+      incognito: false,
+      favIconUrl: '',
+    }
+  })
+
   ipcMain.on('newbro-open-in-new-tab', (event, url: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     if (!tabId) return
@@ -1316,6 +1353,15 @@ export function tabToggleDevTools(tabId: string): void {
   } catch (err) {
     log.warn('tab-views: toggleDevTools failed', { tabId, err: String(err) })
   }
+}
+
+function hashStringToInt(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  }
+  // chrome tab ids are positive integers, so map into [1, 2^31).
+  return Math.abs(h) || 1
 }
 
 // Silence unused-app warning on some bundlers — `app` is used indirectly

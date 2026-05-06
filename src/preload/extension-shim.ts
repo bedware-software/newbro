@@ -119,29 +119,51 @@ function applyPatches(chrome: Record<string, unknown>): void {
   // / executeScript) but no `create`.
   const tabs = (chrome.tabs ?? (chrome.tabs = {})) as Record<string, unknown>
 
-  // Diagnostic: wrap whatever chrome.tabs.query Electron provided so
-  // we can see what Tampermonkey's popup queries with and what it
-  // gets back. The popup's "no access to this page" check often
-  // hinges on this — if Electron returns no tabs (or a tab without a
-  // url), Tampermonkey can't decide and shows the warning.
+  // chrome.tabs.query — replace Electron's implementation when the
+  // popup asks for {active:true,currentWindow:true}. Electron returns
+  // the popup's OWN WebContentsView (url = chrome-extension://…/
+  // action.html), but Tampermonkey then matches that URL against its
+  // host_permissions / userscript matches to decide "do I have
+  // access to this page", and chrome-extension:// never matches
+  // anything. Forwarding to main returns the workspace's actual
+  // active tab — the page the user is looking at.
   const origQuery = typeof tabs.query === 'function' ? (tabs.query as (q: unknown, cb?: (r: unknown[]) => void) => unknown).bind(tabs) : null
-  if (origQuery) {
-    tabs.query = (queryInfo: unknown, callback?: (results: unknown[]) => void) => {
-      const trace = (results: unknown): void => {
-        try {
-          ipcRenderer.send('newbro-ext-shim-trace', { kind: 'tabs.query', args: queryInfo, results })
-        } catch { /* ignore */ }
-      }
+  tabs.query = (queryInfo: unknown, callback?: (results: unknown[]) => void) => {
+    const wantsActive =
+      typeof queryInfo === 'object' && queryInfo !== null &&
+      ((queryInfo as Record<string, unknown>).active === true ||
+        (queryInfo as Record<string, unknown>).currentWindow === true ||
+        (queryInfo as Record<string, unknown>).lastFocusedWindow === true)
+    const trace = (results: unknown, source: string): void => {
+      try {
+        ipcRenderer.send('newbro-ext-shim-trace', { kind: 'tabs.query', source, args: queryInfo, results })
+      } catch { /* ignore */ }
+    }
+    if (wantsActive) {
+      const promise = ipcRenderer.invoke('newbro-ext-active-tab-info').then((tab: unknown) => {
+        const results = tab ? [tab] : []
+        trace(results, 'shim-active')
+        return results
+      })
       if (typeof callback === 'function') {
-        return origQuery(queryInfo, (results: unknown[]) => { trace(results); callback(results) })
+        promise.then((r) => callback(r as unknown[]))
+        return undefined
+      }
+      return promise
+    }
+    if (origQuery) {
+      if (typeof callback === 'function') {
+        return origQuery(queryInfo, (results: unknown[]) => { trace(results, 'electron'); callback(results) })
       }
       const maybe = origQuery(queryInfo)
       if (maybe && typeof (maybe as Promise<unknown>).then === 'function') {
-        return (maybe as Promise<unknown>).then((r) => { trace(r); return r })
+        return (maybe as Promise<unknown>).then((r) => { trace(r, 'electron'); return r })
       }
-      trace(maybe)
+      trace(maybe, 'electron')
       return maybe
     }
+    if (typeof callback === 'function') Promise.resolve().then(() => { trace([], 'empty'); callback([]) })
+    return Promise.resolve([])
   }
 
   if (typeof tabs.create !== 'function') {
@@ -217,11 +239,20 @@ function applyPatches(chrome: Record<string, unknown>): void {
   if (typeof userScripts.register !== 'function') userScripts.register = noopAsync
   if (typeof userScripts.unregister !== 'function') userScripts.unregister = noopAsync
   if (typeof userScripts.update !== 'function') userScripts.update = noopAsync
-  if (typeof userScripts.getScripts !== 'function') {
-    userScripts.getScripts = (_filter?: unknown, callback?: (s: unknown[]) => void) => {
-      if (typeof callback === 'function') Promise.resolve().then(() => callback([]))
-      return Promise.resolve([])
-    }
+  // chrome.userScripts.getScripts — Tampermonkey calls this to test
+  // whether the userScripts API is "alive" AND to read the registered
+  // scripts' match patterns for the access check. Empty list is OK
+  // for the alive-check, but the access check would fail so we trace
+  // the call so we can see Tampermonkey's expectation. (We can't
+  // populate the list cross-context cheaply: registrations live in
+  // main's per-partition registry; if returning [] keeps causing
+  // false negatives we'll wire an IPC fetch here too.)
+  userScripts.getScripts = (filter?: unknown, callback?: (s: unknown[]) => void) => {
+    try {
+      ipcRenderer.send('newbro-ext-shim-trace', { kind: 'userScripts.getScripts', args: filter })
+    } catch { /* ignore */ }
+    if (typeof callback === 'function') Promise.resolve().then(() => callback([]))
+    return Promise.resolve([])
   }
   if (typeof userScripts.configureWorld !== 'function') userScripts.configureWorld = noopAsync
   if (typeof userScripts.getWorldConfigurations !== 'function') {
@@ -273,6 +304,9 @@ function applyPatches(chrome: Record<string, unknown>): void {
       ? (management.getSelf as (cb?: (info: unknown) => void) => Promise<unknown> | void).bind(management)
       : null
   management.getSelf = (callback?: (info: unknown) => void) => {
+    try {
+      ipcRenderer.send('newbro-ext-shim-trace', { kind: 'management.getSelf' })
+    } catch { /* ignore */ }
     const manifest =
       typeof runtime.getManifest === 'function'
         ? (runtime.getManifest as () => Record<string, unknown>)()
