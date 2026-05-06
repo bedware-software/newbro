@@ -81,6 +81,30 @@ export function registerUserScripts(
     if (!s || typeof s.id !== 'string' || s.id.length === 0) continue
     map.set(s.id, s)
   }
+  // Detailed log so the next test run shows exactly what Tampermonkey
+  // forwarded — id, matches, runAt, world, and the size of the
+  // injected JS body. If the user's script doesn't appear here, then
+  // Tampermonkey isn't routing through chrome.userScripts.register at
+  // all (probably uses chrome.scripting.executeScript instead) and we
+  // need a different polyfill path.
+  for (const s of scripts) {
+    if (!s) continue
+    const totalCodeLen = Array.isArray(s.js)
+      ? s.js.reduce((n, j) => n + (typeof j.code === 'string' ? j.code.length : 0), 0)
+      : 0
+    log.info('userscripts: register entry', {
+      partition,
+      extensionId,
+      id: s.id,
+      matches: s.matches,
+      excludeMatches: s.excludeMatches,
+      runAt: s.runAt,
+      world: s.world,
+      allFrames: s.allFrames,
+      jsCount: Array.isArray(s.js) ? s.js.length : 0,
+      jsCodeLen: totalCodeLen,
+    })
+  }
   log.info('userscripts: registered', {
     partition,
     extensionId,
@@ -192,15 +216,35 @@ export function injectMatchingUserScripts(
   wc: WebContents,
 ): void {
   const reg = registries.get(partition)
+  const totalScripts = reg
+    ? Array.from(reg.byExtension.values()).reduce((n, m) => n + m.size, 0)
+    : 0
+  log.info('userscripts: navigation', { partition, url, runAt, totalScripts })
   if (!reg || reg.byExtension.size === 0) return
   if (!url || !/^(https?|ftp|file):/i.test(url)) return
 
   for (const [extensionId, scripts] of reg.byExtension) {
     for (const script of scripts.values()) {
       const scriptRunAt = script.runAt ?? 'document_idle'
-      if (scriptRunAt !== runAt) continue
-      if (!matchesAny(script.matches, url)) continue
-      if (matchesAny(script.excludeMatches, url)) continue
+      if (scriptRunAt !== runAt) {
+        log.info('userscripts: skip (runAt mismatch)', {
+          extensionId, id: script.id, scriptRunAt, runAt,
+        })
+        continue
+      }
+      const m1 = matchesAny(script.matches, url)
+      if (!m1) {
+        log.info('userscripts: skip (matches mismatch)', {
+          extensionId, id: script.id, url, matches: script.matches,
+        })
+        continue
+      }
+      if (matchesAny(script.excludeMatches, url)) {
+        log.info('userscripts: skip (excluded)', {
+          extensionId, id: script.id, url, excludeMatches: script.excludeMatches,
+        })
+        continue
+      }
       if (!Array.isArray(script.js) || script.js.length === 0) continue
       const code = script.js
         .map((s) => (typeof s.code === 'string' ? s.code : ''))

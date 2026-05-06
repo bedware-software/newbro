@@ -38,8 +38,12 @@
 //        zero tabs, caches "no access" forever, and refuses to
 //        register or inject userscripts even after the user
 //        navigates to a matching URL.
+//   V6 — added chrome.scripting.executeScript polyfill that forwards
+//        body + target tabIds to main for actual execution. Some
+//        MV3 extensions inject userscripts via chrome.scripting
+//        instead of chrome.userScripts.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V5__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V6__'
 
 // Markers we know about. Anything matching one of these gets stripped
 // and replaced with the current version's source.
@@ -340,6 +344,39 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       if (typeof cb === 'function') Promise.resolve().then(function () { cb(info2); });
       return Promise.resolve(info2);
     };
+
+    // ── chrome.scripting.executeScript ─────────────────────────────
+    // Some MV3 extensions inject userscripts via chrome.scripting
+    // instead of (or in addition to) chrome.userScripts.register.
+    // Electron 41 has a partial chrome.scripting; rather than risk
+    // breaking what works, we ONLY add executeScript if it's missing,
+    // and forward to main via the newbro-ipc channel for execution.
+    var scripting = c.scripting || (c.scripting = {});
+    if (typeof scripting.executeScript !== 'function') {
+      scripting.executeScript = function (injection, cb) {
+        try {
+          // Best-effort serialize: extract the function body if the
+          // caller passed { func, args } and the inline code if they
+          // passed { files } we'd need to read from disk in main.
+          var body = '';
+          var fn = injection && injection.func;
+          if (typeof fn === 'function') body = '(' + fn.toString() + ').apply(null, ' + JSON.stringify(injection.args || []) + ');';
+          else if (Array.isArray(injection && injection.files)) body = '/* file injection not yet supported */';
+          else if (typeof (injection && injection.code) === 'string') body = injection.code;
+          var tabIds = (injection && injection.target && Array.isArray(injection.target.tabIds)) ? injection.target.tabIds : [];
+          sendPost('scripting-execute', {
+            extId: extId,
+            tabIds: tabIds,
+            allFrames: injection && injection.target && injection.target.allFrames === true,
+            world: (injection && injection.world) || 'ISOLATED',
+            body: body,
+          });
+        } catch (_) {}
+        var results = [{ frameId: 0, result: undefined }];
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(results); });
+        return Promise.resolve(results);
+      };
+    }
 
     // ── chrome.action badge ────────────────────────────────────────
     // Tampermonkey calls setBadgeText({ text: '3', tabId }) to surface

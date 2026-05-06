@@ -565,6 +565,23 @@ function configureSession(ses: Electron.Session): void {
             origins: u.searchParams.get('origins') ?? '',
             permissions: u.searchParams.get('permissions') ?? '',
           })
+        } else if (action === 'scripting-execute') {
+          const body = readUploadBody(details)
+          const parsed = body ? safeJsonParse(body) : null
+          if (parsed && typeof parsed === 'object') {
+            const p = parsed as { extId?: unknown; tabIds?: unknown; body?: unknown; world?: unknown }
+            const extId = typeof p.extId === 'string' ? p.extId : ''
+            const tabIds = Array.isArray(p.tabIds) ? (p.tabIds as number[]) : []
+            const code = typeof p.body === 'string' ? p.body : ''
+            log.info('extensions: scripting-execute', { extId, tabIds, codeLen: code.length })
+            // Inject the code into every requested tab. Tab ids passed
+            // by the SW shim come from our hashed UUIDs (see
+            // tab-views.ts hashStringToInt) — find each matching tab
+            // and run its code.
+            if (code.length > 0 && tabIds.length > 0) {
+              executeScriptOnHashedTabIds(getPartitionForSession(ses), tabIds, code)
+            }
+          }
         } else if (action === 'badge-set' || action === 'badge-color') {
           // Forward to every workspace renderer so it can update its
           // toolbar icon overlay. Renderer-side rendering ships in a
@@ -613,6 +630,27 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   })
+}
+
+function executeScriptOnHashedTabIds(partition: string, hashedTabIds: number[], code: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    for (const view of win.contentView.children) {
+      const wc = (view as unknown as { webContents?: Electron.WebContents }).webContents
+      if (!wc || wc.isDestroyed()) continue
+      if (wc.session !== session.fromPartition(partition)) continue
+      // Cross-reference via a fresh getActiveTabInfoForWindow call —
+      // its return value carries the same hashed id the SW shim
+      // would have received from chrome.tabs.query, so a match here
+      // means we're operating on the right WebContentsView.
+      const info = getActiveTabInfoForWindow(win.id)
+      if (info && hashedTabIds.includes(info.id)) {
+        wc.executeJavaScript(code, true).catch((err) => {
+          log.warn('scripting-execute: injection failed', { err: String(err) })
+        })
+      }
+    }
+  }
 }
 
 function pickWindowForPartition(partition: string): BrowserWindow | null {
