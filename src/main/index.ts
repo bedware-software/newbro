@@ -563,6 +563,17 @@ function configureSession(ses: Electron.Session): void {
             const ids = Array.isArray(p.ids) ? (p.ids as string[]) : null
             if (extId) unregisterUserScripts(getPartitionForSession(ses), extId, ids)
           }
+        } else if (action === 'sw-shim-ran') {
+          const body = readUploadBody(details)
+          const parsed = body ? safeJsonParse(body) : null
+          log.info('extensions: SW shim ran', { partition, info: parsed })
+        } else if (
+          action === 'userscripts-getScripts' ||
+          action === 'userscripts-configureWorld'
+        ) {
+          const body = readUploadBody(details)
+          const parsed = body ? safeJsonParse(body) : null
+          log.info('extensions: ' + action, { partition, info: parsed })
         } else if (action === 'permission-check') {
           // Diagnostic from the SW shim's chrome.permissions.contains.
           // Surfaces what URL/permissions Tampermonkey is gating on.
@@ -717,10 +728,11 @@ export function setupPartitionSession(partition: string): void {
     log.warn('extensions: registerPreloadScript(service-worker) failed', { partition, err: String(err) })
   }
   // Mirror chrome-extension service-worker console messages into the
-  // main log. Without this the only signal that something went wrong in
-  // an extension's MV3 background script is a Chromium-internal stderr
-  // line; our app log lost it. This is also where we'd see "[ext-shim]"
-  // diagnostics from the polyfill running inside the SW context.
+  // main log. Drop the level filter — Tampermonkey logs at level 0/1
+  // (info/debug) but those are exactly the lines we need to figure
+  // out why chrome.userScripts.register isn't being called. We
+  // exclude one known-noisy line (extension.isAllowedFileSchemeAccess
+  // unimplemented) which fires every 30s and floods.
   try {
     const sw = (ses as unknown as { serviceWorkers?: { on?: Function } }).serviceWorkers
     if (sw && typeof sw.on === 'function') {
@@ -731,8 +743,8 @@ export function setupPartitionSession(partition: string): void {
           details: { message?: string; sourceUrl?: string; level?: number },
         ) => {
           const msg = String(details?.message ?? '')
+          if (msg.includes('extension.isAllowedFileSchemeAccess is not yet implemented')) return
           const url = String(details?.sourceUrl ?? '')
-          if (!msg.startsWith('[newbro-ext-shim]') && (details?.level ?? 0) < 2) return
           log.info('ext sw console', { partition, level: details?.level, url, msg })
         },
       )
