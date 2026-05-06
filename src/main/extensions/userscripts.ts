@@ -275,7 +275,45 @@ export function injectMatchingUserScripts(
       // this invocation. Tampermonkey already wraps each user script
       // in its own GM_* sandbox before passing it to register(), so
       // this is belt-and-braces — but cheap insurance.
-      const wrapped = '(function(){' + code + '\n;})();'
+      //
+      // ALSO prepend a minimal chrome.* stub. Chromium binds chrome.*
+      // only to extension contexts (content_scripts, popup, SW). Our
+      // executeJavaScriptInIsolatedWorld lands in a fresh isolated
+      // world that's NOT one of those, so chrome.runtime is
+      // undefined and Tampermonkey's bootstrap throws on its very
+      // first chrome.runtime.id access. The stub keeps the bootstrap
+      // alive past that line; sendMessage is a no-op (full bridge to
+      // the SW would require bidirectional postMessage routing that
+      // doesn't exist yet — a follow-up).
+      const setup = `;(function(){
+  var g = (typeof self !== 'undefined') ? self : window;
+  if (!g.chrome) g.chrome = {};
+  var c = g.chrome;
+  if (!c.runtime) c.runtime = {};
+  c.runtime.id = c.runtime.id || ${JSON.stringify(extensionId)};
+  c.runtime.getURL = c.runtime.getURL || function (path) {
+    return 'chrome-extension://' + ${JSON.stringify(extensionId)} + '/' + String(path || '').replace(/^\\/+/, '');
+  };
+  c.runtime.sendMessage = c.runtime.sendMessage || function () { return Promise.resolve(); };
+  c.runtime.onMessage = c.runtime.onMessage || { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } };
+  c.runtime.connect = c.runtime.connect || function () {
+    return {
+      name: '',
+      postMessage: function () {},
+      disconnect: function () {},
+      onMessage: { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } },
+      onDisconnect: { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } },
+    };
+  };
+  if (!c.storage) c.storage = {};
+  if (!c.storage.local) c.storage.local = {
+    get: function (k, cb) { var r = {}; if (cb) cb(r); return Promise.resolve(r); },
+    set: function (i, cb) { if (cb) cb(); return Promise.resolve(); },
+    remove: function (k, cb) { if (cb) cb(); return Promise.resolve(); },
+    clear: function (cb) { if (cb) cb(); return Promise.resolve(); }
+  };
+})();`
+      const wrapped = setup + '\n(function(){' + code + '\n;})();'
       const world = script.world === 'MAIN' ? 0 : worldIdForExtension(extensionId)
       log.info('userscripts: injecting', {
         partition,
@@ -293,15 +331,25 @@ export function injectMatchingUserScripts(
             })
           })
         } else {
-          // executeJavaScriptInIsolatedWorld is sync-style — takes an
-          // array of scripts, no Promise return on every Electron
-          // version, so wrap in try/catch.
-          ;(wc as unknown as {
+          // executeJavaScriptInIsolatedWorld returns a Promise that
+          // rejects when the injected code throws — without an
+          // explicit .catch we get UnhandledPromiseRejectionWarning
+          // in the main log. Wrap in try/catch for the synchronous
+          // throw path AND .catch on the returned Promise for the
+          // async one. Either way we log the failure and move on.
+          const maybe = (wc as unknown as {
             executeJavaScriptInIsolatedWorld: (
               worldId: number,
               scripts: { code: string }[],
             ) => Promise<unknown> | void
           }).executeJavaScriptInIsolatedWorld(world, [{ code: wrapped }])
+          if (maybe && typeof (maybe as Promise<unknown>).then === 'function') {
+            ;(maybe as Promise<unknown>).then(undefined, (err) => {
+              log.warn('userscripts: injection failed (isolated)', {
+                partition, extensionId, id: script.id, url, world, err: String(err),
+              })
+            })
+          }
         }
       } catch (err) {
         log.warn('userscripts: injection failed', {
