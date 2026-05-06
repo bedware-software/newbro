@@ -25,7 +25,7 @@ import { log } from './log'
 import { setupPartitionSession } from './index'
 import { ensureExtensionInSession } from './extensions/manager'
 import { injectMatchingUserScripts } from './extensions/userscripts'
-import { getExtensionsFor } from './chrome-extensions-bridge'
+import { getExtensionsFor, suppressLibrarySelectTab } from './chrome-extensions-bridge'
 
 export interface TabBounds {
   x: number
@@ -643,13 +643,28 @@ export function createTab(opts: {
   wireEvents(rec)
 
   // Register the tab with electron-chrome-extensions so chrome.tabs.*
-  // sees it. The library tracks via webContents identity and emits its
-  // own events (onCreated/onActivated/onRemoved) to extensions. Skip
-  // gracefully if no instance has been created yet for this session
-  // (would be the case if setupPartitionSession hasn't run before us).
+  // sees it. The library auto-marks each newly-added tab as the
+  // window's active tab via observeTab → onActivated, which fires our
+  // selectTab callback. With multiple tabs being created on workspace
+  // restore, that cascade made every tab "active" in turn and the
+  // renderer's URL bar cycled through all of them. Suppress the
+  // library's selectTab callback during the addTab + corrective
+  // selectTab pair so only OUR view of the active tab wins.
   try {
     const ext = getExtensionsFor(view.webContents.session)
-    if (ext) ext.addTab(view.webContents, win)
+    if (ext) {
+      suppressLibrarySelectTab(() => {
+        ext.addTab(view.webContents, win)
+        // The library just marked THIS tab active. Correct it back to
+        // our recorded active tab if they differ (i.e. when adding a
+        // background tab while another tab is foreground).
+        const realActive = activeTabByWindow.get(opts.windowId)
+        if (realActive && realActive !== opts.tabId) {
+          const activeRec = tabs.get(realActive)
+          if (activeRec) ext.selectTab(activeRec.view.webContents)
+        }
+      })
+    }
   } catch (err) {
     log.warn('tab-views: addTab to extensions failed', { tabId: opts.tabId, err: String(err) })
   }
@@ -742,6 +757,7 @@ export function activateTab(windowId: number, tabId: string, url: string): void 
 
 function setActiveTab(windowId: number, tabId: string): void {
   const prev = activeTabByWindow.get(windowId)
+  if (prev === tabId) return // already active — no need to re-bound or notify
   if (prev && prev !== tabId) {
     const prevRec = tabs.get(prev)
     if (prevRec) {
@@ -759,11 +775,15 @@ function setActiveTab(windowId: number, tabId: string): void {
   }
   // Tell electron-chrome-extensions which tab is now active so
   // chrome.tabs.query({active:true}) and chrome.tabs.onActivated fire
-  // with the right tab id. Without this, extensions see a stale
-  // "active tab" and the popup shows "no access".
+  // with the right tab id. Wrapped in suppressLibrarySelectTab so the
+  // library's internal active-tab-changed event can't bounce back as
+  // a selectTab callback we'd then re-process (which would create the
+  // exact loop we just fixed in createTab).
   try {
     const ext = getExtensionsFor(rec.view.webContents.session)
-    if (ext) ext.selectTab(rec.view.webContents)
+    if (ext) {
+      suppressLibrarySelectTab(() => ext.selectTab(rec.view.webContents))
+    }
   } catch (err) {
     log.warn('tab-views: selectTab to extensions failed', { tabId, err: String(err) })
   }
@@ -1418,15 +1438,20 @@ export function getRecordByWebContents(wc: WebContents): { tabId: string; window
 }
 
 /** chrome.tabs.update active:true bridge — promote the matching tab
- *  to the workspace's active tab. */
+ *  to the workspace's active tab. Only called from the library's
+ *  selectTab callback path (gated by isLibrarySelectTabSuppressed in
+ *  the bridge), so by the time we get here it's an extension-driven
+ *  activation we want to honour. */
 export function selectTabByWebContents(wc: WebContents): void {
   const rec = getRecordByWebContents(wc)
   if (!rec) return
+  if (activeTabByWindow.get(rec.windowId) === rec.tabId) return
   setActiveTab(rec.windowId, rec.tabId)
-  // Mirror the renderer's "active tab" so its sidebar / titlebar
-  // reflect the change too. The renderer is the source of truth for
-  // the persisted active-tab id; broadcasting here makes extension-
-  // initiated activations stick.
+  // Mirror to the renderer so its sidebar / URL bar / WebviewPanel
+  // pick up the activation. The renderer's onActivateTab handler
+  // updates the store, which triggers tab:activate IPC back to us —
+  // but setActiveTab's prev===tabId early-return makes that round-
+  // trip a no-op.
   sendToWindowRenderer(rec.windowId, 'activate-tab', rec.tabId)
 }
 

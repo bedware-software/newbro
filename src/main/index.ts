@@ -31,7 +31,7 @@ import {
   selectTabByWebContents,
   destroyTabByWebContents,
 } from './tab-views'
-import { getOrCreateExtensions } from './chrome-extensions-bridge'
+import { getOrCreateExtensions, isLibrarySelectTabSuppressed } from './chrome-extensions-bridge'
 import { loadEnabledExtensionsInto, rehydrateExtensionsOnStartup } from './extensions/manager'
 import {
   registerUserScripts,
@@ -757,7 +757,15 @@ export function setupPartitionSession(partition: string): void {
         return [wc, win]
       },
       selectTab: (wc) => {
-        try { selectTabByWebContents(wc) } catch { /* ignore */ }
+        // The library calls this for any setActiveTab in its store —
+        // including the spurious one observeTab fires when we addTab
+        // a background tab. Skip if we're orchestrating that addTab
+        // round-trip ourselves; honour real chrome.tabs.update calls
+        // from extensions otherwise.
+        try {
+          if (isLibrarySelectTabSuppressed()) return
+          selectTabByWebContents(wc)
+        } catch { /* ignore */ }
       },
       removeTab: (wc) => {
         try { destroyTabByWebContents(wc) } catch { /* ignore */ }

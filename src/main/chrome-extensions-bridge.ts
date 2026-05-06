@@ -23,6 +23,32 @@ import { log } from './log'
 
 const instances = new Map<Session, ElectronChromeExtensions>()
 
+/** True while we're inside our own ext.addTab / ext.selectTab call.
+ *  The library auto-activates each newly-added tab (observeTab calls
+ *  onActivated → store.setActiveTab → impl.selectTab callback), which
+ *  cascades through every tab as the workspace restores — every tab
+ *  becomes "active" in turn, the renderer cycles its URL bar through
+ *  all of them, and the user sees lightning-fast tab cycling. We
+ *  flip the flag while orchestrating so the library's spurious
+ *  callback during that window is ignored; real callbacks (from
+ *  chrome.tabs.update issued by an extension) come in after the flag
+ *  is cleared and propagate to the renderer normally. */
+let suppressLibraryCallback = false
+
+export function suppressLibrarySelectTab<T>(work: () => T): T {
+  const previous = suppressLibraryCallback
+  suppressLibraryCallback = true
+  try {
+    return work()
+  } finally {
+    suppressLibraryCallback = previous
+  }
+}
+
+export function isLibrarySelectTabSuppressed(): boolean {
+  return suppressLibraryCallback
+}
+
 /** Initialise the extension API surface for a session. Idempotent —
  *  calling twice for the same session returns the existing instance. */
 export function getOrCreateExtensions(
