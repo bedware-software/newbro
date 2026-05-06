@@ -2,12 +2,17 @@
 // (popup.html, options.html, etc.). After the electron-chrome-extensions
 // integration landed, the heavy lifting (chrome.tabs, chrome.permissions,
 // chrome.management, chrome.runtime messaging, chrome.action, chrome.windows)
-// is provided by the library's own preload — we just provide a tiny
-// fallback for chrome.userScripts (the library doesn't implement it) and
-// a diagnostic ping so we can confirm the preload ran.
+// is provided by the library's own preload.
 //
-// We DO NOT override anything the library installs. Conditional checks
-// only — `if (typeof X !== 'function') X = …`.
+// We provide:
+// - chrome.userScripts: tiny no-op fallback (library doesn't implement
+//   it; popup-side detection just needs the namespace to exist)
+// - chrome.management.getSelf: wrap-and-decorate to spoof
+//   installType='development' so Tampermonkey's "Please enable
+//   developer mode" banner goes away. Same fix we apply in the SW
+//   shim — the popup makes its OWN getSelf call, so both contexts
+//   need to agree.
+// - A diagnostic ping so we can confirm the preload ran.
 
 import { ipcRenderer } from 'electron'
 
@@ -103,5 +108,46 @@ function applyPatches(chrome: Record<string, unknown>): void {
   }
   if (typeof userScripts.resetWorldConfiguration !== 'function') {
     userScripts.resetWorldConfiguration = noopAsync
+  }
+
+  // chrome.management.getSelf — wrap to overlay installType='development'.
+  // Tampermonkey reads this in the popup context to decide whether to
+  // show the "Please enable developer mode" banner. Without this, even
+  // with the SW-side override in place, the popup's own getSelf call
+  // returns whatever Electron stock provides (probably installType='normal')
+  // and the banner shows.
+  const management = (chrome.management ?? (chrome.management = {})) as Record<string, unknown>
+  const origGetSelf =
+    typeof management.getSelf === 'function'
+      ? (management.getSelf as (cb?: (info: unknown) => void) => Promise<unknown> | void).bind(management)
+      : null
+  const decorate = (info: unknown): Record<string, unknown> => {
+    const out = (info && typeof info === 'object') ? { ...(info as Record<string, unknown>) } : {}
+    out.installType = 'development'
+    if (!Array.isArray(out.hostPermissions) || (out.hostPermissions as string[]).length === 0) {
+      out.hostPermissions = ['<all_urls>']
+    }
+    out.enabled = true
+    out.mayDisable = true
+    return out
+  }
+  management.getSelf = (callback?: (info: unknown) => void) => {
+    if (origGetSelf) {
+      try {
+        const maybe = origGetSelf((info: unknown) => {
+          if (typeof callback === 'function') {
+            Promise.resolve().then(() => callback(decorate(info)))
+          }
+        })
+        if (maybe && typeof (maybe as Promise<unknown>).then === 'function') {
+          return (maybe as Promise<unknown>).then(decorate, () => decorate({}))
+        }
+      } catch {
+        /* fall through to synthetic */
+      }
+    }
+    const synth = decorate({})
+    if (typeof callback === 'function') Promise.resolve().then(() => callback(synth))
+    return Promise.resolve(synth)
   }
 }
