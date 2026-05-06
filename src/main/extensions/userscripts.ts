@@ -23,7 +23,10 @@
 // type", not formal completeness.
 
 import type { WebContents } from 'electron'
+import { existsSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { log } from '../log'
+import { getExtensionEntry } from './manager'
 
 interface UserScriptJsSource {
   /** Inline JS to inject. */
@@ -245,12 +248,29 @@ export function injectMatchingUserScripts(
         })
         continue
       }
-      if (!Array.isArray(script.js) || script.js.length === 0) continue
+      if (!Array.isArray(script.js) || script.js.length === 0) {
+        log.info('userscripts: skip (no js sources)', { extensionId, id: script.id })
+        continue
+      }
+      // js[] entries can carry inline `code` OR a `file` path
+      // relative to the extension root. Tampermonkey 5.4 registers
+      // its bootstrap scripts with `file` only, so we must read the
+      // file content here. Reads are cached at the per-script level
+      // because the same script body gets re-injected on every
+      // navigation.
       const code = script.js
-        .map((s) => (typeof s.code === 'string' ? s.code : ''))
+        .map((src) => loadJsSource(extensionId, src))
         .filter((s) => s.length > 0)
         .join('\n;\n')
-      if (!code) continue
+      if (!code) {
+        log.info('userscripts: skip (empty code body)', {
+          extensionId,
+          id: script.id,
+          jsLen: script.js.length,
+          jsShape: script.js.map((s) => ({ hasCode: typeof s.code === 'string', file: s.file ?? null })),
+        })
+        continue
+      }
       // Wrap in an IIFE so the script's top-level vars stay scoped to
       // this invocation. Tampermonkey already wraps each user script
       // in its own GM_* sandbox before passing it to register(), so
@@ -298,5 +318,51 @@ export function injectMatchingUserScripts(
 export function clearUserScriptsForExtension(extensionId: string): void {
   for (const reg of registries.values()) {
     reg.byExtension.delete(extensionId)
+  }
+}
+
+// Cache loaded file contents — Tampermonkey's bootstrap files don't
+// change at runtime, so re-reading them on every navigation is just
+// wasted I/O. Keyed by absolute path.
+const fileSourceCache = new Map<string, string>()
+
+/** Resolve a single js[] source entry to its actual JavaScript body.
+ *  - { code: '...' } → returns the inline code as-is.
+ *  - { file: 'path/inside/extension.js' } → reads from the
+ *    extension's on-disk root via getExtensionEntry(extensionId).path.
+ *  - Anything else → empty string (caller filters out empties).
+ *
+ *  Path-traversal-safe: relative paths are resolved against the
+ *  extension root and rejected if they escape it. */
+function loadJsSource(extensionId: string, src: UserScriptJsSource): string {
+  if (typeof src.code === 'string' && src.code.length > 0) return src.code
+  if (typeof src.file !== 'string' || src.file.length === 0) return ''
+  const entry = getExtensionEntry(extensionId)
+  if (!entry || !entry.path) {
+    log.warn('userscripts: cannot resolve js[].file — extension not registered', {
+      extensionId,
+      file: src.file,
+    })
+    return ''
+  }
+  // Strip leading slashes so join() doesn't treat src.file as absolute,
+  // then check the resolved path stays inside the extension dir.
+  const cleanRel = src.file.replace(/^\/+/, '')
+  if (cleanRel.includes('..')) return ''
+  const abs = join(entry.path, cleanRel)
+  const root = resolve(entry.path)
+  if (!resolve(abs).startsWith(root)) return ''
+  if (fileSourceCache.has(abs)) return fileSourceCache.get(abs) ?? ''
+  if (!existsSync(abs)) {
+    log.warn('userscripts: js[].file missing on disk', { extensionId, abs })
+    return ''
+  }
+  try {
+    const text = readFileSync(abs, 'utf8')
+    fileSourceCache.set(abs, text)
+    return text
+  } catch (err) {
+    log.warn('userscripts: js[].file read failed', { extensionId, abs, err: String(err) })
+    return ''
   }
 }
