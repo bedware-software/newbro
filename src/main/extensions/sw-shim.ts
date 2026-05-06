@@ -35,8 +35,13 @@
 //        our impl). Plus a shim-ran beacon so we can confirm in
 //        main's log that the SW shim actually executed for each
 //        extension.
+//   V9 — wrap chrome.management.getSelf to return
+//        installType: 'development'. Tampermonkey 5.4.x in MV3 gates
+//        chrome.userScripts use on installType === 'development' (the
+//        Chrome dev-mode toggle). Without this Tampermonkey decides
+//        userScripts is unavailable and never even calls register().
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V8__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V9__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -129,6 +134,47 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     us.resetWorldConfiguration = function (worldId, cb) {
       if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
       return Promise.resolve();
+    };
+
+    // ── chrome.management.getSelf ──────────────────────────────────
+    // Tampermonkey 5.4.x checks chrome.management.getSelf().installType
+    // and refuses to use chrome.userScripts unless it equals
+    // 'development' (Chrome's dev-mode-on signal). Electron's stock
+    // chrome.management returns 'normal' (or doesn't expose installType
+    // at all), so Tampermonkey silently bails on the userScripts path
+    // — which is why we never see a register() call in the logs.
+    //
+    // Wrap getSelf to call through to whatever Electron provided, then
+    // overlay installType: 'development' + hostPermissions: ['<all_urls>']
+    // before passing to the caller. The library doesn't touch
+    // chrome.management at all, so we're not clobbering anything.
+    var management = c.management || (c.management = {});
+    var origGetSelf = (typeof management.getSelf === 'function') ? management.getSelf.bind(management) : null;
+    function decorateSelf(info) {
+      info = info || {};
+      info.installType = 'development';
+      info.hostPermissions = info.hostPermissions && info.hostPermissions.length ? info.hostPermissions : ['<all_urls>'];
+      info.enabled = true;
+      info.mayDisable = true;
+      info.id = info.id || extId;
+      return info;
+    }
+    management.getSelf = function (cb) {
+      if (origGetSelf) {
+        try {
+          var maybe = origGetSelf(function (info) {
+            if (typeof cb === 'function') Promise.resolve().then(function () { cb(decorateSelf(info)); });
+          });
+          if (maybe && typeof maybe.then === 'function') {
+            return maybe.then(decorateSelf, function () { return decorateSelf({}); });
+          }
+        } catch (_) {
+          /* fall through to synthetic */
+        }
+      }
+      var synth = decorateSelf({});
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(synth); });
+      return Promise.resolve(synth);
     };
 
     // ── chrome.scripting.executeScript ─────────────────────────────

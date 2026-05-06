@@ -566,14 +566,20 @@ function configureSession(ses: Electron.Session): void {
         } else if (action === 'sw-shim-ran') {
           const body = readUploadBody(details)
           const parsed = body ? safeJsonParse(body) : null
-          log.info('extensions: SW shim ran', { partition, info: parsed })
+          log.info('extensions: SW shim ran', {
+            partition: getPartitionForSession(ses),
+            info: parsed,
+          })
         } else if (
           action === 'userscripts-getScripts' ||
           action === 'userscripts-configureWorld'
         ) {
           const body = readUploadBody(details)
           const parsed = body ? safeJsonParse(body) : null
-          log.info('extensions: ' + action, { partition, info: parsed })
+          log.info('extensions: ' + action, {
+            partition: getPartitionForSession(ses),
+            info: parsed,
+          })
         } else if (action === 'permission-check') {
           // Diagnostic from the SW shim's chrome.permissions.contains.
           // Surfaces what URL/permissions Tampermonkey is gating on.
