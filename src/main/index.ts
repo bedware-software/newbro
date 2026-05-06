@@ -5,7 +5,7 @@
 // store grabs the default name during the import cascade and we never
 // get a separate dev folder. Keep this as the FIRST internal import.
 import { APP_NAME } from './branding'
-import { app, BrowserWindow, session, Menu, nativeImage, screen } from 'electron'
+import { app, BrowserWindow, session, Menu, nativeImage, screen, protocol } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
@@ -21,7 +21,12 @@ import {
 } from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { log } from './log'
-import { registerWorkspaceWindowForTabs, installTabPreloadListeners, closeExtensionPopup } from './tab-views'
+import {
+  registerWorkspaceWindowForTabs,
+  installTabPreloadListeners,
+  closeExtensionPopup,
+  getActiveTabInfoForWindow,
+} from './tab-views'
 import { loadEnabledExtensionsInto, rehydrateExtensionsOnStartup } from './extensions/manager'
 import {
   registerUserScripts,
@@ -30,6 +35,18 @@ import {
 } from './extensions/userscripts'
 
 // ── Chromium flags ──
+
+// Register newbro-ipc:// as a privileged scheme so the SW shim we
+// inject into MV3 background scripts can do `fetch('newbro-ipc://...')`
+// to query main and get a JSON response back. Without privileged +
+// supportFetchAPI, fetch() of a custom scheme from a service worker
+// just errors. MUST run before app.ready.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'newbro-ipc',
+    privileges: { secure: true, standard: true, supportFetchAPI: true, corsEnabled: true },
+  },
+])
 
 // Disable Chromium's User-Agent Client Hints so we don't send sec-ch-ua/
 // sec-ch-ua-mobile/sec-ch-ua-platform headers or expose navigator.userAgentData.
@@ -464,6 +481,43 @@ function configureSession(ses: Electron.Session): void {
   // the request — the .test TLD never reaches DNS even if the cancel
   // races. Pattern stays narrow (one host) so legitimate requests are
   // untouched.
+  // Custom protocol that the SW shim can fetch from to get JSON back.
+  // The webRequest sentinel pattern is one-way (we cancel, no body),
+  // which is fine for "open this tab" but doesn't help when the SW
+  // needs to ask "what's the URL of the active tab?" — that needs a
+  // round-trip with content. protocol.handle returns a real Response.
+  try {
+    const handle = (ses.protocol as { handle?: (scheme: string, h: (req: Request) => Promise<Response> | Response) => void }).handle
+    if (typeof handle === 'function') {
+      handle.call(ses.protocol, 'newbro-ipc', async (req: Request): Promise<Response> => {
+        try {
+          const u = new URL(req.url)
+          const action = u.hostname || u.pathname.replace(/^\/+/, '')
+          if (action === 'active-tab-info' || action === 'active-tab-info/') {
+            // Find the workspace window that owns this partition. We
+            // pick the focused one; if none is focused, the first
+            // window with a tab in this partition.
+            const win = pickWindowForPartition(partition)
+            if (!win) {
+              log.info('extensions: ipc active-tab-info — no window for partition', { partition })
+              return jsonResponse({ tab: null })
+            }
+            const tab = getActiveTabInfoForWindow(win.id)
+            log.info('extensions: ipc active-tab-info', { partition, windowId: win.id, tab })
+            return jsonResponse({ tab })
+          }
+          return jsonResponse({ error: 'unknown-action', action })
+        } catch (err) {
+          return jsonResponse({ error: String(err) }, 500)
+        }
+      })
+    } else {
+      log.warn('extensions: ses.protocol.handle missing — SW newbro-ipc:// won\'t work', { partition })
+    }
+  } catch (err) {
+    log.warn('extensions: ses.protocol.handle setup failed', { partition, err: String(err) })
+  }
+
   ses.webRequest.onBeforeRequest(
     { urls: ['https://newbro-ext-ipc.test/*', 'http://newbro-ext-ipc.test/*'] },
     (details, callback) => {
@@ -552,6 +606,35 @@ function getPartitionForSession(ses: Electron.Session): string {
     if (session.fromPartition(partition) === ses) return partition
   }
   return 'persist:default'
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function pickWindowForPartition(partition: string): BrowserWindow | null {
+  const focused = BrowserWindow.getFocusedWindow()
+  if (focused && !focused.isDestroyed()) {
+    for (const view of focused.contentView.children) {
+      const wc = (view as unknown as { webContents?: Electron.WebContents }).webContents
+      if (wc && !wc.isDestroyed() && wc.session === session.fromPartition(partition)) {
+        return focused
+      }
+    }
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    for (const view of win.contentView.children) {
+      const wc = (view as unknown as { webContents?: Electron.WebContents }).webContents
+      if (wc && !wc.isDestroyed() && wc.session === session.fromPartition(partition)) {
+        return win
+      }
+    }
+  }
+  return null
 }
 
 export function setupPartitionSession(partition: string): void {

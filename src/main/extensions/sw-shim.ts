@@ -31,8 +31,15 @@
 //        with hostPermissions: ['<all_urls>'] so Tampermonkey's
 //        popup-side access check passes regardless of which API path
 //        it takes.
+//   V5 — overrode chrome.tabs.query in the SW context to fetch
+//        newbro-ipc://active-tab-info and return main's view of the
+//        workspace's active tab. Tampermonkey's SW initialises
+//        BEFORE our WebContentsView tabs exist; without this it sees
+//        zero tabs, caches "no access" forever, and refuses to
+//        register or inject userscripts even after the user
+//        navigates to a matching URL.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V4__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V5__'
 
 // Markers we know about. Anything matching one of these gets stripped
 // and replaced with the current version's source.
@@ -103,6 +110,47 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
         return Promise.resolve(tab);
       };
     }
+
+    // chrome.tabs.query — when the SW asks "what's the active tab?",
+    // Electron returns either nothing (we observed Tampermonkey
+    // initialise BEFORE our tab WebContentsViews exist, so the query
+    // is empty) or the popup view itself with a chrome-extension://
+    // URL. Either way, Tampermonkey caches "no tabs / no usable URL
+    // → no access" and refuses to register or inject anything.
+    //
+    // Override for {active:true} / {currentWindow:true} /
+    // {lastFocusedWindow:true} queries: do an async fetch to
+    // newbro-ipc://active-tab-info and return whatever main reports
+    // as the workspace's actual active tab. Other queries (specific
+    // tabId etc.) fall through to Electron's implementation.
+    var origTabsQuery = (typeof tabs.query === 'function') ? tabs.query.bind(tabs) : null;
+    tabs.query = function (queryInfo, cb) {
+      var wantsActive =
+        queryInfo && typeof queryInfo === 'object' &&
+        (queryInfo.active === true ||
+         queryInfo.currentWindow === true ||
+         queryInfo.lastFocusedWindow === true);
+      if (wantsActive) {
+        var p = fetch('newbro-ipc://active-tab-info')
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            var arr = (j && j.tab) ? [j.tab] : [];
+            return arr;
+          })
+          .catch(function () { return []; });
+        if (typeof cb === 'function') {
+          p.then(function (arr) { cb(arr); });
+          return undefined;
+        }
+        return p;
+      }
+      if (origTabsQuery) {
+        if (typeof cb === 'function') return origTabsQuery(queryInfo, cb);
+        return origTabsQuery(queryInfo);
+      }
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb([]); });
+      return Promise.resolve([]);
+    };
 
     // ── chrome.windows ─────────────────────────────────────────────
     var wins = c.windows || (c.windows = {});

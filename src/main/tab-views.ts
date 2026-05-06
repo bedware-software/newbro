@@ -1364,6 +1364,49 @@ function hashStringToInt(s: string): number {
   return Math.abs(h) || 1
 }
 
+/** Used by the newbro-ipc:// protocol handler in main/index.ts so the
+ *  SW shim's chrome.tabs.query polyfill can return the workspace's
+ *  actual active tab. The popup-side handler that does the same job
+ *  lives in this file's installTabPreloadListeners as
+ *  'newbro-ext-active-tab-info' ipcMain.handle — same shape, fed by
+ *  the IPC sender's window. The protocol path can't read the sender,
+ *  so the caller passes the windowId explicitly. */
+export function getActiveTabInfoForWindow(windowId: number): {
+  id: number
+  url: string
+  title: string
+  active: boolean
+  highlighted: boolean
+  pinned: boolean
+  windowId: number
+  index: number
+  status: string
+  incognito: boolean
+  favIconUrl: string
+} | null {
+  const activeTabId = activeTabByWindow.get(windowId)
+  if (!activeTabId) return null
+  const rec = tabs.get(activeTabId)
+  if (!rec) return null
+  let url = ''
+  let title = ''
+  try { url = rec.view.webContents.getURL() } catch { /* ignore */ }
+  try { title = rec.view.webContents.getTitle() } catch { /* ignore */ }
+  return {
+    id: hashStringToInt(rec.tabId),
+    url,
+    title,
+    active: true,
+    highlighted: true,
+    pinned: false,
+    windowId,
+    index: 0,
+    status: 'complete',
+    incognito: false,
+    favIconUrl: '',
+  }
+}
+
 // Silence unused-app warning on some bundlers — `app` is used indirectly
 // via session.fromPartition / BrowserWindow.fromId, both of which need
 // the app to be ready; leaving the import ensures the main module order
