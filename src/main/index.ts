@@ -26,7 +26,12 @@ import {
   installTabPreloadListeners,
   closeExtensionPopup,
   getActiveTabInfoForWindow,
+  createTabForExtension,
+  getRecordByWebContents,
+  selectTabByWebContents,
+  destroyTabByWebContents,
 } from './tab-views'
+import { getOrCreateExtensions } from './chrome-extensions-bridge'
 import { loadEnabledExtensionsInto, rehydrateExtensionsOnStartup } from './extensions/manager'
 import {
   registerUserScripts,
@@ -736,6 +741,32 @@ export function setupPartitionSession(partition: string): void {
     log.warn('extensions: failed to wire SW console-message listener', { partition, err: String(err) })
   }
   configuredPartitions.add(partition)
+
+  // Hand the partition over to electron-chrome-extensions BEFORE
+  // loadEnabledExtensionsInto fires — the library installs its
+  // session preload via registerPreloadScript, and chrome.* in
+  // background-script and popup contexts only works for extensions
+  // loaded AFTER that preload is registered.
+  try {
+    getOrCreateExtensions(ses, {
+      createTab: async (details) => {
+        const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+        if (!win || win.isDestroyed()) throw new Error('no live window for chrome.tabs.create')
+        const url = typeof details.url === 'string' ? details.url : 'about:blank'
+        const wc = await createTabForExtension(win, partition, url, details.active !== false)
+        return [wc, win]
+      },
+      selectTab: (wc) => {
+        try { selectTabByWebContents(wc) } catch { /* ignore */ }
+      },
+      removeTab: (wc) => {
+        try { destroyTabByWebContents(wc) } catch { /* ignore */ }
+      },
+    })
+  } catch (err) {
+    log.warn('extensions: ElectronChromeExtensions setup failed', { partition, err: String(err) })
+  }
+
   // Load every user-installed, enabled extension into the partition so
   // content scripts / declarativeNetRequest rules / MV3 service workers
   // attach before the first page navigation in this partition. Fire and

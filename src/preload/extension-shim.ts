@@ -1,63 +1,29 @@
-// Minimal polyfill for chrome.* APIs Electron 41 doesn't ship out of the
-// box. Registered as a session preload (frame + service-worker) on every
-// partition that hosts extensions; runs INSIDE the extension's own
-// contexts so its scripts see a chrome.tabs.create that actually opens
-// a tab in the host workspace, instead of throwing
-//   "TypeError: I.tabs.create is not a function"
-// the way Tampermonkey's Dashboard button does. The Electron-supplied
-// chrome.tabs.query / .update / .reload / .sendMessage / .executeScript
-// surface is left alone — we only fill in the gaps.
+// Frame-context preload that runs in chrome-extension:// frames
+// (popup.html, options.html, etc.). After the electron-chrome-extensions
+// integration landed, the heavy lifting (chrome.tabs, chrome.permissions,
+// chrome.management, chrome.runtime messaging, chrome.action, chrome.windows)
+// is provided by the library's own preload — we just provide a tiny
+// fallback for chrome.userScripts (the library doesn't implement it) and
+// a diagnostic ping so we can confirm the preload ran.
 //
-// Why a shim runs in BOTH context kinds:
-//   - Frames (popup.html, options.html, regular extension pages) —
-//     the popup script may call chrome.tabs.create directly.
-//   - Service workers (MV3 background.js) — clicks in the popup are
-//     usually round-tripped through chrome.runtime.sendMessage; the
-//     listener in the SW is what actually calls chrome.tabs.create.
-//     Tampermonkey 5.4.x is exactly this shape.
-//
-// Timing: this preload runs BEFORE any extension code, but Chromium
-// installs the chrome.* binding on the same context lazily (chrome.tabs
-// is a host object filled in C++). We can't synchronously patch a thing
-// that doesn't exist yet, so we use a getter/setter trap on
-// `globalThis.chrome` that re-applies our patches every time Chromium
-// (re-)assigns the namespace. Polling / microtasks proved unreliable in
-// the MV3 service-worker context — Tampermonkey's background script
-// imports its own scripts very early and bound `chrome.tabs` to a local
-// closure variable BEFORE any deferred patching could land.
-//
-// We can't `contextBridge`-expose anything here because the shim runs in
-// the extension's own JS world (chrome.* lives there). ipcRenderer is
-// available in both Electron preload contexts, so we use it directly.
+// We DO NOT override anything the library installs. Conditional checks
+// only — `if (typeof X !== 'function') X = …`.
 
 import { ipcRenderer } from 'electron'
 
-// Diagnostic: tell main we ran. The user-visible bug-report flow is "I
-// installed Tampermonkey, clicked X, here's the log" — so loud
-// confirmation of "shim loaded in SW for this extension" makes it easy
-// to tell whether registerPreloadScript({ type: 'service-worker' })
-// actually delivered the bytes.
 function reportLoaded(stage: string): void {
   try {
     ipcRenderer.send('newbro-ext-shim-loaded', {
       stage,
       href: typeof location !== 'undefined' ? location?.href : null,
       hasChrome: typeof (globalThis as { chrome?: unknown }).chrome !== 'undefined',
-      hasTabs:
-        typeof (globalThis as { chrome?: { tabs?: unknown } }).chrome?.tabs !== 'undefined',
-      hasTabsCreate:
-        typeof (globalThis as { chrome?: { tabs?: { create?: unknown } } }).chrome?.tabs
-          ?.create === 'function',
+      hasUserScripts:
+        typeof (globalThis as { chrome?: { userScripts?: unknown } }).chrome?.userScripts !== 'undefined',
     })
-  } catch {
-    /* ipcRenderer can be torn down in some contexts; best-effort */
-  }
+  } catch { /* ipcRenderer may be torn down */ }
 }
 
-// Skip the shim outside extension contexts. Frames load with location.protocol
-// available; service workers load with self.location populated to the
-// extension's own URL. Either way, "is this a chrome-extension:// context"
-// is the gate we want.
+// Skip outside extension contexts.
 const proto = (() => {
   try {
     if (typeof location !== 'undefined' && location?.protocol) return location.protocol
@@ -75,289 +41,11 @@ if (proto === 'chrome-extension:') {
   reportLoaded('preload-end')
 }
 
-interface CreateProperties {
-  url?: string
-  active?: boolean
-  windowId?: number
-  index?: number
-  pinned?: boolean
-  openerTabId?: number
-}
-
-interface FakeTab {
-  id: number
-  index: number
-  windowId: number
-  active: boolean
-  highlighted: boolean
-  pinned: boolean
-  url: string
-  status: 'complete' | 'loading'
-  incognito: boolean
-}
-
-function fakeTab(url: string, active: boolean): FakeTab {
-  return {
-    id: -1,
-    index: 0,
-    windowId: -1,
-    active,
-    highlighted: active,
-    pinned: false,
-    url,
-    status: 'loading',
-    incognito: false,
-  }
-}
-
-function applyPatches(chrome: Record<string, unknown>): void {
-  if (!chrome || typeof chrome !== 'object') return
-
-  // chrome.tabs ── the gap we ACTUALLY hit. Tampermonkey calls .create
-  // from background.js; Unhook calls it from popup.js. Electron 41
-  // exposes a partial chrome.tabs (query / update / reload / sendMessage
-  // / executeScript) but no `create`.
-  const tabs = (chrome.tabs ?? (chrome.tabs = {})) as Record<string, unknown>
-
-  // chrome.tabs.query — replace Electron's implementation when the
-  // popup asks for {active:true,currentWindow:true}. Electron returns
-  // the popup's OWN WebContentsView (url = chrome-extension://…/
-  // action.html), but Tampermonkey then matches that URL against its
-  // host_permissions / userscript matches to decide "do I have
-  // access to this page", and chrome-extension:// never matches
-  // anything. Forwarding to main returns the workspace's actual
-  // active tab — the page the user is looking at.
-  const origQuery = typeof tabs.query === 'function' ? (tabs.query as (q: unknown, cb?: (r: unknown[]) => void) => unknown).bind(tabs) : null
-  tabs.query = (queryInfo: unknown, callback?: (results: unknown[]) => void) => {
-    const wantsActive =
-      typeof queryInfo === 'object' && queryInfo !== null &&
-      ((queryInfo as Record<string, unknown>).active === true ||
-        (queryInfo as Record<string, unknown>).currentWindow === true ||
-        (queryInfo as Record<string, unknown>).lastFocusedWindow === true)
-    const trace = (results: unknown, source: string): void => {
-      try {
-        ipcRenderer.send('newbro-ext-shim-trace', { kind: 'tabs.query', source, args: queryInfo, results })
-      } catch { /* ignore */ }
-    }
-    if (wantsActive) {
-      const promise = ipcRenderer.invoke('newbro-ext-active-tab-info').then((tab: unknown) => {
-        const results = tab ? [tab] : []
-        trace(results, 'shim-active')
-        return results
-      })
-      if (typeof callback === 'function') {
-        promise.then((r) => callback(r as unknown[]))
-        return undefined
-      }
-      return promise
-    }
-    if (origQuery) {
-      if (typeof callback === 'function') {
-        return origQuery(queryInfo, (results: unknown[]) => { trace(results, 'electron'); callback(results) })
-      }
-      const maybe = origQuery(queryInfo)
-      if (maybe && typeof (maybe as Promise<unknown>).then === 'function') {
-        return (maybe as Promise<unknown>).then((r) => { trace(r, 'electron'); return r })
-      }
-      trace(maybe, 'electron')
-      return maybe
-    }
-    if (typeof callback === 'function') Promise.resolve().then(() => { trace([], 'empty'); callback([]) })
-    return Promise.resolve([])
-  }
-
-  if (typeof tabs.create !== 'function') {
-    tabs.create = (props: CreateProperties, callback?: (tab: FakeTab) => void) => {
-      const url = typeof props?.url === 'string' ? props.url : ''
-      const active = props?.active !== false
-      try { ipcRenderer.send('newbro-ext-open-tab', { url, active }) } catch { /* ignore */ }
-      const tab = fakeTab(url, active)
-      if (typeof callback === 'function') {
-        Promise.resolve().then(() => callback(tab))
-      }
-      return Promise.resolve(tab)
-    }
-  }
-
-  // chrome.windows.create ── extensions occasionally use this instead of
-  // chrome.tabs.create, requesting a popup window. Treat the same as a
-  // new tab — we don't have multi-window-per-extension UX yet and a tab
-  // is the closest equivalent.
-  const windows = (chrome.windows ?? (chrome.windows = {})) as Record<string, unknown>
-  if (typeof windows.create !== 'function') {
-    windows.create = (
-      props: { url?: string | string[]; focused?: boolean },
-      callback?: (win: { id: number; tabs: FakeTab[] }) => void
-    ) => {
-      const urls = Array.isArray(props?.url) ? props!.url : props?.url ? [props.url as string] : []
-      for (const u of urls) {
-        try { ipcRenderer.send('newbro-ext-open-tab', { url: u, active: props?.focused !== false }) } catch { /* ignore */ }
-      }
-      const win = { id: -1, tabs: urls.map((u) => fakeTab(u, true)) }
-      if (typeof callback === 'function') Promise.resolve().then(() => callback(win))
-      return Promise.resolve(win)
-    }
-  }
-
-  // chrome.runtime.openOptionsPage ── built into real Chrome, missing
-  // here. Tampermonkey, uBlock, and many others wire their "Open
-  // settings" link to it. Look up the manifest's options page from the
-  // extension's own URL via chrome.runtime.getManifest (which Electron
-  // does provide) and route it through the same new-tab IPC.
-  const runtime = (chrome.runtime ?? (chrome.runtime = {})) as Record<string, unknown>
-  if (typeof runtime.openOptionsPage !== 'function') {
-    runtime.openOptionsPage = (callback?: () => void) => {
-      try {
-        const m = typeof runtime.getManifest === 'function'
-          ? (runtime.getManifest as () => Record<string, unknown>)()
-          : {}
-        const optionsPage =
-          typeof m.options_page === 'string'
-            ? m.options_page
-            : (m.options_ui as { page?: string } | undefined)?.page
-        if (typeof optionsPage === 'string' && optionsPage.length > 0 && typeof runtime.getURL === 'function') {
-          const url = (runtime.getURL as (path: string) => string)(optionsPage)
-          ipcRenderer.send('newbro-ext-open-tab', { url, active: true })
-        }
-      } catch { /* ignore */ }
-      if (typeof callback === 'function') Promise.resolve().then(() => callback())
-      return Promise.resolve()
-    }
-  }
-
-  // chrome.userScripts ── stubbed so popup-side detection
-  // (Tampermonkey reads chrome.userScripts to decide whether to show
-  // the "developer mode" warning) sees a real-looking namespace.
-  // Persistence and injection live in the SW context's stub; this
-  // frame-side stub just answers calls with empty results so the popup
-  // doesn't blow up if it queries here.
-  const userScripts = (chrome.userScripts ?? (chrome.userScripts = {})) as Record<string, unknown>
-  const noopAsync = (_args?: unknown, callback?: (...a: unknown[]) => void) => {
-    if (typeof callback === 'function') Promise.resolve().then(() => callback())
-    return Promise.resolve()
-  }
-  if (typeof userScripts.register !== 'function') userScripts.register = noopAsync
-  if (typeof userScripts.unregister !== 'function') userScripts.unregister = noopAsync
-  if (typeof userScripts.update !== 'function') userScripts.update = noopAsync
-  // chrome.userScripts.getScripts — Tampermonkey calls this to test
-  // whether the userScripts API is "alive" AND to read the registered
-  // scripts' match patterns for the access check. Empty list is OK
-  // for the alive-check, but the access check would fail so we trace
-  // the call so we can see Tampermonkey's expectation. (We can't
-  // populate the list cross-context cheaply: registrations live in
-  // main's per-partition registry; if returning [] keeps causing
-  // false negatives we'll wire an IPC fetch here too.)
-  userScripts.getScripts = (filter?: unknown, callback?: (s: unknown[]) => void) => {
-    try {
-      ipcRenderer.send('newbro-ext-shim-trace', { kind: 'userScripts.getScripts', args: filter })
-    } catch { /* ignore */ }
-    if (typeof callback === 'function') Promise.resolve().then(() => callback([]))
-    return Promise.resolve([])
-  }
-  if (typeof userScripts.configureWorld !== 'function') userScripts.configureWorld = noopAsync
-  if (typeof userScripts.getWorldConfigurations !== 'function') {
-    userScripts.getWorldConfigurations = (callback?: (s: unknown[]) => void) => {
-      if (typeof callback === 'function') Promise.resolve().then(() => callback([]))
-      return Promise.resolve([])
-    }
-  }
-  if (typeof userScripts.resetWorldConfiguration !== 'function') {
-    userScripts.resetWorldConfiguration = noopAsync
-  }
-
-  // chrome.permissions ── grant-all stub. Force-overwrite (don't gate
-  // on `typeof === 'function'`) — Electron 41 ships a partial
-  // chrome.permissions.contains that returns false when the API isn't
-  // backed by real permission storage, which is exactly the path that
-  // makes Tampermonkey's popup show "no access to this page" even
-  // after we declared <all_urls> in host_permissions.
-  const permissions = (chrome.permissions ?? (chrome.permissions = {})) as Record<string, unknown>
-  permissions.contains = (args: unknown, callback?: (b: boolean) => void) => {
-    try {
-      ipcRenderer.send('newbro-ext-shim-trace', { kind: 'permissions.contains', args })
-    } catch { /* ignore */ }
-    if (typeof callback === 'function') Promise.resolve().then(() => callback(true))
-    return Promise.resolve(true)
-  }
-  const grantTrue = (_args?: unknown, callback?: (b: boolean) => void) => {
-    if (typeof callback === 'function') Promise.resolve().then(() => callback(true))
-    return Promise.resolve(true)
-  }
-  permissions.request = grantTrue
-  permissions.remove = grantTrue
-  permissions.getAll = (callback?: (p: { permissions: string[]; origins: string[] }) => void) => {
-    const all = { permissions: [], origins: ['<all_urls>'] }
-    if (typeof callback === 'function') Promise.resolve().then(() => callback(all))
-    return Promise.resolve(all)
-  }
-  const noopEvent = { addListener: () => {}, removeListener: () => {}, hasListener: () => false }
-  if (!permissions.onAdded) permissions.onAdded = noopEvent
-  if (!permissions.onRemoved) permissions.onRemoved = noopEvent
-
-  // chrome.management.getSelf ── decorate whatever Electron returns
-  // (or fabricate from scratch) so host_permissions includes
-  // '<all_urls>'. Tampermonkey reads its own ExtensionInfo on the
-  // popup-access path on some builds.
-  const management = (chrome.management ?? (chrome.management = {})) as Record<string, unknown>
-  const origGetSelf =
-    typeof management.getSelf === 'function'
-      ? (management.getSelf as (cb?: (info: unknown) => void) => Promise<unknown> | void).bind(management)
-      : null
-  management.getSelf = (callback?: (info: unknown) => void) => {
-    try {
-      ipcRenderer.send('newbro-ext-shim-trace', { kind: 'management.getSelf' })
-    } catch { /* ignore */ }
-    const manifest =
-      typeof runtime.getManifest === 'function'
-        ? (runtime.getManifest as () => Record<string, unknown>)()
-        : {}
-    const decorate = (info: Record<string, unknown> | null | undefined): Record<string, unknown> => {
-      const out = { ...(info ?? {}) } as Record<string, unknown>
-      out.hostPermissions = ['<all_urls>']
-      if (Array.isArray((manifest as Record<string, unknown>).permissions)) {
-        out.permissions = ((manifest as Record<string, unknown>).permissions as string[]).slice()
-      } else if (!Array.isArray(out.permissions)) {
-        out.permissions = []
-      }
-      out.enabled = true
-      out.mayDisable = true
-      return out
-    }
-    if (origGetSelf) {
-      try {
-        const maybe = origGetSelf((info: unknown) => {
-          if (typeof callback === 'function') {
-            Promise.resolve().then(() => callback(decorate(info as Record<string, unknown>)))
-          }
-        })
-        if (maybe && typeof (maybe as Promise<unknown>).then === 'function') {
-          return (maybe as Promise<unknown>).then(
-            (info) => decorate(info as Record<string, unknown>),
-            () => decorate({}),
-          )
-        }
-      } catch {
-        /* fall through to synthetic */
-      }
-    }
-    const synth = decorate({})
-    if (typeof callback === 'function') Promise.resolve().then(() => callback(synth))
-    return Promise.resolve(synth)
-  }
-}
-
 function install(): void {
   const w = globalThis as unknown as { chrome?: Record<string, unknown> }
 
-  // Patch whatever's already there now …
   if (w.chrome) applyPatches(w.chrome)
 
-  // … AND keep patching every time Chromium replaces the chrome object.
-  // The MV3 service worker observed in practice has Chromium initialise
-  // chrome AFTER the preload returns — patches we wrote to a placeholder
-  // {} get clobbered when Chromium assigns the real namespace. The trap
-  // below re-applies our patches at every assignment point so the gap is
-  // closed regardless of timing.
   let backing: Record<string, unknown> | undefined = w.chrome
   try {
     Object.defineProperty(globalThis, 'chrome', {
@@ -370,11 +58,6 @@ function install(): void {
       },
     })
   } catch {
-    // Some Chromium builds make `chrome` non-configurable on the worker
-    // global; defineProperty throws in that case. Fall back to polling
-    // for a short window so we still patch once Chromium is done
-    // initialising. Six attempts × 1ms covers the common races; bail
-    // out after that to avoid an infinite microtask churn.
     let tries = 0
     const tick = (): void => {
       if (w.chrome && typeof w.chrome === 'object') {
@@ -387,3 +70,38 @@ function install(): void {
   }
 }
 
+function applyPatches(chrome: Record<string, unknown>): void {
+  if (!chrome || typeof chrome !== 'object') return
+
+  // chrome.userScripts ── stubbed so popup-side detection
+  // (Tampermonkey reads chrome.userScripts to decide whether to show
+  // the "developer mode required" warning) sees a real-looking
+  // namespace. Persistence and injection live in the SW context's
+  // shim and main's userscripts registry; this frame-side stub just
+  // answers calls with empty results so the popup doesn't blow up if
+  // it queries here.
+  const userScripts = (chrome.userScripts ?? (chrome.userScripts = {})) as Record<string, unknown>
+  const noopAsync = (_args?: unknown, callback?: (...a: unknown[]) => void) => {
+    if (typeof callback === 'function') Promise.resolve().then(() => callback())
+    return Promise.resolve()
+  }
+  if (typeof userScripts.register !== 'function') userScripts.register = noopAsync
+  if (typeof userScripts.unregister !== 'function') userScripts.unregister = noopAsync
+  if (typeof userScripts.update !== 'function') userScripts.update = noopAsync
+  if (typeof userScripts.getScripts !== 'function') {
+    userScripts.getScripts = (_filter?: unknown, callback?: (s: unknown[]) => void) => {
+      if (typeof callback === 'function') Promise.resolve().then(() => callback([]))
+      return Promise.resolve([])
+    }
+  }
+  if (typeof userScripts.configureWorld !== 'function') userScripts.configureWorld = noopAsync
+  if (typeof userScripts.getWorldConfigurations !== 'function') {
+    userScripts.getWorldConfigurations = (callback?: (s: unknown[]) => void) => {
+      if (typeof callback === 'function') Promise.resolve().then(() => callback([]))
+      return Promise.resolve([])
+    }
+  }
+  if (typeof userScripts.resetWorldConfiguration !== 'function') {
+    userScripts.resetWorldConfiguration = noopAsync
+  }
+}

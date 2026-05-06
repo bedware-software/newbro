@@ -25,6 +25,7 @@ import { log } from './log'
 import { setupPartitionSession } from './index'
 import { ensureExtensionInSession } from './extensions/manager'
 import { injectMatchingUserScripts } from './extensions/userscripts'
+import { getExtensionsFor } from './chrome-extensions-bridge'
 
 export interface TabBounds {
   x: number
@@ -641,6 +642,25 @@ export function createTab(opts: {
   wcIdToTabId.set(view.webContents.id, opts.tabId)
   wireEvents(rec)
 
+  // Register the tab with electron-chrome-extensions so chrome.tabs.*
+  // sees it. The library tracks via webContents identity and emits its
+  // own events (onCreated/onActivated/onRemoved) to extensions. Skip
+  // gracefully if no instance has been created yet for this session
+  // (would be the case if setupPartitionSession hasn't run before us).
+  try {
+    const ext = getExtensionsFor(view.webContents.session)
+    if (ext) ext.addTab(view.webContents, win)
+  } catch (err) {
+    log.warn('tab-views: addTab to extensions failed', { tabId: opts.tabId, err: String(err) })
+  }
+
+  // Resolve any pending chrome.tabs.create awaiting THIS URL. See
+  // createTabForExtension for the round-trip rationale.
+  if (opts.url) {
+    const pending = pendingExtTabs.get(opts.url)
+    if (pending) pending(view.webContents)
+  }
+
   // Let the owning window install its shortcut interceptor on this tab's
   // webContents so menu accelerators fire even when the page has focus.
   const install = shortcutInstallers.get(opts.windowId)
@@ -737,12 +757,32 @@ function setActiveTab(windowId: number, tabId: string): void {
     rec.lastBounds = wb
     rec.view.setBounds(wb)
   }
+  // Tell electron-chrome-extensions which tab is now active so
+  // chrome.tabs.query({active:true}) and chrome.tabs.onActivated fire
+  // with the right tab id. Without this, extensions see a stale
+  // "active tab" and the popup shows "no access".
+  try {
+    const ext = getExtensionsFor(rec.view.webContents.session)
+    if (ext) ext.selectTab(rec.view.webContents)
+  } catch (err) {
+    log.warn('tab-views: selectTab to extensions failed', { tabId, err: String(err) })
+  }
 }
 
 export function destroyTab(tabId: string): void {
   const rec = tabs.get(tabId)
   if (!rec) return
   const wcId = rec.view.webContents.id
+  // Notify electron-chrome-extensions so chrome.tabs.onRemoved fires
+  // and any cached state about this tab is cleaned up. Done before we
+  // tear down the WebContentsView — once the webContents is destroyed
+  // the library can't read its id any more.
+  try {
+    const ext = getExtensionsFor(rec.view.webContents.session)
+    if (ext) ext.removeTab(rec.view.webContents)
+  } catch {
+    /* ignore — library may not be initialised for this session */
+  }
   const win = BrowserWindow.fromId(rec.windowId)
   if (win && !win.isDestroyed()) {
     try {
@@ -1362,6 +1402,70 @@ function hashStringToInt(s: string): number {
   }
   // chrome tab ids are positive integers, so map into [1, 2^31).
   return Math.abs(h) || 1
+}
+
+/** Look up a tab record by its WebContents identity. Used by the
+ *  electron-chrome-extensions integration so chrome.tabs.update /
+ *  chrome.tabs.remove can map the library's WebContents argument
+ *  back to a tab id we own. Returns null when no matching tab. */
+export function getRecordByWebContents(wc: WebContents): { tabId: string; windowId: number } | null {
+  for (const rec of tabs.values()) {
+    if (rec.view.webContents === wc) {
+      return { tabId: rec.tabId, windowId: rec.windowId }
+    }
+  }
+  return null
+}
+
+/** chrome.tabs.update active:true bridge — promote the matching tab
+ *  to the workspace's active tab. */
+export function selectTabByWebContents(wc: WebContents): void {
+  const rec = getRecordByWebContents(wc)
+  if (!rec) return
+  setActiveTab(rec.windowId, rec.tabId)
+  // Mirror the renderer's "active tab" so its sidebar / titlebar
+  // reflect the change too. The renderer is the source of truth for
+  // the persisted active-tab id; broadcasting here makes extension-
+  // initiated activations stick.
+  sendToWindowRenderer(rec.windowId, 'activate-tab', rec.tabId)
+}
+
+/** chrome.tabs.remove bridge — close the matching tab. */
+export function destroyTabByWebContents(wc: WebContents): void {
+  const rec = getRecordByWebContents(wc)
+  if (!rec) return
+  destroyTab(rec.tabId)
+  sendToWindowRenderer(rec.windowId, 'extension-closed-tab', rec.tabId)
+}
+
+/** Pending chrome.tabs.create requests waiting for the renderer's
+ *  round-trip. Keyed by URL — the next tab:create with matching URL
+ *  resolves the promise. Brittle if two extensions request the same
+ *  URL simultaneously, but that's vanishingly rare in practice. */
+const pendingExtTabs = new Map<string, (wc: WebContents) => void>()
+
+/** chrome.tabs.create bridge — open a new tab in the given window via
+ *  the renderer's regular new-tab flow, then resolve with its
+ *  WebContents once it's created in main. The library uses the
+ *  WebContents identity to wire chrome.tabs events. */
+export async function createTabForExtension(
+  win: BrowserWindow,
+  _partition: string,
+  url: string,
+  _active: boolean,
+): Promise<WebContents> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingExtTabs.delete(url)
+      reject(new Error('createTabForExtension: timeout'))
+    }, 5000)
+    pendingExtTabs.set(url, (wc) => {
+      clearTimeout(timer)
+      pendingExtTabs.delete(url)
+      resolve(wc)
+    })
+    sendToWindowRenderer(win.id, 'open-url-as-tab', url)
+  })
 }
 
 /** Used by the newbro-ipc:// protocol handler in main/index.ts so the
