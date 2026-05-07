@@ -563,6 +563,32 @@ function configureSession(ses: Electron.Session): void {
             const ids = Array.isArray(p.ids) ? (p.ids as string[]) : null
             if (extId) unregisterUserScripts(getPartitionForSession(ses), extId, ids)
           }
+        } else if (action === 'proxy-settings-set') {
+          // Browsec / Hola / VPN-style extensions call
+          // chrome.proxy.settings.set({ value: <chrome.proxy.config> }).
+          // Convert to Electron's session.setProxy() shape and apply
+          // to every partitioned session in this profile so all tabs
+          // route through the new proxy.
+          const body = readUploadBody(details)
+          const parsed = body ? safeJsonParse(body) : null
+          if (parsed && typeof parsed === 'object') {
+            const p = parsed as { value?: unknown; extId?: unknown }
+            const cfg = chromeProxyToElectron(p.value)
+            if (cfg) {
+              log.info('extensions: chrome.proxy.settings.set', {
+                extId: p.extId,
+                cfg,
+              })
+              applyProxyConfigToAllSessions(cfg)
+            } else {
+              log.warn('extensions: chrome.proxy.settings.set — could not parse value', {
+                extId: p.extId, value: p.value,
+              })
+            }
+          }
+        } else if (action === 'proxy-settings-clear') {
+          log.info('extensions: chrome.proxy.settings.clear — reverting to system')
+          applyProxyConfigToAllSessions({ mode: 'system' })
         } else if (action === 'sw-shim-ran' || action === 'post-patch-state') {
           const body = readUploadBody(details)
           const parsed = body ? safeJsonParse(body) : null
@@ -647,6 +673,115 @@ function getPartitionForSession(ses: Electron.Session): string {
   return 'persist:default'
 }
 
+/** Translate chrome.proxy.config (passed by the extension) into the
+ *  Electron ProxyConfig shape. Returns null when the input doesn't
+ *  parse — caller logs and falls back to system. */
+function chromeProxyToElectron(value: unknown): Electron.ProxyConfig | null {
+  if (!value || typeof value !== 'object') return null
+  const v = value as {
+    mode?: string
+    rules?: {
+      singleProxy?: { scheme?: string; host?: string; port?: number }
+      proxyForHttp?: { scheme?: string; host?: string; port?: number }
+      proxyForHttps?: { scheme?: string; host?: string; port?: number }
+      proxyForFtp?: { scheme?: string; host?: string; port?: number }
+      fallbackProxy?: { scheme?: string; host?: string; port?: number }
+      bypassList?: string[]
+    }
+    pacScript?: { url?: string; data?: string; mandatory?: boolean }
+  }
+  const mode = String(v.mode ?? '').toLowerCase()
+
+  const fmtServer = (s?: { scheme?: string; host?: string; port?: number }): string | null => {
+    if (!s || !s.host) return null
+    const scheme = (s.scheme ?? 'http').toLowerCase()
+    const port = typeof s.port === 'number' ? `:${s.port}` : ''
+    return `${scheme}://${s.host}${port}`
+  }
+
+  if (mode === 'direct') return { mode: 'direct' }
+  if (mode === 'system') return { mode: 'system' }
+  if (mode === 'auto_detect') return { mode: 'auto_detect' }
+  if (mode === 'pac_script') {
+    if (v.pacScript?.url) return { mode: 'pac_script', pacScript: v.pacScript.url }
+    return null
+  }
+  if (mode === 'fixed_servers') {
+    const rules = v.rules ?? {}
+    const parts: string[] = []
+    const single = fmtServer(rules.singleProxy)
+    if (single) {
+      // singleProxy applies to all schemes
+      parts.push(single)
+    } else {
+      const http = fmtServer(rules.proxyForHttp)
+      const https = fmtServer(rules.proxyForHttps)
+      const ftp = fmtServer(rules.proxyForFtp)
+      const fallback = fmtServer(rules.fallbackProxy)
+      if (http) parts.push(`http=${http}`)
+      if (https) parts.push(`https=${https}`)
+      if (ftp) parts.push(`ftp=${ftp}`)
+      if (fallback) parts.push(fallback)
+    }
+    if (parts.length === 0) return null
+    const proxyRules = parts.join(';')
+    const proxyBypassRules = Array.isArray(rules.bypassList) && rules.bypassList.length > 0
+      ? rules.bypassList.join(',')
+      : '<-loopback>'
+    return { mode: 'fixed_servers', proxyRules, proxyBypassRules }
+  }
+  return null
+}
+
+/** Apply a proxy config to every session we've configured. Used by
+ *  chrome.proxy.settings.set/clear forwarding so VPN extensions can
+ *  actually route traffic. */
+function applyProxyConfigToAllSessions(cfg: Electron.ProxyConfig): void {
+  const all = new Set<Electron.Session>([session.defaultSession])
+  for (const partition of configuredPartitions) {
+    all.add(session.fromPartition(partition))
+  }
+  for (const ses of all) {
+    ses.setProxy(cfg)
+      .then(async () => {
+        await ses.forceReloadProxyConfig()
+        await ses.closeAllConnections()
+      })
+      .catch((err) => log.warn('extensions: applyProxyConfigToAllSessions failed', { err: String(err) }))
+  }
+}
+
+/** registerPreloadScript replaces the deprecated setPreloads. Idempotent
+ *  per `id`: re-registering the same id silently returns. We use this
+ *  instead of setPreloads so partitioned sessions get the new API
+ *  surface AND so we can target frame vs service-worker contexts
+ *  explicitly. Falls back to setPreloads only if the new API isn't
+ *  exposed (very old Electron). */
+function registerFramePreload(ses: Electron.Session, filePath: string, id: string): void {
+  try {
+    const reg = (ses as unknown as {
+      registerPreloadScript?: (spec: { type: 'frame' | 'service-worker'; filePath: string; id?: string }) => string | void
+    }).registerPreloadScript
+    if (typeof reg === 'function') {
+      reg.call(ses, { type: 'frame', filePath, id })
+      return
+    }
+  } catch (err) {
+    log.warn('extensions: registerPreloadScript(frame) failed', { id, err: String(err) })
+  }
+  // Fallback for Electron < 35.
+  try {
+    const setPreloads = (ses as unknown as { setPreloads?: (paths: string[]) => void }).setPreloads
+    const getPreloads = (ses as unknown as { getPreloads?: () => string[] }).getPreloads
+    if (typeof setPreloads === 'function') {
+      const existing = typeof getPreloads === 'function' ? getPreloads.call(ses) : []
+      if (!existing.includes(filePath)) setPreloads.call(ses, [...existing, filePath])
+    }
+  } catch (err) {
+    log.warn('extensions: setPreloads fallback failed', { id, err: String(err) })
+  }
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -705,7 +840,11 @@ export function setupPartitionSession(partition: string): void {
   // session belongs to the main renderer which doesn't need (and shouldn't
   // have) page-fingerprint overrides. The extension shim runs alongside
   // it; both self-disable on URLs outside their target scheme.
-  ses.setPreloads([WEBVIEW_STEALTH_PRELOAD, EXTENSION_SHIM_PRELOAD])
+  // Use registerPreloadScript (Electron 35+) instead of setPreloads
+  // (deprecated). The new API additionally lets us scope to frames vs
+  // service workers explicitly.
+  registerFramePreload(ses, WEBVIEW_STEALTH_PRELOAD, 'newbro-stealth')
+  registerFramePreload(ses, EXTENSION_SHIM_PRELOAD, 'newbro-extension-shim')
   // The shim ALSO needs to run inside MV3 service workers, where most
   // extensions (Tampermonkey's icon-click handler in particular) host
   // their chrome.tabs.create calls. registerPreloadScript with

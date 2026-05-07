@@ -63,8 +63,13 @@
 //         (chrome.userScripts, chrome.scripting.executeScript,
 //         chrome.management.getSelf decoration) still land on the
 //         real chrome and the Proxy preserves them via Reflect.get.
+//   V14 — Real chrome.proxy.settings implementation: forwards the
+//         extension's chrome.proxy.config to main, which converts to
+//         Electron's session.setProxy() shape and applies to every
+//         partitioned session. Browsec / Hola / Hoxx / similar VPN
+//         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V13__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V14__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -197,14 +202,63 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       return p;
     };
 
-    // ── chrome.proxy / chrome.privacy / chrome.browsingData ────────
-    // Electron 41 doesn't expose these and Browsec (and other VPN /
-    // privacy extensions) crashes on first access reading e.g.
-    // chrome.proxy.settings. Stub them so the SW doesn't die at
-    // background.js:190 with "Cannot read properties of undefined
-    // (reading 'settings')". The stubs don't actually do anything —
-    // Browsec won't be able to set the system proxy via chrome.proxy
-    // — but at least its UI will load.
+    // ── chrome.proxy.settings — REAL implementation ────────────────
+    // VPN extensions (Browsec, Hola, etc.) call
+    // chrome.proxy.settings.set({ value: { mode, rules: { singleProxy
+    // }, … } }) to install a proxy. Our auto-stub for unknown
+    // chrome.* surfaces (set up later in this IIFE) would no-op the
+    // call, so the proxy never landed and the user's IP never
+    // changed. Wire the call to main: forward { mode, rules } in
+    // chrome.proxy.config shape, main converts it to Electron's
+    // proxyRules string and calls ses.setProxy() on every partition.
+    var proxySettings = {
+      set: function (details, cb) {
+        try {
+          var value = (details && details.value) ? details.value : null;
+          if (value) {
+            sendPost('proxy-settings-set', {
+              extId: extId,
+              scope: details && details.scope,
+              value: value,
+            });
+          }
+        } catch (_) {}
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      },
+      get: function (_d, cb) {
+        // We don't currently round-trip the live proxy config back —
+        // return system-mode so Browsec sees a known-baseline state.
+        var out = {
+          value: { mode: 'system' },
+          levelOfControl: 'controllable_by_this_extension',
+          incognitoSpecific: false,
+        };
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(out); });
+        return Promise.resolve(out);
+      },
+      clear: function (_d, cb) {
+        sendPost('proxy-settings-clear', { extId: extId });
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      },
+      onChange: {
+        addListener: function () {},
+        removeListener: function () {},
+        hasListener: function () { return false; },
+      },
+    };
+    // Direct assign first; fall back to defineProperty if the chrome
+    // object is sealed for unknown-permission keys.
+    try { c.proxy = { settings: proxySettings }; } catch (_) {
+      try {
+        Object.defineProperty(c, 'proxy', {
+          configurable: true, enumerable: true, writable: true,
+          value: { settings: proxySettings },
+        });
+      } catch (_) { /* auto-stub below will catch chrome.proxy reads */ }
+    }
+
     function chromeSettingStub(defaultValue) {
       var listeners = [];
       return {

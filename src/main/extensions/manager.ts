@@ -100,6 +100,48 @@ function extensionsRoot(): string {
   return join(app.getPath('userData'), 'extensions')
 }
 
+/** Adapter for Electron's deprecated session-extension methods.
+ *  Electron 41 deprecated `session.getAllExtensions / loadExtension /
+ *  removeExtension` in favour of `session.extensions.*`. The new
+ *  namespace is preferred when present; fall back to the legacy
+ *  methods on older builds. Centralised so we have one place to
+ *  swap when the legacy paths are removed entirely. */
+type SesExtensions = {
+  getAllExtensions?: () => Electron.Extension[]
+  loadExtension?: (path: string, options?: Electron.LoadExtensionOptions) => Promise<Electron.Extension>
+  removeExtension?: (id: string) => void
+}
+function sesExt(ses: Session): SesExtensions {
+  const modern = (ses as unknown as { extensions?: SesExtensions }).extensions
+  if (modern) return modern
+  return ses as unknown as SesExtensions
+}
+function sessionGetAllExtensions(ses: Session): Electron.Extension[] {
+  const e = sesExt(ses)
+  try {
+    return e.getAllExtensions ? e.getAllExtensions() : []
+  } catch {
+    return []
+  }
+}
+async function sessionLoadExtension(
+  ses: Session,
+  path: string,
+  options?: Electron.LoadExtensionOptions,
+): Promise<Electron.Extension | null> {
+  const e = sesExt(ses)
+  if (!e.loadExtension) return null
+  return e.loadExtension(path, options)
+}
+function sessionRemoveExtension(ses: Session, id: string): void {
+  const e = sesExt(ses)
+  try {
+    if (e.removeExtension) e.removeExtension(id)
+  } catch {
+    /* extension may not be loaded in this session */
+  }
+}
+
 /** Parse Chrome's relaxed `manifest.json` / `messages.json` dialect.
  *  Chrome accepts JSONC: line + block comments, trailing commas, plus
  *  whatever quirks Chromium's PicojsonReader tolerates (BOM, lone
@@ -344,6 +386,14 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
     'downloads',
     'chrome://favicon/',
     'management',
+    // VPN / privacy extensions (Browsec, etc.) — Electron's manifest
+    // validator emits an ExtensionLoadWarning per unknown permission.
+    // Our SW shim's chrome.* polyfill handles the runtime API surface;
+    // stripping the permission here just silences the warning.
+    'proxy',
+    'privacy',
+    'browsingData',
+    'background',
   ])
   // `webRequestBlocking` is MV2-only on real Chrome; in MV3 Electron will
   // refuse the load. For MV2 extensions we leave it alone — our build
@@ -646,21 +696,15 @@ async function loadExtensionInto(ses: Session, entry: PersistedEntry): Promise<v
   // and a plain "id matches → skip" would leave the session pointing at a
   // directory that no longer exists. Force a remove + reload in that case.
   let stale = false
-  try {
-    const existing = ses.getAllExtensions?.() ?? []
-    const same = existing.find((e) => e.id === entry.id)
-    if (same) {
-      if (same.path === entry.path) return
-      stale = true
-    }
-  } catch {
-    /* ignore — getAllExtensions might not exist on older build */
+  const existing = sessionGetAllExtensions(ses)
+  const same = existing.find((e) => e.id === entry.id)
+  if (same) {
+    if (same.path === entry.path) return
+    stale = true
   }
-  if (stale) {
-    try { ses.removeExtension(entry.id) } catch { /* not loaded */ }
-  }
+  if (stale) sessionRemoveExtension(ses, entry.id)
   try {
-    const ext = await ses.loadExtension(entry.path, { allowFileAccess: false })
+    const ext = await sessionLoadExtension(ses, entry.path, { allowFileAccess: false })
     // The resolved id is what Electron derived from manifest.key (or the
     // path hash when key was missing). If it disagrees with the id the
     // user installed under, every chrome-extension://<entry.id>/… URL
@@ -681,11 +725,7 @@ async function loadExtensionInto(ses: Session, entry: PersistedEntry): Promise<v
 
 function removeExtensionFromAllSessions(extensionId: string): void {
   for (const ses of getAllSessions()) {
-    try {
-      ses.removeExtension(extensionId)
-    } catch {
-      /* extension may not be loaded in this session */
-    }
+    sessionRemoveExtension(ses, extensionId)
   }
 }
 
@@ -774,17 +814,12 @@ export async function ensureExtensionInSession(
   // Compare existing registration against the on-disk path.
   let stalePath: string | null = null
   let alreadyLoadedAtRightPath = false
-  try {
-    const all = ses.getAllExtensions?.() ?? []
-    const same = all.find((e) => e.id === extensionId)
-    if (same) {
-      if (same.path === entry.path) {
-        alreadyLoadedAtRightPath = true
-      } else {
-        stalePath = same.path
-      }
-    }
-  } catch { /* ignore */ }
+  const all = sessionGetAllExtensions(ses)
+  const same = all.find((e) => e.id === extensionId)
+  if (same) {
+    if (same.path === entry.path) alreadyLoadedAtRightPath = true
+    else stalePath = same.path
+  }
 
   if (alreadyLoadedAtRightPath) return true
 
@@ -794,24 +829,18 @@ export async function ensureExtensionInSession(
       stalePath,
       newPath: entry.path,
     })
-    try { ses.removeExtension(extensionId) } catch { /* not loaded */ }
+    sessionRemoveExtension(ses, extensionId)
   }
 
   try {
-    const ext = await ses.loadExtension(entry.path, { allowFileAccess: false })
-    let postCount = 0
-    let postIds: string[] = []
-    try {
-      const all = ses.getAllExtensions?.() ?? []
-      postCount = all.length
-      postIds = all.map((e) => e.id)
-    } catch { /* ignore */ }
+    const ext = await sessionLoadExtension(ses, entry.path, { allowFileAccess: false })
+    const post = sessionGetAllExtensions(ses)
     log.info('ensureExtensionInSession: loadExtension resolved', {
       id: extensionId,
       path: entry.path,
       resolvedId: ext?.id ?? null,
-      postCount,
-      postIds,
+      postCount: post.length,
+      postIds: post.map((e) => e.id),
     })
     return true
   } catch (err) {
@@ -1010,18 +1039,14 @@ export async function loadEnabledExtensionsInto(ses: Session): Promise<void> {
 export async function rehydrateExtensionsOnStartup(): Promise<void> {
   // Clear any stale extensions left on the default session by older
   // builds of Newbro. No-op when nothing was registered.
-  try {
-    const stale = session.defaultSession.getAllExtensions?.() ?? []
-    for (const e of stale) {
-      try {
-        session.defaultSession.removeExtension(e.id)
-        log.info('extensions: cleared stale default-session registration', { id: e.id })
-      } catch (err) {
-        log.warn('extensions: failed to clear default-session entry', { id: e.id, err: String(err) })
-      }
+  const stale = sessionGetAllExtensions(session.defaultSession)
+  for (const e of stale) {
+    try {
+      sessionRemoveExtension(session.defaultSession, e.id)
+      log.info('extensions: cleared stale default-session registration', { id: e.id })
+    } catch (err) {
+      log.warn('extensions: failed to clear default-session entry', { id: e.id, err: String(err) })
     }
-  } catch {
-    /* ignore — getAllExtensions might not exist on older builds */
   }
 
   const all = { ...store.get('extensions') }
