@@ -40,8 +40,11 @@
 //        chrome.userScripts use on installType === 'development' (the
 //        Chrome dev-mode toggle). Without this Tampermonkey decides
 //        userScripts is unavailable and never even calls register().
+//   V10 — single-promise getSelf wrapper (V9's two-callback path
+//         called the user callback twice in callback-style mode,
+//         which Tampermonkey's popup choked on → white screen).
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V9__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V10__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -139,17 +142,13 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     // ── chrome.management.getSelf ──────────────────────────────────
     // Tampermonkey 5.4.x checks chrome.management.getSelf().installType
     // and refuses to use chrome.userScripts unless it equals
-    // 'development' (Chrome's dev-mode-on signal). Electron's stock
-    // chrome.management returns 'normal' (or doesn't expose installType
-    // at all), so Tampermonkey silently bails on the userScripts path
-    // — which is why we never see a register() call in the logs.
-    //
-    // Wrap getSelf to call through to whatever Electron provided, then
-    // overlay installType: 'development' + hostPermissions: ['<all_urls>']
-    // before passing to the caller. The library doesn't touch
-    // chrome.management at all, so we're not clobbering anything.
+    // 'development' (Chrome's dev-mode-on signal). Wrap getSelf so we
+    // can overlay installType: 'development' on whatever Electron
+    // returns. Single-promise path — V9's two-callback wrapper called
+    // the user callback twice in the callback-style case which made
+    // Tampermonkey's popup white-screen.
     var management = c.management || (c.management = {});
-    var origGetSelf = (typeof management.getSelf === 'function') ? management.getSelf.bind(management) : null;
+    var rawGetSelf = (typeof management.getSelf === 'function') ? management.getSelf.bind(management) : null;
     function decorateSelf(info) {
       info = info || {};
       info.installType = 'development';
@@ -157,24 +156,25 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       info.enabled = true;
       info.mayDisable = true;
       info.id = info.id || extId;
+      info.type = info.type || 'extension';
       return info;
     }
-    management.getSelf = function (cb) {
-      if (origGetSelf) {
-        try {
-          var maybe = origGetSelf(function (info) {
-            if (typeof cb === 'function') Promise.resolve().then(function () { cb(decorateSelf(info)); });
-          });
-          if (maybe && typeof maybe.then === 'function') {
-            return maybe.then(decorateSelf, function () { return decorateSelf({}); });
-          }
-        } catch (_) {
-          /* fall through to synthetic */
-        }
+    function callRawGetSelf() {
+      if (!rawGetSelf) return Promise.resolve(undefined);
+      try {
+        var maybe = rawGetSelf();
+        if (maybe && typeof maybe.then === 'function') return maybe;
+        return new Promise(function (resolve) {
+          try { rawGetSelf(function (info) { resolve(info); }); } catch (_) { resolve(undefined); }
+        });
+      } catch (_) {
+        return Promise.resolve(undefined);
       }
-      var synth = decorateSelf({});
-      if (typeof cb === 'function') Promise.resolve().then(function () { cb(synth); });
-      return Promise.resolve(synth);
+    }
+    management.getSelf = function (cb) {
+      var p = callRawGetSelf().then(decorateSelf, function () { return decorateSelf({}); });
+      if (typeof cb === 'function') p.then(function (info) { try { cb(info); } catch (_) {} });
+      return p;
     };
 
     // ── chrome.scripting.executeScript ─────────────────────────────

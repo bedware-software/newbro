@@ -1106,6 +1106,32 @@ export async function toggleExtensionPopup(
     log.warn('extension popup: loadURL failed', { url, err: String(err) })
   })
 
+  // Auto-open DevTools on the popup when NEWBRO_EXT_DEVTOOLS=1 is set.
+  // The popup is a free-standing WebContentsView with no chrome and
+  // no right-click "Inspect" — there's otherwise no way to see what
+  // its scripts log, so when the popup white-screens (e.g. an
+  // exception inside the extension's popup.html) we have no signal
+  // beyond an empty rectangle. Gated on env var so the production
+  // experience isn't littered with devtools windows.
+  if (process.env['NEWBRO_EXT_DEVTOOLS']) {
+    try { view.webContents.openDevTools({ mode: 'detach' }) } catch { /* ignore */ }
+  }
+  // Also pipe in-popup console messages into the main log
+  // unconditionally — even without devtools open, we'll see what
+  // the popup page logs / warns / errors. Cheap, narrow signal that's
+  // saved us hours of triage on the SW side and is just as useful
+  // for popup-side white-screen bugs.
+  view.webContents.on('console-message', (e) => {
+    const detail = e as unknown as { level?: string; message?: string; sourceId?: string; line?: number }
+    log.info('extension popup console', {
+      extensionId,
+      level: detail.level,
+      sourceId: detail.sourceId,
+      line: detail.line,
+      msg: detail.message,
+    })
+  })
+
   // Pull keyboard focus into the popup once the page is rendered so typing
   // (form fields, search boxes inside the popup) routes there without the
   // user needing an extra click. Bail out if the popup was torn down before
