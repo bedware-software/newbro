@@ -563,10 +563,10 @@ function configureSession(ses: Electron.Session): void {
             const ids = Array.isArray(p.ids) ? (p.ids as string[]) : null
             if (extId) unregisterUserScripts(getPartitionForSession(ses), extId, ids)
           }
-        } else if (action === 'sw-shim-ran') {
+        } else if (action === 'sw-shim-ran' || action === 'post-patch-state') {
           const body = readUploadBody(details)
           const parsed = body ? safeJsonParse(body) : null
-          log.info('extensions: SW shim ran', {
+          log.info('extensions: ' + action, {
             partition: getPartitionForSession(ses),
             info: parsed,
           })

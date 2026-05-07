@@ -47,8 +47,15 @@
 //         so VPN / privacy extensions like Browsec don't crash on
 //         first access (background.js:190 read 'settings' on
 //         undefined chrome.proxy).
+//   V12 — V11 stubs were silently failing on Browsec's chrome (likely
+//         frozen for unknown-permission keys); switch direct
+//         assignment to defineProperty-with-fallback so values land
+//         on sealed objects too. Added stubs for chrome.contentSettings
+//         / chrome.types / chrome.topSites / chrome.idle. Plus a
+//         post-patch-state beacon to confirm in main's log that the
+//         stubs actually took.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V11__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V12__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -220,57 +227,109 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       removeListener: function () {},
       hasListener: function () { return false; },
     };
-    if (!c.proxy) c.proxy = {};
-    if (!c.proxy.settings) c.proxy.settings = chromeSettingStub({ mode: 'system' });
-    if (!c.proxy.onProxyError) c.proxy.onProxyError = noopEvent;
-
-    if (!c.privacy) c.privacy = {};
-    if (!c.privacy.network) c.privacy.network = {
-      networkPredictionEnabled: chromeSettingStub(true),
-      webRTCIPHandlingPolicy: chromeSettingStub('default'),
-    };
-    if (!c.privacy.services) c.privacy.services = {
-      alternateErrorPagesEnabled: chromeSettingStub(true),
-      autofillEnabled: chromeSettingStub(true),
-      autofillAddressEnabled: chromeSettingStub(true),
-      autofillCreditCardEnabled: chromeSettingStub(true),
-      passwordSavingEnabled: chromeSettingStub(true),
-      safeBrowsingEnabled: chromeSettingStub(true),
-      searchSuggestEnabled: chromeSettingStub(true),
-      spellingServiceEnabled: chromeSettingStub(true),
-      translationServiceEnabled: chromeSettingStub(true),
-    };
-    if (!c.privacy.websites) c.privacy.websites = {
-      thirdPartyCookiesAllowed: chromeSettingStub(true),
-      hyperlinkAuditingEnabled: chromeSettingStub(true),
-      referrersEnabled: chromeSettingStub(true),
-      doNotTrackEnabled: chromeSettingStub(false),
-      protectedContentEnabled: chromeSettingStub(true),
-    };
-
-    if (!c.browsingData) c.browsingData = {
-      remove: function (_options, _dataToRemove, cb) {
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
-        return Promise.resolve();
+    // Force-assign: if direct assignment fails (chrome object frozen
+    // for unknown-permission keys), fall back to defineProperty so
+    // the value lands anyway. We need this because in V11 we observed
+    // c.proxy = {} silently failing on Browsec's chrome — the SW kept
+    // crashing on chrome.proxy.settings lookup at line 282.
+    function safeAssign(obj, key, value) {
+      try {
+        Object.defineProperty(obj, key, {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: value,
+        });
+        return;
+      } catch (_) { /* try direct */ }
+      try { obj[key] = value; } catch (_) { /* give up */ }
+    }
+    safeAssign(c, 'proxy', {
+      settings: chromeSettingStub({ mode: 'system' }),
+      onProxyError: noopEvent,
+    });
+    safeAssign(c, 'privacy', {
+      network: {
+        networkPredictionEnabled: chromeSettingStub(true),
+        webRTCIPHandlingPolicy: chromeSettingStub('default'),
       },
-      removeCache: function (_options, cb) {
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
-        return Promise.resolve();
+      services: {
+        alternateErrorPagesEnabled: chromeSettingStub(true),
+        autofillEnabled: chromeSettingStub(true),
+        autofillAddressEnabled: chromeSettingStub(true),
+        autofillCreditCardEnabled: chromeSettingStub(true),
+        passwordSavingEnabled: chromeSettingStub(true),
+        safeBrowsingEnabled: chromeSettingStub(true),
+        searchSuggestEnabled: chromeSettingStub(true),
+        spellingServiceEnabled: chromeSettingStub(true),
+        translationServiceEnabled: chromeSettingStub(true),
       },
-      removeCookies: function (_options, cb) {
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
-        return Promise.resolve();
+      websites: {
+        thirdPartyCookiesAllowed: chromeSettingStub(true),
+        hyperlinkAuditingEnabled: chromeSettingStub(true),
+        referrersEnabled: chromeSettingStub(true),
+        doNotTrackEnabled: chromeSettingStub(false),
+        protectedContentEnabled: chromeSettingStub(true),
       },
-      removeHistory: function (_options, cb) {
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
-        return Promise.resolve();
-      },
+    });
+    safeAssign(c, 'browsingData', {
+      remove: function (_o, _d, cb) { if (typeof cb === 'function') Promise.resolve().then(function () { cb(); }); return Promise.resolve(); },
+      removeCache: function (_o, cb) { if (typeof cb === 'function') Promise.resolve().then(function () { cb(); }); return Promise.resolve(); },
+      removeCookies: function (_o, cb) { if (typeof cb === 'function') Promise.resolve().then(function () { cb(); }); return Promise.resolve(); },
+      removeHistory: function (_o, cb) { if (typeof cb === 'function') Promise.resolve().then(function () { cb(); }); return Promise.resolve(); },
       settings: function (cb) {
         var s = { options: { since: 0, originTypes: { unprotectedWeb: true } }, dataToRemove: {}, dataRemovalPermitted: {} };
         if (typeof cb === 'function') Promise.resolve().then(function () { cb(s); });
         return Promise.resolve(s);
       },
-    };
+    });
+    // Additional namespaces Browsec / privacy / VPN extensions may
+    // touch beyond proxy/privacy/browsingData. Shotgun stub anything
+    // plausible — cheap and prevents a class of "Cannot read X on
+    // undefined" crashes from cascading line by line.
+    safeAssign(c, 'contentSettings', {
+      cookies: chromeSettingStub('allow'),
+      images: chromeSettingStub('allow'),
+      javascript: chromeSettingStub('allow'),
+      location: chromeSettingStub('ask'),
+      notifications: chromeSettingStub('ask'),
+      popups: chromeSettingStub('block'),
+      microphone: chromeSettingStub('ask'),
+      camera: chromeSettingStub('ask'),
+    });
+    safeAssign(c, 'types', {
+      // ChromeSetting is the constructor extensions check via
+      // chrome.types.ChromeSetting. Empty function so `instanceof`
+      // checks on stubbed settings don't throw.
+      ChromeSetting: function ChromeSetting() {},
+    })
+    safeAssign(c, 'topSites', {
+      get: function (cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb([]); });
+        return Promise.resolve([]);
+      },
+    });
+    safeAssign(c, 'idle', {
+      queryState: function (_d, cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb('active'); });
+        return Promise.resolve('active');
+      },
+      setDetectionInterval: function () {},
+      onStateChanged: noopEvent,
+    });
+    // Send a post-patch state beacon so we can confirm in main's log
+    // that the stubs actually took. If hasProxySettingsSet shows false
+    // here we know the assignment didn't land and need a different
+    // strategy (Proxy on chrome, etc).
+    sendPost('post-patch-state', {
+      extId: extId,
+      hasProxy: !!c.proxy,
+      hasProxySettings: !!(c.proxy && c.proxy.settings),
+      hasProxySettingsSet: typeof (c.proxy && c.proxy.settings && c.proxy.settings.set) === 'function',
+      hasPrivacy: !!c.privacy,
+      hasBrowsingData: !!c.browsingData,
+      hasContentSettings: !!c.contentSettings,
+    });
 
     // ── chrome.scripting.executeScript ─────────────────────────────
     // Force-overwrite for the same reason as userScripts.
