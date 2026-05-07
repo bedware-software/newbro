@@ -517,61 +517,80 @@ function configureSession(ses: Electron.Session): void {
   })
 
   const externalFilter = { urls: ['http://*/*', 'https://*/*'] }
+
+  // Track per-request the Origin header for fetches initiated from
+  // chrome-extension:// contexts (SW + popup). Used by the
+  // onHeadersReceived hook to inject matching CORS allow headers — Chrome
+  // grants extension origins implicit CORS bypass for any URL listed in
+  // host_permissions; Electron does not, so e.g. Browsec's `fetch(
+  // https://www.google-analytics.com/...)` fails with "Failed to fetch"
+  // because the response carries no Access-Control-Allow-Origin matching
+  // the chrome-extension origin. We mirror Chrome's privilege by adding
+  // the headers ourselves on the response.
+  const extOriginByRequest = new Map<number, { origin: string; credentialed: boolean }>()
+
   ses.webRequest.onBeforeSendHeaders(externalFilter, (details, callback) => {
     const headers = { ...details.requestHeaders }
     delete headers['X-Electron-Version']
+    const origin = headers['Origin'] ?? headers['origin']
+    if (typeof origin === 'string' && origin.startsWith('chrome-extension://')) {
+      const credentialed = Boolean(headers['Cookie'] ?? headers['cookie'])
+      extOriginByRequest.set(details.id, { origin, credentialed })
+    }
     callback({ requestHeaders: headers })
   })
 
-  // CORS bypass for fetches initiated by extension service workers and
-  // popups. Chrome grants chrome-extension:// origins implicit permission
-  // to fetch any URL listed in host_permissions without CORS — Electron
-  // doesn't honour that, so an extension SW's `fetch('https://api.foo')`
-  // fails with "Failed to fetch" because the response carries no
-  // Access-Control-Allow-Origin header. We synthesize one here when the
-  // initiator is chrome-extension://, mirroring Chrome's privilege.
-  // Also handle preflight OPTIONS by ensuring the relevant Allow-* headers
-  // are present on the response, regardless of what the server sent.
   ses.webRequest.onHeadersReceived(externalFilter, (details, callback) => {
-    const initiator = (details as { initiator?: string }).initiator
-    if (typeof initiator !== 'string' || !initiator.startsWith('chrome-extension://')) {
+    const tracked = extOriginByRequest.get(details.id)
+    if (!tracked) {
       callback({})
       return
     }
     const headers: Record<string, string[]> = {}
     for (const [k, v] of Object.entries(details.responseHeaders ?? {})) {
-      // Drop existing CORS allow headers — we replace them wholesale so
-      // a server-set "*" or "null" doesn't conflict with our credentialed
-      // allow-origin (the spec rejects credentialed requests against "*").
       const lower = k.toLowerCase()
-      if (lower === 'access-control-allow-origin') continue
-      if (lower === 'access-control-allow-credentials') continue
-      if (lower === 'access-control-allow-methods') continue
-      if (lower === 'access-control-allow-headers') continue
-      if (lower === 'access-control-expose-headers') continue
+      // Drop server-set CORS allow headers — we replace them so a "*"
+      // doesn't conflict with our credentialed allow-origin (the spec
+      // rejects credentialed requests against "*").
+      if (
+        lower === 'access-control-allow-origin' ||
+        lower === 'access-control-allow-credentials' ||
+        lower === 'access-control-allow-methods' ||
+        lower === 'access-control-allow-headers' ||
+        lower === 'access-control-expose-headers'
+      ) continue
       headers[k] = Array.isArray(v) ? v : [String(v)]
     }
-    headers['Access-Control-Allow-Origin'] = [initiator]
-    headers['Access-Control-Allow-Credentials'] = ['true']
+    headers['Access-Control-Allow-Origin'] = [tracked.origin]
+    if (tracked.credentialed) {
+      headers['Access-Control-Allow-Credentials'] = ['true']
+    }
     headers['Access-Control-Allow-Methods'] = ['GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH']
     headers['Access-Control-Allow-Headers'] = ['*']
     headers['Access-Control-Expose-Headers'] = ['*']
     callback({ responseHeaders: headers })
   })
 
-  // Diagnostic: log network errors initiated by extension SWs / popups.
-  // "Uncaught (in promise) TypeError: Failed to fetch" from chrome-extension://
-  // background.js doesn't tell us which URL — onErrorOccurred does. Drop
+  // Cleanup tracking map on terminal events. onCompleted/onErrorOccurred
+  // both fire after the headers stage, so the map is consumed before
+  // either runs.
+  const dropTracked = (details: { id: number }): void => {
+    extOriginByRequest.delete(details.id)
+  }
+  ses.webRequest.onCompleted(externalFilter, dropTracked)
+
+  // Diagnostic: log network errors for chrome-extension fetches. Drop
   // ERR_ABORTED noise (extensions cancelling polls during teardown).
   ses.webRequest.onErrorOccurred(externalFilter, (details) => {
-    const initiator = (details as { initiator?: string }).initiator
-    if (typeof initiator !== 'string' || !initiator.startsWith('chrome-extension://')) return
+    const tracked = extOriginByRequest.get(details.id)
+    extOriginByRequest.delete(details.id)
+    if (!tracked) return
     if (details.error === 'net::ERR_ABORTED') return
     log.warn('ext fetch failed', {
       url: details.url,
       method: details.method,
       error: details.error,
-      initiator,
+      origin: tracked.origin,
     })
   })
 
