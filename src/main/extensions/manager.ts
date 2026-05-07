@@ -99,12 +99,31 @@ function extensionsRoot(): string {
   return join(app.getPath('userData'), 'extensions')
 }
 
+/** Chrome treats `manifest.json` as relaxed JSON: line + block comments
+ *  AND trailing commas before `]` / `}` are accepted. JSON.parse is
+ *  strict. Centralise the cleaner so every parse site (readManifest,
+ *  patchManifest, rehydrate's mis-keyed-install detector) handles
+ *  both — Browsec's manifest in particular has trailing commas that
+ *  trip strict JSON parsers.
+ *
+ *  We only strip the relaxed-JSON dialect, NOT every nuance of JSON5
+ *  (single-quoted strings, unquoted keys, multi-line strings). No
+ *  extension we've encountered uses those. */
+function stripRelaxedJson(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, '')                // /* block comments */
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')              // // line comments (skip URLs after `:`)
+    .replace(/,(\s*[}\]])/g, '$1')                    // trailing commas before `}` / `]`
+}
+
+function parseRelaxedJson(text: string): unknown {
+  return JSON.parse(stripRelaxedJson(text))
+}
+
 function readManifest(extDir: string): Record<string, unknown> {
   const manifestPath = join(extDir, 'manifest.json')
   const text = readFileSync(manifestPath, 'utf8')
-  // Chrome allows comments in manifest.json; strip them conservatively.
-  const withoutComments = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
-  return JSON.parse(withoutComments)
+  return parseRelaxedJson(text) as Record<string, unknown>
 }
 
 /** Read the extension's localized messages.json for the given locale. The
@@ -123,8 +142,7 @@ function readLocaleMessages(extDir: string, locale: string): Record<string, { me
   try {
     if (!existsSync(path)) return null
     const text = readFileSync(path, 'utf8')
-    const cleaned = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
-    const parsed = JSON.parse(cleaned)
+    const parsed = parseRelaxedJson(text)
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, { message?: string }>) : null
   } catch {
     return null
@@ -231,11 +249,9 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
   } catch {
     return false
   }
-  // Chrome allows comments in manifest.json; strip before parsing.
-  const cleaned = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
   let manifest: Record<string, unknown>
   try {
-    manifest = JSON.parse(cleaned)
+    manifest = parseRelaxedJson(raw) as Record<string, unknown>
   } catch (err) {
     log.warn('extensions: failed to parse manifest for patching', String(err))
     return false
@@ -1015,10 +1031,8 @@ export async function rehydrateExtensionsOnStartup(): Promise<void> {
     // will see them disappear from Settings → Extensions and can
     // reinstall under the now-fixed code path.
     try {
-      const manifestRaw = JSON.parse(
+      const manifestRaw = parseRelaxedJson(
         readFileSync(join(entry.path, 'manifest.json'), 'utf8')
-          .replace(/\/\*[\s\S]*?\*\//g, '')
-          .replace(/(^|[^:])\/\/.*$/gm, '$1')
       ) as Record<string, unknown>
       const key = typeof manifestRaw.key === 'string' ? manifestRaw.key : null
       if (key) {
