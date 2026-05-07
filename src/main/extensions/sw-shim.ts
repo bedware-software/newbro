@@ -299,8 +299,8 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     });
     safeAssign(c, 'types', {
       // ChromeSetting is the constructor extensions check via
-      // chrome.types.ChromeSetting. Empty function so `instanceof`
-      // checks on stubbed settings don't throw.
+      // chrome.types.ChromeSetting. Empty function so instanceof
+      // checks on stubbed settings dont throw.
       ChromeSetting: function ChromeSetting() {},
     })
     safeAssign(c, 'topSites', {
