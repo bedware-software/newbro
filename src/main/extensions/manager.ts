@@ -33,6 +33,7 @@ import { app, BrowserWindow, session, type Session } from 'electron'
 import Store from 'electron-store'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { log } from '../log'
 import { parseCrx, extractCrxPublicKey, deriveExtensionIdFromPublicKey } from './crx'
 import { fetchCrx, extractExtensionIdFromUrl as _extract, clearCrxFetchSession } from './store'
@@ -99,25 +100,34 @@ function extensionsRoot(): string {
   return join(app.getPath('userData'), 'extensions')
 }
 
-/** Chrome treats `manifest.json` as relaxed JSON: line + block comments
- *  AND trailing commas before `]` / `}` are accepted. JSON.parse is
- *  strict. Centralise the cleaner so every parse site (readManifest,
- *  patchManifest, rehydrate's mis-keyed-install detector) handles
- *  both — Browsec's manifest in particular has trailing commas that
- *  trip strict JSON parsers.
+/** Parse Chrome's relaxed `manifest.json` / `messages.json` dialect.
+ *  Chrome accepts JSONC: line + block comments, trailing commas, plus
+ *  whatever quirks Chromium's PicojsonReader tolerates (BOM, lone
+ *  surrogates, etc.). Strict JSON.parse rejects all of it.
  *
- *  We only strip the relaxed-JSON dialect, NOT every nuance of JSON5
- *  (single-quoted strings, unquoted keys, multi-line strings). No
- *  extension we've encountered uses those. */
-function stripRelaxedJson(text: string): string {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, '')                // /* block comments */
-    .replace(/(^|[^:])\/\/.*$/gm, '$1')              // // line comments (skip URLs after `:`)
-    .replace(/,(\s*[}\]])/g, '$1')                    // trailing commas before `}` / `]`
-}
-
+ *  Browsec's manifest is the test case — its CRX failed our regex-
+ *  based stripper at "position 5015 line 17 column 3" both before and
+ *  after we added trailing-comma handling. jsonc-parser (VS Code's
+ *  parser) handles every dialect quirk we've encountered, including
+ *  comments inside strings (which our naive `//` regex stripped) and
+ *  BOM at file start.
+ *
+ *  Returns the parsed object or throws — same contract as JSON.parse,
+ *  so callers don't need to change. We feed parse errors through
+ *  jsonc-parser's accumulator and surface the first one. */
 function parseRelaxedJson(text: string): unknown {
-  return JSON.parse(stripRelaxedJson(text))
+  // Strip BOM if present — jsonc-parser handles it but old call sites
+  // expect "what JSON.parse would do" semantics, so doing it here
+  // avoids any surprise downstream.
+  let input = text
+  if (input.length > 0 && input.charCodeAt(0) === 0xfeff) input = input.slice(1)
+  const errors: ParseError[] = []
+  const result = parseJsonc(input, errors, { allowTrailingComma: true })
+  if (errors.length > 0) {
+    const e = errors[0]
+    throw new SyntaxError(`manifest.json: parse error code ${e.error} at offset ${e.offset}, length ${e.length}`)
+  }
+  return result
 }
 
 function readManifest(extDir: string): Record<string, unknown> {
