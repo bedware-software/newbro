@@ -115,3 +115,118 @@ export function getOrCreateExtensions(
 export function getExtensionsFor(ses: Session): ElectronChromeExtensions | undefined {
   return instances.get(ses) ?? ElectronChromeExtensions.fromSession(ses)
 }
+
+/** Per-extension dynamic browser-action state surfaced to the renderer.
+ *  Mirrors the shape of BrowserActionAPI.getState() entries plus an
+ *  iconModified timestamp to bust the icon cache when chrome.action.setIcon
+ *  fires from the SW. */
+export interface BrowserActionEntry {
+  id: string
+  title?: string
+  popup?: string
+  text?: string
+  color?: string
+  iconModified?: number
+  /** Per-tab overrides — same shape as the top-level fields. */
+  tabs: Record<number, {
+    title?: string
+    popup?: string
+    text?: string
+    color?: string
+    iconModified?: number
+  }>
+}
+
+export interface BrowserActionState {
+  activeTabId?: number
+  actions: BrowserActionEntry[]
+}
+
+/** Read the BrowserAction state for a session and shape it for the renderer.
+ *  We can't use the library's getState() directly because it strips the
+ *  iconModified field — and we need that to drive the crx:// cache buster
+ *  so the toolbar icon refreshes when the extension calls setIcon. */
+export function getBrowserActionStateForSession(ses: Session): BrowserActionState {
+  const ext = getExtensionsFor(ses)
+  if (!ext) return { actions: [] }
+  // The library's actionMap is private. The `as any` cast is the cost of
+  // not being able to subscribe to icon updates through any public API.
+  type RawAction = {
+    title?: string
+    popup?: string
+    text?: string
+    color?: string
+    iconModified?: number
+    tabs: Record<number, {
+      title?: string
+      popup?: string
+      text?: string
+      color?: string
+      iconModified?: number
+    }>
+  }
+  const internal = (ext as unknown as {
+    api?: { browserAction?: { actionMap?: Map<string, RawAction>; getState?: () => { activeTabId?: number } } }
+  }).api?.browserAction
+  if (!internal?.actionMap) return { actions: [] }
+  const actions: BrowserActionEntry[] = []
+  for (const [id, raw] of internal.actionMap.entries()) {
+    const tabs: Record<number, BrowserActionEntry['tabs'][number]> = {}
+    for (const [tabId, t] of Object.entries(raw.tabs ?? {})) {
+      tabs[Number(tabId)] = {
+        title: t.title,
+        popup: t.popup,
+        text: t.text,
+        color: t.color,
+        iconModified: t.iconModified,
+      }
+    }
+    actions.push({
+      id,
+      title: raw.title,
+      popup: raw.popup,
+      text: raw.text,
+      color: raw.color,
+      iconModified: raw.iconModified,
+      tabs,
+    })
+  }
+  const activeTabId = internal.getState?.().activeTabId
+  return { activeTabId, actions }
+}
+
+/** Subscribe to browser-action updates for the given session. The library
+ *  emits these whenever the actionMap mutates (chrome.action.setIcon /
+ *  setBadgeText / setTitle / setPopup, plus tab-removed cleanups and the
+ *  active-tab-changed event). We piggyback by injecting a fake observer
+ *  into BrowserActionAPI's private observers Set — the library calls
+ *  observer.send('browserAction.update') on each mutation, and we forward
+ *  that to the supplied callback after pulling the latest state. */
+export function subscribeBrowserActionUpdates(
+  ses: Session,
+  callback: (state: BrowserActionState) => void,
+): () => void {
+  const ext = getExtensionsFor(ses)
+  if (!ext) return () => undefined
+  const observers = (ext as unknown as {
+    api?: { browserAction?: { observers?: Set<unknown> } }
+  }).api?.browserAction?.observers
+  if (!observers) return () => undefined
+  const fakeObserver = {
+    isDestroyed: () => false,
+    send: (channel: string) => {
+      if (channel !== 'browserAction.update') return
+      try {
+        callback(getBrowserActionStateForSession(ses))
+      } catch (err) {
+        log.warn('extensions: browser-action callback threw', String(err))
+      }
+    },
+    once: () => undefined,
+  }
+  observers.add(fakeObserver)
+  // Also fire one immediately so the renderer picks up whatever the
+  // library has already discovered from manifest defaults.
+  try { callback(getBrowserActionStateForSession(ses)) } catch { /* ignore */ }
+  return () => { observers.delete(fakeObserver) }
+}

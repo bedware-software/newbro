@@ -244,6 +244,30 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
 /** Render pinned, enabled extensions that declare `action` as clickable
  *  icons. Click toggles the popup; right-click opens a Chrome-style context
  *  menu (pin/unpin, disable, options, remove, manage). */
+/** Live, per-extension state pushed by main from the BrowserActionAPI in
+ *  electron-chrome-extensions. Mirrors what chrome.action.setIcon /
+ *  setBadgeText / setTitle / setPopup mutate. */
+interface BrowserActionEntry {
+  id: string
+  title?: string
+  popup?: string
+  text?: string
+  color?: string
+  iconModified?: number
+  tabs: Record<number, {
+    title?: string
+    popup?: string
+    text?: string
+    color?: string
+    iconModified?: number
+  }>
+}
+interface BrowserActionState {
+  partition: string | null
+  activeTabId?: number
+  actions: BrowserActionEntry[]
+}
+
 function ExtensionActions({
   activeTabId,
   onOpenSettings,
@@ -252,6 +276,10 @@ function ExtensionActions({
   onOpenSettings: () => void
 }) {
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([])
+  const [actionState, setActionState] = useState<BrowserActionState>({
+    partition: null,
+    actions: [],
+  })
   // Which extension's popup is currently open (one per window). Tracked so
   // the icon can render a pressed state and so a second click on the same
   // icon hits the toggle path.
@@ -268,7 +296,15 @@ function ExtensionActions({
       setOpenPopupId(p.extensionId)
     )
     const cleanupClose = api.onExtensionPopupClosed?.(() => setOpenPopupId(null))
-    return () => { cleanupChange?.(); cleanupOpen?.(); cleanupClose?.() }
+    // Prime + subscribe to dynamic browser-action state so chrome.action.setIcon
+    // / setBadgeText updates immediately reflect on the toolbar icon.
+    api.getBrowserActionState?.().then((p: { partition: string | null; state: { activeTabId?: number; actions: BrowserActionEntry[] } } | null) => {
+      if (p) setActionState({ partition: p.partition, activeTabId: p.state.activeTabId, actions: p.state.actions })
+    })
+    const cleanupAction = api.onBrowserActionState?.((p: { partition: string; activeTabId?: number; actions: BrowserActionEntry[] }) => {
+      setActionState({ partition: p.partition, activeTabId: p.activeTabId, actions: p.actions })
+    })
+    return () => { cleanupChange?.(); cleanupOpen?.(); cleanupClose?.(); cleanupAction?.() }
   }, [])
 
   // When the open popup's extension gets unpinned/uninstalled/disabled, ask
@@ -378,6 +414,31 @@ function ExtensionActions({
     >
       {visible.map((ext) => {
         const isOpen = openPopupId === ext.id
+        const action = actionState.actions.find((a) => a.id === ext.id)
+        // Per-tab override beats the action-global value beats the manifest
+        // default — same precedence chrome.action follows. Renderer doesn't
+        // know its own tabId, but the library's getState carries the
+        // active-tab id from the *partition* this window owns, which is what
+        // we want anyway.
+        const tabState = action && actionState.activeTabId != null
+          ? action.tabs[actionState.activeTabId]
+          : undefined
+        const dynamicTitle = tabState?.title ?? action?.title
+        const dynamicText = tabState?.text ?? action?.text
+        const dynamicColor = tabState?.color ?? action?.color ?? '#666'
+        const iconModified = tabState?.iconModified ?? action?.iconModified
+        // Use the library's crx:// route when we have a live action entry
+        // for this extension — that way chrome.action.setIcon is reflected
+        // immediately. Fall back to the static manifest iconUrl otherwise.
+        let iconSrc: string | null | undefined = ext.iconUrl
+        if (action && actionState.partition) {
+          const params = new URLSearchParams({
+            tabId: actionState.activeTabId != null ? `${actionState.activeTabId}` : '-1',
+            partition: actionState.partition,
+          })
+          if (iconModified) params.set('t', String(iconModified))
+          iconSrc = `crx://extension-icon/${ext.id}/32/2?${params.toString()}`
+        }
         return (
           <button
             key={ext.id}
@@ -387,21 +448,39 @@ function ExtensionActions({
             }}
             onClick={() => handleClick(ext)}
             onContextMenu={(e) => handleContextMenu(ext, e)}
-            title={ext.actionDefaultTitle || ext.name}
-            className={`h-8 w-8 shrink-0 flex items-center justify-center rounded-md overflow-hidden transition-colors ${
+            title={dynamicTitle || ext.actionDefaultTitle || ext.name}
+            className={`relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md overflow-hidden transition-colors ${
               isOpen ? 'bg-muted text-foreground' : 'hover:bg-muted text-secondary-foreground'
             }`}
           >
-            {ext.iconUrl ? (
+            {iconSrc ? (
               <img
-                src={ext.iconUrl}
+                src={iconSrc}
                 alt=""
                 className="w-5 h-5"
-                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                onError={(e) => {
+                  // Fall back to the static manifest icon if the dynamic
+                  // crx:// fetch fails (icon not yet processed, partition
+                  // closed, etc.). Hides the broken-image glyph either way.
+                  const img = e.currentTarget as HTMLImageElement
+                  if (ext.iconUrl && img.src !== ext.iconUrl) {
+                    img.src = ext.iconUrl
+                  } else {
+                    img.style.display = 'none'
+                  }
+                }}
               />
             ) : (
               <Puzzle size={15} />
             )}
+            {dynamicText ? (
+              <span
+                className="absolute bottom-0 right-0 text-[8px] leading-none font-medium px-[2px] py-[1px] rounded-sm text-white pointer-events-none"
+                style={{ backgroundColor: dynamicColor }}
+              >
+                {dynamicText}
+              </span>
+            ) : null}
           </button>
         )
       })}

@@ -31,7 +31,14 @@ import {
   selectTabByWebContents,
   destroyTabByWebContents,
 } from './tab-views'
-import { getOrCreateExtensions, isLibrarySelectTabSuppressed } from './chrome-extensions-bridge'
+import {
+  getOrCreateExtensions,
+  isLibrarySelectTabSuppressed,
+  subscribeBrowserActionUpdates,
+  getBrowserActionStateForSession,
+  type BrowserActionState,
+} from './chrome-extensions-bridge'
+import { ElectronChromeExtensions } from 'electron-chrome-extensions'
 import { loadEnabledExtensionsInto, rehydrateExtensionsOnStartup } from './extensions/manager'
 import {
   registerUserScripts,
@@ -164,6 +171,44 @@ const configuredPartitions = new Set<string>()
 const workspaceWindows = new Map<string, BrowserWindow>()
 const workspaceProfiles = new Map<string, string>() // workspaceId → profileId
 let lastKnownOpenWindows: OpenWindowEntry[] = []
+
+/** Snapshot of the most recent browser-action state we pushed for each
+ *  partition. The toolbar can ask main for "what was the last state?" on
+ *  mount so it doesn't have to wait for the next mutation, and the
+ *  IPC handler below reads from here without re-walking the library. */
+const lastBrowserActionStateByPartition = new Map<string, BrowserActionState>()
+
+function partitionForWorkspace(workspaceId: string): string | null {
+  const profileId = workspaceProfiles.get(workspaceId)
+  return profileId ? `persist:profile-${profileId}` : null
+}
+
+function partitionForBrowserWindow(win: BrowserWindow): string | null {
+  for (const [wsId, w] of workspaceWindows) {
+    if (w === win) return partitionForWorkspace(wsId)
+  }
+  return null
+}
+
+function broadcastBrowserActionState(partition: string, state: BrowserActionState): void {
+  lastBrowserActionStateByPartition.set(partition, state)
+  for (const [wsId, win] of workspaceWindows) {
+    if (win.isDestroyed()) continue
+    if (partitionForWorkspace(wsId) !== partition) continue
+    win.webContents.send('extensions:browser-action-state', { partition, ...state })
+  }
+}
+
+export function getBrowserActionStateForWindow(
+  win: BrowserWindow,
+): { partition: string | null; state: BrowserActionState } {
+  const partition = partitionForBrowserWindow(win)
+  if (!partition) return { partition: null, state: { actions: [] } }
+  const cached = lastBrowserActionStateByPartition.get(partition)
+  if (cached) return { partition, state: cached }
+  // First fetch before any subscribe-triggered initial fire — read live.
+  return { partition, state: getBrowserActionStateForSession(session.fromPartition(partition)) }
+}
 
 // Resolve icon paths once
 const iconPng = join(__dirname, '../../resources/icon.png')
@@ -936,6 +981,15 @@ export function setupPartitionSession(partition: string): void {
         try { destroyTabByWebContents(wc) } catch { /* ignore */ }
       },
     })
+    // Push live browser-action state to every workspace window backed by
+    // this partition so the toolbar icons can update when extensions call
+    // chrome.action.setIcon / setBadgeText / setTitle / setPopup. The
+    // initial fire (inside subscribe) primes the renderer with manifest
+    // defaults; subsequent fires arrive on each chrome.action.* mutation
+    // or active-tab change.
+    subscribeBrowserActionUpdates(ses, (state) => {
+      broadcastBrowserActionState(partition, state)
+    })
   } catch (err) {
     log.warn('extensions: ElectronChromeExtensions setup failed', { partition, err: String(err) })
   }
@@ -1478,6 +1532,17 @@ app.whenReady().then(() => {
 
   configureSession(session.defaultSession)
   applyProxySettingsToAllSessions(loadSettings())
+
+  // Register the `crx://` protocol on the renderer's session so the
+  // toolbar can fetch dynamic extension icons (chrome.action.setIcon)
+  // by URL. The library's handler resolves cross-partition via the
+  // ?partition= query param, so the renderer can ask for any profile's
+  // icon by passing its partition string.
+  try {
+    ElectronChromeExtensions.handleCRXProtocol(session.defaultSession)
+  } catch (err) {
+    log.warn('extensions: handleCRXProtocol(default) failed', String(err))
+  }
 
   // Rehydrate installed extensions before any window opens. Each entry is
   // loaded into sessions as they get configured by setupPartitionSession.

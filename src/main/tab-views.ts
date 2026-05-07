@@ -1018,7 +1018,8 @@ export async function toggleExtensionPopup(
   // succeeds but Chromium still bounces. Useful when triaging future
   // ERR_BLOCKED_BY_CLIENT reports.
   try {
-    const all = ses.getAllExtensions?.() ?? []
+    const sesExt = (ses as unknown as { extensions?: { getAllExtensions?: () => Electron.Extension[] } }).extensions
+    const all = sesExt?.getAllExtensions?.() ?? []
     log.info('extension popup: opening', {
       partition,
       extensionId,
