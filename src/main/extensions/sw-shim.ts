@@ -54,8 +54,17 @@
 //         / chrome.types / chrome.topSites / chrome.idle. Plus a
 //         post-patch-state beacon to confirm in main's log that the
 //         stubs actually took.
+//   V13 — Stop the whack-a-mole. Wrap self.chrome in a Proxy that
+//         returns a callable + chainable + event-like auto-stub for
+//         ANY unknown property. Browsec was failing on a new line
+//         (190 → 282 → 335) every iteration as we added stubs one
+//         namespace at a time; the Proxy means there ARE no missing
+//         namespaces from the SW's perspective. Specific patches
+//         (chrome.userScripts, chrome.scripting.executeScript,
+//         chrome.management.getSelf decoration) still land on the
+//         real chrome and the Proxy preserves them via Reflect.get.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V12__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V13__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -227,109 +236,22 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       removeListener: function () {},
       hasListener: function () { return false; },
     };
-    // Force-assign: if direct assignment fails (chrome object frozen
-    // for unknown-permission keys), fall back to defineProperty so
-    // the value lands anyway. We need this because in V11 we observed
-    // c.proxy = {} silently failing on Browsec's chrome — the SW kept
-    // crashing on chrome.proxy.settings lookup at line 282.
-    function safeAssign(obj, key, value) {
-      try {
-        Object.defineProperty(obj, key, {
-          configurable: true,
-          enumerable: true,
-          writable: true,
-          value: value,
-        });
-        return;
-      } catch (_) { /* try direct */ }
-      try { obj[key] = value; } catch (_) { /* give up */ }
-    }
-    safeAssign(c, 'proxy', {
-      settings: chromeSettingStub({ mode: 'system' }),
-      onProxyError: noopEvent,
-    });
-    safeAssign(c, 'privacy', {
-      network: {
-        networkPredictionEnabled: chromeSettingStub(true),
-        webRTCIPHandlingPolicy: chromeSettingStub('default'),
-      },
-      services: {
-        alternateErrorPagesEnabled: chromeSettingStub(true),
-        autofillEnabled: chromeSettingStub(true),
-        autofillAddressEnabled: chromeSettingStub(true),
-        autofillCreditCardEnabled: chromeSettingStub(true),
-        passwordSavingEnabled: chromeSettingStub(true),
-        safeBrowsingEnabled: chromeSettingStub(true),
-        searchSuggestEnabled: chromeSettingStub(true),
-        spellingServiceEnabled: chromeSettingStub(true),
-        translationServiceEnabled: chromeSettingStub(true),
-      },
-      websites: {
-        thirdPartyCookiesAllowed: chromeSettingStub(true),
-        hyperlinkAuditingEnabled: chromeSettingStub(true),
-        referrersEnabled: chromeSettingStub(true),
-        doNotTrackEnabled: chromeSettingStub(false),
-        protectedContentEnabled: chromeSettingStub(true),
-      },
-    });
-    safeAssign(c, 'browsingData', {
-      remove: function (_o, _d, cb) { if (typeof cb === 'function') Promise.resolve().then(function () { cb(); }); return Promise.resolve(); },
-      removeCache: function (_o, cb) { if (typeof cb === 'function') Promise.resolve().then(function () { cb(); }); return Promise.resolve(); },
-      removeCookies: function (_o, cb) { if (typeof cb === 'function') Promise.resolve().then(function () { cb(); }); return Promise.resolve(); },
-      removeHistory: function (_o, cb) { if (typeof cb === 'function') Promise.resolve().then(function () { cb(); }); return Promise.resolve(); },
-      settings: function (cb) {
-        var s = { options: { since: 0, originTypes: { unprotectedWeb: true } }, dataToRemove: {}, dataRemovalPermitted: {} };
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb(s); });
-        return Promise.resolve(s);
-      },
-    });
-    // Additional namespaces Browsec / privacy / VPN extensions may
-    // touch beyond proxy/privacy/browsingData. Shotgun stub anything
-    // plausible — cheap and prevents a class of "Cannot read X on
-    // undefined" crashes from cascading line by line.
-    safeAssign(c, 'contentSettings', {
-      cookies: chromeSettingStub('allow'),
-      images: chromeSettingStub('allow'),
-      javascript: chromeSettingStub('allow'),
-      location: chromeSettingStub('ask'),
-      notifications: chromeSettingStub('ask'),
-      popups: chromeSettingStub('block'),
-      microphone: chromeSettingStub('ask'),
-      camera: chromeSettingStub('ask'),
-    });
-    safeAssign(c, 'types', {
-      // ChromeSetting is the constructor extensions check via
-      // chrome.types.ChromeSetting. Empty function so instanceof
-      // checks on stubbed settings dont throw.
-      ChromeSetting: function ChromeSetting() {},
-    })
-    safeAssign(c, 'topSites', {
-      get: function (cb) {
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb([]); });
-        return Promise.resolve([]);
-      },
-    });
-    safeAssign(c, 'idle', {
-      queryState: function (_d, cb) {
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb('active'); });
-        return Promise.resolve('active');
-      },
-      setDetectionInterval: function () {},
-      onStateChanged: noopEvent,
-    });
-    // Send a post-patch state beacon so we can confirm in main's log
-    // that the stubs actually took. If hasProxySettingsSet shows false
-    // here we know the assignment didn't land and need a different
-    // strategy (Proxy on chrome, etc).
-    sendPost('post-patch-state', {
-      extId: extId,
-      hasProxy: !!c.proxy,
-      hasProxySettings: !!(c.proxy && c.proxy.settings),
-      hasProxySettingsSet: typeof (c.proxy && c.proxy.settings && c.proxy.settings.set) === 'function',
-      hasPrivacy: !!c.privacy,
-      hasBrowsingData: !!c.browsingData,
-      hasContentSettings: !!c.contentSettings,
-    });
+    // Whack-a-mole stubs (V11 chrome.proxy, V12 chrome.contentSettings
+    // / chrome.types / chrome.topSites / chrome.idle) kept inching
+    // forward Browsec's crash one line at a time — fix line 190,
+    // crash at 282, fix that, crash at 335. The real fix: wrap
+    // self.chrome in a Proxy that auto-stubs ANY unknown property
+    // with a chainable + callable + event-like stub. Anything that
+    // returns undefined on a real chrome.X access now returns an
+    // auto-stub instead, so chrome.WHATEVER.foo.bar.baz(callback)
+    // resolves with a Promise, fires the callback, and chains
+    // forever. The SW can't crash on a missing chrome.* surface
+    // because there are no missing surfaces from its perspective.
+    //
+    // Done LATER in the patch, after the specific namespace patches
+    // (chrome.userScripts, chrome.scripting.executeScript,
+    // chrome.management.getSelf) so the Proxy preserves their real
+    // shape via Reflect.get.
 
     // ── chrome.scripting.executeScript ─────────────────────────────
     // Force-overwrite for the same reason as userScripts.
@@ -371,14 +293,104 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       hasScriptingExecuteScript: !!(self.chrome && self.chrome.scripting && typeof self.chrome.scripting.executeScript === 'function'),
     });
   } catch (_) {}
+  // ── Auto-stub Proxy ─────────────────────────────────────────────
+  // For ANY chrome.* namespace not provided by Electron / library /
+  // our specific patches, return a chainable + callable + event-like
+  // stub. Means chrome.proxy.settings.set(details, cb) resolves
+  // safely instead of throwing 'Cannot read settings on undefined'.
+  // Browsec / VPN / privacy extensions touch lots of these and
+  // crashing on the first missing one made the SW DOA.
+  //
+  // The auto-stub is itself a Proxy on a function so:
+  //   - typeof X === 'function'
+  //   - X(...) returns Promise.resolve() and fires the last-arg
+  //     callback (chrome async API contract)
+  //   - X.foo / X[0] / X.bar.baz returns another auto-stub (chainable)
+  //   - X.addListener / .removeListener are no-ops
+  //   - X.hasListener returns false
+  function makeAutoStub() {
+    var fn = function autoStub() {
+      var cb = arguments.length > 0 ? arguments[arguments.length - 1] : undefined;
+      if (typeof cb === 'function') {
+        Promise.resolve().then(function () { try { cb(); } catch (_) {} });
+      }
+      return Promise.resolve();
+    };
+    return new Proxy(fn, {
+      get: function (target, prop) {
+        if (prop === Symbol.toPrimitive) return function () { return ''; };
+        if (prop === 'toString') return function () { return '[autoStub]'; };
+        if (prop === 'valueOf') return function () { return undefined; };
+        if (prop === Symbol.iterator) return undefined;
+        if (prop === 'then') return undefined; // never identify as a thenable
+        if (prop === 'addListener' || prop === 'removeListener') return function () {};
+        if (prop === 'hasListener') return function () { return false; };
+        if (prop === 'getRules' || prop === 'getRuleNames') {
+          return function (_a, cb) {
+            if (typeof cb === 'function') Promise.resolve().then(function () { cb([]); });
+            return Promise.resolve([]);
+          };
+        }
+        // Any other access returns a fresh nested auto-stub.
+        return makeAutoStub();
+      },
+      set: function () { return true; },
+      has: function () { return true; },
+    });
+  }
+
+  function wrapChromeWithAutoStub(real) {
+    if (!real || typeof real !== 'object') return real;
+    return new Proxy(real, {
+      get: function (target, prop) {
+        // Reflect first — preserves library / Electron / our patched
+        // namespaces (chrome.tabs, chrome.userScripts, chrome.runtime…)
+        var v = Reflect.get(target, prop);
+        if (v !== undefined) return v;
+        // Some Symbol-keyed access shouldn't auto-stub
+        if (typeof prop === 'symbol') return undefined;
+        return makeAutoStub();
+      },
+      // Forward set/delete/has to the real target — Proxy default would
+      // do this anyway, but spelling it out is clearer.
+      set: function (target, prop, value) { return Reflect.set(target, prop, value); },
+      deleteProperty: function (target, prop) { return Reflect.deleteProperty(target, prop); },
+      has: function (target, prop) { return Reflect.has(target, prop); },
+    });
+  }
+
+  // Run specific patches first, then wrap.
   try { patch(self.chrome); } catch (_) {}
+  try {
+    if (self.chrome) {
+      var wrapped = wrapChromeWithAutoStub(self.chrome);
+      // Replace via defineProperty when possible (lands even if the
+      // current self.chrome property is non-writable).
+      try {
+        Object.defineProperty(self, 'chrome', {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: wrapped,
+        });
+      } catch (_) {
+        try { self.chrome = wrapped; } catch (_) {}
+      }
+    }
+  } catch (_) {}
+
+  // Trap reassignment of self.chrome (some Electron versions do this
+  // post-preload). Re-patch + re-wrap when it happens.
   try {
     var ref = self.chrome;
     Object.defineProperty(self, 'chrome', {
       configurable: true,
       enumerable: true,
       get: function () { return ref; },
-      set: function (v) { ref = v; if (v) patch(v); }
+      set: function (v) {
+        if (v && typeof v === 'object') { try { patch(v); } catch (_) {} ref = wrapChromeWithAutoStub(v); }
+        else { ref = v; }
+      }
     });
   } catch (_) {
     var tries = 0;
@@ -388,6 +400,18 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     };
     tick();
   }
+
+  // Diagnostic: report what's visible POST-wrap so we can confirm in
+  // main's log that auto-stubbing engaged.
+  try {
+    sendPost('post-patch-state', {
+      extId: extId,
+      hasProxy: typeof self.chrome.proxy !== 'undefined',
+      hasProxySettings: typeof self.chrome.proxy.settings !== 'undefined',
+      hasProxySettingsSet: typeof self.chrome.proxy.settings.set === 'function',
+      proxyIsAutoStub: !Reflect.has(Object.getPrototypeOf(self.chrome) || {}, 'proxy'),
+    });
+  } catch (_) {}
 })();
 ${SW_SHIM_FOOTER}
 `
