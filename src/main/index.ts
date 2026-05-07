@@ -734,11 +734,16 @@ export function setupPartitionSession(partition: string): void {
     log.warn('extensions: registerPreloadScript(service-worker) failed', { partition, err: String(err) })
   }
   // Mirror chrome-extension service-worker console messages into the
-  // main log. Drop the level filter — Tampermonkey logs at level 0/1
-  // (info/debug) but those are exactly the lines we need to figure
-  // out why chrome.userScripts.register isn't being called. We
-  // exclude one known-noisy line (extension.isAllowedFileSchemeAccess
-  // unimplemented) which fires every 30s and floods.
+  // main log. We KEEP:
+  //   - everything at level 2+ (warnings, errors)
+  //   - level 0/1 messages from the extension's own background.js
+  //     (sourceUrl set) — those are extension-author logs we care about
+  // We DROP:
+  //   - level 0/1 messages with no sourceUrl (`url === ''`) — that's
+  //     electron-chrome-extensions' own internal debug logging
+  //     (tabs.query / tabs.onActivated / browserAction.setIcon spam,
+  //     fires hundreds of times per startup)
+  //   - the 30-second `extension.isAllowedFileSchemeAccess` flood
   try {
     const sw = (ses as unknown as { serviceWorkers?: { on?: Function } }).serviceWorkers
     if (sw && typeof sw.on === 'function') {
@@ -751,7 +756,10 @@ export function setupPartitionSession(partition: string): void {
           const msg = String(details?.message ?? '')
           if (msg.includes('extension.isAllowedFileSchemeAccess is not yet implemented')) return
           const url = String(details?.sourceUrl ?? '')
-          log.info('ext sw console', { partition, level: details?.level, url, msg })
+          const level = details?.level ?? 0
+          // Library-internal debug spam: no source URL + info/log level.
+          if (level < 2 && !url) return
+          log.info('ext sw console', { partition, level, url, msg })
         },
       )
     }

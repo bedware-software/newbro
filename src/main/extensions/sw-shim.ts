@@ -43,8 +43,12 @@
 //   V10 — single-promise getSelf wrapper (V9's two-callback path
 //         called the user callback twice in callback-style mode,
 //         which Tampermonkey's popup choked on → white screen).
+//   V11 — chrome.proxy / chrome.privacy / chrome.browsingData stubs
+//         so VPN / privacy extensions like Browsec don't crash on
+//         first access (background.js:190 read 'settings' on
+//         undefined chrome.proxy).
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V10__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V11__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -175,6 +179,97 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       var p = callRawGetSelf().then(decorateSelf, function () { return decorateSelf({}); });
       if (typeof cb === 'function') p.then(function (info) { try { cb(info); } catch (_) {} });
       return p;
+    };
+
+    // ── chrome.proxy / chrome.privacy / chrome.browsingData ────────
+    // Electron 41 doesn't expose these and Browsec (and other VPN /
+    // privacy extensions) crashes on first access reading e.g.
+    // chrome.proxy.settings. Stub them so the SW doesn't die at
+    // background.js:190 with "Cannot read properties of undefined
+    // (reading 'settings')". The stubs don't actually do anything —
+    // Browsec won't be able to set the system proxy via chrome.proxy
+    // — but at least its UI will load.
+    function chromeSettingStub(defaultValue) {
+      var listeners = [];
+      return {
+        get: function (_details, cb) {
+          var out = { value: defaultValue, levelOfControl: 'controllable_by_this_extension', incognitoSpecific: false };
+          if (typeof cb === 'function') Promise.resolve().then(function () { cb(out); });
+          return Promise.resolve(out);
+        },
+        set: function (_details, cb) {
+          if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+          return Promise.resolve();
+        },
+        clear: function (_details, cb) {
+          if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+          return Promise.resolve();
+        },
+        onChange: {
+          addListener: function (fn) { if (typeof fn === 'function') listeners.push(fn); },
+          removeListener: function (fn) {
+            var i = listeners.indexOf(fn);
+            if (i !== -1) listeners.splice(i, 1);
+          },
+          hasListener: function (fn) { return listeners.indexOf(fn) !== -1; },
+        },
+      };
+    }
+    var noopEvent = {
+      addListener: function () {},
+      removeListener: function () {},
+      hasListener: function () { return false; },
+    };
+    if (!c.proxy) c.proxy = {};
+    if (!c.proxy.settings) c.proxy.settings = chromeSettingStub({ mode: 'system' });
+    if (!c.proxy.onProxyError) c.proxy.onProxyError = noopEvent;
+
+    if (!c.privacy) c.privacy = {};
+    if (!c.privacy.network) c.privacy.network = {
+      networkPredictionEnabled: chromeSettingStub(true),
+      webRTCIPHandlingPolicy: chromeSettingStub('default'),
+    };
+    if (!c.privacy.services) c.privacy.services = {
+      alternateErrorPagesEnabled: chromeSettingStub(true),
+      autofillEnabled: chromeSettingStub(true),
+      autofillAddressEnabled: chromeSettingStub(true),
+      autofillCreditCardEnabled: chromeSettingStub(true),
+      passwordSavingEnabled: chromeSettingStub(true),
+      safeBrowsingEnabled: chromeSettingStub(true),
+      searchSuggestEnabled: chromeSettingStub(true),
+      spellingServiceEnabled: chromeSettingStub(true),
+      translationServiceEnabled: chromeSettingStub(true),
+    };
+    if (!c.privacy.websites) c.privacy.websites = {
+      thirdPartyCookiesAllowed: chromeSettingStub(true),
+      hyperlinkAuditingEnabled: chromeSettingStub(true),
+      referrersEnabled: chromeSettingStub(true),
+      doNotTrackEnabled: chromeSettingStub(false),
+      protectedContentEnabled: chromeSettingStub(true),
+    };
+
+    if (!c.browsingData) c.browsingData = {
+      remove: function (_options, _dataToRemove, cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      },
+      removeCache: function (_options, cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      },
+      removeCookies: function (_options, cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      },
+      removeHistory: function (_options, cb) {
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+        return Promise.resolve();
+      },
+      settings: function (cb) {
+        var s = { options: { since: 0, originTypes: { unprotectedWeb: true } }, dataToRemove: {}, dataRemovalPermitted: {} };
+        if (typeof cb === 'function') Promise.resolve().then(function () { cb(s); });
+        return Promise.resolve(s);
+      },
     };
 
     // ── chrome.scripting.executeScript ─────────────────────────────
