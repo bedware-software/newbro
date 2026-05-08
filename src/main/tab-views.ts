@@ -22,7 +22,7 @@ import { BrowserWindow, Menu, WebContentsView, clipboard, ipcMain, session, app 
 import type { Session, WebContents } from 'electron'
 import { join } from 'path'
 import { log } from './log'
-import { setupPartitionSession } from './index'
+import { setupPartitionSession, shouldDropExtConsoleMessage } from './index'
 import { ensureExtensionInSession } from './extensions/manager'
 import { injectMatchingUserScripts } from './extensions/userscripts'
 import { getExtensionsFor, suppressLibrarySelectTab } from './chrome-extensions-bridge'
@@ -1124,12 +1124,16 @@ export async function toggleExtensionPopup(
   // for popup-side white-screen bugs.
   view.webContents.on('console-message', (e) => {
     const detail = e as unknown as { level?: string; message?: string; sourceId?: string; line?: number }
+    const msg = String(detail.message ?? '')
+    const isError = detail.level === 'warning' || detail.level === 'error'
+    if (!isError && shouldDropExtConsoleMessage(msg)) return
+    const truncated = msg.length > 400 ? msg.slice(0, 400) + ` …(${msg.length - 400} more)` : msg
     log.info('extension popup console', {
       extensionId,
       level: detail.level,
       sourceId: detail.sourceId,
       line: detail.line,
-      msg: detail.message,
+      msg: truncated,
     })
   })
 

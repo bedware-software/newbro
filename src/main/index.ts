@@ -579,20 +579,40 @@ function configureSession(ses: Electron.Session): void {
   }
   ses.webRequest.onCompleted(externalFilter, dropTracked)
 
-  // Diagnostic: log network errors for chrome-extension fetches. Drop
-  // ERR_ABORTED noise (extensions cancelling polls during teardown).
+  // Diagnostic: log network errors for any URL Browsec or other extensions
+  // hit. Don't filter on the tracked origin map — onBeforeSendHeaders may
+  // not see chrome-extension SW fetches at all on Electron 41 (the
+  // tracking + CORS injection branch above relies on it firing). Logging
+  // unconditionally for known extension targets confirms whether
+  // webRequest fires at all for these requests.
   ses.webRequest.onErrorOccurred(externalFilter, (details) => {
     const tracked = extOriginByRequest.get(details.id)
     extOriginByRequest.delete(details.id)
-    if (!tracked) return
     if (details.error === 'net::ERR_ABORTED') return
     log.warn('ext fetch failed', {
       url: details.url,
       method: details.method,
       error: details.error,
-      origin: tracked.origin,
+      origin: tracked?.origin ?? '(untracked)',
     })
   })
+
+  // Symmetric counterpart: confirm chrome-extension SW fetches even reach
+  // onBeforeRequest. If this fires for google-analytics.com calls but
+  // onErrorOccurred doesn't, the request is silently dropped between
+  // stages. If neither fires, webRequest is bypassed entirely for SW
+  // contexts and we need a different fix surface.
+  ses.webRequest.onBeforeRequest(
+    { urls: ['*://*.google-analytics.com/*', '*://api.browsec.com/*'] },
+    (details, callback) => {
+      log.info('ext fetch start', {
+        url: details.url,
+        method: details.method,
+        resourceType: details.resourceType,
+      })
+      callback({ cancel: false })
+    },
+  )
 
   // SW → main IPC channel. The shim we prepend into MV3 service workers
   // can't import { ipcRenderer } from 'electron' (no preload bridge in
@@ -905,6 +925,36 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
+/** Patterns matched against extension SW + popup console.log/info messages.
+ *  Returns true when the message is known noise we'd rather not flood the
+ *  main log with — Browsec's per-event analytics, Tampermonkey's alarm
+ *  scheduler, etc. Errors and warnings (level >= 2) bypass this filter. */
+const EXT_CONSOLE_NOISE_REGEXES = [
+  /^alarm:/, // Tampermonkey scheduler
+  /^Storage:\s/, // Tampermonkey storage init
+  /^\[gaDigest\//, // Browsec GA4 digest
+  /^\[jitsu\],/, // Browsec jitsu events
+  /^\[gaUserIdPromise\]/, // Browsec analytics id
+  /^\[initial state:/, // Browsec massive PAC dump (~3KB)
+  /^\[defaultCountry\]/, // Browsec country selection
+  /^\[storageListener\]/, // Browsec storage echoes
+  /^\[highLevelPac/, // Browsec PAC ops
+  /^\[storage[A-Z]/, // Browsec storage adapter
+  /^Local delay\./, // Browsec timing
+  /^Delay\./, // Browsec timing
+  /^Store: account update/, // Browsec account
+  /^ajaxes\./, // Browsec API trace
+  /^onAuthRequired\.addListener/, // Browsec init
+  /^KeepAliveWorker/, // Browsec keep-alive
+]
+export function shouldDropExtConsoleMessage(message: string): boolean {
+  // Browsec prefixes its own logs with `[dd, hh:mm:ss.mmm], `. Strip
+  // before matching so the regexes can target message content directly.
+  const stripped = message.replace(/^\[\d+,\s*\d+:\d+:\d+\.\d+\],\s*/, '')
+  for (const re of EXT_CONSOLE_NOISE_REGEXES) if (re.test(stripped)) return true
+  return false
+}
+
 function executeScriptOnHashedTabIds(partition: string, hashedTabIds: number[], code: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue
@@ -1014,7 +1064,9 @@ export function setupPartitionSession(partition: string): void {
           const level = details?.level ?? 0
           // Library-internal debug spam: no source URL + info/log level.
           if (level < 2 && !url) return
-          log.info('ext sw console', { partition, level, url, msg })
+          if (level < 2 && shouldDropExtConsoleMessage(msg)) return
+          const truncated = msg.length > 400 ? msg.slice(0, 400) + ` …(${msg.length - 400} more)` : msg
+          log.info('ext sw console', { partition, level, url, msg: truncated })
         },
       )
     }
