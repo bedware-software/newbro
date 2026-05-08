@@ -665,44 +665,50 @@ function configureSession(ses: Electron.Session): void {
   // registers an auth handler at SW init silently no-ops, and a 407
   // Proxy-Authentication-Required from the SOCKS/HTTPS proxy goes
   // unanswered — the connection drops, the VPN never establishes.
-  // We:
-  //   1. Listen for auth challenges at the session level here,
+  //
+  // Electron exposes session-scoped HTTP auth via the global
+  // `app.on('login', ...)` event (NOT ses.webRequest.onAuthRequired,
+  // which doesn't exist on Electron's WebRequest). We register the
+  // handler once per partition and dispatch only when the request
+  // belongs to this session. Lifecycle:
+  //   1. app 'login' fires with the auth challenge,
   //   2. Park the chromium-side callback in pendingAuthChallenges,
-  //   3. Hand the challenge details to the SW via the newbro-ipc
-  //      `auth-poll` long-poll endpoint above,
+  //   3. Hand the challenge details to the SW via newbro-ipc auth-poll,
   //   4. The SW invokes the extension's registered listener,
-  //   5. The listener's reply lands back here via `auth-respond`,
-  //   6. We invoke the parked chromium callback with the credentials.
-  ses.webRequest.onAuthRequired((details, callback) => {
-    const challengeId = `${details.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  //   5. The listener's reply lands back via auth-respond,
+  //   6. We invoke the parked chromium callback with credentials.
+  app.on('login', (event, webContents, requestDetails, authInfo, callback) => {
+    if (webContents && webContents.session !== ses) return
+    event.preventDefault()
+    const challengeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     const detailsLite = {
-      requestId: String(details.id),
-      url: details.url,
-      method: details.method,
-      isProxy: (details as { isProxy?: boolean }).isProxy === true,
-      scheme: (details as { scheme?: string }).scheme,
-      realm: (details as { realm?: string }).realm,
-      challenger: (details as { challenger?: { host?: string; port?: number } }).challenger,
-      statusCode: (details as { statusCode?: number }).statusCode,
+      url: requestDetails.url,
+      method: requestDetails.method,
+      isProxy: authInfo.isProxy,
+      scheme: authInfo.scheme,
+      realm: authInfo.realm,
+      challenger: { host: authInfo.host, port: authInfo.port },
     }
     pendingAuthChallenges.set(challengeId, {
       partition,
       details: detailsLite,
-      callback,
+      callback: (resp) => {
+        if (resp && typeof resp.username === 'string') callback(resp.username, resp.password ?? '')
+        else callback()
+      },
       timer: setTimeout(() => {
         if (pendingAuthChallenges.delete(challengeId)) {
-          log.warn('extensions: auth challenge timed out — no listener responded', { partition, url: details.url })
-          callback({})
+          log.warn('extensions: auth challenge timed out — no listener responded', { partition, url: requestDetails.url })
+          callback()
         }
       }, 15000),
     })
-    // Wake up the SW poll for this partition, if any is waiting.
     const waiting = waitingAuthPolls.get(partition)
     if (waiting && waiting.length > 0) {
       const wake = waiting.shift()!
       wake({ challenge: { id: challengeId, details: detailsLite } })
     }
-    log.info('extensions: auth challenge queued', { partition, challengeId, url: details.url })
+    log.info('extensions: auth challenge queued', { partition, challengeId, url: requestDetails.url, isProxy: authInfo.isProxy })
   })
 
   // SW → main IPC channel. The shim we prepend into MV3 service workers
