@@ -923,6 +923,51 @@ const POPUP_DEFAULT_HEIGHT = 520
 /** Padding between window edge and popup so the panel never butts up
  *  against the sash. Matches Chrome's spacing. */
 const POPUP_VIEWPORT_MARGIN = 6
+/** Chrome's popup size constraints — we mirror them exactly so popups
+ *  designed against Chrome's web store render predictably. Values from
+ *  electron-chrome-extensions's PopupView.BOUNDS as well as Chromium's
+ *  src/extensions/browser/extension_host_delegate.cc. */
+const POPUP_MIN_WIDTH = 25
+const POPUP_MIN_HEIGHT = 25
+const POPUP_MAX_WIDTH = 800
+const POPUP_MAX_HEIGHT = 600
+
+/** Read the popup body's preferred size and resize the WebContentsView to
+ *  match. Without this the popup view stays at our 360×520 default and
+ *  any popup smaller (Tampermonkey, Dark Reader's filter pane) shows a
+ *  visible "gutter" of empty WebContentsView around the actual UI;
+ *  popups taller than 520 (Browsec country list, options pages) get
+ *  clipped. Chrome's behaviour is "auto-fit, capped at 800×600". */
+async function fitExtensionPopupToContent(windowId: number): Promise<void> {
+  const rec = extensionPopupByWindow.get(windowId)
+  if (!rec) return
+  if (rec.view.webContents.isDestroyed()) return
+  try {
+    const size = (await rec.view.webContents.executeJavaScript(
+      `(() => {
+        const html = document.documentElement;
+        const body = document.body;
+        if (!body) return null;
+        return {
+          width: Math.max(body.scrollWidth, html.scrollWidth, body.getBoundingClientRect().width),
+          height: Math.max(body.scrollHeight, html.scrollHeight, body.getBoundingClientRect().height),
+        };
+      })()`,
+    )) as { width?: number; height?: number } | null
+    if (!size || typeof size.width !== 'number' || typeof size.height !== 'number') return
+    const w = Math.round(Math.max(POPUP_MIN_WIDTH, Math.min(POPUP_MAX_WIDTH, size.width)))
+    const h = Math.round(Math.max(POPUP_MIN_HEIGHT, Math.min(POPUP_MAX_HEIGHT, size.height)))
+    if (w === rec.width && h === rec.height) return
+    rec.width = w
+    rec.height = h
+    const ownerWindow = BrowserWindow.fromId(rec.windowId)
+    if (!ownerWindow || ownerWindow.isDestroyed()) return
+    const bounds = clampPopupBounds(ownerWindow, rec.anchor, w, h)
+    rec.view.setBounds(bounds)
+  } catch {
+    /* page may have torn down between read and resize */
+  }
+}
 
 function clampPopupBounds(
   ownerWindow: BrowserWindow,
@@ -1052,7 +1097,11 @@ export async function toggleExtensionPopup(
   const height = POPUP_DEFAULT_HEIGHT
   const bounds = clampPopupBounds(ownerWindow, anchor, width, height)
   view.setBounds(bounds)
-  view.setBackgroundColor('#ffffff')
+  // Transparent so any unfilled gap between our WebContentsView and the
+  // popup HTML's own background colour doesn't render as a white border
+  // around the popup. After fitExtensionPopupToContent runs there should
+  // be no gap, but on first paint and during loadURL the gap is visible.
+  view.setBackgroundColor('#00000000')
   ownerWindow.contentView.addChildView(view)
 
   // Tear down on owner-window blur. Listener is stored on the record so
@@ -1144,6 +1193,17 @@ export async function toggleExtensionPopup(
   view.webContents.once('did-finish-load', () => {
     if (!extensionPopupByWindow.has(windowId)) return
     try { view.webContents.focus() } catch { /* ignore */ }
+    // Fit the WebContentsView to the popup's preferred size. Several
+    // attempts at increasing delays — most popups settle synchronously
+    // on first paint, but Tampermonkey/Dark Reader/Browsec hydrate
+    // their UI from chrome.storage promises and grow late, so we retry
+    // out to ~1s. Each attempt is cheap (one executeJavaScript round-
+    // trip + setBounds when changed).
+    fitExtensionPopupToContent(windowId)
+    setTimeout(() => fitExtensionPopupToContent(windowId), 50)
+    setTimeout(() => fitExtensionPopupToContent(windowId), 200)
+    setTimeout(() => fitExtensionPopupToContent(windowId), 600)
+    setTimeout(() => fitExtensionPopupToContent(windowId), 1200)
   })
 
   // Tear down on owner-window destroy. Map cleanup happens here too in
