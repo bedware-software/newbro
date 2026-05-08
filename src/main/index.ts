@@ -844,7 +844,8 @@ function configureSession(ses: Electron.Session): void {
           action === 'sw-shim-ran' ||
           action === 'post-patch-state' ||
           action === 'userscripts-shim-state' ||
-          action === 'webRequest-onAuthRequired-add'
+          action === 'webRequest-onAuthRequired-add' ||
+          action === 'patch-step'
         ) {
           const body = readUploadBody(details)
           const parsed = body ? safeJsonParse(body) : null

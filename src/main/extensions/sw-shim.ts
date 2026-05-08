@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V18__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V19__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -108,6 +108,12 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     if (!c || typeof c !== 'object') return;
 
     var extId = getExtId(c);
+    // Beacon BEFORE any of the per-namespace setup so we can see in
+    // main's log whether patch() entered for each extension and what
+    // chrome looks like before our overrides land.
+    try {
+      sendPost('patch-step', { extId: extId, step: 'enter', hasWebRequest: typeof c.webRequest !== 'undefined' });
+    } catch (_) {}
 
     // chrome.userScripts: register OUR namespace into NEWBRO_OVERRIDES
     // unconditionally. Chromium ships a partial chrome.userScripts in
@@ -206,62 +212,75 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     // forward registered listeners to main via newbro-ipc so the
     // session-level auth challenge actually reaches Browsec's
     // credentials callback.
+    var __authListeners = [];
+    var newWR = {
+      onAuthRequired: {
+        addListener: function (callback, filter, extraInfoSpec) {
+          __authListeners.push(callback);
+          sendPost('webRequest-onAuthRequired-add', {
+            extId: extId,
+            filter: filter,
+            extraInfoSpec: extraInfoSpec,
+            listenerCount: __authListeners.length,
+          });
+        },
+        removeListener: function (callback) {
+          __authListeners = __authListeners.filter(function (l) { return l !== callback; });
+        },
+        hasListener: function (callback) {
+          return __authListeners.indexOf(callback) !== -1;
+        },
+      },
+    };
+    // Copy lib's existing chrome.webRequest properties (especially
+    // onHeadersReceived) onto our object so consumers see a unified
+    // namespace. Walking own-property names + getters in case the
+    // lib used Object.defineProperty with non-enumerable descriptors.
     try {
-      var existingWR = c.webRequest;
-      if (existingWR && typeof existingWR === 'object' && !existingWR.onAuthRequired) {
-        var __authListeners = [];
-        var __nextChallengeId = 1;
-        existingWR.onAuthRequired = {
-          addListener: function (callback, filter, extraInfoSpec) {
-            __authListeners.push(callback);
-            sendPost('webRequest-onAuthRequired-add', {
-              extId: extId,
-              filter: filter,
-              extraInfoSpec: extraInfoSpec,
-              listenerCount: __authListeners.length,
-            });
-          },
-          removeListener: function (callback) {
-            __authListeners = __authListeners.filter(function (l) { return l !== callback; });
-          },
-          hasListener: function (callback) {
-            return __authListeners.indexOf(callback) !== -1;
-          },
-        };
-        // Long-poll for auth challenges from main via newbro-ipc://
-        // (the webRequest sentinel host gets cancelled by main and
-        // can't return a body, so we use the real protocol handler
-        // here). Each iteration hangs at the protocol boundary until
-        // main has a challenge or a 30s timeout expires; on receipt
-        // we invoke registered listeners and POST the response back.
-        var __pollAuth = function () {
-          fetch('newbro-ipc://auth-poll?extId=' + encodeURIComponent(extId))
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-              if (data && data.challenge) {
-                var ch = data.challenge;
-                var responded = false;
-                var fire = function (response) {
-                  if (responded) return;
-                  responded = true;
-                  fetch('newbro-ipc://auth-respond', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ challengeId: ch.id, response: response }),
-                  }).catch(function () {});
-                };
-                for (var i = 0; i < __authListeners.length; i++) {
-                  try { __authListeners[i](ch.details, fire); } catch (_) {}
-                }
-                setTimeout(function () { fire({}); }, 5000);
-              }
-            })
-            .catch(function () {})
-            .then(function () { setTimeout(__pollAuth, 50); });
-        };
-        Promise.resolve().then(__pollAuth);
+      var realWR = c.webRequest;
+      if (realWR && typeof realWR === 'object') {
+        var keys = Object.getOwnPropertyNames(realWR);
+        for (var k = 0; k < keys.length; k++) {
+          var key = keys[k];
+          if (key === 'onAuthRequired') continue;
+          try { newWR[key] = realWR[key]; } catch (_) {}
+        }
       }
     } catch (_) {}
+    NEWBRO_OVERRIDES['webRequest'] = newWR;
+    try { c.webRequest = newWR; } catch (_) {
+      try { Object.defineProperty(c, 'webRequest', { configurable: true, enumerable: true, writable: true, value: newWR }); } catch (_) {}
+    }
+    // Long-poll for auth challenges from main via newbro-ipc://. Each
+    // iteration hangs at the protocol boundary until main has a
+    // challenge or a 30s timeout expires; on receipt we invoke
+    // registered listeners and POST the response back.
+    var __pollAuth = function () {
+      fetch('newbro-ipc://auth-poll?extId=' + encodeURIComponent(extId))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data && data.challenge) {
+            var ch = data.challenge;
+            var responded = false;
+            var fire = function (response) {
+              if (responded) return;
+              responded = true;
+              fetch('newbro-ipc://auth-respond', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ challengeId: ch.id, response: response }),
+              }).catch(function () {});
+            };
+            for (var i = 0; i < __authListeners.length; i++) {
+              try { __authListeners[i](ch.details, fire); } catch (_) {}
+            }
+            setTimeout(function () { fire({}); }, 5000);
+          }
+        })
+        .catch(function () {})
+        .then(function () { setTimeout(__pollAuth, 50); });
+    };
+    Promise.resolve().then(__pollAuth);
 
     // Synchronous diagnostic: log what we put on chrome.userScripts.
     // Fires before TM's init (which is on a microtask) so we always
@@ -272,6 +291,9 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
         methods: Object.keys(us),
         executionWorld: us.ExecutionWorld,
       });
+    } catch (_) {}
+    try {
+      sendPost('patch-step', { extId: extId, step: 'after-userScripts-and-webRequest' });
     } catch (_) {}
 
     // ── chrome.management.getSelf ──────────────────────────────────
