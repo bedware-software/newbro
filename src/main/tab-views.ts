@@ -926,11 +926,13 @@ const POPUP_VIEWPORT_MARGIN = 6
 /** Chrome's popup size constraints — we mirror them exactly so popups
  *  designed against Chrome's web store render predictably. Values from
  *  electron-chrome-extensions's PopupView.BOUNDS as well as Chromium's
- *  src/extensions/browser/extension_host_delegate.cc. */
-const POPUP_MIN_WIDTH = 25
-const POPUP_MIN_HEIGHT = 25
-const POPUP_MAX_WIDTH = 800
-const POPUP_MAX_HEIGHT = 600
+ *  src/extensions/browser/extension_host_delegate.cc. Names prefixed
+ *  EXT_ to avoid collision with the (different) workspace popup
+ *  constants further up. */
+const EXT_POPUP_MIN_WIDTH = 25
+const EXT_POPUP_MIN_HEIGHT = 25
+const EXT_POPUP_MAX_WIDTH = 800
+const EXT_POPUP_MAX_HEIGHT = 600
 
 /** Read the popup body's preferred size and resize the WebContentsView to
  *  match. Without this the popup view stays at our 360×520 default and
@@ -955,8 +957,8 @@ async function fitExtensionPopupToContent(windowId: number): Promise<void> {
       })()`,
     )) as { width?: number; height?: number } | null
     if (!size || typeof size.width !== 'number' || typeof size.height !== 'number') return
-    const w = Math.round(Math.max(POPUP_MIN_WIDTH, Math.min(POPUP_MAX_WIDTH, size.width)))
-    const h = Math.round(Math.max(POPUP_MIN_HEIGHT, Math.min(POPUP_MAX_HEIGHT, size.height)))
+    const w = Math.round(Math.max(EXT_POPUP_MIN_WIDTH, Math.min(EXT_POPUP_MAX_WIDTH, size.width)))
+    const h = Math.round(Math.max(EXT_POPUP_MIN_HEIGHT, Math.min(EXT_POPUP_MAX_HEIGHT, size.height)))
     if (w === rec.width && h === rec.height) return
     rec.width = w
     rec.height = h
