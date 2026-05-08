@@ -22,8 +22,10 @@ import { BrowserWindow, Menu, WebContentsView, clipboard, ipcMain, session, app 
 import type { Session, WebContents } from 'electron'
 import { join } from 'path'
 import { log } from './log'
-import { setupPartitionSession } from './index'
+import { setupPartitionSession, shouldDropExtConsoleMessage } from './index'
 import { ensureExtensionInSession } from './extensions/manager'
+import { injectMatchingUserScripts } from './extensions/userscripts'
+import { getExtensionsFor, suppressLibrarySelectTab } from './chrome-extensions-bridge'
 
 export interface TabBounds {
   x: number
@@ -225,6 +227,32 @@ function wireEvents(rec: TabRecord): void {
   wc.on('did-stop-loading', () =>
     emit({ type: 'did-stop-loading', tabId: rec.tabId, url: wc.getURL() })
   )
+
+  // chrome.userScripts injection. The SW shim forwards register() calls
+  // to main where they're stored per partition; here we run any that
+  // match the current page URL at the right Chrome runAt phase.
+  // - document_start: fire on did-frame-finish-load for the main frame's
+  //   first navigation (best proxy we have for "before scripts run").
+  //   Electron exposes did-start-navigation but the JS context isn't
+  //   ready there, so executeJavaScript would silently no-op.
+  // - document_end: dom-ready (DOM parsed, before subresources finish).
+  // - document_idle: did-finish-load.
+  // We don't separate document_start from document_end yet because the
+  // event ordering in Electron doesn't always give us a usable hook
+  // BEFORE DOMContentLoaded; document_end via dom-ready covers both for
+  // the practical-effects case. Tampermonkey's wrapper handles its own
+  // run-at semantics inside the user script anyway.
+  wc.on('dom-ready', () => {
+    const url = (() => { try { return wc.getURL() } catch { return '' } })()
+    if (!url) return
+    injectMatchingUserScripts(rec.partition, url, 'document_start', wc)
+    injectMatchingUserScripts(rec.partition, url, 'document_end', wc)
+  })
+  wc.on('did-finish-load', () => {
+    const url = (() => { try { return wc.getURL() } catch { return '' } })()
+    if (!url) return
+    injectMatchingUserScripts(rec.partition, url, 'document_idle', wc)
+  })
   wc.on('did-navigate', (_e, url) => {
     emit({ type: 'did-navigate', tabId: rec.tabId, url })
     emitNavState()
@@ -614,6 +642,40 @@ export function createTab(opts: {
   wcIdToTabId.set(view.webContents.id, opts.tabId)
   wireEvents(rec)
 
+  // Register the tab with electron-chrome-extensions so chrome.tabs.*
+  // sees it. The library auto-marks each newly-added tab as the
+  // window's active tab via observeTab → onActivated, which fires our
+  // selectTab callback. With multiple tabs being created on workspace
+  // restore, that cascade made every tab "active" in turn and the
+  // renderer's URL bar cycled through all of them. Suppress the
+  // library's selectTab callback during the addTab + corrective
+  // selectTab pair so only OUR view of the active tab wins.
+  try {
+    const ext = getExtensionsFor(view.webContents.session)
+    if (ext) {
+      suppressLibrarySelectTab(() => {
+        ext.addTab(view.webContents, win)
+        // The library just marked THIS tab active. Correct it back to
+        // our recorded active tab if they differ (i.e. when adding a
+        // background tab while another tab is foreground).
+        const realActive = activeTabByWindow.get(opts.windowId)
+        if (realActive && realActive !== opts.tabId) {
+          const activeRec = tabs.get(realActive)
+          if (activeRec) ext.selectTab(activeRec.view.webContents)
+        }
+      })
+    }
+  } catch (err) {
+    log.warn('tab-views: addTab to extensions failed', { tabId: opts.tabId, err: String(err) })
+  }
+
+  // Resolve any pending chrome.tabs.create awaiting THIS URL. See
+  // createTabForExtension for the round-trip rationale.
+  if (opts.url) {
+    const pending = pendingExtTabs.get(opts.url)
+    if (pending) pending(view.webContents)
+  }
+
   // Let the owning window install its shortcut interceptor on this tab's
   // webContents so menu accelerators fire even when the page has focus.
   const install = shortcutInstallers.get(opts.windowId)
@@ -638,13 +700,49 @@ export function createTab(opts: {
   }
 }
 
+/** Match a `chrome-extension://<id>/...` URL and return the extension id.
+ *  Returns null for non-extension URLs. Used to gate any tab navigation
+ *  that targets an extension's own page on a "session has the extension
+ *  loaded" check — Chromium's navigation throttle 403s the load with
+ *  `ERR_BLOCKED_BY_CLIENT (-20)` if the extension isn't registered for
+ *  the navigating session, even when the resource is web-accessible. */
+function extractExtensionIdFromExtUrl(url: string): string | null {
+  const m = url.match(/^chrome-extension:\/\/([a-p]{32})\//i)
+  return m ? m[1] : null
+}
+
+async function startTabNavigation(rec: TabRecord, url: string): Promise<void> {
+  // Some extensions (Browsec's "Health Check" button) link to other
+  // extensions using the legacy `extension://<id>/…` scheme. Chromium
+  // accepts this as an alias for `chrome-extension://`, but Electron's
+  // loadURL doesn't — it fails with ERR_FAILED. Normalise here so the
+  // canonical chrome-extension:// path takes over (incl. ensureExtension-
+  // InSession below).
+  if (url.startsWith('extension://')) {
+    url = 'chrome-' + url
+  }
+  const extId = extractExtensionIdFromExtUrl(url)
+  if (extId) {
+    // Extension is supposed to already be loaded into this partition
+    // (setupPartitionSession → loadEnabledExtensionsInto), but on a fresh
+    // partition the load is fire-and-forget. Awaiting here closes the
+    // race with the loadURL below.
+    await ensureExtensionInSession(rec.view.webContents.session, extId).catch(() => false)
+  }
+  rec.view.webContents.loadURL(url).catch((err) => {
+    // ERR_ABORTED is normal during user-initiated redirects (e.g. Google's
+    // consent.google.com flow interrupting a chromewebstore load). Skip.
+    const msg = String(err)
+    if (msg.includes('ERR_ABORTED')) return
+    log.warn('tab-views: loadURL failed', { tabId: rec.tabId, url, err: msg })
+  })
+}
+
 function loadIfNeeded(rec: TabRecord, url: string): void {
   if (rec.activated) return
   rec.activated = true
   if (!url || url === 'about:blank') return
-  rec.view.webContents.loadURL(url).catch((err) => {
-    log.warn('tab-views: loadURL failed', { tabId: rec.tabId, url, err: String(err) })
-  })
+  void startTabNavigation(rec, url)
 }
 
 export function activateTab(windowId: number, tabId: string, url: string): void {
@@ -672,6 +770,7 @@ export function activateTab(windowId: number, tabId: string, url: string): void 
 
 function setActiveTab(windowId: number, tabId: string): void {
   const prev = activeTabByWindow.get(windowId)
+  if (prev === tabId) return // already active — no need to re-bound or notify
   if (prev && prev !== tabId) {
     const prevRec = tabs.get(prev)
     if (prevRec) {
@@ -687,12 +786,36 @@ function setActiveTab(windowId: number, tabId: string): void {
     rec.lastBounds = wb
     rec.view.setBounds(wb)
   }
+  // Tell electron-chrome-extensions which tab is now active so
+  // chrome.tabs.query({active:true}) and chrome.tabs.onActivated fire
+  // with the right tab id. Wrapped in suppressLibrarySelectTab so the
+  // library's internal active-tab-changed event can't bounce back as
+  // a selectTab callback we'd then re-process (which would create the
+  // exact loop we just fixed in createTab).
+  try {
+    const ext = getExtensionsFor(rec.view.webContents.session)
+    if (ext) {
+      suppressLibrarySelectTab(() => ext.selectTab(rec.view.webContents))
+    }
+  } catch (err) {
+    log.warn('tab-views: selectTab to extensions failed', { tabId, err: String(err) })
+  }
 }
 
 export function destroyTab(tabId: string): void {
   const rec = tabs.get(tabId)
   if (!rec) return
   const wcId = rec.view.webContents.id
+  // Notify electron-chrome-extensions so chrome.tabs.onRemoved fires
+  // and any cached state about this tab is cleaned up. Done before we
+  // tear down the WebContentsView — once the webContents is destroyed
+  // the library can't read its id any more.
+  try {
+    const ext = getExtensionsFor(rec.view.webContents.session)
+    if (ext) ext.removeTab(rec.view.webContents)
+  } catch {
+    /* ignore — library may not be initialised for this session */
+  }
   const win = BrowserWindow.fromId(rec.windowId)
   if (win && !win.isDestroyed()) {
     try {
@@ -731,9 +854,7 @@ export function tabNavigate(tabId: string, url: string): void {
   const rec = tabs.get(tabId)
   if (!rec) return
   rec.activated = true
-  rec.view.webContents.loadURL(url).catch((err) => {
-    log.warn('tab-views: navigate failed', { tabId, url, err: String(err) })
-  })
+  void startTabNavigation(rec, url)
 }
 
 export function tabGoBack(tabId: string): void {
@@ -815,6 +936,53 @@ const POPUP_DEFAULT_HEIGHT = 520
 /** Padding between window edge and popup so the panel never butts up
  *  against the sash. Matches Chrome's spacing. */
 const POPUP_VIEWPORT_MARGIN = 6
+/** Chrome's popup size constraints — we mirror them exactly so popups
+ *  designed against Chrome's web store render predictably. Values from
+ *  electron-chrome-extensions's PopupView.BOUNDS as well as Chromium's
+ *  src/extensions/browser/extension_host_delegate.cc. Names prefixed
+ *  EXT_ to avoid collision with the (different) workspace popup
+ *  constants further up. */
+const EXT_POPUP_MIN_WIDTH = 25
+const EXT_POPUP_MIN_HEIGHT = 25
+const EXT_POPUP_MAX_WIDTH = 800
+const EXT_POPUP_MAX_HEIGHT = 600
+
+/** Read the popup body's preferred size and resize the WebContentsView to
+ *  match. Without this the popup view stays at our 360×520 default and
+ *  any popup smaller (Tampermonkey, Dark Reader's filter pane) shows a
+ *  visible "gutter" of empty WebContentsView around the actual UI;
+ *  popups taller than 520 (Browsec country list, options pages) get
+ *  clipped. Chrome's behaviour is "auto-fit, capped at 800×600". */
+async function fitExtensionPopupToContent(windowId: number): Promise<void> {
+  const rec = extensionPopupByWindow.get(windowId)
+  if (!rec) return
+  if (rec.view.webContents.isDestroyed()) return
+  try {
+    const size = (await rec.view.webContents.executeJavaScript(
+      `(() => {
+        const html = document.documentElement;
+        const body = document.body;
+        if (!body) return null;
+        return {
+          width: Math.max(body.scrollWidth, html.scrollWidth, body.getBoundingClientRect().width),
+          height: Math.max(body.scrollHeight, html.scrollHeight, body.getBoundingClientRect().height),
+        };
+      })()`,
+    )) as { width?: number; height?: number } | null
+    if (!size || typeof size.width !== 'number' || typeof size.height !== 'number') return
+    const w = Math.round(Math.max(EXT_POPUP_MIN_WIDTH, Math.min(EXT_POPUP_MAX_WIDTH, size.width)))
+    const h = Math.round(Math.max(EXT_POPUP_MIN_HEIGHT, Math.min(EXT_POPUP_MAX_HEIGHT, size.height)))
+    if (w === rec.width && h === rec.height) return
+    rec.width = w
+    rec.height = h
+    const ownerWindow = BrowserWindow.fromId(rec.windowId)
+    if (!ownerWindow || ownerWindow.isDestroyed()) return
+    const bounds = clampPopupBounds(ownerWindow, rec.anchor, w, h)
+    rec.view.setBounds(bounds)
+  } catch {
+    /* page may have torn down between read and resize */
+  }
+}
 
 function clampPopupBounds(
   ownerWindow: BrowserWindow,
@@ -910,7 +1078,8 @@ export async function toggleExtensionPopup(
   // succeeds but Chromium still bounces. Useful when triaging future
   // ERR_BLOCKED_BY_CLIENT reports.
   try {
-    const all = ses.getAllExtensions?.() ?? []
+    const sesExt = (ses as unknown as { extensions?: { getAllExtensions?: () => Electron.Extension[] } }).extensions
+    const all = sesExt?.getAllExtensions?.() ?? []
     log.info('extension popup: opening', {
       partition,
       extensionId,
@@ -923,8 +1092,11 @@ export async function toggleExtensionPopup(
 
   // Match the webPreferences shape of regular tabs as closely as possible.
   // chrome-extension:// loads succeed in tab WebContentsViews, so we copy
-  // the same surface — partition + session + stealth preload + sandbox
-  // off — to avoid hitting whatever subtle gate diverging settings trip.
+  // the same surface — partition + session + sandbox off. The session-level
+  // stealth preload is registered via `setPreloads` and runs here too, but
+  // it self-disables on `chrome-extension://` URLs (see
+  // src/preload/webview-stealth.ts STEALTH_ENABLED guard) so it doesn't
+  // shadow the extension's `chrome.*` API surface or neuter window.close.
   const view = new WebContentsView({
     webPreferences: {
       partition,
@@ -940,14 +1112,55 @@ export async function toggleExtensionPopup(
   const height = POPUP_DEFAULT_HEIGHT
   const bounds = clampPopupBounds(ownerWindow, anchor, width, height)
   view.setBounds(bounds)
-  view.setBackgroundColor('#ffffff')
+  // Transparent so any unfilled gap between our WebContentsView and the
+  // popup HTML's own background colour doesn't render as a white border
+  // around the popup. After fitExtensionPopupToContent runs there should
+  // be no gap, but on first paint and during loadURL the gap is visible.
+  view.setBackgroundColor('#00000000')
   ownerWindow.contentView.addChildView(view)
 
   // Tear down on owner-window blur. Listener is stored on the record so
   // closeExtensionPopup can remove it — without this, every open/close
   // cycle leaks a listener and Node hits MaxListenersExceeded after 11.
-  const onBlur = (): void => { closeExtensionPopup(windowId) }
+  // Exception: keep the popup alive while DevTools is attached.
+  // Opening DevTools (detached mode) creates its own window and blurs
+  // the workspace, which would tear down the popup the moment the user
+  // tried to inspect it — destroying the WebContents that DevTools is
+  // attached to. Skipping teardown while DevTools is open lets the user
+  // actually use it; the popup will close on the next blur after they
+  // dismiss DevTools.
+  const onBlur = (): void => {
+    try {
+      if (!view.webContents.isDestroyed() && view.webContents.isDevToolsOpened()) return
+    } catch { /* ignore */ }
+    closeExtensionPopup(windowId)
+  }
   ownerWindow.on('blur', onBlur)
+
+  // Diagnose silent popup failures: a renderer crash, hang, or aborted
+  // load all surface as "click did nothing" / "blank white panel" to the
+  // user. Logging the cause makes triage tractable.
+  view.webContents.on('render-process-gone', (_e, details) => {
+    log.error('extension popup: renderer gone', { extensionId, details })
+  })
+  view.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return
+    log.warn('extension popup: did-fail-load', {
+      extensionId,
+      url: validatedURL,
+      errorCode,
+      errorDescription,
+    })
+  })
+  // Open extension-page links inside the popup as new tabs. Without this,
+  // an extension's "Open dashboard" link inside the popup tries to navigate
+  // the popup view itself, which we don't want — the popup should stay
+  // small and the dashboard belongs in a regular tab.
+  view.webContents.setWindowOpenHandler((details) => {
+    sendToWindowRenderer(windowId, 'open-url-as-tab', details.url)
+    closeExtensionPopup(windowId)
+    return { action: 'deny' }
+  })
 
   const rec: ExtensionPopupRecord = {
     windowId,
@@ -962,8 +1175,68 @@ export async function toggleExtensionPopup(
 
   const url = `chrome-extension://${extensionId}/${popupPath.replace(/^\//, '')}`
   view.webContents.loadURL(url).catch((err) => {
+    // Don't tear down the popup on initial load failure — the white panel
+    // is at least visible feedback that the click landed, and the
+    // did-fail-load listener above logs the cause for triage. Tearing down
+    // here used to make Tampermonkey's icon-click look like a no-op when
+    // the chrome-extension:// load was bouncing on a navigation throttle.
     log.warn('extension popup: loadURL failed', { url, err: String(err) })
-    closeExtensionPopup(windowId)
+  })
+
+  // Auto-open DevTools on the popup when NEWBRO_EXT_DEVTOOLS=1 is set.
+  // The popup is a free-standing WebContentsView with no chrome and
+  // no right-click "Inspect" — there's otherwise no way to see what
+  // its scripts log, so when the popup white-screens (e.g. an
+  // exception inside the extension's popup.html) we have no signal
+  // beyond an empty rectangle. Gated on env var so the production
+  // experience isn't littered with devtools windows.
+  if (process.env['NEWBRO_EXT_DEVTOOLS']) {
+    try { view.webContents.openDevTools({ mode: 'detach' }) } catch { /* ignore */ }
+  }
+  // Right-click → Inspect, plus Cmd/Ctrl+Shift+I shortcut. The popup
+  // has no native context menu and no toolbar, so without these the
+  // only way to open DevTools is the env var above. Mirrors what
+  // browsers offer for extension popups (chrome://extensions enables
+  // "Inspect views" for the SW; this gives the same for the popup
+  // window itself).
+  view.webContents.on('context-menu', (_e, params) => {
+    const menu = Menu.buildFromTemplate([
+      {
+        label: 'Inspect',
+        click: () => {
+          try {
+            view.webContents.openDevTools({ mode: 'detach' })
+            view.webContents.inspectElement(params.x, params.y)
+          } catch { /* ignore */ }
+        },
+      },
+    ])
+    menu.popup({ window: ownerWindow })
+  })
+  view.webContents.on('before-input-event', (_e, input) => {
+    const mod = process.platform === 'darwin' ? input.meta : input.control
+    if (mod && input.shift && input.key.toLowerCase() === 'i') {
+      try { view.webContents.toggleDevTools() } catch { /* ignore */ }
+    }
+  })
+  // Also pipe in-popup console messages into the main log
+  // unconditionally — even without devtools open, we'll see what
+  // the popup page logs / warns / errors. Cheap, narrow signal that's
+  // saved us hours of triage on the SW side and is just as useful
+  // for popup-side white-screen bugs.
+  view.webContents.on('console-message', (e) => {
+    const detail = e as unknown as { level?: string; message?: string; sourceId?: string; line?: number }
+    const msg = String(detail.message ?? '')
+    const isError = detail.level === 'warning' || detail.level === 'error'
+    if (!isError && shouldDropExtConsoleMessage(msg)) return
+    const truncated = msg.length > 400 ? msg.slice(0, 400) + ` …(${msg.length - 400} more)` : msg
+    log.info('extension popup console', {
+      extensionId,
+      level: detail.level,
+      sourceId: detail.sourceId,
+      line: detail.line,
+      msg: truncated,
+    })
   })
 
   // Pull keyboard focus into the popup once the page is rendered so typing
@@ -973,6 +1246,46 @@ export async function toggleExtensionPopup(
   view.webContents.once('did-finish-load', () => {
     if (!extensionPopupByWindow.has(windowId)) return
     try { view.webContents.focus() } catch { /* ignore */ }
+    // Fit the WebContentsView to the popup's preferred size. Several
+    // attempts at increasing delays — most popups settle synchronously
+    // on first paint, but Tampermonkey/Dark Reader/Browsec hydrate
+    // their UI from chrome.storage promises and grow late, so we retry
+    // out to ~1s. Each attempt is cheap (one executeJavaScript round-
+    // trip + setBounds when changed).
+    fitExtensionPopupToContent(windowId)
+    setTimeout(() => fitExtensionPopupToContent(windowId), 50)
+    setTimeout(() => fitExtensionPopupToContent(windowId), 200)
+    setTimeout(() => fitExtensionPopupToContent(windowId), 600)
+    setTimeout(() => fitExtensionPopupToContent(windowId), 1200)
+    // Click-event instrumentation. When a Browsec/Hola button "does
+    // nothing" it can mean (a) Browsec never bound the listener, or
+    // (b) real mouse events never reach the page. We can tell which
+    // by capturing every pointerdown/click at the document with a
+    // capture-phase listener. Goes through the existing console-message
+    // pipe to main's log, so no extra IPC required.
+    view.webContents
+      .executeJavaScript(
+        `(function(){
+          if (window.__newbroClickProbeInstalled) return;
+          window.__newbroClickProbeInstalled = true;
+          function describe(el){
+            if (!el) return '(none)';
+            var t = el.tagName + (el.id ? '#' + el.id : '');
+            var cls = (el.className || '').toString().slice(0, 60);
+            if (cls) t += '.' + cls.replace(/\\s+/g, '.');
+            var txt = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 50);
+            return t + ' "' + txt + '"';
+          }
+          document.addEventListener('pointerdown', function(e){
+            try { console.log('[newbro-debug] pointerdown', describe(e.target)); } catch(_){}
+          }, true);
+          document.addEventListener('click', function(e){
+            try { console.log('[newbro-debug] click', describe(e.target)); } catch(_){}
+          }, true);
+          console.log('[newbro-debug] click probe installed');
+        })();`,
+      )
+      .catch(() => undefined)
   })
 
   // Tear down on owner-window destroy. Map cleanup happens here too in
@@ -1066,6 +1379,86 @@ export function installTabPreloadListeners(): void {
     if (!tabId) return
     if (direction === 'back') tabGoBack(tabId)
     else if (direction === 'forward') tabGoForward(tabId)
+  })
+
+  // chrome.tabs.create / chrome.windows.create / chrome.runtime.openOptionsPage
+  // polyfill. The extension-shim preload runs inside chrome-extension://
+  // frames AND in MV3 service workers, where it intercepts the missing
+  // chrome.* tab-opening calls and forwards the URL here. Sender can be
+  // any webContents (popup view, background SW, options page) — we
+  // don't try to map it to a specific tab; we just open the URL in the
+  // currently-focused workspace window. That matches how Chrome routes
+  // chrome.tabs.create from a background page when it doesn't carry a
+  // tabs.windowId.
+  ipcMain.on('newbro-ext-open-tab', (_event, payload: unknown) => {
+    const p = (typeof payload === 'object' && payload !== null
+      ? (payload as Record<string, unknown>)
+      : {})
+    const url = typeof p.url === 'string' ? p.url : ''
+    if (!url) return
+    // Close any open extension popup so it doesn't outlive its anchor
+    // when the user clicks "Dashboard" or "Open settings" inside it.
+    const focused = BrowserWindow.getFocusedWindow()
+    const target =
+      focused && !focused.isDestroyed()
+        ? focused
+        : BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null
+    if (!target) return
+    if (extensionPopupByWindow.has(target.id)) closeExtensionPopup(target.id)
+    sendToWindowRenderer(target.id, 'open-url-as-tab', url)
+  })
+
+  // Diagnostic counterpart to extension-shim's reportLoaded(). Lets us
+  // confirm in the main log that the shim actually ran in the SW and
+  // that chrome.tabs.create was missing at the time we patched (i.e.
+  // the polyfill is doing useful work, not duplicating Electron's API).
+  ipcMain.on('newbro-ext-shim-loaded', (_event, info: unknown) => {
+    log.info('extension shim loaded', info)
+  })
+
+  // Permission/management call traces from the frame shim. SW-context
+  // calls go via the webRequest 'permission-check' action handled in
+  // main/index.ts. Both surface here so we can see exactly which APIs
+  // an extension is hitting when it decides "no access to this page".
+  ipcMain.on('newbro-ext-shim-trace', (_event, info: unknown) => {
+    log.info('extension shim trace (frame)', info)
+  })
+
+  // Popup → main: "what's the URL of the user's active tab in the
+  // workspace that owns this popup?" Tampermonkey calls
+  // chrome.tabs.query({active:true,currentWindow:true}) on popup
+  // open, then matches that URL against host_permissions /
+  // userscript matches to decide whether to show "no access to this
+  // page". Electron's chrome.tabs.query returns the popup view itself
+  // (URL = chrome-extension://…/action.html) so the match always
+  // fails. The frame shim invokes this handler instead.
+  ipcMain.handle('newbro-ext-active-tab-info', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win || win.isDestroyed()) return null
+    const activeTabId = activeTabByWindow.get(win.id)
+    if (!activeTabId) return null
+    const rec = tabs.get(activeTabId)
+    if (!rec) return null
+    let url = ''
+    let title = ''
+    try { url = rec.view.webContents.getURL() } catch { /* ignore */ }
+    try { title = rec.view.webContents.getTitle() } catch { /* ignore */ }
+    return {
+      // chrome.tabs expects a numeric id. Hash the UUID to a stable
+      // positive integer; collisions are vanishingly unlikely across
+      // the handful of tabs a workspace holds.
+      id: hashStringToInt(rec.tabId),
+      url,
+      title,
+      active: true,
+      highlighted: true,
+      pinned: false,
+      windowId: win.id,
+      index: 0,
+      status: 'complete',
+      incognito: false,
+      favIconUrl: '',
+    }
   })
 
   ipcMain.on('newbro-open-in-new-tab', (event, url: unknown) => {
@@ -1192,6 +1585,127 @@ export function tabToggleDevTools(tabId: string): void {
     else wc.openDevTools({ mode: 'detach' })
   } catch (err) {
     log.warn('tab-views: toggleDevTools failed', { tabId, err: String(err) })
+  }
+}
+
+function hashStringToInt(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  }
+  // chrome tab ids are positive integers, so map into [1, 2^31).
+  return Math.abs(h) || 1
+}
+
+/** Look up a tab record by its WebContents identity. Used by the
+ *  electron-chrome-extensions integration so chrome.tabs.update /
+ *  chrome.tabs.remove can map the library's WebContents argument
+ *  back to a tab id we own. Returns null when no matching tab. */
+export function getRecordByWebContents(wc: WebContents): { tabId: string; windowId: number } | null {
+  for (const rec of tabs.values()) {
+    if (rec.view.webContents === wc) {
+      return { tabId: rec.tabId, windowId: rec.windowId }
+    }
+  }
+  return null
+}
+
+/** chrome.tabs.update active:true bridge — promote the matching tab
+ *  to the workspace's active tab. Only called from the library's
+ *  selectTab callback path (gated by isLibrarySelectTabSuppressed in
+ *  the bridge), so by the time we get here it's an extension-driven
+ *  activation we want to honour. */
+export function selectTabByWebContents(wc: WebContents): void {
+  const rec = getRecordByWebContents(wc)
+  if (!rec) return
+  if (activeTabByWindow.get(rec.windowId) === rec.tabId) return
+  setActiveTab(rec.windowId, rec.tabId)
+  // Mirror to the renderer so its sidebar / URL bar / WebviewPanel
+  // pick up the activation. The renderer's onActivateTab handler
+  // updates the store, which triggers tab:activate IPC back to us —
+  // but setActiveTab's prev===tabId early-return makes that round-
+  // trip a no-op.
+  sendToWindowRenderer(rec.windowId, 'activate-tab', rec.tabId)
+}
+
+/** chrome.tabs.remove bridge — close the matching tab. */
+export function destroyTabByWebContents(wc: WebContents): void {
+  const rec = getRecordByWebContents(wc)
+  if (!rec) return
+  destroyTab(rec.tabId)
+  sendToWindowRenderer(rec.windowId, 'extension-closed-tab', rec.tabId)
+}
+
+/** Pending chrome.tabs.create requests waiting for the renderer's
+ *  round-trip. Keyed by URL — the next tab:create with matching URL
+ *  resolves the promise. Brittle if two extensions request the same
+ *  URL simultaneously, but that's vanishingly rare in practice. */
+const pendingExtTabs = new Map<string, (wc: WebContents) => void>()
+
+/** chrome.tabs.create bridge — open a new tab in the given window via
+ *  the renderer's regular new-tab flow, then resolve with its
+ *  WebContents once it's created in main. The library uses the
+ *  WebContents identity to wire chrome.tabs events. */
+export async function createTabForExtension(
+  win: BrowserWindow,
+  _partition: string,
+  url: string,
+  _active: boolean,
+): Promise<WebContents> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingExtTabs.delete(url)
+      reject(new Error('createTabForExtension: timeout'))
+    }, 5000)
+    pendingExtTabs.set(url, (wc) => {
+      clearTimeout(timer)
+      pendingExtTabs.delete(url)
+      resolve(wc)
+    })
+    sendToWindowRenderer(win.id, 'open-url-as-tab', url)
+  })
+}
+
+/** Used by the newbro-ipc:// protocol handler in main/index.ts so the
+ *  SW shim's chrome.tabs.query polyfill can return the workspace's
+ *  actual active tab. The popup-side handler that does the same job
+ *  lives in this file's installTabPreloadListeners as
+ *  'newbro-ext-active-tab-info' ipcMain.handle — same shape, fed by
+ *  the IPC sender's window. The protocol path can't read the sender,
+ *  so the caller passes the windowId explicitly. */
+export function getActiveTabInfoForWindow(windowId: number): {
+  id: number
+  url: string
+  title: string
+  active: boolean
+  highlighted: boolean
+  pinned: boolean
+  windowId: number
+  index: number
+  status: string
+  incognito: boolean
+  favIconUrl: string
+} | null {
+  const activeTabId = activeTabByWindow.get(windowId)
+  if (!activeTabId) return null
+  const rec = tabs.get(activeTabId)
+  if (!rec) return null
+  let url = ''
+  let title = ''
+  try { url = rec.view.webContents.getURL() } catch { /* ignore */ }
+  try { title = rec.view.webContents.getTitle() } catch { /* ignore */ }
+  return {
+    id: hashStringToInt(rec.tabId),
+    url,
+    title,
+    active: true,
+    highlighted: true,
+    pinned: false,
+    windowId,
+    index: 0,
+    status: 'complete',
+    incognito: false,
+    favIconUrl: '',
   }
 }
 

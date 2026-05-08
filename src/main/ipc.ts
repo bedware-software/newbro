@@ -5,7 +5,7 @@ import * as path from 'path'
 import { spawn } from 'child_process'
 import { loadState, saveState } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
-import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin } from './index'
+import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow } from './index'
 import { log } from './log'
 import { checkForUpdatesNow, downloadUpdateNow, installUpdateNow, getLatestStatus } from './updater'
 import {
@@ -270,6 +270,16 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (!win) return false
     return closeExtensionPopup(win.id)
+  })
+
+  // Toolbar fetches the latest dynamic browser-action state on mount so it
+  // can render setIcon / setBadgeText / setTitle overrides immediately —
+  // without waiting for the next mutation event. The push channel
+  // 'extensions:browser-action-state' delivers updates after that.
+  ipcMain.handle('extensions:browser-action-state:get', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return { partition: null, state: { actions: [] } }
+    return getBrowserActionStateForWindow(win)
   })
 
   // Fire-and-forget: high-frequency from ResizeObserver on the icon row.

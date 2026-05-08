@@ -18,6 +18,17 @@
 // extension itself) expects, breaking action popups and content-script
 // targeting. extractCrxPublicKey gives us the bytes to plant in the
 // manifest so Electron arrives at the same id Chrome Web Store assigned.
+//
+// IMPORTANT: a Chrome Web Store CRX3 typically contains TWO RSA proofs in
+// `sha256_with_rsa[]` — the publisher's signing key (whose public-key hash
+// IS the extension id) and Google's CWS enrollment / verification key. The
+// publisher's key is NOT guaranteed to come first; in practice the CWS
+// flavour we see today emits Google's enrollment key as the first proof.
+// Picking the first one therefore makes every extension we install collide
+// on Google's id. We must pass the expected id and pick the proof whose
+// SHA-256 hash matches.
+
+import { createHash } from 'node:crypto'
 
 const MAGIC = 0x34327243 // "Cr24" as uint32 LE (bytes: 0x43 'C', 0x72 'r', 0x32 '2', 0x34 '4')
 
@@ -47,7 +58,34 @@ export function parseCrx(buf: Buffer): Buffer {
   throw new Error(`CRX: unsupported version ${version}`)
 }
 
-/** Extract the first `public_key` declared in a CRX file's signature header.
+/** SHA-256(public_key) → 32-char Chrome extension id. Each hex digit
+ *  maps onto the alphabet a–p (0→a, 1→b, … 9→j, a→k, b→l, … f→p),
+ *  taking the first 32 chars of the hex digest. This is the canonical
+ *  algorithm Chromium uses; reproducing it lets us identify which proof
+ *  inside a CRX3 belongs to the publisher and which is Google's
+ *  enrollment key. */
+export function deriveExtensionIdFromPublicKey(pubKey: Buffer): string {
+  const hex = createHash('sha256').update(pubKey).digest('hex')
+  let id = ''
+  for (let i = 0; i < 32; i++) {
+    const c = hex.charCodeAt(i)
+    let v: number
+    if (c >= 48 && c <= 57) v = c - 48           // '0'-'9'
+    else if (c >= 97 && c <= 102) v = c - 87     // 'a'-'f'
+    else if (c >= 65 && c <= 70) v = c - 55      // 'A'-'F'
+    else return ''
+    id += String.fromCharCode(97 + v)            // 'a' + v
+  }
+  return id
+}
+
+/** Extract the publisher's public key from a CRX file. Pass `expectedId`
+ *  when available — the value will be used to pick the right proof out
+ *  of a CRX3 file that contains multiple RSA proofs (publisher's +
+ *  Google's enrollment). When `expectedId` isn't provided we return the
+ *  first key, which still matches CRX2 (single key) and offline / dev
+ *  builds where there's only one proof in the header.
+ *
  *  Returns the raw DER-encoded SubjectPublicKeyInfo bytes (suitable for
  *  base64-encoding into manifest.json's `key` field), or null if the file
  *  has no parseable key.
@@ -65,15 +103,14 @@ export function parseCrx(buf: Buffer): Buffer {
  *      }
  *
  *  We walk the protobuf manually rather than pulling in a runtime — this
- *  is the only protobuf in the codebase, and the schema is fixed. CRX2
- *  is simpler: the public key is a length-prefixed blob right after the
- *  version field. */
-export function extractCrxPublicKey(buf: Buffer): Buffer | null {
+ *  is the only protobuf in the codebase, and the schema is fixed. */
+export function extractCrxPublicKey(buf: Buffer, expectedId?: string): Buffer | null {
   if (buf.length < 12) return null
   if (buf.readUInt32LE(0) !== MAGIC) return null
   const version = buf.readUInt32LE(4)
 
   if (version === 2) {
+    // CRX2 only carries a single key — no ambiguity.
     const pubKeyLen = buf.readUInt32LE(8)
     if (16 + pubKeyLen > buf.length) return null
     return Buffer.from(buf.subarray(16, 16 + pubKeyLen))
@@ -83,7 +120,21 @@ export function extractCrxPublicKey(buf: Buffer): Buffer | null {
   const headerLen = buf.readUInt32LE(8)
   if (12 + headerLen > buf.length) return null
   const header = buf.subarray(12, 12 + headerLen)
-  return findFirstPublicKey(header)
+  const allKeys = findAllPublicKeys(header)
+  if (allKeys.length === 0) return null
+  if (!expectedId) return allKeys[0]
+  for (const key of allKeys) {
+    if (deriveExtensionIdFromPublicKey(key) === expectedId.toLowerCase()) {
+      return key
+    }
+  }
+  // No proof matched the expected id — fall back to the first proof and
+  // let the caller log a warning. Returning null here would cause us to
+  // skip the manifest `key` patch entirely, which means Electron would
+  // hash the on-disk path and we'd end up with a different ad-hoc id;
+  // returning the first proof at least preserves prior behaviour for the
+  // no-expectedId code path.
+  return null
 }
 
 // ── Minimal protobuf walker ─────────────────────────────────────────────
@@ -107,29 +158,32 @@ function readVarint(buf: Buffer, offset: number): Varint | null {
   return null
 }
 
-/** Scan the CrxFileHeader for the first AsymmetricKeyProof (field 2 RSA
- *  or field 3 ECDSA) and return its public_key (field 1). */
-function findFirstPublicKey(buf: Buffer): Buffer | null {
+/** Walk the CrxFileHeader and collect every public_key from each
+ *  AsymmetricKeyProof under sha256_with_rsa (field 2) and
+ *  sha256_with_ecdsa (field 3). Order is preserved so callers that
+ *  don't have an `expectedId` can still pick the first proof. */
+function findAllPublicKeys(buf: Buffer): Buffer[] {
+  const out: Buffer[] = []
   let i = 0
   while (i < buf.length) {
-    const tag = readVarint(buf, i); if (!tag) return null
+    const tag = readVarint(buf, i); if (!tag) return out
     i = tag.next
     const fieldNum = tag.value >>> 3
     const wireType = tag.value & 0x7
     if (wireType === 2) {
-      const len = readVarint(buf, i); if (!len) return null
+      const len = readVarint(buf, i); if (!len) return out
       i = len.next
-      if (i + len.value > buf.length) return null
+      if (i + len.value > buf.length) return out
       const fieldBytes = buf.subarray(i, i + len.value)
       i += len.value
       if (fieldNum === 2 || fieldNum === 3) {
         const pk = findInnerPublicKey(fieldBytes)
-        if (pk) return pk
+        if (pk) out.push(pk)
       }
       // For field 10000 (signed_header_data) and unrecognized fields we
       // just skip the bytes.
     } else if (wireType === 0) {
-      const v = readVarint(buf, i); if (!v) return null
+      const v = readVarint(buf, i); if (!v) return out
       i = v.next
     } else if (wireType === 1) {
       i += 8
@@ -137,11 +191,11 @@ function findFirstPublicKey(buf: Buffer): Buffer | null {
       i += 4
     } else {
       // Wire types 3/4 (deprecated start/end group) shouldn't appear in
-      // CrxFileHeader. If they do, give up rather than guess.
-      return null
+      // CrxFileHeader. If they do, give up on the rest rather than guess.
+      return out
     }
   }
-  return null
+  return out
 }
 
 /** Inside an AsymmetricKeyProof, return the bytes of field 1 (public_key). */

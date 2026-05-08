@@ -1,6 +1,6 @@
 {
   "name": "Newbro",
-  "version": "1.1.39",
+  "version": "1.1.102",
   "description": "Workspace-based browser with profiles and tab groups",
   "repository": {
     "type": "git",
@@ -80,9 +80,11 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "electron-chrome-extensions": "npm:@iamevan/electron-chrome-extensions@4.9.4",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.3.9",
     "immer": "^11.1.4",
+    "jsonc-parser": "^3.3.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "uuid": "^14.0.0",

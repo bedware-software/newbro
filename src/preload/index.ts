@@ -120,6 +120,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener('extension-popup-closed', handler) }
   },
 
+  // Dynamic browser-action state — main process broadcasts updates whenever
+  // an extension calls chrome.action.setIcon / setBadgeText / setTitle /
+  // setPopup, or when the active tab changes. The toolbar uses this to
+  // overlay live icons + badges over its static manifest icon.
+  getBrowserActionState: (): Promise<{
+    partition: string | null
+    state: { activeTabId?: number; actions: unknown[] }
+  }> => ipcRenderer.invoke('extensions:browser-action-state:get'),
+  onBrowserActionState: (
+    callback: (payload: { partition: string; activeTabId?: number; actions: unknown[] }) => void
+  ) => {
+    const handler = (_e: Electron.IpcRendererEvent, payload: {
+      partition: string
+      activeTabId?: number
+      actions: unknown[]
+    }) => callback(payload)
+    ipcRenderer.on('extensions:browser-action-state', handler)
+    return () => { ipcRenderer.removeListener('extensions:browser-action-state', handler) }
+  },
+
   // Receive events from main process — return cleanup function
   onShortcut: (callback: (action: string) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, action: string) => callback(action)

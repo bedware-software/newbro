@@ -20,6 +20,40 @@ import { webFrame, ipcRenderer } from 'electron'
 // eslint-disable-next-line no-console
 console.log('[newbro-stealth] preload loaded')
 
+// True for the kind of pages this preload exists to stealth: real
+// http(s) and file:// content. False for extension UI (popup, options,
+// background page), Chromium internals, devtools, and about:blank — any
+// of these would either be UNAFFECTED by our overrides or actively
+// BROKEN by them:
+//   - The window.close() neuter would block an extension popup from
+//     closing itself.
+//   - The window.chrome stub would shadow the real chrome.* surface
+//     that Electron has installed for the extension, breaking
+//     chrome.runtime messaging, chrome.storage, chrome.tabs, etc.
+//   - The contextmenu / wheel / mouse listeners send IPC messages that
+//     main's tab handlers route through `wcIdToTabId` — extension
+//     popups and chrome:// pages aren't in that map, so the IPCs are
+//     no-ops at best, misleading at worst (the right-click handler in
+//     particular synthesises a tab context menu against the wrong tab).
+const STEALTH_ENABLED = (() => {
+  const proto = location.protocol
+  if (
+    proto === 'chrome-extension:' ||
+    proto === 'devtools:' ||
+    proto === 'chrome:' ||
+    proto === 'chrome-search:' ||
+    proto === 'chrome-untrusted:'
+  ) {
+    // eslint-disable-next-line no-console
+    console.log('[newbro-stealth] skipped for', proto, location.href)
+    return false
+  }
+  // about:blank is the initial-document URL for OAuth popups — those
+  // navigate to a real https origin almost immediately so we DO want
+  // stealth there.
+  return true
+})()
+
 const STEALTH_SCRIPT = `
 (() => {
   const log = (...a) => { try { console.log('[newbro-stealth]', ...a) } catch (_) {} };
@@ -239,17 +273,19 @@ const STEALTH_SCRIPT = `
 })();
 `
 
-try {
-  // webFrame.executeJavaScript runs the code string in the frame's MAIN world
-  // (world 0), even if the preload itself is in an isolated world. This is
-  // the documented way to inject into the page context from a preload.
-  webFrame.executeJavaScript(STEALTH_SCRIPT, false).catch((err) => {
+if (STEALTH_ENABLED) {
+  try {
+    // webFrame.executeJavaScript runs the code string in the frame's MAIN world
+    // (world 0), even if the preload itself is in an isolated world. This is
+    // the documented way to inject into the page context from a preload.
+    webFrame.executeJavaScript(STEALTH_SCRIPT, false).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.log('[newbro-stealth] executeJavaScript rejected:', err)
+    })
+  } catch (err) {
     // eslint-disable-next-line no-console
-    console.log('[newbro-stealth] executeJavaScript rejected:', err)
-  })
-} catch (err) {
-  // eslint-disable-next-line no-console
-  console.log('[newbro-stealth] executeJavaScript threw:', err)
+    console.log('[newbro-stealth] executeJavaScript threw:', err)
+  }
 }
 
 // ── Mouse side buttons → host navigation ──────────────────────────────────
@@ -265,22 +301,24 @@ try {
 // in the capture phase so page scripts can't swallow the event first, and
 // preventDefault on all three to suppress any site handler that might try
 // to use these buttons for its own UI (e.g. Jira keyboard/mouse shortcuts).
-try {
-  const relay = (e: MouseEvent): void => {
-    // MouseEvent.button: 3 = XButton1 (back), 4 = XButton2 (forward)
-    if (e.button !== 3 && e.button !== 4) return
-    e.preventDefault()
-    e.stopPropagation()
-    if (e.type === 'mouseup') {
-      ipcRenderer.send('newbro-nav', e.button === 3 ? 'back' : 'forward')
+if (STEALTH_ENABLED) {
+  try {
+    const relay = (e: MouseEvent): void => {
+      // MouseEvent.button: 3 = XButton1 (back), 4 = XButton2 (forward)
+      if (e.button !== 3 && e.button !== 4) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.type === 'mouseup') {
+        ipcRenderer.send('newbro-nav', e.button === 3 ? 'back' : 'forward')
+      }
     }
+    window.addEventListener('mousedown', relay, true)
+    window.addEventListener('mouseup', relay, true)
+    window.addEventListener('auxclick', relay, true)
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.log('[newbro-stealth] mouse-nav wiring failed:', err)
   }
-  window.addEventListener('mousedown', relay, true)
-  window.addEventListener('mouseup', relay, true)
-  window.addEventListener('auxclick', relay, true)
-} catch (err) {
-  // eslint-disable-next-line no-console
-  console.log('[newbro-stealth] mouse-nav wiring failed:', err)
 }
 
 // ── Middle-click on <a> → open in new tab ─────────────────────────────────
@@ -291,30 +329,32 @@ try {
 // routers, click tracking), so middle-click silently does nothing. We walk
 // up from the event target to find the nearest <a href>, cancel the event,
 // and relay the URL to main which forwards to the renderer as a new tab.
-try {
-  const findAnchor = (target: EventTarget | null): HTMLAnchorElement | null => {
-    let node = target as Node | null
-    while (node) {
-      if (node instanceof HTMLAnchorElement && node.href) return node
-      node = (node as Node).parentNode
+if (STEALTH_ENABLED) {
+  try {
+    const findAnchor = (target: EventTarget | null): HTMLAnchorElement | null => {
+      let node = target as Node | null
+      while (node) {
+        if (node instanceof HTMLAnchorElement && node.href) return node
+        node = (node as Node).parentNode
+      }
+      return null
     }
-    return null
-  }
-  const middleClickRelay = (e: MouseEvent): void => {
-    if (e.button !== 1) return
-    const a = findAnchor(e.target)
-    if (!a) return
-    e.preventDefault()
-    e.stopPropagation()
-    if (e.type === 'auxclick') {
-      ipcRenderer.send('newbro-open-in-new-tab', a.href)
+    const middleClickRelay = (e: MouseEvent): void => {
+      if (e.button !== 1) return
+      const a = findAnchor(e.target)
+      if (!a) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.type === 'auxclick') {
+        ipcRenderer.send('newbro-open-in-new-tab', a.href)
+      }
     }
+    window.addEventListener('mousedown', middleClickRelay, true)
+    window.addEventListener('auxclick', middleClickRelay, true)
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.log('[newbro-stealth] middle-click wiring failed:', err)
   }
-  window.addEventListener('mousedown', middleClickRelay, true)
-  window.addEventListener('auxclick', middleClickRelay, true)
-} catch (err) {
-  // eslint-disable-next-line no-console
-  console.log('[newbro-stealth] middle-click wiring failed:', err)
 }
 
 // ── Two-finger horizontal swipe → back/forward (overlay rendering) ───────
@@ -333,7 +373,7 @@ try {
 // isolated-world preload (so site CSS resets and DOM mutation can't
 // fight us) and uses z-index 2147483647 + pointer-events:none so it
 // stacks above all page content without intercepting interaction.
-try {
+if (STEALTH_ENABLED) try {
   const REST_INSET_PX = 28    // distance from viewport edge once fully in
   const HIDDEN_OFFSET_PX = 64 // distance past viewport edge when invisible
 
@@ -413,7 +453,7 @@ try {
 // rows; nearest <a> / <img> ancestor lights up "Open link in new tab" /
 // "Copy image address". The page's own contextmenu handlers (e.g.
 // Figma's custom menu) are suppressed via capture-phase preventDefault.
-try {
+if (STEALTH_ENABLED) try {
   window.addEventListener('contextmenu', (e: MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
