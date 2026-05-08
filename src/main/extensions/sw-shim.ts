@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V14__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V15__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -103,15 +103,27 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
 
     var extId = getExtId(c);
 
-    // ── chrome.userScripts ─────────────────────────────────────────
-    // FORCE-overwrite. Electron 41 ships partial chrome.userScripts
-    // stubs that may throw "developer mode required" or no-op
-    // silently; the typeof guard would skip our impl and Tampermonkey
-    // would either bail (and never call register, exactly what we
-    // observed) or fall back to chrome.scripting.executeScript which
-    // also doesn't work. The library doesn't implement userScripts
-    // so we're not clobbering anything important.
-    var us = c.userScripts || (c.userScripts = {});
+    // chrome.userScripts: Force-replace via defineProperty. Chromium
+    // ships a partial chrome.userScripts in the SW global whose
+    // methods are non-writable accessors that resolve to undefined
+    // when the chrome://extensions Developer Mode "Allow User
+    // Scripts" gate is off (the only state Electron exposes). Plain
+    // property assignment silently no-ops / throws in strict mode,
+    // which our outer try/catch swallows, and TM crashes on
+    //    (await chrome.userScripts.getScripts()).map(...)
+    // because the awaited value is undefined. Replacing the whole
+    // namespace via defineProperty lands our methods regardless.
+    var us = {}
+    try {
+      Object.defineProperty(c, 'userScripts', {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: us,
+      });
+    } catch (_) {
+      try { c.userScripts = us; } catch (_) {}
+    }
     us.register = function (scripts, cb) {
       var arr = Array.isArray(scripts) ? scripts : [scripts];
       arr.forEach(function (s) { if (s && s.id) REGISTERED[s.id] = s; });
@@ -307,31 +319,70 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     // chrome.management.getSelf) so the Proxy preserves their real
     // shape via Reflect.get.
 
-    // ── chrome.scripting.executeScript ─────────────────────────────
-    // Force-overwrite for the same reason as userScripts.
-    var scripting = c.scripting || (c.scripting = {});
-    {
-      scripting.executeScript = function (injection, cb) {
-        try {
-          var body = '';
-          var fn = injection && injection.func;
-          if (typeof fn === 'function') body = '(' + fn.toString() + ').apply(null, ' + JSON.stringify(injection.args || []) + ');';
-          else if (Array.isArray(injection && injection.files)) body = '/* file injection not yet supported */';
-          else if (typeof (injection && injection.code) === 'string') body = injection.code;
-          var tabIds = (injection && injection.target && Array.isArray(injection.target.tabIds)) ? injection.target.tabIds : [];
-          sendPost('scripting-execute', {
-            extId: extId,
-            tabIds: tabIds,
-            allFrames: injection && injection.target && injection.target.allFrames === true,
-            world: (injection && injection.world) || 'ISOLATED',
-            body: body,
-          });
-        } catch (_) {}
-        var results = [{ frameId: 0, result: undefined }];
-        if (typeof cb === 'function') Promise.resolve().then(function () { cb(results); });
-        return Promise.resolve(results);
-      };
+    // chrome.scripting: same defineProperty-based replace as
+    // chrome.userScripts. Chromium ships a partial chrome.scripting
+    // whose methods are non-writable; plain assignment silently
+    // no-ops, and an extension calling e.g.
+    //    (await chrome.scripting.getRegisteredContentScripts()).map
+    // crashes on the undefined return.
+    var scripting = {}
+    try {
+      Object.defineProperty(c, 'scripting', {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: scripting,
+      });
+    } catch (_) {
+      try { c.scripting = scripting; } catch (_) {}
     }
+    scripting.executeScript = function (injection, cb) {
+      try {
+        var body = '';
+        var fn = injection && injection.func;
+        if (typeof fn === 'function') body = '(' + fn.toString() + ').apply(null, ' + JSON.stringify(injection.args || []) + ');';
+        else if (Array.isArray(injection && injection.files)) body = '/* file injection not yet supported */';
+        else if (typeof (injection && injection.code) === 'string') body = injection.code;
+        var tabIds = (injection && injection.target && Array.isArray(injection.target.tabIds)) ? injection.target.tabIds : [];
+        sendPost('scripting-execute', {
+          extId: extId,
+          tabIds: tabIds,
+          allFrames: injection && injection.target && injection.target.allFrames === true,
+          world: (injection && injection.world) || 'ISOLATED',
+          body: body,
+        });
+      } catch (_) {}
+      var results = [{ frameId: 0, result: undefined }];
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(results); });
+      return Promise.resolve(results);
+    };
+    // Methods Tampermonkey + others probe at init time. Each must
+    // resolve with [] so an awaited .map of the result does not crash.
+    scripting.getRegisteredContentScripts = function (filter, cb) {
+      var out = [];
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(out); });
+      return Promise.resolve(out);
+    };
+    scripting.registerContentScripts = function (scripts, cb) {
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+      return Promise.resolve();
+    };
+    scripting.unregisterContentScripts = function (filter, cb) {
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+      return Promise.resolve();
+    };
+    scripting.updateContentScripts = function (scripts, cb) {
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+      return Promise.resolve();
+    };
+    scripting.insertCSS = function (injection, cb) {
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+      return Promise.resolve();
+    };
+    scripting.removeCSS = function (injection, cb) {
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
+      return Promise.resolve();
+    };
   }
   // Tell main this shim actually ran in this extension's SW context
   // BEFORE we patch — confirms the prepended source executes for
