@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V27__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V28__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -538,7 +538,26 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     // assignment lands. Chromium intrinsics for chrome.proxy can be
     // non-writable accessors in the same way chrome.userScripts and
     // chrome.scripting are.
-    var proxyNamespace = { settings: proxySettings }
+    // chrome.proxy.onError fires when the PAC script raises an error or
+    // a proxy connection fails. Browsec calls
+    // chrome.proxy.onError.addListener(...) at SW init to relay errors
+    // into its UI; without a stub here our SW dies on
+    // undefined.addListener. onProxyError is the standard MV3 alias —
+    // alias it to the same stub.
+    var proxyOnErrorListeners = []
+    var proxyErrorEvent = {
+      addListener: function (cb) { if (typeof cb === 'function') proxyOnErrorListeners.push(cb); },
+      removeListener: function (cb) {
+        var i = proxyOnErrorListeners.indexOf(cb);
+        if (i !== -1) proxyOnErrorListeners.splice(i, 1);
+      },
+      hasListener: function (cb) { return proxyOnErrorListeners.indexOf(cb) !== -1; },
+    };
+    var proxyNamespace = {
+      settings: proxySettings,
+      onError: proxyErrorEvent,
+      onProxyError: proxyErrorEvent,
+    }
     NEWBRO_OVERRIDES['proxy'] = proxyNamespace
     try { c.proxy = proxyNamespace; } catch (_) {
       try {
@@ -797,7 +816,16 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
           try { rid = (real && real.runtime && real.runtime.id) ? String(real.runtime.id) : ''; } catch (_) {}
           try { trackChromeAccess(rid, prop, kind); } catch (_) {}
         }
-        if (override !== undefined) return override;
+        if (override !== undefined) {
+          // V28: wrap our own overrides too. Browsec calls
+          // chrome.proxy.onError.addListener, which our chrome.proxy
+          // override doesn't expose; the fallback turns the missing
+          // on<Event> read into a noop stub.
+          if (typeof override === 'object' && override !== null) {
+            return wrapNsWithEventFallback(override);
+          }
+          return override;
+        }
         if (v !== undefined) {
           // Bind methods that need this to be the real chrome
           // (chrome.tabs.query, chrome.runtime.getManifest, etc.).
