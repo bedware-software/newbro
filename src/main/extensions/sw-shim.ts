@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V21__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V22__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -234,25 +234,35 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       hasListener: function () { return false; },
     };
     var realWR = c.webRequest;
-    if (realWR && typeof realWR === 'object') {
-      var wrEmptyTarget = Object.create(null);
-      var newWR = new Proxy(wrEmptyTarget, {
-        get: function (_t, prop) {
-          if (prop === 'onAuthRequired') return noopAuthEvent;
-          var v = Reflect.get(realWR, prop);
-          if (typeof v === 'function') return v.bind(realWR);
-          return v;
-        },
-        has: function (_t, prop) {
-          if (prop === 'onAuthRequired') return true;
-          return Reflect.has(realWR, prop);
-        },
-        set: function (_t, prop, value) {
-          try { return Reflect.set(realWR, prop, value); } catch (_) { return true; }
-        },
+    var wrEmptyTarget = Object.create(null);
+    var newWR = new Proxy(wrEmptyTarget, {
+      get: function (_t, prop) {
+        if (prop === 'onAuthRequired') return noopAuthEvent;
+        if (realWR == null) return undefined;
+        var v = Reflect.get(realWR, prop);
+        if (typeof v === 'function') return v.bind(realWR);
+        return v;
+      },
+      has: function (_t, prop) {
+        if (prop === 'onAuthRequired') return true;
+        return realWR != null ? Reflect.has(realWR, prop) : false;
+      },
+      set: function (_t, prop, value) {
+        if (realWR != null) {
+          try { return Reflect.set(realWR, prop, value); } catch (_) { /* ignore */ }
+        }
+        return true;
+      },
+    });
+    NEWBRO_OVERRIDES['webRequest'] = newWR;
+    try {
+      sendPost('patch-step', {
+        extId: extId,
+        step: 'webRequest-override-set',
+        realWRType: typeof realWR,
+        overrideHasOnAuthRequired: typeof newWR.onAuthRequired,
       });
-      NEWBRO_OVERRIDES['webRequest'] = newWR;
-    }
+    } catch (_) {}
 
     // Synchronous diagnostic: log what we put on chrome.userScripts.
     // Fires before TM's init (which is on a microtask) so we always
@@ -649,6 +659,9 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
         scrGetRegisteredType: Array.isArray(results[1]) ? 'array' : (results[1] && results[1].__err ? 'error:' + results[1].__err : typeof results[1]),
         proxyGetType: results[2] && results[2].__err ? 'error:' + results[2].__err : typeof results[2],
         chromeIsOurProxy: (function () { try { return self.chrome.userScripts === NEWBRO_OVERRIDES['userScripts']; } catch (_) { return false; } })(),
+        wrIsOurProxy: (function () { try { return self.chrome.webRequest === NEWBRO_OVERRIDES['webRequest']; } catch (_) { return false; } })(),
+        wrOnAuthRequiredType: (function () { try { return typeof self.chrome.webRequest.onAuthRequired; } catch (e) { return 'error:' + String(e); } })(),
+        wrOnAuthRequiredAddListenerType: (function () { try { return typeof self.chrome.webRequest.onAuthRequired.addListener; } catch (e) { return 'error:' + String(e); } })(),
       });
     }, function () {});
   } catch (_) {}
