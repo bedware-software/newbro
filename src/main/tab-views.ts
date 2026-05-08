@@ -1177,6 +1177,32 @@ export async function toggleExtensionPopup(
   if (process.env['NEWBRO_EXT_DEVTOOLS']) {
     try { view.webContents.openDevTools({ mode: 'detach' }) } catch { /* ignore */ }
   }
+  // Right-click → Inspect, plus Cmd/Ctrl+Shift+I shortcut. The popup
+  // has no native context menu and no toolbar, so without these the
+  // only way to open DevTools is the env var above. Mirrors what
+  // browsers offer for extension popups (chrome://extensions enables
+  // "Inspect views" for the SW; this gives the same for the popup
+  // window itself).
+  view.webContents.on('context-menu', (_e, params) => {
+    const menu = Menu.buildFromTemplate([
+      {
+        label: 'Inspect',
+        click: () => {
+          try {
+            view.webContents.openDevTools({ mode: 'detach' })
+            view.webContents.inspectElement(params.x, params.y)
+          } catch { /* ignore */ }
+        },
+      },
+    ])
+    menu.popup({ window: ownerWindow })
+  })
+  view.webContents.on('before-input-event', (_e, input) => {
+    const mod = process.platform === 'darwin' ? input.meta : input.control
+    if (mod && input.shift && input.key.toLowerCase() === 'i') {
+      try { view.webContents.toggleDevTools() } catch { /* ignore */ }
+    }
+  })
   // Also pipe in-popup console messages into the main log
   // unconditionally — even without devtools open, we'll see what
   // the popup page logs / warns / errors. Cheap, narrow signal that's
