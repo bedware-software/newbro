@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V24__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V25__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -391,7 +391,7 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       if (ownUrl && !self.__newbroSourceLogged) {
         self.__newbroSourceLogged = true;
         fetch(ownUrl).then(function (r) { return r.text(); }).then(function (text) {
-          var allLines = text.split('\n');
+          var allLines = text.split('\\n');
           var win = [];
           for (var i = 712; i <= 730 && i < allLines.length; i++) {
             win.push({ line: i + 1, text: String(allLines[i] || '').slice(0, 240) });
