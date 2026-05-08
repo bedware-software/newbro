@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V15__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V16__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -97,23 +97,32 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
   }
 
   var REGISTERED = Object.create(null);
+  // Hard-override map. Chromium intrinsics that we replace
+  // (chrome.userScripts, chrome.scripting, chrome.proxy) sometimes
+  // refuse to be redefined via Object.defineProperty — those
+  // properties land in here so the wrapping Proxy at the end of this
+  // shim can return our values regardless. See wrapChromeWithAutoStub.
+  var NEWBRO_OVERRIDES = Object.create(null);
 
   function patch(c) {
     if (!c || typeof c !== 'object') return;
 
     var extId = getExtId(c);
 
-    // chrome.userScripts: Force-replace via defineProperty. Chromium
-    // ships a partial chrome.userScripts in the SW global whose
-    // methods are non-writable accessors that resolve to undefined
-    // when the chrome://extensions Developer Mode "Allow User
-    // Scripts" gate is off (the only state Electron exposes). Plain
-    // property assignment silently no-ops / throws in strict mode,
-    // which our outer try/catch swallows, and TM crashes on
-    //    (await chrome.userScripts.getScripts()).map(...)
-    // because the awaited value is undefined. Replacing the whole
-    // namespace via defineProperty lands our methods regardless.
+    // chrome.userScripts: register OUR namespace into NEWBRO_OVERRIDES
+    // unconditionally. Chromium ships a partial chrome.userScripts in
+    // the SW global whose methods are non-writable accessors that
+    // resolve to undefined (the chrome://extensions Developer Mode
+    // toggle is off; Electron exposes no UI for it). Both
+    // Object.defineProperty and plain assignment can be silently
+    // rejected by that intrinsic. The OVERRIDES map is consulted by
+    // the wrapping Proxy at the bottom of this shim before
+    // Reflect.get hits the real chrome, so our values reach the
+    // extension regardless. We still attempt a direct write on the
+    // chrome object as a belt-and-suspenders so any code that bypassed
+    // the wrapper Proxy also sees our object.
     var us = {}
+    NEWBRO_OVERRIDES['userScripts'] = us
     try {
       Object.defineProperty(c, 'userScripts', {
         configurable: true,
@@ -260,15 +269,20 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
         hasListener: function () { return false; },
       },
     };
-    // Direct assign first; fall back to defineProperty if the chrome
-    // object is sealed for unknown-permission keys.
-    try { c.proxy = { settings: proxySettings }; } catch (_) {
+    // Register chrome.proxy into NEWBRO_OVERRIDES so the wrapping
+    // Proxy returns OUR object regardless of whether the underlying
+    // assignment lands. Chromium intrinsics for chrome.proxy can be
+    // non-writable accessors in the same way chrome.userScripts and
+    // chrome.scripting are.
+    var proxyNamespace = { settings: proxySettings }
+    NEWBRO_OVERRIDES['proxy'] = proxyNamespace
+    try { c.proxy = proxyNamespace; } catch (_) {
       try {
         Object.defineProperty(c, 'proxy', {
           configurable: true, enumerable: true, writable: true,
-          value: { settings: proxySettings },
+          value: proxyNamespace,
         });
-      } catch (_) { /* auto-stub below will catch chrome.proxy reads */ }
+      } catch (_) { /* OVERRIDES map will satisfy chrome.proxy reads via the wrap */ }
     }
 
     function chromeSettingStub(defaultValue) {
@@ -319,13 +333,11 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     // chrome.management.getSelf) so the Proxy preserves their real
     // shape via Reflect.get.
 
-    // chrome.scripting: same defineProperty-based replace as
-    // chrome.userScripts. Chromium ships a partial chrome.scripting
-    // whose methods are non-writable; plain assignment silently
-    // no-ops, and an extension calling e.g.
-    //    (await chrome.scripting.getRegisteredContentScripts()).map
-    // crashes on the undefined return.
+    // chrome.scripting: register into NEWBRO_OVERRIDES same as
+    // chrome.userScripts above. Chromium's intrinsic chrome.scripting
+    // has the same non-writable-method problem.
     var scripting = {}
+    NEWBRO_OVERRIDES['scripting'] = scripting
     try {
       Object.defineProperty(c, 'scripting', {
         configurable: true,
@@ -448,8 +460,20 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     if (!real || typeof real !== 'object') return real;
     return new Proxy(real, {
       get: function (target, prop) {
-        // Reflect first — preserves library / Electron / our patched
-        // namespaces (chrome.tabs, chrome.userScripts, chrome.runtime…)
+        // Our explicit overrides win FIRST — defineProperty on the real
+        // chrome object can silently no-op when Chromium intrinsics
+        // mark a property non-configurable + non-writable (the
+        // chrome.userScripts gating behind chrome://extensions
+        // Developer Mode is exactly that case in Electron). Without
+        // this override layer, Reflect.get below would return
+        // Chromium's broken stub whose methods resolve to undefined,
+        // and the next await-getScripts-then-dot-map crashes the
+        // calling extension. With it our patched objects
+        // win regardless of whether the underlying defineProperty
+        // landed.
+        if (typeof prop === 'string' && NEWBRO_OVERRIDES[prop]) {
+          return NEWBRO_OVERRIDES[prop];
+        }
         var v = Reflect.get(target, prop);
         if (v !== undefined) return v;
         // Some Symbol-keyed access shouldn't auto-stub
@@ -506,16 +530,35 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     tick();
   }
 
-  // Diagnostic: report what's visible POST-wrap so we can confirm in
-  // main's log that auto-stubbing engaged.
+  // Post-patch diagnostic: ACTUALLY exercise the namespaces we just
+  // installed and report the result. Earlier versions only checked
+  // typeof, which can lie when Chromium ships getter-backed
+  // intrinsics — typeof returns the right thing while the call path
+  // still hands back undefined. This version calls getScripts() (TM's
+  // crash site), getRegisteredContentScripts(), and a fake proxy
+  // settings.get() so the next launch's log directly answers "are
+  // our overrides reachable through self.chrome?".
   try {
-    sendPost('post-patch-state', {
-      extId: extId,
-      hasProxy: typeof self.chrome.proxy !== 'undefined',
-      hasProxySettings: typeof self.chrome.proxy.settings !== 'undefined',
-      hasProxySettingsSet: typeof self.chrome.proxy.settings.set === 'function',
-      proxyIsAutoStub: !Reflect.has(Object.getPrototypeOf(self.chrome) || {}, 'proxy'),
-    });
+    var probeExtId = (self.chrome && self.chrome.runtime && self.chrome.runtime.id) ? String(self.chrome.runtime.id) : '';
+    Promise.all([
+      Promise.resolve().then(function () {
+        try { return self.chrome.userScripts.getScripts(); } catch (e) { return { __err: String(e) }; }
+      }),
+      Promise.resolve().then(function () {
+        try { return self.chrome.scripting.getRegisteredContentScripts(); } catch (e) { return { __err: String(e) }; }
+      }),
+      Promise.resolve().then(function () {
+        try { return self.chrome.proxy.settings.get({}); } catch (e) { return { __err: String(e) }; }
+      }),
+    ]).then(function (results) {
+      sendPost('post-patch-state', {
+        extId: probeExtId,
+        usGetScriptsType: Array.isArray(results[0]) ? 'array' : (results[0] && results[0].__err ? 'error:' + results[0].__err : typeof results[0]),
+        scrGetRegisteredType: Array.isArray(results[1]) ? 'array' : (results[1] && results[1].__err ? 'error:' + results[1].__err : typeof results[1]),
+        proxyGetType: results[2] && results[2].__err ? 'error:' + results[2].__err : typeof results[2],
+        chromeIsOurProxy: (function () { try { return self.chrome.userScripts === NEWBRO_OVERRIDES['userScripts']; } catch (_) { return false; } })(),
+      });
+    }, function () {});
   } catch (_) {}
 })();
 ${SW_SHIM_FOOTER}
