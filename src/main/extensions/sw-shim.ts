@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V20__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V21__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -212,32 +212,47 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     // forward registered listeners to main via newbro-ipc so the
     // session-level auth challenge actually reaches Browsec's
     // credentials callback.
-    // chrome.webRequest.onAuthRequired: minimal stub on the EXISTING
-    // chrome.webRequest object. V18 added the listener via direct
-    // assignment; V19 tried to replace the whole namespace via
-    // NEWBRO_OVERRIDES and copied lib properties — that broke
-    // Browsec's popup controls. Reverted to the leave-lib-webRequest-
-    // alone strategy. Browsec's HTTPS proxy auth will still not be
-    // wired to its onAuthRequired listener (the actual VPN auth fix
-    // needs a different surface than this), but the .addListener
-    // call will at least no-op instead of crashing.
-    try {
-      var existingWR = c.webRequest;
-      if (existingWR && typeof existingWR === 'object' && !existingWR.onAuthRequired) {
-        var noopAuthEvent = {
-          addListener: function () {},
-          removeListener: function () {},
-          hasListener: function () { return false; },
-        };
-        try { existingWR.onAuthRequired = noopAuthEvent; } catch (_) {
-          try {
-            Object.defineProperty(existingWR, 'onAuthRequired', {
-              configurable: true, enumerable: true, writable: true, value: noopAuthEvent,
-            });
-          } catch (_) { /* lib may have frozen it; .addListener will still crash */ }
-        }
-      }
-    } catch (_) {}
+    // chrome.webRequest.onAuthRequired stub.
+    //
+    // V18 added the listener via direct assignment to lib's
+    // chrome.webRequest — silently failed because the lib freezes
+    // that namespace. V19 replaced the namespace by COPYING props,
+    // which broke popup controls (lost reference identity on
+    // onHeadersReceived). V20's noop-via-direct-assignment didn't
+    // help — same freeze.
+    //
+    // V21: wrap chrome.webRequest with a forwarding Proxy. The
+    // Proxy intercepts only onAuthRequired and delegates every
+    // other access to the live lib object via Reflect.get, so
+    // onHeadersReceived and any internal lib state retain their
+    // exact identity. The empty target Proxy pattern (proven by
+    // V17 for chrome.userScripts / scripting / proxy) bypasses the
+    // freeze entirely because the Proxy target is fresh.
+    var noopAuthEvent = {
+      addListener: function () {},
+      removeListener: function () {},
+      hasListener: function () { return false; },
+    };
+    var realWR = c.webRequest;
+    if (realWR && typeof realWR === 'object') {
+      var wrEmptyTarget = Object.create(null);
+      var newWR = new Proxy(wrEmptyTarget, {
+        get: function (_t, prop) {
+          if (prop === 'onAuthRequired') return noopAuthEvent;
+          var v = Reflect.get(realWR, prop);
+          if (typeof v === 'function') return v.bind(realWR);
+          return v;
+        },
+        has: function (_t, prop) {
+          if (prop === 'onAuthRequired') return true;
+          return Reflect.has(realWR, prop);
+        },
+        set: function (_t, prop, value) {
+          try { return Reflect.set(realWR, prop, value); } catch (_) { return true; }
+        },
+      });
+      NEWBRO_OVERRIDES['webRequest'] = newWR;
+    }
 
     // Synchronous diagnostic: log what we put on chrome.userScripts.
     // Fires before TM's init (which is on a microtask) so we always
