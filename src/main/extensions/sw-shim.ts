@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V17__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V18__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -184,6 +184,95 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
       return Promise.resolve();
     };
+    // Chrome 135+ chrome.userScripts.execute. Tampermonkey calls this
+    // and chains .map on the result; without it the property reads as
+    // undefined and the chain crashes.
+    us.execute = function (injection, cb) {
+      var results = [{ frameId: 0, documentId: '', result: undefined }];
+      if (typeof cb === 'function') Promise.resolve().then(function () { cb(results); });
+      return Promise.resolve(results);
+    };
+    // chrome.userScripts.ExecutionWorld enum (Chrome MV3). TM reads
+    // these constants to validate the world arg before register().
+    us.ExecutionWorld = { MAIN: 'MAIN', USER_SCRIPT: 'USER_SCRIPT' };
+
+    // chrome.webRequest.onAuthRequired: Browsec calls
+    // chrome.webRequest.onAuthRequired.addListener at SW init to
+    // handle 407 Proxy-Authentication-Required from its HTTPS
+    // proxies. The library's preload only exposes
+    // webRequest.onHeadersReceived, so .onAuthRequired is undefined
+    // and Browsec crashes with "Cannot read properties of undefined
+    // (reading 'addListener')". We add an event-shape stub and
+    // forward registered listeners to main via newbro-ipc so the
+    // session-level auth challenge actually reaches Browsec's
+    // credentials callback.
+    try {
+      var existingWR = c.webRequest;
+      if (existingWR && typeof existingWR === 'object' && !existingWR.onAuthRequired) {
+        var __authListeners = [];
+        var __nextChallengeId = 1;
+        existingWR.onAuthRequired = {
+          addListener: function (callback, filter, extraInfoSpec) {
+            __authListeners.push(callback);
+            sendPost('webRequest-onAuthRequired-add', {
+              extId: extId,
+              filter: filter,
+              extraInfoSpec: extraInfoSpec,
+              listenerCount: __authListeners.length,
+            });
+          },
+          removeListener: function (callback) {
+            __authListeners = __authListeners.filter(function (l) { return l !== callback; });
+          },
+          hasListener: function (callback) {
+            return __authListeners.indexOf(callback) !== -1;
+          },
+        };
+        // Long-poll for auth challenges from main via newbro-ipc://
+        // (the webRequest sentinel host gets cancelled by main and
+        // can't return a body, so we use the real protocol handler
+        // here). Each iteration hangs at the protocol boundary until
+        // main has a challenge or a 30s timeout expires; on receipt
+        // we invoke registered listeners and POST the response back.
+        var __pollAuth = function () {
+          fetch('newbro-ipc://auth-poll?extId=' + encodeURIComponent(extId))
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (data && data.challenge) {
+                var ch = data.challenge;
+                var responded = false;
+                var fire = function (response) {
+                  if (responded) return;
+                  responded = true;
+                  fetch('newbro-ipc://auth-respond', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ challengeId: ch.id, response: response }),
+                  }).catch(function () {});
+                };
+                for (var i = 0; i < __authListeners.length; i++) {
+                  try { __authListeners[i](ch.details, fire); } catch (_) {}
+                }
+                setTimeout(function () { fire({}); }, 5000);
+              }
+            })
+            .catch(function () {})
+            .then(function () { setTimeout(__pollAuth, 50); });
+        };
+        Promise.resolve().then(__pollAuth);
+      }
+    } catch (_) {}
+
+    // Synchronous diagnostic: log what we put on chrome.userScripts.
+    // Fires before TM's init (which is on a microtask) so we always
+    // get this lifeline even when TM crashes.
+    try {
+      sendPost('userscripts-shim-state', {
+        extId: extId,
+        methods: Object.keys(us),
+        executionWorld: us.ExecutionWorld,
+      });
+    } catch (_) {}
 
     // ── chrome.management.getSelf ──────────────────────────────────
     // Tampermonkey 5.4.x checks chrome.management.getSelf().installType

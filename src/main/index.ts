@@ -178,6 +178,62 @@ let lastKnownOpenWindows: OpenWindowEntry[] = []
  *  IPC handler below reads from here without re-walking the library. */
 const lastBrowserActionStateByPartition = new Map<string, BrowserActionState>()
 
+/** Pending HTTP auth challenges from ses.webRequest.onAuthRequired,
+ *  keyed by a synthetic challenge id. Resolved when the extension's
+ *  SW POSTs back via newbro-ipc/auth-respond. */
+type PendingAuthChallenge = {
+  partition: string
+  details: Record<string, unknown>
+  callback: (response: { username?: string; password?: string; cancel?: boolean } | Record<string, never>) => void
+  timer: NodeJS.Timeout
+}
+const pendingAuthChallenges = new Map<string, PendingAuthChallenge>()
+/** Per-partition queue of resolvers waiting for the next auth
+ *  challenge. The SW's auth-poll long-poll registers here; main calls
+ *  the resolver when ses.webRequest.onAuthRequired fires. */
+const waitingAuthPolls = new Map<string, Array<(payload: unknown) => void>>()
+
+function waitForAuthChallenge(partition: string, timeoutMs: number): Promise<Response> {
+  return new Promise<Response>((resolve) => {
+    const arr = waitingAuthPolls.get(partition) ?? []
+    let settled = false
+    const wake = (payload: unknown): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const idx = arr.indexOf(wake)
+      if (idx !== -1) arr.splice(idx, 1)
+      resolve(new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    }
+    const timer = setTimeout(() => wake({}), timeoutMs)
+    arr.push(wake)
+    waitingAuthPolls.set(partition, arr)
+  })
+}
+
+function resolveAuthChallenge(
+  challengeId: string,
+  response: { authCredentials?: { username?: string; password?: string }; cancel?: boolean },
+): void {
+  const entry = pendingAuthChallenges.get(challengeId)
+  if (!entry) return
+  pendingAuthChallenges.delete(challengeId)
+  clearTimeout(entry.timer)
+  if (response.cancel) {
+    entry.callback({ cancel: true })
+  } else if (response.authCredentials && typeof response.authCredentials.username === 'string') {
+    entry.callback({
+      username: response.authCredentials.username,
+      password: response.authCredentials.password ?? '',
+    })
+  } else {
+    entry.callback({})
+  }
+}
+
 function partitionForWorkspace(workspaceId: string): string | null {
   const profileId = workspaceProfiles.get(workspaceId)
   return profileId ? `persist:profile-${profileId}` : null
@@ -602,6 +658,53 @@ function configureSession(ses: Electron.Session): void {
   })
 
 
+  // chrome.webRequest.onAuthRequired forwarding.
+  //
+  // electron-chrome-extensions doesn't expose onAuthRequired to the
+  // extension SW, so Browsec / any HTTPS-proxy extension that
+  // registers an auth handler at SW init silently no-ops, and a 407
+  // Proxy-Authentication-Required from the SOCKS/HTTPS proxy goes
+  // unanswered — the connection drops, the VPN never establishes.
+  // We:
+  //   1. Listen for auth challenges at the session level here,
+  //   2. Park the chromium-side callback in pendingAuthChallenges,
+  //   3. Hand the challenge details to the SW via the newbro-ipc
+  //      `auth-poll` long-poll endpoint above,
+  //   4. The SW invokes the extension's registered listener,
+  //   5. The listener's reply lands back here via `auth-respond`,
+  //   6. We invoke the parked chromium callback with the credentials.
+  ses.webRequest.onAuthRequired((details, callback) => {
+    const challengeId = `${details.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const detailsLite = {
+      requestId: String(details.id),
+      url: details.url,
+      method: details.method,
+      isProxy: (details as { isProxy?: boolean }).isProxy === true,
+      scheme: (details as { scheme?: string }).scheme,
+      realm: (details as { realm?: string }).realm,
+      challenger: (details as { challenger?: { host?: string; port?: number } }).challenger,
+      statusCode: (details as { statusCode?: number }).statusCode,
+    }
+    pendingAuthChallenges.set(challengeId, {
+      partition,
+      details: detailsLite,
+      callback,
+      timer: setTimeout(() => {
+        if (pendingAuthChallenges.delete(challengeId)) {
+          log.warn('extensions: auth challenge timed out — no listener responded', { partition, url: details.url })
+          callback({})
+        }
+      }, 15000),
+    })
+    // Wake up the SW poll for this partition, if any is waiting.
+    const waiting = waitingAuthPolls.get(partition)
+    if (waiting && waiting.length > 0) {
+      const wake = waiting.shift()!
+      wake({ challenge: { id: challengeId, details: detailsLite } })
+    }
+    log.info('extensions: auth challenge queued', { partition, challengeId, url: details.url })
+  })
+
   // SW → main IPC channel. The shim we prepend into MV3 service workers
   // can't import { ipcRenderer } from 'electron' (no preload bridge in
   // an extension's own JS world), so it talks to us by sending a
@@ -634,6 +737,24 @@ function configureSession(ses: Electron.Session): void {
             const tab = getActiveTabInfoForWindow(win.id)
             log.info('extensions: ipc active-tab-info', { partition, windowId: win.id, tab })
             return jsonResponse({ tab })
+          }
+          if (action === 'auth-poll' || action === 'auth-poll/') {
+            // SW long-polls here for a pending webRequest.onAuthRequired
+            // challenge. Resolve with the next available challenge for
+            // this partition, or wait up to 30s for one to arrive.
+            return waitForAuthChallenge(partition, 30000)
+          }
+          if (action === 'auth-respond' || action === 'auth-respond/') {
+            // SW POSTs credentials/cancel back here. Match by
+            // challengeId, fire the webRequest callback held in main.
+            const body = await req.text()
+            try {
+              const parsed = JSON.parse(body) as { challengeId?: string; response?: { authCredentials?: { username?: string; password?: string }; cancel?: boolean } }
+              if (parsed && typeof parsed.challengeId === 'string') {
+                resolveAuthChallenge(parsed.challengeId, parsed.response ?? {})
+              }
+            } catch { /* ignore malformed body */ }
+            return jsonResponse({ ok: true })
           }
           return jsonResponse({ error: 'unknown-action', action })
         } catch (err) {
@@ -713,7 +834,12 @@ function configureSession(ses: Electron.Session): void {
         } else if (action === 'proxy-settings-clear') {
           log.info('extensions: chrome.proxy.settings.clear — reverting to system')
           applyProxyConfigToAllSessions({ mode: 'system' })
-        } else if (action === 'sw-shim-ran' || action === 'post-patch-state') {
+        } else if (
+          action === 'sw-shim-ran' ||
+          action === 'post-patch-state' ||
+          action === 'userscripts-shim-state' ||
+          action === 'webRequest-onAuthRequired-add'
+        ) {
           const body = readUploadBody(details)
           const parsed = body ? safeJsonParse(body) : null
           log.info('extensions: ' + action, {
