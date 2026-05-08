@@ -1118,7 +1118,19 @@ export async function toggleExtensionPopup(
   // Tear down on owner-window blur. Listener is stored on the record so
   // closeExtensionPopup can remove it — without this, every open/close
   // cycle leaks a listener and Node hits MaxListenersExceeded after 11.
-  const onBlur = (): void => { closeExtensionPopup(windowId) }
+  // Exception: keep the popup alive while DevTools is attached.
+  // Opening DevTools (detached mode) creates its own window and blurs
+  // the workspace, which would tear down the popup the moment the user
+  // tried to inspect it — destroying the WebContents that DevTools is
+  // attached to. Skipping teardown while DevTools is open lets the user
+  // actually use it; the popup will close on the next blur after they
+  // dismiss DevTools.
+  const onBlur = (): void => {
+    try {
+      if (!view.webContents.isDestroyed() && view.webContents.isDevToolsOpened()) return
+    } catch { /* ignore */ }
+    closeExtensionPopup(windowId)
+  }
   ownerWindow.on('blur', onBlur)
 
   // Diagnose silent popup failures: a renderer crash, hang, or aborted
