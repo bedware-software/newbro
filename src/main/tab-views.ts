@@ -712,6 +712,15 @@ function extractExtensionIdFromExtUrl(url: string): string | null {
 }
 
 async function startTabNavigation(rec: TabRecord, url: string): Promise<void> {
+  // Some extensions (Browsec's "Health Check" button) link to other
+  // extensions using the legacy `extension://<id>/…` scheme. Chromium
+  // accepts this as an alias for `chrome-extension://`, but Electron's
+  // loadURL doesn't — it fails with ERR_FAILED. Normalise here so the
+  // canonical chrome-extension:// path takes over (incl. ensureExtension-
+  // InSession below).
+  if (url.startsWith('extension://')) {
+    url = 'chrome-' + url
+  }
   const extId = extractExtensionIdFromExtUrl(url)
   if (extId) {
     // Extension is supposed to already be loaded into this partition
