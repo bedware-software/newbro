@@ -5,6 +5,13 @@
 // store grabs the default name during the import cascade and we never
 // get a separate dev folder. Keep this as the FIRST internal import.
 import { APP_NAME } from './branding'
+// Patches `node_modules/electron-chrome-extensions/dist/cjs/index.js` BEFORE
+// the lib is imported anywhere. ES module imports are statically hoisted, so
+// the side-effect of this module runs prior to any `require('electron-
+// chrome-extensions')` further down. Putting the patch in app.whenReady
+// missed by one process-life: the lib was already in Node's require cache
+// by the time the ready handler fired.
+import './extensions/patch-lib-deps'
 import { app, BrowserWindow, session, Menu, nativeImage, screen, protocol } from 'electron'
 import { dirname, join } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
@@ -1285,71 +1292,12 @@ function patchLibraryPreloadForMV3SetIcon(): void {
   }
 }
 
-/** Patch electron-chrome-extensions' main-process PermissionsAPI.request
- *  so it doesn't reject permissions that aren't in the manifest's
- *  optional_permissions list. The lib mirrors Chrome's contract — only
- *  permissions declared in optional_permissions can be requested at
- *  runtime — but Browsec's Health Check calls
- *  chrome.permissions.request({permissions: [<something not declared>]})
- *  and crashes the popup with "Permissions request includes undeclared
- *  permission". We always grant via store.requestPermissions (returns
- *  true unconditionally) anyway, so the upstream check is defeating
- *  itself. Replace the throw with a no-op. */
-function patchLibraryPermissionsAPI(): void {
-  log.info('extensions: permissions-patch begin')
-  const candidates: string[] = []
-  try {
-    const resolved = require.resolve('electron-chrome-extensions')
-    candidates.push(resolved)
-    candidates.push(join(dirname(resolved), 'index.js'))
-  } catch (err) {
-    log.warn('extensions: permissions-patch require.resolve threw', String(err))
-  }
-  candidates.push(
-    join(__dirname, '..', '..', 'node_modules', 'electron-chrome-extensions', 'dist', 'cjs', 'index.js'),
-    join(process.cwd(), 'node_modules', 'electron-chrome-extensions', 'dist', 'cjs', 'index.js'),
-  )
-  let libPath: string | null = null
-  for (const c of candidates) {
-    try { if (existsSync(c)) { libPath = c; break } } catch { /* ignore */ }
-  }
-  if (!libPath) {
-    log.warn('extensions: permissions-patch could not locate index.js', { candidates })
-    return
-  }
-  log.info('extensions: permissions-patch resolved', { path: libPath })
-  let source: string
-  try {
-    source = readFileSync(libPath, 'utf-8')
-  } catch (err) {
-    log.warn('extensions: permissions-patch cannot read', { path: libPath, err: String(err) })
-    return
-  }
-  if (source.startsWith('// __NEWBRO_LIB_PATCH_V1__')) {
-    log.info('extensions: permissions-patch already applied, skip')
-    return
-  }
-  const before = source
-  source = source.replace(
-    'throw new Error("Permissions request includes undeclared permission");',
-    '/* permission allow-list disabled by Newbro */',
-  )
-  source = source.replace(
-    'throw new Error("Permissions request includes undeclared origin");',
-    '/* origin allow-list disabled by Newbro */',
-  )
-  if (source === before) {
-    log.warn('extensions: permissions-patch — neither throw site found', { path: libPath })
-    return
-  }
-  source = '// __NEWBRO_LIB_PATCH_V1__\n' + source
-  try {
-    writeFileSync(libPath, source)
-    log.info('extensions: patched library PermissionsAPI throws')
-  } catch (err) {
-    log.warn('extensions: permissions-patch cannot write', { path: libPath, err: String(err) })
-  }
-}
+// patchLibraryPermissionsAPI was moved to ./extensions/patch-lib-deps.ts
+// because it must run BEFORE `electron-chrome-extensions` is required —
+// in app.whenReady the lib was already in Node's require cache, so the
+// disk patch only took effect on the next launch. Side-effect import at
+// the top of this file (`import './extensions/patch-lib-deps'`) runs at
+// module load, before any `import { ElectronChromeExtensions }`.
 
 /** Patterns matched against extension SW + popup console.log/info messages.
  *  Returns true when the message is known noise we'd rather not flood the
@@ -2107,7 +2055,6 @@ app.whenReady().then(() => {
   // marker comment prevents double-patching when npm install hasn't
   // wiped node_modules.
   patchLibraryPreloadForMV3SetIcon()
-  patchLibraryPermissionsAPI()
 
   // Register the `crx://` protocol on the renderer's session so the
   // toolbar can fetch dynamic extension icons (chrome.action.setIcon)
