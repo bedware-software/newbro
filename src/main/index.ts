@@ -851,7 +851,8 @@ function configureSession(ses: Electron.Session): void {
           action === 'fetch-end' ||
           action === 'fetch-error' ||
           action === 'ws-open' ||
-          action === 'bg-source-window'
+          action === 'bg-source-window' ||
+          action === 'sw-error'
         ) {
           const body = readUploadBody(details)
           const parsed = body ? safeJsonParse(body) : null

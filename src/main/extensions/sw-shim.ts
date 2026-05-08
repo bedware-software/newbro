@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V26__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V27__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -95,6 +95,30 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
   function getExtId(c) {
     try { return (c.runtime && c.runtime.id) ? String(c.runtime.id) : ''; } catch (_) { return ''; }
   }
+
+  // V27: catch every uncaught error in the SW context and forward to
+  // main with full position info. Without this we only see Chromium's
+  // truncated "Line: N Column: 1" dump, useless for the giant minified
+  // webpack bundles VPN extensions ship. event.error.stack has the real
+  // column number we need to find the offending call.
+  try {
+    self.addEventListener('error', function (event) {
+      try {
+        var c = self.chrome;
+        var rid = (c && c.runtime && c.runtime.id) ? String(c.runtime.id) : '';
+        sendPost('sw-error', {
+          extId: rid,
+          msg: String((event && event.message) || '').slice(0, 300),
+          filename: String((event && event.filename) || '').slice(0, 200),
+          lineno: event && event.lineno,
+          colno: event && event.colno,
+          stack: (event && event.error && event.error.stack)
+            ? String(event.error.stack).slice(0, 2000)
+            : '',
+        });
+      } catch (_) {}
+    });
+  } catch (_) {}
 
   // ── V23 diagnostic instrumentation ─────────────────────────────
   // Goal: stop guessing which chrome.* API a VPN extension uses to
@@ -665,6 +689,54 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
   //   - X.foo / X[0] / X.bar.baz returns another auto-stub (chainable)
   //   - X.addListener / .removeListener are no-ops
   //   - X.hasListener returns false
+  // V27: wrap any chrome.<ns> object so a missing event-shaped property
+  // (anything matching /^on[A-Z]/) returns a no-op event stub instead of
+  // undefined. The lib's tabs factory exposes only onCreated/onRemoved/
+  // onUpdated/onActivated/onReplaced — missing onZoomChange/onAttached/
+  // onDetached/onMoved. Same gap on runtime/windows/etc. when the lib's
+  // SW preload doesn't fire (Electron 41 quirk). Browsec's webpack
+  // bundle calls some missing on<Event>.addListener and the SW dies on
+  // undefined.addListener. This makes EVERY namespace forgiving.
+  // Cache the wrapper per real object so chrome.runtime === chrome.runtime
+  // identity holds across reads.
+  var nsWrapCache = new WeakMap();
+  function wrapNsWithEventFallback(real) {
+    if (!real || typeof real !== 'object') return real;
+    if (nsWrapCache.has(real)) return nsWrapCache.get(real);
+    var stubCache = Object.create(null);
+    var p = new Proxy(Object.create(null), {
+      get: function (_t, prop) {
+        var v;
+        try { v = Reflect.get(real, prop); } catch (_) { v = undefined; }
+        if (v !== undefined && v !== null) {
+          if (typeof v === 'function') return v.bind(real);
+          return v;
+        }
+        if (typeof prop === 'string' && /^on[A-Z]/.test(prop)) {
+          if (!stubCache[prop]) {
+            stubCache[prop] = {
+              addListener: function () {},
+              removeListener: function () {},
+              hasListener: function () { return false; },
+              hasListeners: function () { return false; },
+            };
+          }
+          return stubCache[prop];
+        }
+        return undefined;
+      },
+      has: function (_t, prop) {
+        if (typeof prop === 'string' && /^on[A-Z]/.test(prop)) return true;
+        try { return Reflect.has(real, prop); } catch (_) { return false; }
+      },
+      set: function (_t, prop, value) {
+        try { return Reflect.set(real, prop, value); } catch (_) { return true; }
+      },
+    });
+    nsWrapCache.set(real, p);
+    return p;
+  }
+
   function makeAutoStub() {
     var fn = function autoStub() {
       var cb = arguments.length > 0 ? arguments[arguments.length - 1] : undefined;
@@ -730,6 +802,10 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
           // Bind methods that need this to be the real chrome
           // (chrome.tabs.query, chrome.runtime.getManifest, etc.).
           if (typeof v === 'function') return v.bind(real);
+          // V27: wrap object namespaces with event-fallback so missing
+          // on<Event> properties (e.g. chrome.tabs.onZoomChange) resolve
+          // to a noop event stub instead of undefined.
+          if (typeof v === 'object') return wrapNsWithEventFallback(v);
           return v;
         }
         if (typeof prop === 'symbol') return undefined;
