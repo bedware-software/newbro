@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V16__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V17__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -458,33 +458,42 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
 
   function wrapChromeWithAutoStub(real) {
     if (!real || typeof real !== 'object') return real;
-    return new Proxy(real, {
-      get: function (target, prop) {
-        // Our explicit overrides win FIRST — defineProperty on the real
-        // chrome object can silently no-op when Chromium intrinsics
-        // mark a property non-configurable + non-writable (the
-        // chrome.userScripts gating behind chrome://extensions
-        // Developer Mode is exactly that case in Electron). Without
-        // this override layer, Reflect.get below would return
-        // Chromium's broken stub whose methods resolve to undefined,
-        // and the next await-getScripts-then-dot-map crashes the
-        // calling extension. With it our patched objects
-        // win regardless of whether the underlying defineProperty
-        // landed.
+    // The Proxy target is an EMPTY object, NOT the real chrome. With
+    // an empty target there are no own properties, so the JS Proxy
+    // invariant "if target has a non-configurable own property X, the
+    // get trap must return target[X]" never bites — we can hand back
+    // OVERRIDES['scripting'] etc. even though Chromium's stock chrome
+    // pins those as read-only non-configurable. Reads from the real
+    // chrome happen via the closed-over real reference inside the
+    // trap, not via the target.
+    var emptyTarget = Object.create(null);
+    return new Proxy(emptyTarget, {
+      get: function (_t, prop) {
+        // Our explicit overrides win first.
         if (typeof prop === 'string' && NEWBRO_OVERRIDES[prop]) {
           return NEWBRO_OVERRIDES[prop];
         }
-        var v = Reflect.get(target, prop);
-        if (v !== undefined) return v;
-        // Some Symbol-keyed access shouldn't auto-stub
+        // Then whatever Chromium / the library actually installed.
+        var v = Reflect.get(real, prop);
+        if (v !== undefined) {
+          // Bind methods that need this to be the real chrome
+          // (chrome.tabs.query, chrome.runtime.getManifest, etc.).
+          if (typeof v === 'function') return v.bind(real);
+          return v;
+        }
         if (typeof prop === 'symbol') return undefined;
         return makeAutoStub();
       },
-      // Forward set/delete/has to the real target — Proxy default would
-      // do this anyway, but spelling it out is clearer.
-      set: function (target, prop, value) { return Reflect.set(target, prop, value); },
-      deleteProperty: function (target, prop) { return Reflect.deleteProperty(target, prop); },
-      has: function (target, prop) { return Reflect.has(target, prop); },
+      has: function (_t, prop) {
+        if (typeof prop === 'string' && NEWBRO_OVERRIDES[prop]) return true;
+        return Reflect.has(real, prop);
+      },
+      set: function (_t, prop, value) {
+        try { return Reflect.set(real, prop, value); } catch (_) { return true; }
+      },
+      deleteProperty: function (_t, prop) {
+        try { return Reflect.deleteProperty(real, prop); } catch (_) { return true; }
+      },
     });
   }
 
