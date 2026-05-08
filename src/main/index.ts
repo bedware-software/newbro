@@ -24,6 +24,26 @@ import { log } from './log'
 import { registerWorkspaceWindowForTabs, installTabPreloadListeners } from './tab-views'
 import { loadEnabledExtensionsInto, rehydrateExtensionsOnStartup } from './extensions/manager'
 
+// ── Single-instance lock ──
+// Required for the OS-level "default browser" handoff to work end-to-end.
+// On Windows and Linux, clicking an http(s) link launches `newbro <url>` —
+// without the lock, every click spawns a brand-new Newbro process whose
+// own window opens with no awareness of the URL we were asked to handle.
+// With the lock, only the first instance survives; later launches deliver
+// their argv to it via the `second-instance` event below, and we route the
+// URL into an existing workspace as a new tab.
+//
+// macOS routes URLs via `app.on('open-url')` instead of argv, but acquiring
+// the lock there is harmless and keeps the codepath uniform.
+if (!app.requestSingleInstanceLock()) {
+  // Second instance — original is already running and was notified via the
+  // lock mechanism. Bail out immediately so no window / no background work
+  // spins up; `app.quit()` is async, `process.exit` is what actually halts
+  // before the rest of the module runs.
+  app.quit()
+  process.exit(0)
+}
+
 // ── Chromium flags ──
 
 // Disable Chromium's User-Agent Client Hints so we don't send sec-ch-ua/
@@ -138,8 +158,109 @@ const workspaceWindows = new Map<string, BrowserWindow>()
 const workspaceProfiles = new Map<string, string>() // workspaceId → profileId
 let lastKnownOpenWindows: OpenWindowEntry[] = []
 
+// URLs handed to us by the OS (default-browser handoff) before any workspace
+// window exists yet — typically when Newbro itself was launched by the click.
+// Flushed by `flushPendingUrlsTo` once a window finishes loading.
+const pendingExternalUrls: string[] = []
+
 // Resolve icon paths once
 const iconPng = join(__dirname, '../../resources/icon.png')
+
+/** Pull the first URL-shaped argv entry. The OS appends the URL after our
+ *  binary path on Windows / Linux when handing off http(s) clicks. */
+function pickUrlFromArgv(argv: string[]): string | null {
+  for (const a of argv.slice(1)) {
+    if (typeof a !== 'string') continue
+    if (/^https?:\/\//i.test(a)) return a
+  }
+  return null
+}
+
+function getTargetWorkspaceWindow(): BrowserWindow | null {
+  const focused = BrowserWindow.getFocusedWindow()
+  if (focused && !focused.isDestroyed()) {
+    for (const w of workspaceWindows.values()) {
+      if (w === focused) return w
+    }
+  }
+  for (const w of workspaceWindows.values()) {
+    if (!w.isDestroyed()) return w
+  }
+  return null
+}
+
+/** Hand a URL off to a workspace window's renderer as a new tab. The
+ *  renderer subscribes to this channel in App.tsx (`onOpenUrlAsTab`) and
+ *  routes the URL through addTab / addUngroupedTab on the active group or
+ *  workspace. If no window is up yet (cold start by an OS link click), the
+ *  URL is queued and flushed once the first window finishes loading. */
+function dispatchExternalUrl(url: string): void {
+  const target = getTargetWorkspaceWindow()
+  if (!target) {
+    pendingExternalUrls.push(url)
+    log.info('dispatchExternalUrl: no window yet, queued', { url })
+    return
+  }
+  if (target.isMinimized()) target.restore()
+  target.show()
+  target.focus()
+  target.webContents.send('open-url-as-tab', url)
+  log.info('dispatchExternalUrl: routed to window', { url, windowId: target.id })
+}
+
+/** Flush any URLs that arrived before a window existed. Wait for the
+ *  renderer to finish loading and add a small grace period so React has
+ *  attached its `onOpenUrlAsTab` listener. Re-running on later windows is
+ *  safe — pendingExternalUrls is drained on first flush. */
+function flushPendingUrlsTo(win: BrowserWindow): void {
+  if (pendingExternalUrls.length === 0) return
+  win.webContents.once('did-finish-load', () => {
+    setTimeout(() => {
+      const list = pendingExternalUrls.splice(0)
+      for (const url of list) dispatchExternalUrl(url)
+    }, 250)
+  })
+}
+
+// Second-instance: another `newbro …` invocation handed us its argv via the
+// single-instance lock. Pull the URL out (if any) and route it; otherwise
+// just bring an existing window forward.
+app.on('second-instance', (_e, argv) => {
+  const url = pickUrlFromArgv(argv)
+  log.info('second-instance', { url, argv })
+  if (url) {
+    dispatchExternalUrl(url)
+    return
+  }
+  const w = getTargetWorkspaceWindow()
+  if (w) {
+    if (w.isMinimized()) w.restore()
+    w.focus()
+  }
+})
+
+// macOS dispatches URL clicks via this event regardless of whether the app
+// was already running. preventDefault is conventional even though Electron
+// has no built-in default action.
+app.on('open-url', (e, url) => {
+  e.preventDefault()
+  log.info('open-url', { url, isReady: app.isReady() })
+  if (app.isReady()) {
+    dispatchExternalUrl(url)
+  } else {
+    pendingExternalUrls.push(url)
+  }
+})
+
+// Cold-start handoff on Windows / Linux: the OS launched us *with* the URL
+// in argv. Stash it now; the first window we open will flush it.
+{
+  const initialUrl = pickUrlFromArgv(process.argv)
+  if (initialUrl) {
+    log.info('initial argv URL detected', { initialUrl })
+    pendingExternalUrls.push(initialUrl)
+  }
+}
 
 function normalizeShortcutKeyToken(raw: string): string {
   const key = raw.trim().toLowerCase()
@@ -746,6 +867,11 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   // Register callbacks so the manager can install the shortcut interceptor
   // on every new tab's webContents, and tear down tabs on window close.
   registerWorkspaceWindowForTabs(win, installShortcutInterceptor)
+
+  // Drain any URLs the OS handed us before any window existed (cold start
+  // via a default-browser link click). Has to run AFTER the window is in
+  // workspaceWindows so the helper finds it as a target.
+  flushPendingUrlsTo(win)
 
   const tabSuffix = targetTabId ? `&tabId=${encodeURIComponent(targetTabId)}` : ''
   const params = `?profileId=${profileId}&workspaceId=${workspaceId}${tabSuffix}`

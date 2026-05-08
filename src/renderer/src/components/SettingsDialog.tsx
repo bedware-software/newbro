@@ -427,18 +427,28 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     api?.installUpdate?.()
   }, [])
 
-  // Load the default-browser status whenever the Settings dialog opens. The
-  // value is cheap to query — Electron just reads the OS handler registry —
-  // so refreshing every open keeps the UI honest if the user picked a
-  // different default in System Settings between sessions.
+  // Load the default-browser status whenever the Settings dialog opens, and
+  // refresh whenever the popup regains focus. macOS shows a system prompt
+  // that we can't observe directly — refreshing on focus catches the user
+  // returning to the app after accepting it. Same idea for Windows after the
+  // user picks Newbro in Settings → Default Apps and Cmd/Alt-Tabs back.
   useEffect(() => {
     if (!open) return
     const api = (window as any).electronAPI
     if (!api?.getDefaultBrowserStatus) return
-    api.getDefaultBrowserStatus().then((s: DefaultBrowserStatus) => {
-      if (s) setDefaultBrowserStatus(s)
-    })
+
+    const refresh = (): void => {
+      api.getDefaultBrowserStatus().then((s: DefaultBrowserStatus) => {
+        if (!s) return
+        setDefaultBrowserStatus(s)
+        if (s.isDefault) setDefaultBrowserSystemPaneOpened(false)
+      })
+    }
+
+    refresh()
     setDefaultBrowserSystemPaneOpened(false)
+    window.addEventListener('focus', refresh)
+    return () => window.removeEventListener('focus', refresh)
   }, [open])
 
   const handleMakeDefaultBrowser = useCallback(async () => {
@@ -449,6 +459,20 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       const result: SetAsDefaultBrowserResult = await api.setAsDefaultBrowser()
       if (result?.status) setDefaultBrowserStatus(result.status)
       setDefaultBrowserSystemPaneOpened(!!result?.openedSystemPane)
+      // setAsDefaultProtocolClient returns synchronously, but on macOS the
+      // OS prompt shown to the user is asynchronous — the actual default
+      // doesn't change until they click "Use Newbro". Re-poll a few times
+      // so the UI updates without requiring a manual focus/refresh.
+      const delays = [800, 2000, 5000]
+      for (const delay of delays) {
+        setTimeout(() => {
+          api.getDefaultBrowserStatus().then((s: DefaultBrowserStatus) => {
+            if (!s) return
+            setDefaultBrowserStatus(s)
+            if (s.isDefault) setDefaultBrowserSystemPaneOpened(false)
+          })
+        }, delay)
+      }
     } finally {
       setDefaultBrowserBusy(false)
     }
