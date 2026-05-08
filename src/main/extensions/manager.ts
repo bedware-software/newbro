@@ -533,7 +533,22 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>): boolea
   }
   try {
     writeFileSync(swPath, SW_SHIM_SOURCE + '\n' + body)
-    log.info('extensions: SW shim injected', { extDir, swRel })
+    // Log the first ~25 lines of the extension's original SW. The shim is
+    // ~750 lines, so a runtime crash at e.g. line 769 maps to body line 19.
+    // Without this we have to ask the user to paste the file every time
+    // the SW dies. Truncated per line so we don't dump megabytes.
+    const bodyLines = body.split('\n')
+    const head: { line: number; text: string }[] = []
+    for (let i = 0; i < 25 && i < bodyLines.length; i++) {
+      head.push({ line: i + 1, text: bodyLines[i].slice(0, 240) })
+    }
+    log.info('extensions: SW shim injected', {
+      extDir,
+      swRel,
+      shimLineCount: SW_SHIM_SOURCE.split('\n').length,
+      bodyLineCount: bodyLines.length,
+      bodyHead: head,
+    })
     return true
   } catch (err) {
     log.warn('extensions: SW shim — write failed', { extDir, swRel, err: String(err) })
