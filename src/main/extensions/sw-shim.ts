@@ -330,7 +330,7 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     // V24: stub ALL standard webRequest events, not just onAuthRequired.
     // The library only exposes onHeadersReceived; every other event
     // (onBeforeRequest, onCompleted, onErrorOccurred, …) reads as
-    // undefined, so an extension's `xxx.addListener(...)` crashes.
+    // undefined, so an extension's xxx.addListener(...) crashes.
     // Browsec calls multiple webRequest event listeners at SW init —
     // the crash at bg.js line 719 was on the next addListener after
     // onAuthRequired, not onAuthRequired itself.
