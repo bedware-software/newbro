@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V19__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V20__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -212,75 +212,32 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     // forward registered listeners to main via newbro-ipc so the
     // session-level auth challenge actually reaches Browsec's
     // credentials callback.
-    var __authListeners = [];
-    var newWR = {
-      onAuthRequired: {
-        addListener: function (callback, filter, extraInfoSpec) {
-          __authListeners.push(callback);
-          sendPost('webRequest-onAuthRequired-add', {
-            extId: extId,
-            filter: filter,
-            extraInfoSpec: extraInfoSpec,
-            listenerCount: __authListeners.length,
-          });
-        },
-        removeListener: function (callback) {
-          __authListeners = __authListeners.filter(function (l) { return l !== callback; });
-        },
-        hasListener: function (callback) {
-          return __authListeners.indexOf(callback) !== -1;
-        },
-      },
-    };
-    // Copy lib's existing chrome.webRequest properties (especially
-    // onHeadersReceived) onto our object so consumers see a unified
-    // namespace. Walking own-property names + getters in case the
-    // lib used Object.defineProperty with non-enumerable descriptors.
+    // chrome.webRequest.onAuthRequired: minimal stub on the EXISTING
+    // chrome.webRequest object. V18 added the listener via direct
+    // assignment; V19 tried to replace the whole namespace via
+    // NEWBRO_OVERRIDES and copied lib properties — that broke
+    // Browsec's popup controls. Reverted to the leave-lib-webRequest-
+    // alone strategy. Browsec's HTTPS proxy auth will still not be
+    // wired to its onAuthRequired listener (the actual VPN auth fix
+    // needs a different surface than this), but the .addListener
+    // call will at least no-op instead of crashing.
     try {
-      var realWR = c.webRequest;
-      if (realWR && typeof realWR === 'object') {
-        var keys = Object.getOwnPropertyNames(realWR);
-        for (var k = 0; k < keys.length; k++) {
-          var key = keys[k];
-          if (key === 'onAuthRequired') continue;
-          try { newWR[key] = realWR[key]; } catch (_) {}
+      var existingWR = c.webRequest;
+      if (existingWR && typeof existingWR === 'object' && !existingWR.onAuthRequired) {
+        var noopAuthEvent = {
+          addListener: function () {},
+          removeListener: function () {},
+          hasListener: function () { return false; },
+        };
+        try { existingWR.onAuthRequired = noopAuthEvent; } catch (_) {
+          try {
+            Object.defineProperty(existingWR, 'onAuthRequired', {
+              configurable: true, enumerable: true, writable: true, value: noopAuthEvent,
+            });
+          } catch (_) { /* lib may have frozen it; .addListener will still crash */ }
         }
       }
     } catch (_) {}
-    NEWBRO_OVERRIDES['webRequest'] = newWR;
-    try { c.webRequest = newWR; } catch (_) {
-      try { Object.defineProperty(c, 'webRequest', { configurable: true, enumerable: true, writable: true, value: newWR }); } catch (_) {}
-    }
-    // Long-poll for auth challenges from main via newbro-ipc://. Each
-    // iteration hangs at the protocol boundary until main has a
-    // challenge or a 30s timeout expires; on receipt we invoke
-    // registered listeners and POST the response back.
-    var __pollAuth = function () {
-      fetch('newbro-ipc://auth-poll?extId=' + encodeURIComponent(extId))
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          if (data && data.challenge) {
-            var ch = data.challenge;
-            var responded = false;
-            var fire = function (response) {
-              if (responded) return;
-              responded = true;
-              fetch('newbro-ipc://auth-respond', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ challengeId: ch.id, response: response }),
-              }).catch(function () {});
-            };
-            for (var i = 0; i < __authListeners.length; i++) {
-              try { __authListeners[i](ch.details, fire); } catch (_) {}
-            }
-            setTimeout(function () { fire({}); }, 5000);
-          }
-        })
-        .catch(function () {})
-        .then(function () { setTimeout(__pollAuth, 50); });
-    };
-    Promise.resolve().then(__pollAuth);
 
     // Synchronous diagnostic: log what we put on chrome.userScripts.
     // Fires before TM's init (which is on a microtask) so we always
