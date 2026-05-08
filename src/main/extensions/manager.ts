@@ -31,7 +31,7 @@
 
 import { app, BrowserWindow, session, type Session } from 'electron'
 import Store from 'electron-store'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { log } from '../log'

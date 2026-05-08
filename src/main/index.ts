@@ -645,6 +645,9 @@ function configureSession(ses: Electron.Session): void {
     const tracked = extOriginByRequest.get(details.id)
     extOriginByRequest.delete(details.id)
     if (details.error === 'net::ERR_ABORTED') return
+    // ERR_CACHE_MISS is a normal cache-cold miss on first load — Chromium
+    // refetches and succeeds. Logging it as a failure is misleading.
+    if (details.error === 'net::ERR_CACHE_MISS') return
     // Our SW shim's sentinel ping (newbro-ext-ipc.test/*) is cancelled on
     // purpose — webRequest reports it as ERR_BLOCKED_BY_CLIENT; that's a
     // success path, not a failure.

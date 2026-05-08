@@ -730,7 +730,11 @@ async function startTabNavigation(rec: TabRecord, url: string): Promise<void> {
     await ensureExtensionInSession(rec.view.webContents.session, extId).catch(() => false)
   }
   rec.view.webContents.loadURL(url).catch((err) => {
-    log.warn('tab-views: loadURL failed', { tabId: rec.tabId, url, err: String(err) })
+    // ERR_ABORTED is normal during user-initiated redirects (e.g. Google's
+    // consent.google.com flow interrupting a chromewebstore load). Skip.
+    const msg = String(err)
+    if (msg.includes('ERR_ABORTED')) return
+    log.warn('tab-views: loadURL failed', { tabId: rec.tabId, url, err: msg })
   })
 }
 
