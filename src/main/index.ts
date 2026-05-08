@@ -39,7 +39,7 @@ import {
   type BrowserActionState,
 } from './chrome-extensions-bridge'
 import { ElectronChromeExtensions } from 'electron-chrome-extensions'
-import { loadEnabledExtensionsInto, rehydrateExtensionsOnStartup } from './extensions/manager'
+import { loadEnabledExtensionsInto, readBgSourceWindow, rehydrateExtensionsOnStartup } from './extensions/manager'
 import {
   registerUserScripts,
   unregisterUserScripts,
@@ -860,6 +860,19 @@ function configureSession(ses: Electron.Session): void {
             partition: getPartitionForSession(ses),
             info: parsed,
           })
+          // When the SW crashed, also dump a window of the bundle around
+          // the exact column so we can see what the offending call says.
+          // Without this we just have line+column of a 1.5MB minified line.
+          if (action === 'sw-error' && parsed && typeof parsed === 'object') {
+            const p = parsed as { extId?: unknown; lineno?: unknown; colno?: unknown }
+            const eid = typeof p.extId === 'string' ? p.extId : ''
+            const ln = typeof p.lineno === 'number' ? p.lineno : 0
+            const cn = typeof p.colno === 'number' ? p.colno : 0
+            if (eid && ln > 0 && cn > 0) {
+              const slice = readBgSourceWindow(eid, ln, cn, 320)
+              if (slice) log.info('extensions: sw-error-source', { slice })
+            }
+          }
         } else if (
           action === 'userscripts-getScripts' ||
           action === 'userscripts-configureWorld'

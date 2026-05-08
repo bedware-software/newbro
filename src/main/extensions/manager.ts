@@ -780,6 +780,44 @@ function normalizeEntry(raw: Partial<PersistedEntry> & { id: string }): Extensio
   }
 }
 
+/** Read a window of characters around a (lineno, colno) inside an
+ *  extension's service worker file. Used when an SW crashes deep
+ *  inside a minified webpack bundle — the on-disk file is the only
+ *  way to see what the call site actually says. Returns null if the
+ *  file can't be located or the position is out of range. */
+export function readBgSourceWindow(
+  extensionId: string,
+  lineno: number,
+  colno: number,
+  windowSize = 240,
+): string | null {
+  try {
+    const extDir = join(extensionsRoot(), extensionId)
+    let entries: string[]
+    try { entries = readdirSync(extDir) } catch { return null }
+    const versions = entries.filter((e) => e && e[0] !== '.')
+    const candidates = ['background.js', 'js/background.js', 'background/index.js']
+    for (const v of versions) {
+      for (const c of candidates) {
+        try {
+          const path = join(extDir, v, c)
+          const text = readFileSync(path, 'utf8')
+          const lines = text.split('\n')
+          if (lineno < 1 || lineno > lines.length) continue
+          const line = lines[lineno - 1]
+          const half = Math.floor(windowSize / 2)
+          const start = Math.max(0, colno - half)
+          const end = Math.min(line.length, colno + half)
+          return `[ext=${extensionId} ver=${v} file=${c} line=${lineno} col=${colno} lineLen=${line.length}] ${line.slice(start, end)}`
+        } catch { /* try next candidate */ }
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 export function listExtensions(): ExtensionInfo[] {
   const raw = store.get('extensions') as Record<string, Partial<PersistedEntry> & { id: string }>
   return Object.values(raw)
