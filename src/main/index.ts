@@ -176,13 +176,24 @@ function pickUrlFromArgv(argv: string[]): string | null {
   return null
 }
 
+// Tracks the workspace window the user touched most recently. External URL
+// handoffs from other apps land here, since at that moment Newbro itself is
+// NOT focused (the OS-source app is), so `BrowserWindow.getFocusedWindow()`
+// is the wrong question to ask. Updated by a `focus` listener registered
+// per workspace window in `createWorkspaceWindow`, and seeded on window
+// creation so it's never stale at the moment of the first OS handoff.
+let lastActiveWorkspaceId: string | null = null
+
 function getTargetWorkspaceWindow(): BrowserWindow | null {
-  const focused = BrowserWindow.getFocusedWindow()
-  if (focused && !focused.isDestroyed()) {
-    for (const w of workspaceWindows.values()) {
-      if (w === focused) return w
-    }
+  // Prefer the most-recently-active workspace — what "the current window"
+  // means from the user's perspective when they click an external link.
+  if (lastActiveWorkspaceId) {
+    const w = workspaceWindows.get(lastActiveWorkspaceId)
+    if (w && !w.isDestroyed()) return w
   }
+  // Fallback: any open workspace window. Hits when the focus listener
+  // hasn't fired yet (e.g. the very first window of a cold start that
+  // received a URL via argv before showing).
   for (const w of workspaceWindows.values()) {
     if (!w.isDestroyed()) return w
   }
@@ -721,6 +732,11 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   workspaceWindows.set(workspaceId, win)
   workspaceProfiles.set(workspaceId, profileId)
   lastKnownOpenWindows = [...workspaceWindows.keys()].map(id => ({ profileId: workspaceProfiles.get(id)!, workspaceId: id }))
+  // Seed last-active to the just-opened window so an external URL arriving
+  // immediately after launch routes here even before the OS dispatches a
+  // focus event.
+  lastActiveWorkspaceId = workspaceId
+  win.on('focus', () => { lastActiveWorkspaceId = workspaceId })
   installShortcutInterceptor(win.webContents, win)
 
   // Route the mouse side buttons (XButton1/XButton2 on Windows, matching
