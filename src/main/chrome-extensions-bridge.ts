@@ -220,17 +220,19 @@ export function subscribeBrowserActionUpdates(
       try {
         const state = getBrowserActionStateForSession(ses)
         firedCount++
-        // Log the first few updates so the dev-time log shows the
-        // subscribe is wired correctly. After that fall silent — these
-        // fire on every chrome.action.* mutation and would flood logs
-        // if left unbounded.
-        if (firedCount <= 3) {
-          log.info('extensions: browser-action update', {
-            count: firedCount,
-            extCount: state.actions.length,
-            activeTabId: state.activeTabId,
-          })
-        }
+        // Log every fire — we need to know whether runtime
+        // chrome.action.setIcon calls actually reach the library and
+        // trigger an update. The first 3 are the per-extension
+        // processExtension events at load time; anything past that is
+        // a real runtime mutation we want to see.
+        log.info('extensions: browser-action update', {
+          count: firedCount,
+          extCount: state.actions.length,
+          activeTabId: state.activeTabId,
+          actionsWithIconMod: state.actions
+            .filter((a) => a.iconModified || Object.values(a.tabs).some((t) => t.iconModified))
+            .map((a) => a.id),
+        })
         callback(state)
       } catch (err) {
         log.warn('extensions: browser-action callback threw', String(err))
