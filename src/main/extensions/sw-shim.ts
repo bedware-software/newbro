@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V22__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V23__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -96,6 +96,102 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     try { return (c.runtime && c.runtime.id) ? String(c.runtime.id) : ''; } catch (_) { return ''; }
   }
 
+  // ── V23 diagnostic instrumentation ─────────────────────────────
+  // Goal: stop guessing which chrome.* API a VPN extension uses to
+  // tunnel traffic. We record every unique top-level chrome.<ns>
+  // property read (override / real / autostub), every fetch URL the
+  // SW initiates and its outcome, and every WebSocket the SW opens.
+  // After the user clicks Connect we can see the actual mechanism
+  // (chrome.proxy, declarativeNetRequest, native messaging, raw
+  // WebSocket tunnel, plain HTTPS API call, whatever it is) instead
+  // of inferring it.
+  var ACCESS_SEEN = Object.create(null);
+  var ACCESS_QUEUE = [];
+  var ACCESS_TIMER = null;
+  function trackChromeAccess(extId, prop, kind) {
+    var key = extId + '|' + prop;
+    if (ACCESS_SEEN[key]) return;
+    ACCESS_SEEN[key] = 1;
+    ACCESS_QUEUE.push({ extId: extId, prop: prop, kind: kind });
+    if (!ACCESS_TIMER) {
+      ACCESS_TIMER = setTimeout(function () {
+        ACCESS_TIMER = null;
+        var batch = ACCESS_QUEUE;
+        ACCESS_QUEUE = [];
+        try { sendPost('chrome-access', { items: batch }); } catch (_) {}
+      }, 300);
+    }
+  }
+  function isOurIpcUrl(url) {
+    return typeof url === 'string' && url.indexOf(IPC_HOST) === 0;
+  }
+  function installNetworkSpies(extId) {
+    if (self.__newbroNetSpiesInstalled) return;
+    self.__newbroNetSpiesInstalled = true;
+    try {
+      var rawFetch = self.fetch && self.fetch.bind(self);
+      if (rawFetch) {
+        self.fetch = function (input, init) {
+          var url = '';
+          try { url = (typeof input === 'string') ? input : (input && input.url) || String(input); } catch (_) {}
+          var ours = isOurIpcUrl(url);
+          var t0 = Date.now();
+          if (!ours) {
+            try {
+              sendPost('fetch-start', {
+                extId: extId,
+                url: url.slice(0, 300),
+                method: (init && init.method) || (input && input.method) || 'GET',
+              });
+            } catch (_) {}
+          }
+          return rawFetch(input, init).then(function (resp) {
+            if (!ours && (!resp.ok || resp.status >= 400)) {
+              try {
+                sendPost('fetch-end', {
+                  extId: extId,
+                  url: url.slice(0, 300),
+                  status: resp.status,
+                  ms: Date.now() - t0,
+                });
+              } catch (_) {}
+            }
+            return resp;
+          }, function (err) {
+            if (!ours) {
+              try {
+                sendPost('fetch-error', {
+                  extId: extId,
+                  url: url.slice(0, 300),
+                  err: String(err && err.message || err).slice(0, 200),
+                  ms: Date.now() - t0,
+                });
+              } catch (_) {}
+            }
+            throw err;
+          });
+        };
+      }
+    } catch (_) {}
+    try {
+      var RealWS = self.WebSocket;
+      if (RealWS) {
+        var WrappedWS = new Proxy(RealWS, {
+          construct: function (target, args) {
+            try {
+              sendPost('ws-open', {
+                extId: extId,
+                url: String(args[0]).slice(0, 300),
+              });
+            } catch (_) {}
+            return Reflect.construct(target, args);
+          },
+        });
+        try { self.WebSocket = WrappedWS; } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   var REGISTERED = Object.create(null);
   // Hard-override map. Chromium intrinsics that we replace
   // (chrome.userScripts, chrome.scripting, chrome.proxy) sometimes
@@ -114,6 +210,9 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     try {
       sendPost('patch-step', { extId: extId, step: 'enter', hasWebRequest: typeof c.webRequest !== 'undefined' });
     } catch (_) {}
+    // Install fetch + WebSocket spies once per SW (V23). Done inside
+    // patch so the extId is in scope for every logged event.
+    try { installNetworkSpies(extId); } catch (_) {}
 
     // chrome.userScripts: register OUR namespace into NEWBRO_OVERRIDES
     // unconditionally. Chromium ships a partial chrome.userScripts in
@@ -563,11 +662,22 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     return new Proxy(emptyTarget, {
       get: function (_t, prop) {
         // Our explicit overrides win first.
-        if (typeof prop === 'string' && NEWBRO_OVERRIDES[prop]) {
-          return NEWBRO_OVERRIDES[prop];
-        }
+        var override = (typeof prop === 'string') ? NEWBRO_OVERRIDES[prop] : undefined;
         // Then whatever Chromium / the library actually installed.
         var v = Reflect.get(real, prop);
+        // V23: log every unique top-level chrome.<ns> read so we can
+        // see the mechanism extensions actually use (e.g. proxy vs
+        // declarativeNetRequest vs runtime.connectNative).
+        if (typeof prop === 'string') {
+          var kind;
+          if (override !== undefined) kind = 'override';
+          else if (v !== undefined) kind = (typeof v === 'function' ? 'real-fn' : 'real');
+          else kind = 'autostub';
+          var rid = '';
+          try { rid = (real && real.runtime && real.runtime.id) ? String(real.runtime.id) : ''; } catch (_) {}
+          try { trackChromeAccess(rid, prop, kind); } catch (_) {}
+        }
+        if (override !== undefined) return override;
         if (v !== undefined) {
           // Bind methods that need this to be the real chrome
           // (chrome.tabs.query, chrome.runtime.getManifest, etc.).
