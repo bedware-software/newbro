@@ -69,7 +69,7 @@
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
 //         extensions can now actually route traffic via Newbro.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V23__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V24__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -327,23 +327,52 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
     // exact identity. The empty target Proxy pattern (proven by
     // V17 for chrome.userScripts / scripting / proxy) bypasses the
     // freeze entirely because the Proxy target is fresh.
-    var noopAuthEvent = {
-      addListener: function () {},
-      removeListener: function () {},
-      hasListener: function () { return false; },
-    };
+    // V24: stub ALL standard webRequest events, not just onAuthRequired.
+    // The library only exposes onHeadersReceived; every other event
+    // (onBeforeRequest, onCompleted, onErrorOccurred, …) reads as
+    // undefined, so an extension's `xxx.addListener(...)` crashes.
+    // Browsec calls multiple webRequest event listeners at SW init —
+    // the crash at bg.js line 719 was on the next addListener after
+    // onAuthRequired, not onAuthRequired itself.
+    var WEBREQUEST_EVENT_NAMES = [
+      'onBeforeRequest', 'onBeforeSendHeaders', 'onSendHeaders',
+      'onHeadersReceived', 'onAuthRequired', 'onResponseStarted',
+      'onBeforeRedirect', 'onCompleted', 'onErrorOccurred',
+      'onActionIgnored',
+    ];
+    var wrEventStubs = Object.create(null);
+    function makeWREventStub() {
+      return {
+        addListener: function () {},
+        removeListener: function () {},
+        hasListener: function () { return false; },
+        hasListeners: function () { return false; },
+      };
+    }
+    function getWREventStub(name) {
+      if (!wrEventStubs[name]) wrEventStubs[name] = makeWREventStub();
+      return wrEventStubs[name];
+    }
     var realWR = c.webRequest;
     var wrEmptyTarget = Object.create(null);
     var newWR = new Proxy(wrEmptyTarget, {
       get: function (_t, prop) {
-        if (prop === 'onAuthRequired') return noopAuthEvent;
+        if (typeof prop === 'string' && WEBREQUEST_EVENT_NAMES.indexOf(prop) !== -1) {
+          if (realWR != null) {
+            var rv = Reflect.get(realWR, prop);
+            if (rv && typeof rv === 'object' && typeof rv.addListener === 'function') {
+              return rv;
+            }
+          }
+          return getWREventStub(prop);
+        }
         if (realWR == null) return undefined;
         var v = Reflect.get(realWR, prop);
         if (typeof v === 'function') return v.bind(realWR);
         return v;
       },
       has: function (_t, prop) {
-        if (prop === 'onAuthRequired') return true;
+        if (typeof prop === 'string' && WEBREQUEST_EVENT_NAMES.indexOf(prop) !== -1) return true;
         return realWR != null ? Reflect.has(realWR, prop) : false;
       },
       set: function (_t, prop, value) {
@@ -354,6 +383,25 @@ export const SW_SHIM_SOURCE = `${SW_SHIM_MAGIC}
       },
     });
     NEWBRO_OVERRIDES['webRequest'] = newWR;
+    // Also fetch our own bg.js once so main can log the source around
+    // the crash line — turns "Cannot read properties of undefined" at
+    // line N into the actual code at line N. Cheap, fires once per SW.
+    try {
+      var ownUrl = (self.location && self.location.href) ? self.location.href : '';
+      if (ownUrl && !self.__newbroSourceLogged) {
+        self.__newbroSourceLogged = true;
+        fetch(ownUrl).then(function (r) { return r.text(); }).then(function (text) {
+          var allLines = text.split('\n');
+          var win = [];
+          for (var i = 712; i <= 730 && i < allLines.length; i++) {
+            win.push({ line: i + 1, text: String(allLines[i] || '').slice(0, 240) });
+          }
+          try {
+            sendPost('bg-source-window', { extId: extId, totalLines: allLines.length, lines: win });
+          } catch (_) {}
+        }, function () {});
+      }
+    } catch (_) {}
     try {
       sendPost('patch-step', {
         extId: extId,
