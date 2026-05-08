@@ -1253,6 +1253,35 @@ export async function toggleExtensionPopup(
     setTimeout(() => fitExtensionPopupToContent(windowId), 200)
     setTimeout(() => fitExtensionPopupToContent(windowId), 600)
     setTimeout(() => fitExtensionPopupToContent(windowId), 1200)
+    // Click-event instrumentation. When a Browsec/Hola button "does
+    // nothing" it can mean (a) Browsec never bound the listener, or
+    // (b) real mouse events never reach the page. We can tell which
+    // by capturing every pointerdown/click at the document with a
+    // capture-phase listener. Goes through the existing console-message
+    // pipe to main's log, so no extra IPC required.
+    view.webContents
+      .executeJavaScript(
+        `(function(){
+          if (window.__newbroClickProbeInstalled) return;
+          window.__newbroClickProbeInstalled = true;
+          function describe(el){
+            if (!el) return '(none)';
+            var t = el.tagName + (el.id ? '#' + el.id : '');
+            var cls = (el.className || '').toString().slice(0, 60);
+            if (cls) t += '.' + cls.replace(/\\s+/g, '.');
+            var txt = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 50);
+            return t + ' "' + txt + '"';
+          }
+          document.addEventListener('pointerdown', function(e){
+            try { console.log('[newbro-debug] pointerdown', describe(e.target)); } catch(_){}
+          }, true);
+          document.addEventListener('click', function(e){
+            try { console.log('[newbro-debug] click', describe(e.target)); } catch(_){}
+          }, true);
+          console.log('[newbro-debug] click probe installed');
+        })();`,
+      )
+      .catch(() => undefined)
   })
 
   // Tear down on owner-window destroy. Map cleanup happens here too in
