@@ -212,12 +212,26 @@ export function subscribeBrowserActionUpdates(
     api?: { browserAction?: { observers?: Set<unknown> } }
   }).api?.browserAction?.observers
   if (!observers) return () => undefined
+  let firedCount = 0
   const fakeObserver = {
     isDestroyed: () => false,
     send: (channel: string) => {
       if (channel !== 'browserAction.update') return
       try {
-        callback(getBrowserActionStateForSession(ses))
+        const state = getBrowserActionStateForSession(ses)
+        firedCount++
+        // Log the first few updates so the dev-time log shows the
+        // subscribe is wired correctly. After that fall silent — these
+        // fire on every chrome.action.* mutation and would flood logs
+        // if left unbounded.
+        if (firedCount <= 3) {
+          log.info('extensions: browser-action update', {
+            count: firedCount,
+            extCount: state.actions.length,
+            activeTabId: state.activeTabId,
+          })
+        }
+        callback(state)
       } catch (err) {
         log.warn('extensions: browser-action callback threw', String(err))
       }

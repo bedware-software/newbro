@@ -589,6 +589,10 @@ function configureSession(ses: Electron.Session): void {
     const tracked = extOriginByRequest.get(details.id)
     extOriginByRequest.delete(details.id)
     if (details.error === 'net::ERR_ABORTED') return
+    // Our SW shim's sentinel ping (newbro-ext-ipc.test/*) is cancelled on
+    // purpose — webRequest reports it as ERR_BLOCKED_BY_CLIENT; that's a
+    // success path, not a failure.
+    if (details.error === 'net::ERR_BLOCKED_BY_CLIENT' && details.url.includes('newbro-ext-ipc.test')) return
     log.warn('ext fetch failed', {
       url: details.url,
       method: details.method,
@@ -597,22 +601,6 @@ function configureSession(ses: Electron.Session): void {
     })
   })
 
-  // Symmetric counterpart: confirm chrome-extension SW fetches even reach
-  // onBeforeRequest. If this fires for google-analytics.com calls but
-  // onErrorOccurred doesn't, the request is silently dropped between
-  // stages. If neither fires, webRequest is bypassed entirely for SW
-  // contexts and we need a different fix surface.
-  ses.webRequest.onBeforeRequest(
-    { urls: ['*://*.google-analytics.com/*', '*://api.browsec.com/*'] },
-    (details, callback) => {
-      log.info('ext fetch start', {
-        url: details.url,
-        method: details.method,
-        resourceType: details.resourceType,
-      })
-      callback({ cancel: false })
-    },
-  )
 
   // SW → main IPC channel. The shim we prepend into MV3 service workers
   // can't import { ipcRenderer } from 'electron' (no preload bridge in
@@ -923,6 +911,175 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   })
+}
+
+/** Patch electron-chrome-extensions's preload so chrome.action.setIcon
+ *  with imageData (canvas-rendered icons) actually reaches the main
+ *  process in MV3. Without this, every runtime icon update from a
+ *  canvas-backed extension is dropped:
+ *
+ *    1. Library's preload strips imageData on MV3 with a console.warn —
+ *       MV2 has a sync canvas → toDataURL helper but it uses
+ *       `document.createElement('canvas')` which throws in a SW context.
+ *    2. We replace the helper with an OffscreenCanvas + convertToBlob
+ *       async path, valid in both frame and SW contexts.
+ *    3. invokeExtension's serialize callback runs synchronously today.
+ *       We promote it to await so the new async helper can land before
+ *       the IPC fires.
+ *
+ *  All three edits must succeed — the patch refuses to write when any
+ *  replacement misses (library version drifted) so we don't ship a
+ *  half-patched file. Idempotent via the V2 marker. */
+function patchLibraryPreloadForMV3SetIcon(): void {
+  let preloadPath: string
+  try {
+    preloadPath = join(
+      require.resolve('electron-chrome-extensions'),
+      '..',
+      '..',
+      'chrome-extension-api.preload.js',
+    )
+  } catch (err) {
+    log.warn('extensions: cannot resolve preload for MV3-setIcon patch', String(err))
+    return
+  }
+  let source: string
+  try {
+    source = readFileSync(preloadPath, 'utf-8')
+  } catch (err) {
+    log.warn('extensions: cannot read preload for MV3-setIcon patch', { path: preloadPath, err: String(err) })
+    return
+  }
+  if (source.startsWith('// __NEWBRO_PRELOAD_PATCH_V2__')) return
+  // Strip a stale V1 marker if a previous launch laid one down.
+  source = source.replace(/^\/\/ __NEWBRO_PRELOAD_PATCH_V1__\n/, '')
+
+  // Patches 1-3 below. Each replaceOnce returns a result + matched flag,
+  // and the whole patch only commits when all three matched.
+  const replaceOnce = (input: string, find: string, replace: string): { out: string; ok: boolean } => {
+    const idx = input.indexOf(find)
+    if (idx < 0) return { out: input, ok: false }
+    return { out: input.slice(0, idx) + replace + input.slice(idx + find.length), ok: true }
+  }
+
+  // 1) Replace imageData2base64 with a SW-aware async version. OffscreenCanvas
+  //    is available in MV3 service worker globals; document is not.
+  const oldHelper =
+`      function imageData2base64(imageData) {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
+        canvas.width = imageData.width;
+        canvas.height = imageData.height;
+        ctx.putImageData(imageData, 0, 0);
+        return canvas.toDataURL();
+      }`
+  const newHelper =
+`      async function imageData2base64(imageData) {
+        try {
+          if (typeof document !== "undefined" && document.createElement) {
+            const c = document.createElement("canvas");
+            const cx = c.getContext("2d");
+            if (!cx) return null;
+            c.width = imageData.width;
+            c.height = imageData.height;
+            cx.putImageData(imageData, 0, 0);
+            return c.toDataURL();
+          }
+          if (typeof OffscreenCanvas !== "undefined") {
+            const oc = new OffscreenCanvas(imageData.width, imageData.height);
+            const ox = oc.getContext("2d");
+            if (!ox) return null;
+            ox.putImageData(imageData, 0, 0);
+            const blob = await oc.convertToBlob({ type: "image/png" });
+            const buf = await blob.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            let bin = "";
+            for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+            return "data:image/png;base64," + btoa(bin);
+          }
+          return null;
+        } catch (e) { return null; }
+      }`
+
+  // 2) Replace the setIcon serialize block: drop the MV3 strip and await
+  //    the now-async helper for both the single-ImageData and the size-keyed
+  //    map cases. Using a for-loop instead of Array.reduce so we can await.
+  const oldSetIcon =
+`          setIcon: invokeExtension2("browserAction.setIcon", {
+            serialize: (details) => {
+              if (details.imageData) {
+                if (manifest.manifest_version === 3) {
+                  console.warn(
+                    "action.setIcon with imageData is not yet supported by electron-chrome-extensions"
+                  );
+                  details.imageData = void 0;
+                } else if (details.imageData instanceof ImageData) {
+                  details.imageData = imageData2base64(details.imageData);
+                } else {
+                  details.imageData = Object.entries(details.imageData).reduce(
+                    (obj, pair) => {
+                      obj[pair[0]] = imageData2base64(pair[1]);
+                      return obj;
+                    },
+                    {}
+                  );
+                }
+              }
+              return [details];
+            }
+          }),`
+  const newSetIcon =
+`          setIcon: invokeExtension2("browserAction.setIcon", {
+            serialize: async (details) => {
+              if (details.imageData) {
+                if (typeof ImageData !== "undefined" && details.imageData instanceof ImageData) {
+                  details.imageData = await imageData2base64(details.imageData);
+                } else if (typeof details.imageData === "object") {
+                  const out = {};
+                  const entries = Object.entries(details.imageData);
+                  for (const [k, v] of entries) {
+                    out[k] = await imageData2base64(v);
+                  }
+                  details.imageData = out;
+                }
+              }
+              return [details];
+            }
+          }),`
+
+  // 3) invokeExtension was synchronous through serialize. Make it await so
+  //    the async setIcon serialize lands before the IPC.
+  const oldInvoke =
+`      if (options.serialize) {
+        args = options.serialize(...args);
+      }`
+  const newInvoke =
+`      if (options.serialize) {
+        args = await Promise.resolve(options.serialize(...args));
+      }`
+
+  const r1 = replaceOnce(source, oldHelper, newHelper)
+  const r2 = replaceOnce(r1.out, oldSetIcon, newSetIcon)
+  const r3 = replaceOnce(r2.out, oldInvoke, newInvoke)
+
+  if (!r1.ok || !r2.ok || !r3.ok) {
+    log.warn('extensions: MV3-setIcon patch did not match — library version drifted', {
+      path: preloadPath,
+      helperMatched: r1.ok,
+      setIconMatched: r2.ok,
+      invokeMatched: r3.ok,
+    })
+    return
+  }
+
+  const patched = '// __NEWBRO_PRELOAD_PATCH_V2__\n' + r3.out
+  try {
+    writeFileSync(preloadPath, patched)
+    log.info('extensions: patched library preload for MV3 setIcon imageData')
+  } catch (err) {
+    log.warn('extensions: cannot write patched preload', { path: preloadPath, err: String(err) })
+  }
 }
 
 /** Patterns matched against extension SW + popup console.log/info messages.
@@ -1655,6 +1812,39 @@ app.whenReady().then(() => {
 
   configureSession(session.defaultSession)
   applyProxySettingsToAllSessions(loadSettings())
+
+  // Force DNS-over-HTTPS (Cloudflare + Google) for every Chromium DNS
+  // lookup in the app. The user's system DNS was returning
+  // net::ERR_NAME_NOT_RESOLVED for hosts an extension legitimately
+  // needs to reach (Browsec → google-analytics.com), which is what the
+  // ext-fetch-failed diagnostic finally surfaced. `secureDnsMode: 'secure'`
+  // disables the system-DNS fallback entirely — without that the resolver
+  // still tries the broken upstream first. Must run after app.ready;
+  // calling earlier throws.
+  try {
+    app.configureHostResolver({
+      secureDnsMode: 'secure',
+      secureDnsServers: [
+        'https://cloudflare-dns.com/dns-query',
+        'https://dns.google/dns-query',
+      ],
+    })
+    log.info('dns: DNS-over-HTTPS enabled', { mode: 'secure' })
+  } catch (err) {
+    log.warn('dns: configureHostResolver failed', String(err))
+  }
+
+  // Patch electron-chrome-extensions's preload file in place to support
+  // MV3 chrome.action.setIcon({imageData: ...}). The library's stock
+  // preload strips imageData on MV3 with a `console.warn`, and Browsec
+  // (and any other extension that renders dynamic icons via canvas /
+  // OffscreenCanvas) loses every runtime icon update through that path.
+  // The main-process side of the library already accepts imageData as a
+  // base64 data URL — only the preload's MV3 guard blocks it. We replace
+  // the strip with a SW-aware imageData→base64 path. Idempotent: a
+  // marker comment prevents double-patching when npm install hasn't
+  // wiped node_modules.
+  patchLibraryPreloadForMV3SetIcon()
 
   // Register the `crx://` protocol on the renderer's session so the
   // toolbar can fetch dynamic extension icons (chrome.action.setIcon)
