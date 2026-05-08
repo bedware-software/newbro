@@ -931,18 +931,62 @@ function jsonResponse(body: unknown, status = 200): Response {
  *  replacement misses (library version drifted) so we don't ship a
  *  half-patched file. Idempotent via the V2 marker. */
 function patchLibraryPreloadForMV3SetIcon(): void {
-  let preloadPath: string
+  log.info('extensions: setIcon-patch begin')
+  // Try multiple strategies to resolve the preload path. Vite's externalize
+  // keeps the require call live, but production bundles can sometimes
+  // strip require.resolve unexpectedly — fall back to walking from the
+  // app's resource path so we always find the file.
+  const candidates: string[] = []
   try {
-    preloadPath = join(
-      require.resolve('electron-chrome-extensions'),
-      '..',
-      '..',
-      'chrome-extension-api.preload.js',
+    candidates.push(
+      join(
+        require.resolve('electron-chrome-extensions'),
+        '..',
+        '..',
+        'chrome-extension-api.preload.js',
+      ),
     )
   } catch (err) {
-    log.warn('extensions: cannot resolve preload for MV3-setIcon patch', String(err))
+    log.warn('extensions: setIcon-patch require.resolve threw', String(err))
+  }
+  try {
+    candidates.push(
+      join(
+        app.getAppPath(),
+        'node_modules',
+        'electron-chrome-extensions',
+        'dist',
+        'chrome-extension-api.preload.js',
+      ),
+    )
+  } catch { /* ignore */ }
+  // dev: app.getAppPath() points at out/main; node_modules is two up.
+  try {
+    candidates.push(
+      join(
+        app.getAppPath(),
+        '..',
+        '..',
+        'node_modules',
+        'electron-chrome-extensions',
+        'dist',
+        'chrome-extension-api.preload.js',
+      ),
+    )
+  } catch { /* ignore */ }
+  let preloadPath: string | null = null
+  for (const c of candidates) {
+    try {
+      readFileSync(c, 'utf-8')
+      preloadPath = c
+      break
+    } catch { /* keep trying */ }
+  }
+  if (!preloadPath) {
+    log.warn('extensions: setIcon-patch could not locate preload', { candidates })
     return
   }
+  log.info('extensions: setIcon-patch resolved', { path: preloadPath })
   let source: string
   try {
     source = readFileSync(preloadPath, 'utf-8')
@@ -950,7 +994,10 @@ function patchLibraryPreloadForMV3SetIcon(): void {
     log.warn('extensions: cannot read preload for MV3-setIcon patch', { path: preloadPath, err: String(err) })
     return
   }
-  if (source.startsWith('// __NEWBRO_PRELOAD_PATCH_V2__')) return
+  if (source.startsWith('// __NEWBRO_PRELOAD_PATCH_V2__')) {
+    log.info('extensions: setIcon-patch already applied, skip')
+    return
+  }
   // Strip a stale V1 marker if a previous launch laid one down.
   source = source.replace(/^\/\/ __NEWBRO_PRELOAD_PATCH_V1__\n/, '')
 
@@ -1084,25 +1131,18 @@ function patchLibraryPreloadForMV3SetIcon(): void {
 
 /** Patterns matched against extension SW + popup console.log/info messages.
  *  Returns true when the message is known noise we'd rather not flood the
- *  main log with — Browsec's per-event analytics, Tampermonkey's alarm
- *  scheduler, etc. Errors and warnings (level >= 2) bypass this filter. */
+ *  main log with. Errors and warnings (level >= 2) bypass this filter.
+ *  Be conservative — keep status messages we may need to triage what
+ *  Browsec / Tampermonkey is actually doing. */
 const EXT_CONSOLE_NOISE_REGEXES = [
-  /^alarm:/, // Tampermonkey scheduler
-  /^Storage:\s/, // Tampermonkey storage init
-  /^\[gaDigest\//, // Browsec GA4 digest
-  /^\[jitsu\],/, // Browsec jitsu events
+  /^alarm: schedule\[/, // Tampermonkey scheduler chatter
+  /^\[gaDigest\//, // Browsec GA4 digest noise
+  /^\[jitsu\],/, // Browsec jitsu events (frequent)
   /^\[gaUserIdPromise\]/, // Browsec analytics id
   /^\[initial state:/, // Browsec massive PAC dump (~3KB)
-  /^\[defaultCountry\]/, // Browsec country selection
   /^\[storageListener\]/, // Browsec storage echoes
-  /^\[highLevelPac/, // Browsec PAC ops
-  /^\[storage[A-Z]/, // Browsec storage adapter
   /^Local delay\./, // Browsec timing
   /^Delay\./, // Browsec timing
-  /^Store: account update/, // Browsec account
-  /^ajaxes\./, // Browsec API trace
-  /^onAuthRequired\.addListener/, // Browsec init
-  /^KeepAliveWorker/, // Browsec keep-alive
 ]
 export function shouldDropExtConsoleMessage(message: string): boolean {
   // Browsec prefixes its own logs with `[dd, hh:mm:ss.mmm], `. Strip
