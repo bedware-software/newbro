@@ -468,6 +468,33 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
   //    handlers in main.
   if (patchExtensionCsp(manifest)) modified = true
 
+  // ── Patch 6: convert chrome.userScripts-driven bootstraps to declared
+  //    content_scripts.
+  //
+  //    Tampermonkey-style extensions ship a content.js / page.js pair
+  //    that they register dynamically at SW init via
+  //    chrome.userScripts.register. In Electron 41 we don't have a
+  //    privileged-context injection path for chrome.userScripts — the
+  //    closest we can do is webContents.executeJavaScriptInIsolatedWorld,
+  //    which lands the code in a fresh isolated world with NO chrome.*
+  //    binding. The bootstrap then hangs trying to talk to its SW
+  //    (chrome.runtime.connect handshake), and on macOS where webContents
+  //    in a BrowserWindow share a renderer process this freezes the
+  //    whole window.
+  //
+  //    Real chrome.* binding only happens for manifest-declared
+  //    content_scripts (run in isolated world with full extension
+  //    context). So we DECLARE the bootstraps here, statically — Electron
+  //    handles injection itself, the bootstrap gets a working
+  //    chrome.runtime.sendMessage, and user scripts execute the way the
+  //    extension expects.
+  //
+  //    Hardcoded per extension because each manager picks its own
+  //    bootstrap file names; for now we cover Tampermonkey
+  //    (dhdgff…fdo). Adding Violentmonkey / Greasemonkey is a one-line
+  //    addition once we verify their bootstrap shapes match.
+  if (patchContentScriptsForUserScriptManager(manifest, extDir)) modified = true
+
   if (modified) {
     try {
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
@@ -491,6 +518,115 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
  *  patched leaves the manifest untouched.
  *
  *  Returns true if the manifest was actually modified. */
+/** Lookup of known userscript-manager extensions and the file pair we
+ *  want to register as content_scripts (so they run with real chrome.*
+ *  binding instead of via our half-broken dynamic injection path).
+ *
+ *  Each entry maps the extension's manifest `key` derivation id (the
+ *  one that surfaces in chrome-extension://<id>/) to a list of scripts
+ *  with their target world. `world: 'MAIN'` is MV3 syntax for "run in
+ *  the page's main JS world" (the file gets access to page globals);
+ *  the default is the extension's isolated world (full chrome.* but
+ *  isolated from the page).
+ *
+ *  Adding a new manager: install it, look at the SW's first
+ *  chrome.userScripts.register call in our log, copy the js[].file
+ *  names into a new entry here. */
+const USERSCRIPT_MANAGER_BOOTSTRAPS: Record<
+  string,
+  Array<{ js: string[]; world?: 'MAIN' | 'ISOLATED'; runAt: 'document_start' | 'document_end' | 'document_idle' }>
+> = {
+  // Tampermonkey. Single content_scripts entry with both files —
+  // page.js FIRST so it sets `window.pagejs` on the isolated world's
+  // window before content.js (line 84) reads it. Two separate entries
+  // make injection order undefined and TM throws "pagejs missing"
+  // when content.js wins the race. ISOLATED world (the default for
+  // content_scripts): both files share a window so the handshake
+  // works. world:'MAIN' would split them and break the same way.
+  dhdgffkkebhmkfjojejmpbldmpobfkfo: [
+    { js: ['page.js', 'content.js'], runAt: 'document_start' },
+  ],
+}
+
+/** Derive the extension id from manifest.key (base64 of the SPKI public
+ *  key). Mirrors Chromium's compute-extension-id logic: SHA256 the DER
+ *  bytes, take the first 16 bytes, encode as a-p instead of 0-f. Used
+ *  here because patchManifest doesn't have the id parameter handy. */
+function deriveExtensionIdFromManifestKey(manifest: Record<string, unknown>): string | null {
+  const k = typeof manifest.key === 'string' ? (manifest.key as string) : null
+  if (!k) return null
+  try {
+    const buf = Buffer.from(k, 'base64')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const crypto = require('node:crypto') as typeof import('node:crypto')
+    const hash = crypto.createHash('sha256').update(buf).digest()
+    let out = ''
+    for (let i = 0; i < 16; i++) {
+      const byte = hash[i]
+      out += String.fromCharCode(97 + (byte >> 4))
+      out += String.fromCharCode(97 + (byte & 0xf))
+    }
+    return out
+  } catch (err) {
+    log.warn('extensions: deriveExtensionIdFromManifestKey threw', { err: String(err) })
+    return null
+  }
+}
+
+function patchContentScriptsForUserScriptManager(
+  manifest: Record<string, unknown>,
+  extDir: string,
+): boolean {
+  if (manifest.manifest_version !== 3) return false
+  const id = deriveExtensionIdFromManifestKey(manifest)
+  if (!id) return false
+  const bootstraps = USERSCRIPT_MANAGER_BOOTSTRAPS[id]
+  if (!bootstraps) return false
+  // Every js file must exist on disk — skip silently otherwise (the
+  // extension may have been repackaged or the file name changed across
+  // versions; rather than partially injecting a missing file we leave
+  // the entry off and surface it via the log).
+  const missing: string[] = []
+  for (const entry of bootstraps) {
+    for (const j of entry.js) {
+      if (!existsSync(join(extDir, j))) missing.push(j)
+    }
+  }
+  if (missing.length > 0) {
+    log.warn('extensions: userscript-manager bootstrap files missing on disk', { id, missing })
+    return false
+  }
+  const existing = Array.isArray(manifest.content_scripts)
+    ? (manifest.content_scripts as Array<Record<string, unknown>>)
+    : []
+  const desired: Array<Record<string, unknown>> = bootstraps.map((b) => ({
+    matches: ['<all_urls>'],
+    js: b.js.slice(),
+    run_at: b.runAt,
+    ...(b.world ? { world: b.world } : {}),
+    all_frames: true,
+  }))
+  // Drop any existing entries that mention ANY of the desired files.
+  // A previous patch revision may have split them across two entries
+  // or used a different world — either way, removing-by-file-overlap
+  // and re-appending the freshly-shaped combined entry yields the
+  // intended shape regardless of the prior layout.
+  const allDesiredFiles = new Set(desired.flatMap((d) => d.js as string[]))
+  const filteredExisting = existing.filter((e) => {
+    if (!Array.isArray(e.js)) return true
+    return !(e.js as string[]).some((j) => allDesiredFiles.has(j))
+  })
+  // Idempotent across runs: serialize before/after, compare. Skip the
+  // write if nothing actually changed.
+  const next = [...filteredExisting, ...desired]
+  if (JSON.stringify(existing) === JSON.stringify(next)) return false
+  manifest.content_scripts = next
+  log.info('extensions: declared userscript-manager bootstraps as content_scripts', {
+    id, added: desired.length, droppedExisting: existing.length - filteredExisting.length,
+  })
+  return true
+}
+
 const NEWBRO_CSP_CONNECT_SOURCES = ['newbro-ipc:', 'https://newbro-ext-ipc.test']
 function patchExtensionCsp(manifest: Record<string, unknown>): boolean {
   if (manifest.manifest_version !== 3) return false
@@ -558,6 +694,18 @@ function mergeConnectSrc(csp: string, extraSources: readonly string[]): string {
   // (used in some chrome-extension flows we want to preserve).
   const permissiveConnectSrc =
     `connect-src * data: blob: 'self' ${extraSources.join(' ')}`
+  // One-time cleanup: an earlier release of this patcher added
+  // 'unsafe-inline' / 'unsafe-eval' / blob: to script-src. Chromium's
+  // MV3 manifest validator rejects those values entirely — the
+  // extension fails to load with "Insecure CSP value". Strip them so
+  // re-running against an already-poisoned manifest restores it.
+  const FORBIDDEN_IN_SCRIPT_SRC = new Set(["'unsafe-inline'", "'unsafe-eval'", 'blob:'])
+  for (let i = 0; i < directives.length; i++) {
+    const tokens = directives[i].split(/\s+/).filter(Boolean)
+    if ((tokens[0] || '').toLowerCase() !== 'script-src') continue
+    const cleaned = tokens.filter((t, idx) => idx === 0 || !FORBIDDEN_IN_SCRIPT_SRC.has(t))
+    if (cleaned.length !== tokens.length) directives[i] = cleaned.join(' ')
+  }
   let connectIdx = -1
   for (let i = 0; i < directives.length; i++) {
     const name = directives[i].split(/\s+/, 1)[0]?.toLowerCase()
@@ -567,13 +715,24 @@ function mergeConnectSrc(csp: string, extraSources: readonly string[]): string {
     // No connect-src yet. Add a permissive one alongside whatever else
     // the manifest already declares; seed standard MV3 base directives
     // when the source CSP was completely empty so Chromium accepts it.
+    // Note: we deliberately do NOT add 'unsafe-inline' / 'unsafe-eval' —
+    // MV3's extension manifest validator rejects them, the extension
+    // simply fails to load. CSP relaxation for userscript-manager
+    // inline-script injection has to happen elsewhere.
     const seeded = directives.length > 0 ? directives.slice() : ["script-src 'self'", "object-src 'self'"]
     seeded.push(permissiveConnectSrc)
-    return seeded.join('; ') + ';'
+    const out = seeded.join('; ') + ';'
+    return out === csp ? csp : out
   }
-  if (directives[connectIdx] === permissiveConnectSrc) return csp
-  directives[connectIdx] = permissiveConnectSrc
-  return directives.join('; ') + ';'
+  if (directives[connectIdx] !== permissiveConnectSrc) {
+    directives[connectIdx] = permissiveConnectSrc
+  }
+  // Rebuild from `directives` so the script-src cleanup at the top of
+  // the function (strips 'unsafe-inline' / 'unsafe-eval' / blob:) lands
+  // even when connect-src is already permissive. Caller compares the
+  // result to the original csp; identical → no-op.
+  const out = directives.join('; ') + ';'
+  return out === csp ? csp : out
 }
 
 /** Prepend our chrome.tabs.create / chrome.windows.create /
