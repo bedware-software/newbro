@@ -27,6 +27,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { log } from '../log'
 import { getExtensionEntry } from './manager'
+import { getSwRpcServerInfo } from './sw-rpc-server'
 
 interface UserScriptJsSource {
   /** Inline JS to inject. */
@@ -106,6 +107,21 @@ export function registerUserScripts(
       allFrames: s.allFrames,
       jsCount: Array.isArray(s.js) ? s.js.length : 0,
       jsCodeLen: totalCodeLen,
+      // Dump the shape of each js[] entry so we can tell whether
+      // Tampermonkey is passing inline code, file refs, or something
+      // unusual (data: URLs, blob:, etc.). Truncate long fields so the
+      // log stays readable.
+      jsShape: Array.isArray(s.js)
+        ? s.js.map((j) => {
+            const raw = j as unknown as Record<string, unknown>
+            return {
+              keys: Object.keys(raw || {}),
+              codeLen: typeof raw.code === 'string' ? (raw.code as string).length : null,
+              codePrefix: typeof raw.code === 'string' ? (raw.code as string).slice(0, 120) : null,
+              file: typeof raw.file === 'string' ? (raw.file as string) : null,
+            }
+          })
+        : null,
     })
   }
   log.info('userscripts: registered', {
@@ -218,6 +234,25 @@ export function injectMatchingUserScripts(
   runAt: 'document_start' | 'document_end' | 'document_idle',
   wc: WebContents,
 ): void {
+  // DEFAULT-OFF kill switch. Tampermonkey's content.js / page.js
+  // bootstraps, when injected via executeJavaScriptInIsolatedWorld into
+  // a regular web page, attempt a synchronous handshake with the SW
+  // through chrome.runtime.connect/sendMessage. Our bridge for those
+  // is fetch-based to newbro-ext-ipc.test, but the page's CSP
+  // (e.g. yandex.ru's strict connect-src) blocks the fetch BEFORE the
+  // webRequest interceptor in main can catch it. The handshake never
+  // completes, TM busy-waits, and on macOS where webContents in one
+  // BrowserWindow share a renderer process, the whole window's UI
+  // freezes (Cmd+Q ignored, tabs unresponsive).
+  //
+  // Until we ship a CSP-bypassing transport (likely a hidden iframe at
+  // chrome-extension://<id>/bridge.html that postMessage-tunnels to the
+  // page, then fetches main from chrome-extension origin where our CSP
+  // patch already allows newbro-ext-ipc.test), keep injection OFF by
+  // default. Set NEWBRO_ENABLE_USERSCRIPTS=1 to opt in for testing.
+  if (process.env['NEWBRO_ENABLE_USERSCRIPTS'] !== '1') {
+    return
+  }
   const reg = registries.get(partition)
   const totalScripts = reg
     ? Array.from(reg.byExtension.values()).reduce((n, m) => n + m.size, 0)
@@ -282,36 +317,257 @@ export function injectMatchingUserScripts(
       // world that's NOT one of those, so chrome.runtime is
       // undefined and Tampermonkey's bootstrap throws on its very
       // first chrome.runtime.id access. The stub keeps the bootstrap
-      // alive past that line; sendMessage is a no-op (full bridge to
-      // the SW would require bidirectional postMessage routing that
-      // doesn't exist yet — a follow-up).
+      // alive past that line. chrome.runtime.sendMessage is a REAL
+      // bridge: it fetches the loopback RPC server (same one the SW
+      // shim uses for /auth-poll etc.), main queues the message per
+      // extId, and the SW long-polls /runtime-msg-poll to drain it
+      // into its own chrome.runtime.onMessage listeners.
+      const rpc = getSwRpcServerInfo()
+      const rpcPort = rpc?.port ?? 0
+      const rpcSecret = rpc?.secret ?? ''
       const setup = `;(function(){
   var g = (typeof self !== 'undefined') ? self : window;
+  // ENTRY BEACON: fire BEFORE we touch chrome.* so we know whether the
+  // setup script even started executing in this isolated world. If this
+  // never lands in main's log, the executeJavaScriptInIsolatedWorld call
+  // is being silently dropped (worldId mismatch, Electron quirk, etc.).
+  try {
+    fetch('https://newbro-ext-ipc.test/userscript-setup-entry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        extId: ${JSON.stringify(extensionId)},
+        href: (typeof location !== 'undefined' && location.href) || '',
+        hasChrome: typeof g.chrome !== 'undefined',
+        chromeKeys: g.chrome ? Object.keys(g.chrome).slice(0, 30) : [],
+      }),
+    }).catch(function () {});
+  } catch (e) { /* ignore */ }
   if (!g.chrome) g.chrome = {};
   var c = g.chrome;
   if (!c.runtime) c.runtime = {};
-  c.runtime.id = c.runtime.id || ${JSON.stringify(extensionId)};
-  c.runtime.getURL = c.runtime.getURL || function (path) {
-    return 'chrome-extension://' + ${JSON.stringify(extensionId)} + '/' + String(path || '').replace(/^\\/+/, '');
+  var __newbroRpc = 'http://127.0.0.1:' + ${JSON.stringify(rpcPort)};
+  var __newbroExtId = ${JSON.stringify(extensionId)};
+  var __newbroRpcHeaders = function (extra) {
+    var h = { 'X-Newbro-Token': ${JSON.stringify(rpcSecret)}, 'X-Newbro-Partition': '*' };
+    if (extra) for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) h[k] = extra[k];
+    return h;
   };
-  c.runtime.sendMessage = c.runtime.sendMessage || function () { return Promise.resolve(); };
-  c.runtime.onMessage = c.runtime.onMessage || { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } };
-  c.runtime.connect = c.runtime.connect || function () {
-    return {
-      name: '',
-      postMessage: function () {},
-      disconnect: function () {},
-      onMessage: { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } },
-      onDisconnect: { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } },
+  // Force-overwrite the bridge entry points even if Chromium installed
+  // a partial native binding in this isolated world. Real Chrome injects
+  // chrome.runtime into content_scripts; our chrome.userScripts-driven
+  // injection lands in a similar world, but the native binding is wired
+  // to the wrong (or no) extension context — it accepts calls but
+  // packets never reach the SW. TM's content.js handshake hangs forever
+  // on a port the SW never sees. Replacing unconditionally with our
+  // loopback-RPC bridge is the only way to get cross-context delivery.
+  var __newbroBeforeConnect = typeof c.runtime.connect;
+  var __newbroBeforeSend = typeof c.runtime.sendMessage;
+  var __newbroAssignErrors = {};
+  function __newbroForce(obj, prop, value) {
+    try {
+      Object.defineProperty(obj, prop, { configurable: true, enumerable: true, writable: true, value: value });
+      return 'defineProperty';
+    } catch (e1) {
+      __newbroAssignErrors[prop + '/define'] = String((e1 && e1.message) || e1).slice(0, 120);
+      try { obj[prop] = value; return 'assign'; }
+      catch (e2) {
+        __newbroAssignErrors[prop + '/assign'] = String((e2 && e2.message) || e2).slice(0, 120);
+        return 'failed';
+      }
+    }
+  }
+  __newbroForce(c.runtime, 'id', __newbroExtId);
+  __newbroForce(c.runtime, 'getURL', function (path) {
+    return 'chrome-extension://' + __newbroExtId + '/' + String(path || '').replace(/^\\/+/, '');
+  });
+  // Real sendMessage bridge: POST payload to main, await SW's listener
+  // response. Signature variants Chrome supports:
+  //   sendMessage(message)
+  //   sendMessage(message, options, callback)
+  //   sendMessage(extensionId, message)
+  //   sendMessage(extensionId, message, options, callback)
+  // For the bridge we only need the cross-context same-extension form;
+  // unpack defensively so the common single-arg case works.
+  __newbroForce(c.runtime, 'sendMessage', function (a, b, c2, d) {
+    var message;
+    var callback;
+    if (typeof a === 'string' && typeof b !== 'undefined') {
+      // sendMessage(extensionId, message, options?, callback?)
+      message = b;
+      callback = typeof d === 'function' ? d : (typeof c2 === 'function' ? c2 : undefined);
+    } else {
+      message = a;
+      callback = typeof c2 === 'function' ? c2 : (typeof b === 'function' ? b : undefined);
+    }
+    var p = (function () {
+      try {
+        return fetch(__newbroRpc + '/runtime-msg-send', {
+          method: 'POST',
+          headers: __newbroRpcHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ extId: __newbroExtId, payload: { message: message } }),
+        }).then(function (r) { return r.json(); }).then(function (j) { return j && j.result; });
+      } catch (e) { return Promise.resolve(undefined); }
+    })();
+    if (typeof callback === 'function') p.then(function (v) { try { callback(v); } catch (_) {} });
+    return p;
+  });
+  if (!c.runtime.onMessage) {
+    try { c.runtime.onMessage = { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } }; }
+    catch (e) { __newbroAssignErrors['onMessage/assign'] = String((e && e.message) || e).slice(0, 120); }
+  }
+  // Force-overwrite. Same reason as sendMessage above — the native
+  // binding (if any) doesn't reach our SW, and our bridge does.
+  // Tampermonkey's content.js handshake hangs on a half-bound native
+  // port; our bridge round-trips through main and into the SW shim's
+  // bridged onConnect dispatcher.
+  __newbroForce(c.runtime, 'connect', function (a, b) {
+    var name = '';
+    if (typeof a === 'string' && typeof b === 'object' && b && typeof b.name === 'string') name = b.name;
+    else if (a && typeof a === 'object' && typeof a.name === 'string') name = a.name;
+    var msgListeners = [];
+    var disListeners = [];
+    var portId = null;
+    var connecting = true;
+    var disconnected = false;
+    var pendingSend = [];
+    function fireMsg(m) {
+      var snap = msgListeners.slice();
+      for (var i = 0; i < snap.length; i++) {
+        try { snap[i](m, port); } catch (e) {}
+      }
+    }
+    function fireDisconnect() {
+      if (disconnected) return;
+      disconnected = true;
+      var snap = disListeners.slice();
+      for (var i = 0; i < snap.length; i++) {
+        try { snap[i](port); } catch (e) {}
+      }
+    }
+    function startPoll() {
+      function loop() {
+        if (disconnected || !portId) return;
+        try {
+          fetch(__newbroRpc + '/runtime-port-content-poll?portId=' + encodeURIComponent(portId), {
+            method: 'GET', headers: __newbroRpcHeaders(),
+          }).then(function (r) { return r.json(); }).then(function (j) {
+            if (j && j.event) {
+              if (j.event.type === 'msg') fireMsg(j.event.message);
+              else if (j.event.type === 'disconnect') { fireDisconnect(); return; }
+            }
+            loop();
+          }, function () {
+            setTimeout(loop, 2000);
+          });
+        } catch (e) {}
+      }
+      loop();
+    }
+    fetch(__newbroRpc + '/runtime-port-connect', {
+      method: 'POST',
+      headers: __newbroRpcHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ extId: __newbroExtId, name: name }),
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      portId = j && j.portId ? j.portId : null;
+      connecting = false;
+      if (!portId) { fireDisconnect(); return; }
+      // Drain any postMessage calls that landed before connect resolved.
+      for (var i = 0; i < pendingSend.length; i++) {
+        var m = pendingSend[i];
+        fetch(__newbroRpc + '/runtime-port-content-send', {
+          method: 'POST',
+          headers: __newbroRpcHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ portId: portId, message: m }),
+        }).catch(function () {});
+      }
+      pendingSend = [];
+      startPoll();
+    }, function () { connecting = false; fireDisconnect(); });
+    var port = {
+      name: name,
+      sender: { id: __newbroExtId, frameId: 0, origin: 'newbro-bridge' },
+      postMessage: function (m) {
+        if (disconnected) return;
+        if (connecting || !portId) { pendingSend.push(m); return; }
+        try {
+          fetch(__newbroRpc + '/runtime-port-content-send', {
+            method: 'POST',
+            headers: __newbroRpcHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ portId: portId, message: m }),
+          }).catch(function () {});
+        } catch (e) {}
+      },
+      disconnect: function () {
+        if (disconnected) return;
+        disconnected = true;
+        if (portId) {
+          try {
+            fetch(__newbroRpc + '/runtime-port-disconnect', {
+              method: 'POST',
+              headers: __newbroRpcHeaders({ 'Content-Type': 'application/json' }),
+              body: JSON.stringify({ portId: portId, side: 'content' }),
+            }).catch(function () {});
+          } catch (e) {}
+        }
+      },
+      onMessage: {
+        addListener: function (cb) { if (typeof cb === 'function') msgListeners.push(cb); },
+        removeListener: function (cb) {
+          var i = msgListeners.indexOf(cb);
+          if (i !== -1) msgListeners.splice(i, 1);
+        },
+        hasListener: function (cb) { return msgListeners.indexOf(cb) !== -1; },
+      },
+      onDisconnect: {
+        addListener: function (cb) { if (typeof cb === 'function') disListeners.push(cb); },
+        removeListener: function (cb) {
+          var i = disListeners.indexOf(cb);
+          if (i !== -1) disListeners.splice(i, 1);
+        },
+        hasListener: function (cb) { return disListeners.indexOf(cb) !== -1; },
+      },
     };
-  };
-  if (!c.storage) c.storage = {};
-  if (!c.storage.local) c.storage.local = {
-    get: function (k, cb) { var r = {}; if (cb) cb(r); return Promise.resolve(r); },
-    set: function (i, cb) { if (cb) cb(); return Promise.resolve(); },
-    remove: function (k, cb) { if (cb) cb(); return Promise.resolve(); },
-    clear: function (cb) { if (cb) cb(); return Promise.resolve(); }
-  };
+    return port;
+  });
+  if (!c.storage) {
+    try { c.storage = {}; } catch (e) { __newbroAssignErrors['storage/assign'] = String((e && e.message) || e).slice(0, 120); }
+  }
+  if (c.storage && !c.storage.local) {
+    try {
+      c.storage.local = {
+        get: function (k, cb) { var r = {}; if (cb) cb(r); return Promise.resolve(r); },
+        set: function (i, cb) { if (cb) cb(); return Promise.resolve(); },
+        remove: function (k, cb) { if (cb) cb(); return Promise.resolve(); },
+        clear: function (cb) { if (cb) cb(); return Promise.resolve(); }
+      };
+    } catch (e) { __newbroAssignErrors['storage.local/assign'] = String((e && e.message) || e).slice(0, 120); }
+  }
+  // Diagnostic: post the resulting shape of chrome.runtime to main so we
+  // can confirm whether the force-replace actually landed in this
+  // isolated world. Sent fire-and-forget; reaches main as a webRequest
+  // beacon via the standard newbro-ext-ipc.test interceptor.
+  try {
+    var __nbCheckOurs = function (fn) {
+      try { return typeof fn === 'function' && String(fn).indexOf('__newbroRpc') !== -1; }
+      catch (e) { return false; }
+    };
+    fetch('https://newbro-ext-ipc.test/userscript-setup-installed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        extId: __newbroExtId,
+        href: (typeof location !== 'undefined' && location.href) || '',
+        before: { connect: __newbroBeforeConnect, sendMessage: __newbroBeforeSend },
+        after: {
+          connectIsOurs: __nbCheckOurs(c.runtime && c.runtime.connect),
+          sendMessageIsOurs: __nbCheckOurs(c.runtime && c.runtime.sendMessage),
+          runtimeId: typeof (c.runtime && c.runtime.id),
+        },
+        assignErrors: __newbroAssignErrors,
+      }),
+    }).catch(function () {});
+  } catch (e) { /* ignore */ }
 })();`
       const wrapped = setup + '\n(function(){' + code + '\n;})();'
       const world = script.world === 'MAIN' ? 0 : worldIdForExtension(extensionId)

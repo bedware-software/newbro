@@ -48,8 +48,16 @@ function locateLibIndex(): string | null {
     join(__dirname, '..', '..', 'node_modules', 'electron-chrome-extensions', 'dist', 'cjs', 'index.js'),
     join(process.cwd(), 'node_modules', 'electron-chrome-extensions', 'dist', 'cjs', 'index.js'),
   )
+  const probeFailures: Array<{ candidate: string; err: string }> = []
   for (const c of candidates) {
-    try { if (existsSync(c)) return c } catch { /* ignore */ }
+    try {
+      if (existsSync(c)) return c
+    } catch (err) {
+      probeFailures.push({ candidate: c, err: String(err) })
+    }
+  }
+  if (probeFailures.length > 0) {
+    log.warn('extensions: lib-patch existsSync probe failures', { tried: probeFailures })
   }
   return null
 }

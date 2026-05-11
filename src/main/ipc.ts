@@ -5,7 +5,7 @@ import * as path from 'path'
 import { spawn } from 'child_process'
 import { loadState, saveState } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
-import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow } from './index'
+import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition } from './index'
 import { log } from './log'
 import { checkForUpdatesNow, downloadUpdateNow, installUpdateNow, getLatestStatus } from './updater'
 import {
@@ -143,9 +143,15 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('session:setup', (_e, partition: string) => {
+  ipcMain.handle('session:setup', (e, partition: string) => {
     log.ipc('session:setup', partition)
     setupPartitionSession(partition)
+    // Bind the calling renderer's window to this partition. createWorkspaceWindow
+    // ran before the renderer knew which profile was active, so workspaceProfiles
+    // is sitting on the empty-string seed; without this rebind the toolbar icon
+    // broadcast partition-mismatches and the icon never reflects setIcon /
+    // setBadgeText mutations.
+    bindWebContentsToPartition(e.sender, partition)
   })
 
   // ── Tab hosting (WebContentsView) ──
@@ -565,6 +571,8 @@ export function registerIpcHandlers(): void {
 
       const script = `
 const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const { spawn } = require('child_process');
 const pid = ${pid};
 const target = ${JSON.stringify(userDataDir)};
@@ -573,8 +581,19 @@ const relaunchArgs = ${JSON.stringify(relaunchArgs)};
 const relaunchEnv = ${JSON.stringify(relaunchEnv)};
 const shouldRelaunch = ${JSON.stringify(shouldRelaunch)};
 
+// Diagnostic log — the wipe script runs detached with stdio='ignore'
+// so console.* goes nowhere visible. Without this file we'd silently
+// lose the cause of any wipe/relaunch failure. Stable path so a user
+// can grab it after the fact.
+const logPath = path.join(os.tmpdir(), 'newbro-wipe-' + pid + '.log');
+function diag(msg) {
+  try { fs.appendFileSync(logPath, new Date().toISOString() + ' ' + msg + '\\n'); }
+  catch (e) { /* logfile path is unwritable — last resort, nowhere to forward to */ }
+}
+
 function alive(p) {
-  try { process.kill(p, 0); return true } catch { return false }
+  try { process.kill(p, 0); return true }
+  catch (e) { diag('alive: process.kill probe threw: ' + e); return false }
 }
 
 (async () => {
@@ -586,14 +605,18 @@ function alive(p) {
   // Give Chromium a final moment to release file handles
   await new Promise(r => setTimeout(r, 500))
   // Retry deletion — locks can linger briefly
+  let removed = false;
   for (let attempt = 0; attempt < 10; attempt++) {
     try {
       fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+      removed = true;
       break
     } catch (err) {
+      diag('rmSync attempt ' + attempt + ' failed: ' + err)
       await new Promise(r => setTimeout(r, 500))
     }
   }
+  if (!removed) diag('rmSync exhausted retries — userData may not be fully wiped: ' + target)
   // Relaunch the app AFTER the wipe is fully done, so the fresh instance
   // sees an empty userData and re-creates it cleanly.
   if (shouldRelaunch) {
@@ -606,9 +629,11 @@ function alive(p) {
       child.unref()
     } catch (err) {
       // Best-effort — if relaunch fails the user can start the app manually.
+      diag('relaunch spawn failed: ' + err)
     }
   }
-  try { fs.unlinkSync(__filename) } catch {}
+  try { fs.unlinkSync(__filename) }
+  catch (err) { diag('self-unlink failed: ' + err) }
 })()
 `
       fs.writeFileSync(scriptPath, script, 'utf8')

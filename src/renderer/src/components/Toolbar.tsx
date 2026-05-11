@@ -302,6 +302,16 @@ function ExtensionActions({
       if (p) setActionState({ partition: p.partition, activeTabId: p.state.activeTabId, actions: p.state.actions })
     })
     const cleanupAction = api.onBrowserActionState?.((p: { partition: string; activeTabId?: number; actions: BrowserActionEntry[] }) => {
+      log.event('toolbar.onBrowserActionState', {
+        partition: p.partition,
+        activeTabId: p.activeTabId,
+        actions: (p.actions || []).map((a) => ({
+          id: a.id,
+          text: a.text,
+          color: a.color,
+          iconMod: a.iconModified,
+        })),
+      })
       setActionState({ partition: p.partition, activeTabId: p.activeTabId, actions: p.actions })
     })
     return () => { cleanupChange?.(); cleanupOpen?.(); cleanupClose?.(); cleanupAction?.() }
@@ -475,7 +485,7 @@ function ExtensionActions({
             )}
             {dynamicText ? (
               <span
-                className="absolute bottom-0 right-0 text-[8px] leading-none font-medium px-[2px] py-[1px] rounded-sm text-white pointer-events-none"
+                className="absolute bottom-0 right-0 text-[9px] leading-none font-semibold px-[3px] py-[1px] rounded-sm text-white pointer-events-none"
                 style={{ backgroundColor: dynamicColor }}
               >
                 {dynamicText}
@@ -738,7 +748,8 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
       setTimeout(() => {
         const el = urlRef.current
         if (!el || document.activeElement !== el) return
-        try { el.select() } catch { /* non-text inputs may throw */ }
+        try { el.select() }
+        catch (err) { console.warn('Toolbar: urlRef.select() threw:', err) }
       }, 0)
     }
   }, [activeTab?.url, activeTabId, certBypassedOrigins])
@@ -754,7 +765,13 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
     // Read from the store directly to avoid stale closures in webview event
     // listeners (which are registered once per activeTabId change).
     let origin = ''
-    try { origin = new URL(url).origin } catch { /* ignore */ }
+    try { origin = new URL(url).origin }
+    catch (err) {
+      // Non-URL strings (e.g. "about:blank", malformed entries) reach
+      // this path. Surface anything unexpected; treat the resulting
+      // empty origin as "no bypass" and continue.
+      console.warn('Toolbar: updateSecurity URL parse failed', { url, err: String(err) })
+    }
     const bypassed = useAppStore.getState().certBypassedOrigins
     if (origin && bypassed.has(origin)) {
       setSecurity('warning')
@@ -1181,7 +1198,8 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
               // input (just dimmed). Collapse the selection to position 0
               // so the URL bar reads as plain unselected text once focus
               // moves away — matches typical address-bar behavior.
-              try { e.currentTarget.setSelectionRange(0, 0) } catch { /* ignore */ }
+              try { e.currentTarget.setSelectionRange(0, 0) }
+              catch (err) { console.warn('Toolbar: url onBlur setSelectionRange threw:', err) }
             }}
             placeholder="Enter URL or search..."
             spellCheck={false}

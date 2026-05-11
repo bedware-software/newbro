@@ -22,6 +22,7 @@ export function focusAndSelectUrlBar(): void {
   // landed on the URL bar (the user might have shifted focus elsewhere).
   setTimeout(() => {
     if (document.activeElement !== urlBar) return
-    try { urlBar.select() } catch { /* select may throw on non-text inputs */ }
+    try { urlBar.select() }
+    catch (err) { console.warn('focusUrlBar: urlBar.select() threw:', err) }
   }, 0)
 }

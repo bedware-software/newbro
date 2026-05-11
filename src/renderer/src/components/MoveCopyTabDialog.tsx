@@ -39,11 +39,13 @@ function buildItems(
   for (const p of profiles) {
     for (const w of p.workspaces) {
       if (scope === 'current' && w.id !== currentWorkspaceId) continue
-      const section = scope === 'current' ? `${p.name} · ${w.name}` : `${p.name} · ${w.name}`
+      const section = `Profile: ${p.name} · Workspace: ${w.name}`
       // Root entry — kept first so it always anchors each workspace's group.
+      // Label includes the workspace name because plain "Root" is ambiguous
+      // when results span multiple workspaces.
       out.push({
         id: encodeTarget(w.id, null),
-        label: 'Root',
+        label: `Root · ${w.name}`,
         subLabel: 'Ungrouped tabs',
         section,
         trailingNote: `${(w.tabs || []).length} tabs`,

@@ -84,7 +84,8 @@ export function getOrCreateExtensions(
       return target
     },
     removeWindow: (win) => {
-      try { win.close() } catch { /* ignore */ }
+      try { win.close() }
+      catch (err) { log.warn('extensions: ECE removeWindow callback threw', String(err)) }
     },
     requestPermissions: async () => true,
     assignTabDetails: (details, wc) => {
@@ -94,7 +95,9 @@ export function getOrCreateExtensions(
       try {
         if (!details.url) details.url = wc.getURL()
         if (!details.title) details.title = wc.getTitle()
-      } catch { /* ignore */ }
+      } catch (err) {
+        log.warn('extensions: assignTabDetails getURL/getTitle threw', String(err))
+      }
     },
   })
   instances.set(ses, ext)
@@ -146,25 +149,30 @@ export interface BrowserActionState {
  *  We can't use the library's getState() directly because it strips the
  *  iconModified field — and we need that to drive the crx:// cache buster
  *  so the toolbar icon refreshes when the extension calls setIcon. */
-export function getBrowserActionStateForSession(ses: Session): BrowserActionState {
-  const ext = getExtensionsFor(ses)
-  if (!ext) return { actions: [] }
-  // The library's actionMap is private. The `as any` cast is the cost of
-  // not being able to subscribe to icon updates through any public API.
-  type RawAction = {
+// Shape of the library's internal action entries. Hoisted to module scope
+// so both getBrowserActionStateForSession and subscribeBrowserActionUpdates
+// can refer to it. The library's actionMap is private — this typing is the
+// cost of not having a public API to subscribe to icon mutations.
+type RawAction = {
+  title?: string
+  popup?: string
+  text?: string
+  color?: string
+  iconModified?: number
+  icon?: { path?: string | Record<string, string>; imageData?: unknown }
+  tabs: Record<number, {
     title?: string
     popup?: string
     text?: string
     color?: string
     iconModified?: number
-    tabs: Record<number, {
-      title?: string
-      popup?: string
-      text?: string
-      color?: string
-      iconModified?: number
-    }>
-  }
+    icon?: { path?: string | Record<string, string>; imageData?: unknown }
+  }>
+}
+
+export function getBrowserActionStateForSession(ses: Session): BrowserActionState {
+  const ext = getExtensionsFor(ses)
+  if (!ext) return { actions: [] }
   const internal = (ext as unknown as {
     api?: { browserAction?: { actionMap?: Map<string, RawAction>; getState?: () => { activeTabId?: number } } }
   }).api?.browserAction
@@ -208,9 +216,10 @@ export function subscribeBrowserActionUpdates(
 ): () => void {
   const ext = getExtensionsFor(ses)
   if (!ext) return () => undefined
-  const observers = (ext as unknown as {
-    api?: { browserAction?: { observers?: Set<unknown> } }
-  }).api?.browserAction?.observers
+  const internal = (ext as unknown as {
+    api?: { browserAction?: { observers?: Set<unknown>; actionMap?: Map<string, RawAction> } }
+  }).api?.browserAction
+  const observers = internal?.observers
   if (!observers) return () => undefined
   let firedCount = 0
   const fakeObserver = {
@@ -221,17 +230,40 @@ export function subscribeBrowserActionUpdates(
         const state = getBrowserActionStateForSession(ses)
         firedCount++
         // Log every fire — we need to know whether runtime
-        // chrome.action.setIcon calls actually reach the library and
-        // trigger an update. The first 3 are the per-extension
+        // chrome.action.setIcon / setBadgeText calls actually reach the
+        // library and trigger an update. The first 3 are the per-extension
         // processExtension events at load time; anything past that is
-        // a real runtime mutation we want to see.
+        // a real runtime mutation we want to see. Include text/color and
+        // the raw icon path so we can tell whether setBadgeText / setIcon
+        // are being routed to actionMap with the right values.
         log.info('extensions: browser-action update', {
           count: firedCount,
           extCount: state.actions.length,
           activeTabId: state.activeTabId,
-          actionsWithIconMod: state.actions
-            .filter((a) => a.iconModified || Object.values(a.tabs).some((t) => t.iconModified))
-            .map((a) => a.id),
+          actions: state.actions.map((a) => {
+            const raw = internal?.actionMap?.get(a.id)
+            const iconPath = raw?.icon?.path
+            const iconPathSummary = typeof iconPath === 'string'
+              ? iconPath
+              : iconPath && typeof iconPath === 'object'
+                ? Object.values(iconPath)[0]
+                : null
+            return {
+              id: a.id,
+              text: a.text,
+              color: a.color,
+              title: a.title,
+              iconMod: a.iconModified,
+              iconPath: iconPathSummary,
+              tabKeys: Object.keys(a.tabs),
+              perTab: Object.fromEntries(
+                Object.entries(a.tabs).map(([k, t]) => [
+                  k,
+                  { text: t.text, color: t.color, title: t.title, iconMod: t.iconModified },
+                ])
+              ),
+            }
+          }),
         })
         callback(state)
       } catch (err) {
@@ -243,6 +275,7 @@ export function subscribeBrowserActionUpdates(
   observers.add(fakeObserver)
   // Also fire one immediately so the renderer picks up whatever the
   // library has already discovered from manifest defaults.
-  try { callback(getBrowserActionStateForSession(ses)) } catch { /* ignore */ }
+  try { callback(getBrowserActionStateForSession(ses)) }
+  catch (err) { log.warn('extensions: subscribeBrowserActionUpdates initial-fire threw', String(err)) }
   return () => { observers.delete(fakeObserver) }
 }

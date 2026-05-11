@@ -355,7 +355,8 @@ export function WebviewPanel() {
   }
 
   const handleCertContinue = async (err: CertError): Promise<void> => {
-    try { await window.electronAPI.bypassCertForUrl(err.url) } catch { /* ignore */ }
+    try { await window.electronAPI.bypassCertForUrl(err.url) }
+    catch (ipcErr) { console.warn('WebviewPanel: bypassCertForUrl IPC failed', { url: err.url, err: String(ipcErr) }) }
     useAppStore.getState().markOriginCertBypassed(err.url)
     setCertErrors((prev) => { const m = new Map(prev); m.delete(err.tabId); return m })
     if (err.url) window.electronAPI.tabNavigate?.(err.tabId, err.url)
@@ -422,7 +423,13 @@ function CertWarningOverlay({
   onContinue: () => void
 }) {
   let hostname = url
-  try { hostname = new URL(url).hostname } catch { /* ignore */ }
+  try { hostname = new URL(url).hostname }
+  catch (err) {
+    // Some cert errors arrive without a parseable URL — fall back to
+    // showing the raw string. Logged so an unexpectedly malformed URL
+    // surfaces in DevTools rather than being silently shrugged off.
+    console.warn('WebviewPanel: cert-error hostname parse failed', { url, err: String(err) })
+  }
   return (
     <div className="absolute inset-0 z-50 bg-[#eaecf1] text-[#11151f] flex items-center justify-center">
       <div className="w-full max-w-[640px] px-8">

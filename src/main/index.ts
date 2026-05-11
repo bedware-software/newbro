@@ -47,6 +47,8 @@ import {
 } from './chrome-extensions-bridge'
 import { ElectronChromeExtensions } from 'electron-chrome-extensions'
 import { loadEnabledExtensionsInto, readBgSourceWindow, rehydrateExtensionsOnStartup } from './extensions/manager'
+import { startSwCdpInspector, setSwCdpAuthHandler, type SwCdpAuthResponse } from './extensions/sw-cdp-inspector'
+import { startSwRpcServer, getSwRpcServerInfo } from './extensions/sw-rpc-server'
 import {
   registerUserScripts,
   unregisterUserScripts,
@@ -99,6 +101,22 @@ app.commandLine.appendSwitch(
   'UserAgentClientHint,UserAgentClientHintFullVersionList,GreaseUACH,CriticalClientHint'
 )
 
+// Always-on Chromium remote debugging. This lets the developer attach
+// DevTools to extension service workers (and any other Chromium target)
+// from a separate Chrome via chrome://inspect/#devices → Configure →
+// localhost:9229. SW Network tab is the only place that reveals the
+// actual `net::ERR_*` behind a fetch's generic "Failed to fetch".
+//
+// Port choice: 9229 is the Node.js inspector default — Electron isn't
+// using Node inspector here so the port is free, and the number is
+// memorable. Bound to localhost so external machines can't connect.
+//
+// Connect from Chrome:
+//   chrome://inspect/#devices → "Configure" → add localhost:9229 →
+//   SWs and pages show up under "Remote Target".
+app.commandLine.appendSwitch('remote-debugging-port', '9229')
+app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
+
 // ── Certificate error bypass ──
 // Origins the user has explicitly chosen to bypass for this session.
 // Cleared when the app quits — not persisted.
@@ -128,7 +146,7 @@ app.on('child-process-gone', (_e, details) => {
 })
 app.on('render-process-gone', (_e, wc, details) => {
   let url = ''
-  try { url = wc.getURL() } catch { /* ignore */ }
+  try { url = wc.getURL() } catch (e) { log.warn('render-process-gone/getURL', String(e)) }
   log.error('app-level render-process-gone', {
     wcId: wc.id,
     type: wc.getType(),
@@ -210,6 +228,295 @@ const pendingExternalUrls: string[] = []
  *  IPC handler below reads from here without re-walking the library. */
 const lastBrowserActionStateByPartition = new Map<string, BrowserActionState>()
 
+/** Per-extension flag tracking whether the SW shim has been told
+ *  "this is cold start" yet for this main-process lifetime. Backs
+ *  chrome.runtime.onStartup in the SW shim — see coldStartCheck
+ *  in the startSwRpcServer call below for the semantic. Cleared
+ *  implicitly when the main process exits (Set is in-memory). */
+const coldStartFiredFor = new Set<string>()
+
+/** Per-extension queue of pending chrome.storage.onChanged events that
+ *  arrived from non-SW contexts (popup posts via 'storage-bridge')
+ *  and haven't yet been picked up by the SW shim's /storage-poll
+ *  long-poll. See SwRpcRoutes.storagePoll for why this bridge is
+ *  necessary in Electron 41. */
+type StorageChangePayload = {
+  areaName: string
+  changes: Record<string, unknown>
+}
+const queuedStorageChanges = new Map<string, StorageChangePayload[]>()
+const waitingStoragePolls = new Map<string, Array<(payload: unknown) => void>>()
+
+function deliverStorageChangeToWaiter(extId: string): void {
+  const queue = queuedStorageChanges.get(extId)
+  const waiters = waitingStoragePolls.get(extId)
+  if (!queue || queue.length === 0) return
+  if (!waiters || waiters.length === 0) return
+  const change = queue.shift()!
+  const wake = waiters.shift()!
+  if (queue.length === 0) queuedStorageChanges.delete(extId)
+  if (waiters.length === 0) waitingStoragePolls.delete(extId)
+  wake({ change })
+}
+
+function waitForStorageChange(extId: string, timeoutMs: number): Promise<unknown> {
+  return new Promise<unknown>((resolve) => {
+    let settled = false
+    const wake = (payload: unknown): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const arr = waitingStoragePolls.get(extId)
+      if (arr) {
+        const idx = arr.indexOf(wake)
+        if (idx !== -1) arr.splice(idx, 1)
+        if (arr.length === 0) waitingStoragePolls.delete(extId)
+      }
+      resolve(payload)
+    }
+    const timer = setTimeout(() => wake({}), timeoutMs)
+    const arr = waitingStoragePolls.get(extId) ?? []
+    arr.push(wake)
+    waitingStoragePolls.set(extId, arr)
+    deliverStorageChangeToWaiter(extId)
+  })
+}
+
+function enqueueStorageChange(
+  extId: string,
+  areaName: string,
+  changes: Record<string, unknown>,
+): void {
+  const arr = queuedStorageChanges.get(extId) ?? []
+  arr.push({ areaName, changes })
+  queuedStorageChanges.set(extId, arr)
+  deliverStorageChangeToWaiter(extId)
+}
+
+/** chrome.runtime.sendMessage bridge state.
+ *
+ *  Why this exists: user scripts injected via chrome.userScripts.register
+ *  run in a fresh isolated world. Chromium's chrome.* binding only
+ *  attaches to declared extension contexts (popup, options, content
+ *  scripts declared in manifest, the SW itself). Our dynamically-injected
+ *  userscript world gets none of it, so chrome.runtime.sendMessage from
+ *  the user script (or Tampermonkey's content.js bootstrap) reaches a
+ *  setup-stub no-op and never makes it to the SW.
+ *
+ *  Bridge flow:
+ *    1. Userscript-world stub POSTs message → main via
+ *       loopback /runtime-msg-send.
+ *    2. Main parks the request, queues the message per extId.
+ *    3. SW long-polls /runtime-msg-poll, drains queue, dispatches
+ *       to its chrome.runtime.onMessage listeners.
+ *    4. SW POSTs the listener's response (or {} if none responded) to
+ *       /runtime-msg-respond keyed by msgId.
+ *    5. Main correlates msgId to the parked request and resolves with
+ *       the response body. The userscript fetch resolves with the
+ *       SW's response. */
+interface PendingRuntimeMessage {
+  msgId: string
+  extId: string
+  payload: unknown
+}
+const pendingRuntimeMsgRequests = new Map<string, (response: unknown) => void>()
+const queuedRuntimeMessages = new Map<string, PendingRuntimeMessage[]>()
+const waitingRuntimeMsgPolls = new Map<string, Array<(payload: unknown) => void>>()
+
+function enqueueRuntimeMessage(extId: string, payload: unknown): string {
+  const msgId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const arr = queuedRuntimeMessages.get(extId) ?? []
+  arr.push({ msgId, extId, payload })
+  queuedRuntimeMessages.set(extId, arr)
+  // Wake the first waiting poll for this extId.
+  const wakes = waitingRuntimeMsgPolls.get(extId)
+  if (wakes && wakes.length > 0) {
+    const wake = wakes.shift()!
+    if (wakes.length === 0) waitingRuntimeMsgPolls.delete(extId)
+    drainRuntimeMessagesTo(extId, wake)
+  }
+  return msgId
+}
+
+function drainRuntimeMessagesTo(extId: string, wake: (payload: unknown) => void): void {
+  const arr = queuedRuntimeMessages.get(extId) ?? []
+  if (arr.length === 0) { wake({}); return }
+  const next = arr.shift()!
+  if (arr.length === 0) queuedRuntimeMessages.delete(extId)
+  else queuedRuntimeMessages.set(extId, arr)
+  wake({ message: next })
+}
+
+function waitForRuntimeMessage(extId: string, timeoutMs: number): Promise<unknown> {
+  return new Promise((resolve) => {
+    let settled = false
+    const wake = (payload: unknown): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const arr = waitingRuntimeMsgPolls.get(extId)
+      if (arr) {
+        const idx = arr.indexOf(wake)
+        if (idx !== -1) arr.splice(idx, 1)
+        if (arr.length === 0) waitingRuntimeMsgPolls.delete(extId)
+      }
+      resolve(payload)
+    }
+    const timer = setTimeout(() => wake({}), timeoutMs)
+    if ((queuedRuntimeMessages.get(extId) ?? []).length > 0) {
+      drainRuntimeMessagesTo(extId, wake)
+      return
+    }
+    const list = waitingRuntimeMsgPolls.get(extId) ?? []
+    list.push(wake)
+    waitingRuntimeMsgPolls.set(extId, list)
+  })
+}
+
+/** chrome.runtime.connect port bridge state.
+ *
+ *  Same motivation as the sendMessage bridge: user scripts injected
+ *  via chrome.userScripts.register land in a fresh isolated world with
+ *  no chrome.* binding, so chrome.runtime.connect from the userscript
+ *  (or Tampermonkey's content.js bootstrap) has nothing to talk to.
+ *  We model each port as a pair of queues + waiter arrays — one
+ *  direction for content→SW, the other for SW→content. Disconnects
+ *  from either side notify the other.
+ *
+ *  Port event payloads (what the SW poll returns):
+ *    { type: 'connect', portId, name }     — new port opened by content
+ *    { type: 'msg',     portId, message }  — content sent a message
+ *    { type: 'disconnect', portId }        — content closed the port
+ *
+ *  Content poll returns:
+ *    { type: 'msg', message }    — SW posted to this port
+ *    { type: 'disconnect' }      — SW closed the port */
+interface PortBridgeState {
+  extId: string
+  portId: string
+  name: string
+  toSw: Array<{ type: 'connect' | 'msg' | 'disconnect'; portId: string; name?: string; message?: unknown }>
+  toContent: Array<{ type: 'msg' | 'disconnect'; message?: unknown }>
+  contentWaiters: Array<(payload: unknown) => void>
+}
+const portsByPortId = new Map<string, PortBridgeState>()
+const portSwWaiters = new Map<string, Array<(payload: unknown) => void>>()
+// Pending SW events that arrived before the SW started polling. Drained
+// when /runtime-port-sw-poll wakes up.
+const pendingSwPortEvents = new Map<string, PortBridgeState['toSw']>()
+
+function pushSwEvent(extId: string, event: PortBridgeState['toSw'][number]): void {
+  const wakes = portSwWaiters.get(extId)
+  if (wakes && wakes.length > 0) {
+    const wake = wakes.shift()!
+    if (wakes.length === 0) portSwWaiters.delete(extId)
+    wake({ event })
+    return
+  }
+  const queue = pendingSwPortEvents.get(extId) ?? []
+  queue.push(event)
+  pendingSwPortEvents.set(extId, queue)
+}
+
+function pushContentEvent(port: PortBridgeState, event: PortBridgeState['toContent'][number]): void {
+  if (port.contentWaiters.length > 0) {
+    const wake = port.contentWaiters.shift()!
+    wake({ event })
+    return
+  }
+  port.toContent.push(event)
+}
+
+function openPort(extId: string, name: string): string {
+  const portId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const port: PortBridgeState = {
+    extId,
+    portId,
+    name,
+    toSw: [],
+    toContent: [],
+    contentWaiters: [],
+  }
+  portsByPortId.set(portId, port)
+  pushSwEvent(extId, { type: 'connect', portId, name })
+  log.info('rpc/port-open', { extId, portId, name })
+  return portId
+}
+
+function portContentSend(portId: string, message: unknown): void {
+  const port = portsByPortId.get(portId)
+  if (!port) return
+  pushSwEvent(port.extId, { type: 'msg', portId, message })
+}
+
+function portSwSend(portId: string, message: unknown): void {
+  const port = portsByPortId.get(portId)
+  if (!port) return
+  pushContentEvent(port, { type: 'msg', message })
+}
+
+function portContentPoll(portId: string, timeoutMs: number): Promise<unknown> {
+  const port = portsByPortId.get(portId)
+  if (!port) return Promise.resolve({ event: { type: 'disconnect' } })
+  if (port.toContent.length > 0) {
+    return Promise.resolve({ event: port.toContent.shift()! })
+  }
+  return new Promise((resolve) => {
+    let settled = false
+    const wake = (payload: unknown): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const idx = port.contentWaiters.indexOf(wake)
+      if (idx !== -1) port.contentWaiters.splice(idx, 1)
+      resolve(payload)
+    }
+    const timer = setTimeout(() => wake({}), timeoutMs)
+    port.contentWaiters.push(wake)
+  })
+}
+
+function portSwPoll(extId: string, timeoutMs: number): Promise<unknown> {
+  const pending = pendingSwPortEvents.get(extId)
+  if (pending && pending.length > 0) {
+    const event = pending.shift()!
+    if (pending.length === 0) pendingSwPortEvents.delete(extId)
+    return Promise.resolve({ event })
+  }
+  return new Promise((resolve) => {
+    let settled = false
+    const wake = (payload: unknown): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const arr = portSwWaiters.get(extId)
+      if (arr) {
+        const idx = arr.indexOf(wake)
+        if (idx !== -1) arr.splice(idx, 1)
+        if (arr.length === 0) portSwWaiters.delete(extId)
+      }
+      resolve(payload)
+    }
+    const timer = setTimeout(() => wake({}), timeoutMs)
+    const arr = portSwWaiters.get(extId) ?? []
+    arr.push(wake)
+    portSwWaiters.set(extId, arr)
+  })
+}
+
+function portDisconnect(portId: string, side: 'content' | 'sw'): void {
+  const port = portsByPortId.get(portId)
+  if (!port) return
+  portsByPortId.delete(portId)
+  if (side === 'content') {
+    // Content disconnected → notify SW.
+    pushSwEvent(port.extId, { type: 'disconnect', portId })
+  } else {
+    // SW disconnected → notify content.
+    pushContentEvent(port, { type: 'disconnect' })
+  }
+}
+
 /** Pending HTTP auth challenges from ses.webRequest.onAuthRequired,
  *  keyed by a synthetic challenge id. Resolved when the extension's
  *  SW POSTs back via newbro-ipc/auth-respond. */
@@ -220,29 +527,91 @@ type PendingAuthChallenge = {
   timer: NodeJS.Timeout
 }
 const pendingAuthChallenges = new Map<string, PendingAuthChallenge>()
-/** Per-partition queue of resolvers waiting for the next auth
- *  challenge. The SW's auth-poll long-poll registers here; main calls
- *  the resolver when ses.webRequest.onAuthRequired fires. */
+/** Auth challenges waiting to be picked up by an SW's webRequest.onAuthRequired
+ *  listener, keyed by challengeId. We track which extension SWs have already
+ *  received each challenge so a fan-out delivery model works: every extension
+ *  whose SW is currently long-polling /auth-poll gets a copy, and the FIRST
+ *  one to respond resolves the challenge (subsequent responses no-op via
+ *  pendingAuthChallenges.delete()). Was a global FIFO queue before — that
+ *  worked when only one extension (Browsec) handled proxy auth, but missed
+ *  delivery in 2+ VPN scenarios because each shift() handed the challenge
+ *  to whichever SW polled first, leaving the others blind. */
+interface QueuedChallenge {
+  id: string
+  partition: string
+  details: Record<string, unknown>
+  deliveredTo: Set<string>
+}
+const queuedChallenges = new Map<string, QueuedChallenge>()
+/** Polls currently waiting for a challenge, keyed by extension id. One
+ *  extension's SW maintains a single in-flight long-poll at a time, but
+ *  in transient states (response just sent, new poll about to land) we
+ *  may have brief overlap, so each extId tracks an array of wake'rs. */
 const waitingAuthPolls = new Map<string, Array<(payload: unknown) => void>>()
 
-function waitForAuthChallenge(partition: string, timeoutMs: number): Promise<Response> {
+/** Push a new challenge into the queue and fan it out to every extension
+ *  currently long-polling /auth-poll for this partition. Each waiter
+ *  receives a copy; first responder wins. */
+function enqueueAuthChallenge(challenge: QueuedChallenge): void {
+  queuedChallenges.set(challenge.id, challenge)
+  fanOutChallenge(challenge)
+}
+
+function fanOutChallenge(challenge: QueuedChallenge): void {
+  for (const [extId, wakes] of waitingAuthPolls) {
+    if (challenge.deliveredTo.has(extId)) continue
+    const wake = wakes.shift()
+    if (!wake) continue
+    if (wakes.length === 0) waitingAuthPolls.delete(extId)
+    challenge.deliveredTo.add(extId)
+    wake({ challenge: { id: challenge.id, details: challenge.details } })
+  }
+}
+
+/** When a fresh poll arrives, hand it the oldest challenge that hasn't
+ *  yet been delivered to this extId. */
+function maybeDeliverPending(extId: string, wake: (payload: unknown) => void): boolean {
+  for (const challenge of queuedChallenges.values()) {
+    if (challenge.deliveredTo.has(extId)) continue
+    challenge.deliveredTo.add(extId)
+    wake({ challenge: { id: challenge.id, details: challenge.details } })
+    return true
+  }
+  return false
+}
+
+function waitForAuthChallenge(extId: string, timeoutMs: number): Promise<Response> {
   return new Promise<Response>((resolve) => {
-    const arr = waitingAuthPolls.get(partition) ?? []
     let settled = false
     const wake = (payload: unknown): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      const idx = arr.indexOf(wake)
-      if (idx !== -1) arr.splice(idx, 1)
+      // Detach from the waiters list — only if we're still there. If
+      // fanOutChallenge already plucked us, the splice is a no-op.
+      const arr = waitingAuthPolls.get(extId)
+      if (arr) {
+        const idx = arr.indexOf(wake)
+        if (idx !== -1) arr.splice(idx, 1)
+        if (arr.length === 0) waitingAuthPolls.delete(extId)
+      }
       resolve(new Response(JSON.stringify(payload), {
         status: 200,
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': '*',
+        },
       }))
     }
     const timer = setTimeout(() => wake({}), timeoutMs)
-    arr.push(wake)
-    waitingAuthPolls.set(partition, arr)
+    // Deliver an already-queued challenge first if any.
+    if (maybeDeliverPending(extId, wake)) return
+    // Otherwise park the wake'r in the per-extension list.
+    const list = waitingAuthPolls.get(extId) ?? []
+    list.push(wake)
+    waitingAuthPolls.set(extId, list)
   })
 }
 
@@ -253,6 +622,7 @@ function resolveAuthChallenge(
   const entry = pendingAuthChallenges.get(challengeId)
   if (!entry) return
   pendingAuthChallenges.delete(challengeId)
+  queuedChallenges.delete(challengeId)
   clearTimeout(entry.timer)
   if (response.cancel) {
     entry.callback({ cancel: true })
@@ -266,6 +636,102 @@ function resolveAuthChallenge(
   }
 }
 
+/** Register the global app.on('login') handler exactly once. Lifecycle:
+ *  1. app 'login' fires with the auth challenge,
+ *  2. We map webContents.session → partition; bail if no match,
+ *  3. Park the chromium-side callback in pendingAuthChallenges,
+ *  4. Hand the challenge details to that partition's SW via auth-poll,
+ *  5. The SW's listener replies via auth-respond,
+ *  6. We invoke the parked chromium callback with credentials.
+ *
+ *  NEVER register this from inside per-session setup — Electron's
+ *  callback is one-shot, and N listeners parking N timers all aimed
+ *  at the same callback dies hard with "One-time callback was called
+ *  more than once" the moment any of them resolve.
+ *
+ *  Note: app.on('login') primarily covers webContents-initiated
+ *  requests (tab navigations and subresources). Service-worker-
+ *  initiated fetches (Browsec's webstat.me SmartSettings ping,
+ *  dynamic-config gist, etc.) don't reliably reach this event in
+ *  Electron 41 — they're handled instead by the CDP Fetch.authRequired
+ *  router wired in app.whenReady, which forwards via the same
+ *  pendingAuthChallenges + queuedChallenges machinery. The SW shim's
+ *  auth-poll consumes from both surfaces transparently. */
+let loginHandlerInstalled = false
+function installLoginHandlerOnce(): void {
+  if (loginHandlerInstalled) return
+  loginHandlerInstalled = true
+  app.on('login', (event, webContents, requestDetails, authInfo, callback) => {
+    // Trace ENTRY unconditionally — we need to know whether this fires
+    // for SW-initiated fetches (Browsec's webstat.me ping et al.) and
+    // what shape the args take in Electron 41. Without this trace we
+    // can't tell the difference between "event didn't fire" and
+    // "event fired but our handler bailed".
+    log.info('extensions: app.on(login) fired', {
+      url: requestDetails.url,
+      isProxy: authInfo.isProxy,
+      scheme: authInfo.scheme,
+      hasWebContents: !!webContents,
+      wcType: webContents ? (webContents as { getType?: () => string }).getType?.() : null,
+      wcId: webContents ? webContents.id : null,
+    })
+    // Try to resolve the partition from webContents.session. If
+    // webContents is missing, fall back to "the only configured
+    // partition" — this is a single-profile-active heuristic that
+    // covers SW-initiated fetches in Electron 41 (where the lib
+    // doesn't surface a webContents for service-worker requests).
+    let partition: string | null = null
+    if (webContents) {
+      const ses = webContents.session
+      for (const p of configuredPartitions) {
+        if (session.fromPartition(p) === ses) { partition = p; break }
+      }
+    }
+    if (!partition && configuredPartitions.size === 1) {
+      // Single partition active → all SW auth has to belong to it.
+      // For multi-profile setups we can't disambiguate from authInfo
+      // alone (proxy.host doesn't identify which extension owns it),
+      // so we'd let those challenges fall through to Electron's
+      // default-cancel rather than misroute them.
+      partition = Array.from(configuredPartitions)[0]
+    }
+    if (!partition) {
+      log.info('extensions: app.on(login) fired but no partition matched, leaving to default', {
+        url: requestDetails.url,
+        configuredPartitionCount: configuredPartitions.size,
+      })
+      return
+    }
+    event.preventDefault()
+    const challengeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const detailsLite = {
+      url: requestDetails.url,
+      method: requestDetails.method,
+      isProxy: authInfo.isProxy,
+      scheme: authInfo.scheme,
+      realm: authInfo.realm,
+      challenger: { host: authInfo.host, port: authInfo.port },
+    }
+    pendingAuthChallenges.set(challengeId, {
+      partition,
+      details: detailsLite,
+      callback: (resp) => {
+        if (resp && typeof resp.username === 'string') callback(resp.username, resp.password ?? '')
+        else callback()
+      },
+      timer: setTimeout(() => {
+        if (pendingAuthChallenges.delete(challengeId)) {
+          log.warn('extensions: auth challenge timed out — no listener responded', { partition, url: requestDetails.url })
+          callback()
+        }
+      }, 15000),
+    })
+    enqueueAuthChallenge({ id: challengeId, partition, details: detailsLite, deliveredTo: new Set() })
+    log.info('extensions: auth challenge queued', { partition, challengeId, url: requestDetails.url, isProxy: authInfo.isProxy, source: 'app.on(login)' })
+  })
+}
+
+
 function partitionForWorkspace(workspaceId: string): string | null {
   const profileId = workspaceProfiles.get(workspaceId)
   return profileId ? `persist:profile-${profileId}` : null
@@ -278,13 +744,53 @@ function partitionForBrowserWindow(win: BrowserWindow): string | null {
   return null
 }
 
+/** Late-register the partition (profileId) for the workspace window that
+ *  hosts the given webContents. The window is opened early via
+ *  createWorkspaceWindow — at that point the saved state may carry an empty
+ *  profileId (first launch, or stale `lastKnownOpenWindows` entries from
+ *  before the workspace state was hydrated). The renderer fires
+ *  `session:setup` once it knows the active profile, and we use that hook
+ *  to backfill the workspaceProfiles map. Without this, the partition
+ *  match in broadcastBrowserActionState never lands and the toolbar icon
+ *  never sees chrome.action.setIcon / setBadgeText updates — the icon
+ *  appears stuck on the manifest default even though main is happily
+ *  receiving every actionMap mutation. */
+export function bindWebContentsToPartition(wc: Electron.WebContents, partition: string): void {
+  const m = partition.match(/^persist:profile-(.+)$/)
+  if (!m) return
+  const profileId = m[1]
+  for (const [wsId, win] of workspaceWindows) {
+    if (win.isDestroyed()) continue
+    if (win.webContents !== wc) continue
+    const prior = workspaceProfiles.get(wsId)
+    if (prior === profileId) return
+    workspaceProfiles.set(wsId, profileId)
+    log.info('workspace-profile rebind', { workspaceId: wsId, profileId, prior: prior ?? null })
+    // Re-broadcast the last-known state for this partition so the window
+    // catches up immediately — the prior broadcast happened before the
+    // mapping existed, so its sentTo was 0 and the renderer is still
+    // looking at the manifest default.
+    const cached = lastBrowserActionStateByPartition.get(partition)
+    if (cached) broadcastBrowserActionState(partition, cached)
+    return
+  }
+}
+
 function broadcastBrowserActionState(partition: string, state: BrowserActionState): void {
   lastBrowserActionStateByPartition.set(partition, state)
+  let sentTo = 0
   for (const [wsId, win] of workspaceWindows) {
     if (win.isDestroyed()) continue
     if (partitionForWorkspace(wsId) !== partition) continue
     win.webContents.send('extensions:browser-action-state', { partition, ...state })
+    sentTo++
   }
+  log.info('extensions: broadcast browser-action-state', {
+    partition,
+    sentTo,
+    totalWindows: workspaceWindows.size,
+    actions: state.actions.map((a) => ({ id: a.id, text: a.text, iconMod: a.iconModified })),
+  })
 }
 
 export function getBrowserActionStateForWindow(
@@ -641,8 +1147,17 @@ function applyProxyToSession(ses: Electron.Session, settings: Settings): void {
   const cfg = toElectronProxyConfig(settings.proxy)
   ses.setProxy(cfg)
     .then(async () => {
+      // forceReloadProxyConfig makes NEW requests pick up the proxy.
+      // We deliberately don't call closeAllConnections here — that
+      // would kill any in-flight tab navigation (e.g. workspace-restore
+      // tabs that started loading microseconds before this Promise
+      // resolves), which surfaced as a 100%-reproducible ERR_FAILED on
+      // ya.ru on app start. In-flight connections keep their original
+      // proxy state, which for app boot is harmless (the connection
+      // just started, no leak window). For a mid-session VPN switch,
+      // in-flight requests finish through the old proxy — accept that
+      // small leak in exchange for tab-load reliability.
       await ses.forceReloadProxyConfig()
-      await ses.closeAllConnections()
       log.info('proxy applied to session', {
         mode: settings.proxy.mode,
         proxyRules: sanitizeProxyRules(settings.proxy.proxyRules || ''),
@@ -679,7 +1194,7 @@ const EXTENSION_SHIM_PRELOAD = join(__dirname, '../preload/extension-shim.js')
 /** Configure a session: strip Electron branding from the UA, allow permissions,
  *  apply proxy settings. Applied to both the default session and partitioned
  *  webview sessions. */
-function configureSession(ses: Electron.Session): void {
+function configureSession(ses: Electron.Session, partition: string): void {
   const rawUA = ses.getUserAgent()
   const cleanUA = rawUA
     .replace(/\s*Electron\/\S+/g, '')
@@ -688,6 +1203,11 @@ function configureSession(ses: Electron.Session): void {
   ses.setUserAgent(cleanUA)
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(true))
   applyProxyToSession(ses, loadSettings())
+  // Restore the VPN extension's last-known proxy BEFORE any tab in this
+  // partition starts navigating — otherwise tab loads that fire between
+  // app start and Browsec's first setActualPac get aborted when our
+  // applyProxyConfigToAllSessions runs closeAllConnections.
+  applyPersistedExtensionProxyToSession(partition, ses)
 
   // Synchronously allow TLS handshakes for user-bypassed origins. This is
   // called for every request (including subresources like favicons and
@@ -799,59 +1319,55 @@ function configureSession(ses: Electron.Session): void {
     })
   })
 
-
-  // chrome.webRequest.onAuthRequired forwarding.
-  //
-  // electron-chrome-extensions doesn't expose onAuthRequired to the
-  // extension SW, so Browsec / any HTTPS-proxy extension that
-  // registers an auth handler at SW init silently no-ops, and a 407
-  // Proxy-Authentication-Required from the SOCKS/HTTPS proxy goes
-  // unanswered — the connection drops, the VPN never establishes.
-  //
-  // Electron exposes session-scoped HTTP auth via the global
-  // `app.on('login', ...)` event (NOT ses.webRequest.onAuthRequired,
-  // which doesn't exist on Electron's WebRequest). We register the
-  // handler once per partition and dispatch only when the request
-  // belongs to this session. Lifecycle:
-  //   1. app 'login' fires with the auth challenge,
-  //   2. Park the chromium-side callback in pendingAuthChallenges,
-  //   3. Hand the challenge details to the SW via newbro-ipc auth-poll,
-  //   4. The SW invokes the extension's registered listener,
-  //   5. The listener's reply lands back via auth-respond,
-  //   6. We invoke the parked chromium callback with credentials.
-  app.on('login', (event, webContents, requestDetails, authInfo, callback) => {
-    if (webContents && webContents.session !== ses) return
-    event.preventDefault()
-    const challengeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const detailsLite = {
-      url: requestDetails.url,
-      method: requestDetails.method,
-      isProxy: authInfo.isProxy,
-      scheme: authInfo.scheme,
-      realm: authInfo.realm,
-      challenger: { host: authInfo.host, port: authInfo.port },
-    }
-    pendingAuthChallenges.set(challengeId, {
+  // Specifically capture errors on the SW IPC host AND the newbro-ipc://
+  // scheme. fetch() inside a SW only surfaces "Failed to fetch" — the
+  // real net::ERR_* code lives here. The previous handler filtered to
+  // http(s) only and would fall through ERR_BLOCKED_BY_CLIENT for the
+  // sentinel host (intentional cancel) without giving us visibility
+  // into UNEXPECTED errors on those URLs.
+  const ipcFilter = {
+    urls: [
+      'https://newbro-ext-ipc.test/*',
+      'http://newbro-ext-ipc.test/*',
+      'newbro-ipc://*/*',
+    ],
+  }
+  ses.webRequest.onErrorOccurred(ipcFilter, (details) => {
+    // Cancellation of fire-and-forget posts to newbro-ext-ipc.test is
+    // by design (one-way IPC). Anything ELSE on these URLs is a real
+    // problem worth logging — DNS, CORS, scheme policy, etc.
+    if (
+      details.error === 'net::ERR_BLOCKED_BY_CLIENT' &&
+      details.url.includes('newbro-ext-ipc.test')
+    ) return
+    log.warn('newbro IPC fetch failed', {
+      url: details.url,
+      method: details.method,
+      error: details.error,
       partition,
-      details: detailsLite,
-      callback: (resp) => {
-        if (resp && typeof resp.username === 'string') callback(resp.username, resp.password ?? '')
-        else callback()
-      },
-      timer: setTimeout(() => {
-        if (pendingAuthChallenges.delete(challengeId)) {
-          log.warn('extensions: auth challenge timed out — no listener responded', { partition, url: requestDetails.url })
-          callback()
-        }
-      }, 15000),
     })
-    const waiting = waitingAuthPolls.get(partition)
-    if (waiting && waiting.length > 0) {
-      const wake = waiting.shift()!
-      wake({ challenge: { id: challengeId, details: detailsLite } })
-    }
-    log.info('extensions: auth challenge queued', { partition, challengeId, url: requestDetails.url, isProxy: authInfo.isProxy })
   })
+  ses.webRequest.onCompleted(ipcFilter, (details) => {
+    // Track even successful IPC requests so we can correlate
+    // "Failed to fetch" in the SW with what main actually did.
+    log.info('newbro IPC fetch completed', {
+      url: details.url,
+      method: details.method,
+      statusCode: details.statusCode,
+      partition,
+    })
+  })
+
+
+  // chrome.webRequest.onAuthRequired forwarding lives in
+  // installLoginHandlerOnce() — registered ONCE on app, not per
+  // session. The handler dispatches to a per-session partition via
+  // webContents.session lookup. Earlier this was registered inside
+  // configureSession(), so each new partition added another listener
+  // and a single login fired N times → each parked its own timer
+  // pointing at the SAME Electron callback → after 15s all timers
+  // raced to invoke it, throwing "One-time callback was called more
+  // than once."
 
   // SW → main IPC channel. The shim we prepend into MV3 service workers
   // can't import { ipcRenderer } from 'electron' (no preload bridge in
@@ -873,6 +1389,32 @@ function configureSession(ses: Electron.Session): void {
         try {
           const u = new URL(req.url)
           const action = u.hostname || u.pathname.replace(/^\/+/, '')
+          // Trace every reach into the protocol handler. If the SW
+          // says "Failed to fetch" but we don't see this log line, the
+          // failure is BEFORE the handler runs (CORS preflight, scheme
+          // policy, etc.). If we DO see it, the failure is in our
+          // response shape or the SW's reading of it.
+          log.info('extensions: newbro-ipc request', {
+            partition,
+            action,
+            method: req.method,
+            url: req.url.slice(0, 200),
+          })
+          // CORS preflight — Chromium fires OPTIONS before non-simple
+          // POSTs across origins. Without explicit handling here the
+          // preflight rejects and the actual POST never happens, so
+          // auth-respond never reaches main.
+          if (req.method === 'OPTIONS') {
+            return new Response(null, {
+              status: 204,
+              headers: {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                'Access-Control-Allow-Headers': '*',
+                'Access-Control-Max-Age': '86400',
+              },
+            })
+          }
           if (action === 'active-tab-info' || action === 'active-tab-info/') {
             // Find the workspace window that owns this partition. We
             // pick the focused one; if none is focused, the first
@@ -901,7 +1443,9 @@ function configureSession(ses: Electron.Session): void {
               if (parsed && typeof parsed.challengeId === 'string') {
                 resolveAuthChallenge(parsed.challengeId, parsed.response ?? {})
               }
-            } catch { /* ignore malformed body */ }
+            } catch (err) {
+              log.warn('extensions: auth-respond body parse failed', { partition, err: String(err) })
+            }
             return jsonResponse({ ok: true })
           }
           return jsonResponse({ error: 'unknown-action', action })
@@ -922,6 +1466,14 @@ function configureSession(ses: Electron.Session): void {
       try {
         const u = new URL(details.url)
         const action = u.pathname.replace(/^\/+/, '')
+
+        // Round-trip actions (auth-poll, auth-respond, active-tab-info)
+        // moved off this channel — they go to the loopback HTTP server
+        // started in app.whenReady (sw-rpc-server.ts). webRequest's
+        // cancel-bound transport can't deliver a response body, and
+        // the data:-URL-redirect alternative was rejected with
+        // ERR_UNSAFE_REDIRECT by Chromium's net stack.
+
         if (action === 'open-tab') {
           const url = u.searchParams.get('url')
           if (typeof url === 'string' && url.length > 0) {
@@ -931,7 +1483,8 @@ function configureSession(ses: Electron.Session): void {
                 ? focused
                 : BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null
             if (target) {
-              try { closeExtensionPopup(target.id) } catch { /* ignore */ }
+              try { closeExtensionPopup(target.id) }
+              catch (err) { log.warn('extensions: closeExtensionPopup before open-tab', { err: String(err) }) }
               target.webContents.send('open-url-as-tab', url)
               log.info('extensions: SW shim opened tab', { url })
             }
@@ -982,6 +1535,30 @@ function configureSession(ses: Electron.Session): void {
         } else if (action === 'proxy-settings-clear') {
           log.info('extensions: chrome.proxy.settings.clear — reverting to system')
           applyProxyConfigToAllSessions({ mode: 'system' })
+        } else if (action === 'storage-bridge') {
+          // Popup (or any non-SW context) writes to chrome.storage.local;
+          // Electron 41 fires onChanged in the writing context only, so
+          // the SW never sees the change. The frame-side preload posts
+          // each onChanged payload here; we queue per extId and the SW
+          // shim drains via /storage-poll. See SwRpcRoutes.storagePoll.
+          const body = readUploadBody(details)
+          const parsed = body ? safeJsonParse(body) : null
+          if (parsed && typeof parsed === 'object') {
+            const p = parsed as { extId?: unknown; areaName?: unknown; changes?: unknown }
+            const extId = typeof p.extId === 'string' ? p.extId : ''
+            const areaName = typeof p.areaName === 'string' ? p.areaName : 'local'
+            const changes = (p.changes && typeof p.changes === 'object') ? (p.changes as Record<string, unknown>) : {}
+            const keys = Object.keys(changes)
+            if (extId && keys.length > 0) {
+              log.info('extensions: storage-bridge fwd', {
+                partition: getPartitionForSession(ses),
+                extId,
+                areaName,
+                keys,
+              })
+              enqueueStorageChange(extId, areaName, changes)
+            }
+          }
         } else if (
           action === 'sw-shim-ran' ||
           action === 'post-patch-state' ||
@@ -994,7 +1571,19 @@ function configureSession(ses: Electron.Session): void {
           action === 'fetch-error' ||
           action === 'ws-open' ||
           action === 'bg-source-window' ||
-          action === 'sw-error'
+          action === 'sw-error' ||
+          action === 'runtime-onStartup-check' ||
+          action === 'runtime-event-onMessage' ||
+          action === 'runtime-event-onConnect' ||
+          action === 'storage-bridge-recv' ||
+          action === 'storage-onChanged-missing' ||
+          action === 'storage-bridge-mainworld-installed' ||
+          action === 'storage-bridge-mainworld-gaveup' ||
+          action === 'sw-shim-error' ||
+          action === 'wrap-chrome-diag' ||
+          action === 'chrome-access-miss' ||
+          action === 'userscript-setup-installed' ||
+          action === 'userscript-setup-entry'
         ) {
           const body = readUploadBody(details)
           const parsed = body ? safeJsonParse(body) : null
@@ -1123,6 +1712,19 @@ function chromeProxyToElectron(value: unknown): Electron.ProxyConfig | null {
   if (mode === 'auto_detect') return { mode: 'auto_detect' }
   if (mode === 'pac_script') {
     if (v.pacScript?.url) return { mode: 'pac_script', pacScript: v.pacScript.url }
+    if (typeof v.pacScript?.data === 'string' && v.pacScript.data.length > 0) {
+      // Browsec/Hola/etc. ship the PAC body inline rather than hosting
+      // it. Electron's setProxy only accepts a URL, but Chrome's network
+      // stack treats a base64 data: URI the same as a fetched script.
+      // Base64 because the PAC body contains arbitrary characters and
+      // grows to ~300KB — URL-encoding would balloon further; base64 is
+      // ~33% overhead and well under Chromium's data-URI ceiling.
+      const b64 = Buffer.from(v.pacScript.data, 'utf8').toString('base64')
+      return {
+        mode: 'pac_script',
+        pacScript: `data:application/x-ns-proxy-autoconfig;base64,${b64}`,
+      }
+    }
     return null
   }
   if (mode === 'fixed_servers') {
@@ -1152,22 +1754,145 @@ function chromeProxyToElectron(value: unknown): Electron.ProxyConfig | null {
   return null
 }
 
-/** Apply a proxy config to every session we've configured. Used by
- *  chrome.proxy.settings.set/clear forwarding so VPN extensions can
- *  actually route traffic. */
-function applyProxyConfigToAllSessions(cfg: Electron.ProxyConfig): void {
-  const all = new Set<Electron.Session>([session.defaultSession])
-  for (const partition of configuredPartitions) {
-    all.add(session.fromPartition(partition))
+// Note: prior versions of this file had a `handleIpcRoundTrip` helper
+// that tried to deliver round-trip responses by redirecting the SW's
+// fetch to a `data:application/json,...` URL via webRequest. That
+// approach is dead — Chromium's net stack rejects HTTPS-to-data:
+// redirects with ERR_UNSAFE_REDIRECT. The replacement is a real
+// loopback HTTP server (sw-rpc-server.ts).
+
+/** Bypass list we ALWAYS append to whatever an extension supplies, so
+ *  Newbro's own machinery never gets routed through a VPN proxy by
+ *  accident. The newbro-ext-ipc.test sentinel host is the channel our
+ *  SW shim uses to talk back to main; if a PAC script swallows that
+ *  fetch (Browsec's PAC has no idea what newbro-ext-ipc is and routes
+ *  it through some random server), the SW's diagnostic stream goes
+ *  silent and we lose every fetch-error / sw-error / patch-step beacon.
+ *  loopback covers localhost and 127.0.0.1 for dev-server / IPC ports. */
+const NEWBRO_PROXY_BYPASS = 'newbro-ext-ipc.test;<-loopback>'
+
+/** Merge the extension-supplied bypass list with our mandatory entries.
+ *  Idempotent — adding our markers twice is harmless to Chromium's
+ *  parser, but we still de-dupe for clean logs. */
+function withNewbroBypass(extensionBypass: string | undefined): string {
+  if (!extensionBypass) return NEWBRO_PROXY_BYPASS
+  // Bypass-rule separator in Chromium is ';' (also accepts ',' but
+  // we normalize to ';' on output).
+  const parts = new Set(
+    (extensionBypass + ';' + NEWBRO_PROXY_BYPASS)
+      .split(/[;,]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+  )
+  return Array.from(parts).join(';')
+}
+
+/** Apply a proxy config to every CONFIGURED PARTITION session. Used
+ *  by chrome.proxy.settings.set/clear forwarding so VPN extensions can
+ *  actually route traffic.
+ *
+ *  Notably skips session.defaultSession: that one is the Newbro UI
+ *  shell (toolbar, sidebar, dropdown windows). User browsing happens
+ *  in profile partitions. Putting Browsec's PAC on the default session
+ *  caused Newbro's own UI to attempt proxy auth — fired login events
+ *  for partition 'persist:default' that no SW could ever answer (no
+ *  extension lives in that session), wedging the auth pipeline with
+ *  doomed-to-timeout challenges.
+ *
+ *  ALWAYS forces our newbro-ext-ipc.test host into the bypass list —
+ *  without it the SW shim's IPC channel back to main goes through
+ *  whatever proxy the extension installed and dies on Failed to
+ *  fetch, taking out our entire diagnostic pipeline. */
+/** Last extension-driven proxy config applied per partition. Drives two
+ *  things:
+ *    - Dedup: chrome.proxy.settings.set fires repeatedly at SW boot
+ *      (Browsec calls setActualPac at least twice in the first second).
+ *      A second `ses.setProxy + closeAllConnections` cycle with the
+ *      same PAC kills any in-flight tab load (ya.ru ERR_FAILED) for
+ *      no benefit. Compare the JSON before re-applying.
+ *    - Persistence: the cfg is mirrored to disk so the NEXT launch can
+ *      restore the proxy BEFORE any tab navigates. Without that the SW
+ *      hasn't booted yet when the workspace's tabs start loading, and
+ *      they race against Browsec's first setActualPac. */
+const lastExtensionProxyByPartition = new Map<string, Electron.ProxyConfig>()
+const EXTENSION_PROXY_STORE_PATH = (): string =>
+  join(app.getPath('userData'), 'newbro-extension-proxy.json')
+
+function persistExtensionProxy(): void {
+  try {
+    const obj: Record<string, Electron.ProxyConfig> = {}
+    for (const [k, v] of lastExtensionProxyByPartition) obj[k] = v
+    require('fs').writeFileSync(EXTENSION_PROXY_STORE_PATH(), JSON.stringify(obj, null, 2))
+  } catch (err) {
+    log.warn('extensions: persistExtensionProxy failed', { err: String(err) })
   }
-  for (const ses of all) {
-    ses.setProxy(cfg)
-      .then(async () => {
-        await ses.forceReloadProxyConfig()
-        await ses.closeAllConnections()
+}
+
+function loadPersistedExtensionProxy(): Record<string, Electron.ProxyConfig> {
+  try {
+    const fs = require('fs') as typeof import('fs')
+    const path = EXTENSION_PROXY_STORE_PATH()
+    if (!fs.existsSync(path)) return {}
+    const raw = fs.readFileSync(path, 'utf8')
+    const parsed = JSON.parse(raw) as Record<string, Electron.ProxyConfig>
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch (err) {
+    log.warn('extensions: loadPersistedExtensionProxy failed', { err: String(err) })
+    return {}
+  }
+}
+
+/** Apply the persisted extension proxy (if any) to a freshly-configured
+ *  partition session. Called from configureSession AFTER the default
+ *  applyProxyToSession run, so we override the user's manual settings
+ *  with the SW's last-known cfg — but only if there IS one. New users
+ *  get default-system behavior; returning Browsec users get their VPN
+ *  active from the very first paint. */
+function applyPersistedExtensionProxyToSession(partition: string, ses: Electron.Session): void {
+  const persisted = loadPersistedExtensionProxy()[partition]
+  if (!persisted) return
+  const merged: Electron.ProxyConfig = {
+    ...persisted,
+    proxyBypassRules: withNewbroBypass(persisted.proxyBypassRules),
+  }
+  lastExtensionProxyByPartition.set(partition, merged)
+  ses.setProxy(merged)
+    .then(async () => {
+      await ses.forceReloadProxyConfig()
+      log.info('extensions: restored persisted proxy at session setup', {
+        partition,
+        mode: merged.mode,
       })
-      .catch((err) => log.warn('extensions: applyProxyConfigToAllSessions failed', { err: String(err) }))
+    })
+    .catch((err) => log.warn('extensions: persisted proxy restore failed', { partition, err: String(err) }))
+}
+
+function applyProxyConfigToAllSessions(cfg: Electron.ProxyConfig): void {
+  const merged: Electron.ProxyConfig = {
+    ...cfg,
+    proxyBypassRules: withNewbroBypass(cfg.proxyBypassRules),
   }
+  // Snapshot to disk every time — cheap and covers app crashes.
+  let anyChanged = false
+  for (const partition of configuredPartitions) {
+    const ses = session.fromPartition(partition)
+    const prior = lastExtensionProxyByPartition.get(partition)
+    const sameAsPrior = prior && JSON.stringify(prior) === JSON.stringify(merged)
+    if (sameAsPrior) continue
+    anyChanged = true
+    lastExtensionProxyByPartition.set(partition, merged)
+    ses.setProxy(merged)
+      .then(async () => {
+        // See applyProxyToSession for why we don't closeAllConnections
+        // here — TL;DR ya.ru's workspace-restore navigation races against
+        // Browsec's first setActualPac and gets aborted (ERR_FAILED).
+        // forceReloadProxyConfig is enough; new requests use the fresh
+        // PAC, in-flight ones keep their existing routing.
+        await ses.forceReloadProxyConfig()
+      })
+      .catch((err) => log.warn('extensions: applyProxyConfigToAllSessions failed', { partition, err: String(err) }))
+  }
+  if (anyChanged) persistExtensionProxy()
 }
 
 /** registerPreloadScript replaces the deprecated setPreloads. Idempotent
@@ -1204,7 +1929,18 @@ function registerFramePreload(ses: Electron.Session, filePath: string, id: strin
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      // SW fetches cross-origin (chrome-extension:// → newbro-ipc://)
+      // and Chromium enforces CORS on the response read even though
+      // the scheme is registered with corsEnabled. Without these
+      // headers the response body is opaque and the SW's auth-poll
+      // .then(r => r.json()) sees nothing, so it can't dispatch
+      // challenges.
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+    },
   })
 }
 
@@ -1254,7 +1990,9 @@ function patchLibraryPreloadForMV3SetIcon(): void {
         'chrome-extension-api.preload.js',
       ),
     )
-  } catch { /* ignore */ }
+  } catch (err) {
+    log.warn('extensions: setIcon-patch packaged-candidate join failed', { err: String(err) })
+  }
   // dev: app.getAppPath() points at out/main; node_modules is two up.
   try {
     candidates.push(
@@ -1268,14 +2006,22 @@ function patchLibraryPreloadForMV3SetIcon(): void {
         'chrome-extension-api.preload.js',
       ),
     )
-  } catch { /* ignore */ }
+  } catch (err) {
+    log.warn('extensions: setIcon-patch dev-candidate join failed', { err: String(err) })
+  }
   let preloadPath: string | null = null
+  const probeFailures: Array<{ candidate: string; err: string }> = []
   for (const c of candidates) {
     try {
       readFileSync(c, 'utf-8')
       preloadPath = c
       break
-    } catch { /* keep trying */ }
+    } catch (err) {
+      probeFailures.push({ candidate: c, err: String(err) })
+    }
+  }
+  if (!preloadPath) {
+    log.warn('extensions: setIcon-patch — no candidate readable', { tried: probeFailures })
   }
   if (!preloadPath) {
     log.warn('extensions: setIcon-patch could not locate preload', { candidates })
@@ -1475,6 +2221,45 @@ function executeScriptOnHashedTabIds(partition: string, hashedTabIds: number[], 
   }
 }
 
+/** Pick the partition session to use for SW-originated chrome.cookies
+ *  calls. The SW shim source on disk is shared across partitions for the
+ *  same extension (same bytes everywhere; per-partition substitution
+ *  would invalidate Chromium's SW byte-cache, so we deliberately don't
+ *  do it). That means the SW doesn't reliably know which partition it
+ *  belongs to. Heuristic: prefer the focused workspace window's
+ *  partition; fall back to the first configured partition. Good enough
+ *  for single-profile usage. Multi-profile users will see cookies routed
+ *  through the focused profile, which matches the rough Chrome mental
+ *  model ("active profile gets the action"). */
+function pickCookiesSession(): Electron.Session | null {
+  const focused = BrowserWindow.getFocusedWindow()
+  if (focused && !focused.isDestroyed()) {
+    const partition = partitionForBrowserWindow(focused)
+    if (partition) return session.fromPartition(partition)
+  }
+  const first = Array.from(configuredPartitions)[0]
+  if (first) return session.fromPartition(first)
+  return null
+}
+
+/** Convert Electron's Cookie shape to chrome.cookies.Cookie. The two
+ *  differ in field names and some optional fields. */
+function toCookieDetails(c: Electron.Cookie): Record<string, unknown> {
+  return {
+    name: c.name,
+    value: c.value,
+    domain: c.domain,
+    hostOnly: c.hostOnly,
+    path: c.path,
+    secure: c.secure,
+    httpOnly: c.httpOnly,
+    sameSite: c.sameSite,
+    session: !!c.session,
+    expirationDate: c.expirationDate,
+    storeId: '0',
+  }
+}
+
 function pickWindowForPartition(partition: string): BrowserWindow | null {
   const focused = BrowserWindow.getFocusedWindow()
   if (focused && !focused.isDestroyed()) {
@@ -1499,8 +2284,15 @@ function pickWindowForPartition(partition: string): BrowserWindow | null {
 
 export function setupPartitionSession(partition: string): void {
   if (configuredPartitions.has(partition)) return
+  // Idempotent — only the first partition setup actually attaches the
+  // listener. Must be called BEFORE configuredPartitions.add(partition)
+  // below, but the listener body itself uses configuredPartitions to
+  // resolve the partition string from a session, so the order between
+  // installLoginHandlerOnce and the add is irrelevant — only that the
+  // listener exists by the time a login fires.
+  installLoginHandlerOnce()
   const ses = session.fromPartition(partition)
-  configureSession(ses)
+  configureSession(ses, partition)
   // Only partitioned tab sessions get the stealth preload — the default
   // session belongs to the main renderer which doesn't need (and shouldn't
   // have) page-fingerprint overrides. The extension shim runs alongside
@@ -1597,10 +2389,13 @@ export function setupPartitionSession(partition: string): void {
         try {
           if (isLibrarySelectTabSuppressed()) return
           selectTabByWebContents(wc)
-        } catch { /* ignore */ }
+        } catch (err) {
+          log.warn('extensions: ECE selectTab callback threw', { partition, err: String(err) })
+        }
       },
       removeTab: (wc) => {
-        try { destroyTabByWebContents(wc) } catch { /* ignore */ }
+        try { destroyTabByWebContents(wc) }
+        catch (err) { log.warn('extensions: ECE removeTab callback threw', { partition, err: String(err) }) }
       },
     })
     // Push live browser-action state to every workspace window backed by
@@ -1807,8 +2602,10 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     const wc = win.webContents
     let crashed = false
     let activeUrl = ''
-    try { crashed = wc.isCrashed() } catch { /* ignore */ }
-    try { activeUrl = wc.getURL() } catch { /* ignore */ }
+    try { crashed = wc.isCrashed() }
+    catch (err) { log.warn('window close: isCrashed threw', { workspaceId, err: String(err) }) }
+    try { activeUrl = wc.getURL() }
+    catch (err) { log.warn('window close: getURL threw', { workspaceId, err: String(err) }) }
     log.info('window close', {
       workspaceId,
       windowId: win.id,
@@ -2138,7 +2935,7 @@ function openInitialWindows(): void {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // ── Set dock icon on macOS ──
   if (process.platform === 'darwin' && app.dock) {
     try {
@@ -2162,7 +2959,13 @@ app.whenReady().then(() => {
     version: '',
   })
 
-  configureSession(session.defaultSession)
+  // 'persist:default' is the conventional partition string for the
+  // default session — used in log messages and any partition-keyed map
+  // lookups (e.g. waitingAuthPolls). The default session is shared with
+  // the main renderer, not a workspace tab, so no SW IPC actually
+  // routes through this branch in practice; passing the string keeps
+  // configureSession's body uniform.
+  configureSession(session.defaultSession, 'persist:default')
   applyProxySettingsToAllSessions(loadSettings())
 
   // Force DNS-over-HTTPS (Cloudflare + Google) for every Chromium DNS
@@ -2209,11 +3012,205 @@ app.whenReady().then(() => {
     log.warn('extensions: handleCRXProtocol(default) failed', String(err))
   }
 
+  // Start the loopback RPC server BEFORE rehydrating extensions. The
+  // shim injection in rehydrateExtensionsOnStartup substitutes the
+  // server's port + secret into the SW shim source on disk; if we
+  // injected before the server was up, the patched files would carry
+  // a stale port=0 placeholder and every auth-poll would 404.
+  await startSwRpcServer({
+    authPoll: async (extId, timeoutMs) => {
+      // Per-extension routing: each extId that polls gets the next
+      // challenge not yet delivered to it. Challenges are fanned out to
+      // every concurrently-polling extension; resolveAuthChallenge then
+      // settles on the first /auth-respond. Empty extId falls back to a
+      // single-receiver fan, which keeps the old single-VPN flow working
+      // even if the SW shim is somehow built without an extId in the URL.
+      const resp = await waitForAuthChallenge(extId || '*', timeoutMs)
+      try { return await resp.json() }
+      catch (err) {
+        log.warn('rpc/authPoll: response.json threw', { err: String(err) })
+        return {}
+      }
+    },
+    authRespond: (challengeId, response) => {
+      const r = (response ?? {}) as { authCredentials?: { username?: string; password?: string }; cancel?: boolean }
+      resolveAuthChallenge(challengeId, r)
+    },
+    activeTabInfo: (_partition) => {
+      // Active tab = focused workspace window's active tab. The
+      // partition tag is informational only; we don't have a
+      // multi-window-per-partition model that requires it.
+      const focused = BrowserWindow.getFocusedWindow()
+      const win = focused && !focused.isDestroyed()
+        ? focused
+        : BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+      if (!win) return null
+      return getActiveTabInfoForWindow(win.id)
+    },
+    partitionFromHeader: (_req) => {
+      // SW shim doesn't send partition; return a sentinel so the
+      // server's "no partition" rejection path doesn't fire. All the
+      // routes are partition-agnostic in the global-queue design.
+      return '*'
+    },
+    coldStartCheck: (extId) => {
+      // First call per extId per main-process lifetime returns true,
+      // every subsequent call returns false. Backs the SW shim's
+      // chrome.runtime.onStartup implementation: real Chrome fires
+      // onStartup once at cold browser start, not on every SW
+      // wake-up. Browsec's "restore proxy state if previously on"
+      // logic hangs off onStartup, so missing this means the
+      // extension stays idle until the user clicks Turn on every
+      // single launch.
+      if (extId && coldStartFiredFor.has(extId)) return false
+      if (extId) coldStartFiredFor.add(extId)
+      log.info('extensions: cold-start check', { extId, isCold: true })
+      return true
+    },
+    storagePoll: async (extId, timeoutMs) => {
+      return await waitForStorageChange(extId, timeoutMs)
+    },
+    cookiesGet: async (_partition, details) => {
+      const ses = pickCookiesSession()
+      if (!ses) return null
+      const cookies = await ses.cookies.get(details ?? {})
+      return cookies[0] ? toCookieDetails(cookies[0]) : null
+    },
+    cookiesGetAll: async (_partition, details) => {
+      const ses = pickCookiesSession()
+      if (!ses) return []
+      const cookies = await ses.cookies.get((details ?? {}) as Electron.CookiesGetFilter)
+      return cookies.map(toCookieDetails)
+    },
+    cookiesSet: async (_partition, details) => {
+      const ses = pickCookiesSession()
+      if (!ses) return null
+      try {
+        await ses.cookies.set(details as unknown as Electron.CookiesSetDetails)
+        const back = await ses.cookies.get({ url: (details as { url?: string }).url, name: (details as { name?: string }).name })
+        return back[0] ? toCookieDetails(back[0]) : null
+      } catch (err) {
+        log.warn('rpc/cookies.set threw', { err: String(err) })
+        return null
+      }
+    },
+    cookiesRemove: async (_partition, details) => {
+      const ses = pickCookiesSession()
+      if (!ses) return null
+      try {
+        await ses.cookies.remove(String(details.url ?? ''), String(details.name ?? ''))
+        return { url: details.url, name: details.name, storeId: '0' }
+      } catch (err) {
+        log.warn('rpc/cookies.remove threw', { err: String(err) })
+        return null
+      }
+    },
+    runtimeMsgSend: async (extId, payload) => {
+      const msgId = enqueueRuntimeMessage(extId, payload)
+      log.info('rpc/runtime-msg-send queued', { extId, msgId })
+      return new Promise<unknown>((resolve) => {
+        const timer = setTimeout(() => {
+          if (pendingRuntimeMsgRequests.delete(msgId)) {
+            log.warn('rpc/runtime-msg-send timed out', { extId, msgId })
+            resolve(null)
+          }
+        }, 10000)
+        pendingRuntimeMsgRequests.set(msgId, (response) => {
+          clearTimeout(timer)
+          resolve(response)
+        })
+      })
+    },
+    runtimeMsgPoll: async (extId, timeoutMs) => {
+      return await waitForRuntimeMessage(extId, timeoutMs)
+    },
+    runtimeMsgRespond: (msgId, response) => {
+      const cb = pendingRuntimeMsgRequests.get(msgId)
+      if (!cb) return
+      pendingRuntimeMsgRequests.delete(msgId)
+      cb(response)
+    },
+    portOpen: (extId, name) => openPort(extId, name),
+    portContentSend: (portId, message) => portContentSend(portId, message),
+    portContentPoll: (portId, timeoutMs) => portContentPoll(portId, timeoutMs),
+    portSwSend: (portId, message) => portSwSend(portId, message),
+    portSwPoll: (extId, timeoutMs) => portSwPoll(extId, timeoutMs),
+    portDisconnect: (portId, side) => portDisconnect(portId, side),
+  }).catch((err) => {
+    log.error('sw-rpc-server: failed to start', { err: String(err) })
+  })
+
   // Rehydrate installed extensions before any window opens. Each entry is
   // loaded into sessions as they get configured by setupPartitionSession.
   rehydrateExtensionsOnStartup().catch((err) => {
     log.warn('extensions: rehydrate failed', String(err))
   })
+
+  // Wire CDP auth-challenge router BEFORE startSwCdpInspector so any
+  // SW that comes up immediately has its Fetch.authRequired events
+  // handled. Routes the challenge into the same queue the SW shim's
+  // auth-poll consumes — Browsec's chrome.webRequest.onAuthRequired
+  // listener gets the same payload it would in real Chrome, supplies
+  // credentials, and we send those back via Fetch.continueWithAuth.
+  // This is what unblocks SW-initiated proxy auth (Browsec's
+  // webstat.me ping etc.) on Electron 41, which doesn't surface
+  // webRequest.onAuthRequired or session.on('login') for SW fetches.
+  setSwCdpAuthHandler((details, respond) => {
+    const challengeId = `cdp-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    // CDP fetches don't carry a partition affinity, but the SW
+    // necessarily lives in some configured partition. Use the only
+    // configured partition when there's exactly one (single-profile
+    // case) and a generic '*' otherwise — informational only, the
+    // queue is global and challengeId routes the response.
+    const partition = configuredPartitions.size === 1
+      ? Array.from(configuredPartitions)[0]
+      : '*'
+    const detailsLite = {
+      url: details.url,
+      method: 'GET',
+      isProxy: details.isProxy,
+      scheme: details.scheme,
+      realm: details.realm,
+      challenger: details.challenger,
+    }
+    pendingAuthChallenges.set(challengeId, {
+      partition,
+      details: detailsLite,
+      callback: (resp) => {
+        let cdpResp: SwCdpAuthResponse
+        if (resp && typeof resp.cancel === 'boolean' && resp.cancel) {
+          cdpResp = { cancel: true }
+        } else if (resp && typeof resp.username === 'string') {
+          cdpResp = { username: resp.username, password: resp.password ?? '' }
+        } else {
+          cdpResp = { cancel: true }
+        }
+        respond(cdpResp)
+      },
+      timer: setTimeout(() => {
+        if (pendingAuthChallenges.delete(challengeId)) {
+          log.warn('extensions: CDP auth challenge timed out', { partition, url: details.url })
+          respond({ cancel: true })
+        }
+      }, 15000),
+    })
+    enqueueAuthChallenge({ id: challengeId, partition, details: detailsLite, deliveredTo: new Set() })
+    log.info('extensions: auth challenge queued', {
+      partition,
+      challengeId,
+      url: details.url,
+      isProxy: details.isProxy,
+      source: 'cdp.Fetch.authRequired',
+      swTarget: details.swTargetId,
+    })
+  })
+
+  // Self-attach to extension SWs via CDP and pipe their network events
+  // into our log. Reveals the actual `net::ERR_*` behind any "Failed
+  // to fetch" the SW reports — without needing to open external Chrome
+  // and connect to chrome://inspect. Also handles SW-initiated proxy
+  // auth via the handler registered just above.
+  startSwCdpInspector()
 
   buildMenu()
   registerIpcHandlers()

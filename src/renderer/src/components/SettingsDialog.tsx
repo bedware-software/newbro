@@ -1422,7 +1422,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         </div>
                         <button
                           type="button"
-                          onClick={() => { navigator.clipboard.writeText(row.value).catch(() => {}) }}
+                          onClick={() => {
+                            navigator.clipboard.writeText(row.value).catch((err) => {
+                              console.warn('SettingsDialog: clipboard write failed', { value: row.value, err: String(err) })
+                            })
+                          }}
                           title="Click to copy"
                           className="text-xs text-muted-foreground font-mono truncate hover:text-foreground transition-colors text-right select-all"
                         >

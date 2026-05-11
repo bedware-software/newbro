@@ -37,7 +37,7 @@ function buildItems(
       out.push({
         id: w.id,
         label: w.name,
-        section: p.name,
+        section: `Profile: ${p.name}`,
         trailingNote: `${tabCount} tabs`,
       })
     }

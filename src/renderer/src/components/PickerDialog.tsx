@@ -170,6 +170,7 @@ export function PickerDialog({
       width={width}
       height={height}
       resizable={false}
+      closeOnBlur
       onClose={onCancel}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">

@@ -53,16 +53,34 @@ function fuzzyScore(query: string, text: string): number {
   if (!query) return 0
   const q = query.toLowerCase()
   const t = text.toLowerCase()
+  const isWordStart = (i: number) => i === 0 || /[\s\-_]/.test(t[i - 1])
 
-  // Direct substring match scores highest; earlier position is better.
+  // 1. Word-start substring — query is a prefix of some word in the text.
   const idx = t.indexOf(q)
-  if (idx !== -1) {
-    return 1000 - idx * 2 + (idx === 0 ? 50 : 0)
+  if (idx !== -1 && isWordStart(idx)) {
+    return 2000 - idx * 2 + (idx === 0 ? 100 : 0)
   }
 
-  // Subsequence match: all query chars must appear in order in the text.
-  // Word-boundary and consecutive-char matches are weighted higher.
-  const isWordStart = (i: number) => i === 0 || /[\s\-_]/.test(t[i - 1])
+  // 2. Acronym match — query letters are the first letters of consecutive
+  //    words. Beats mid-word substring so "os" surfaces "Open Settings",
+  //    and "ng" surfaces "Add to New Group..." (initials "atng" contains
+  //    "ng") instead of "Open Setti[ng]s".
+  if (q.length >= 2) {
+    const initials = t.split(/[\s_\-]+/).filter(Boolean).map((w) => w[0]).join('')
+    const ii = initials.indexOf(q)
+    if (ii !== -1) {
+      const exact = ii === 0 && q.length === initials.length ? 100 : 0
+      return 1500 - ii * 10 + exact
+    }
+  }
+
+  // 3. Substring inside a word.
+  if (idx !== -1) {
+    return 1000 - idx * 2
+  }
+
+  // 4. Subsequence match: all query chars must appear in order in the text.
+  //    Word-boundary and consecutive-char matches are weighted higher.
   let score = 0
   let qi = 0
   let lastMatchIdx = -2
@@ -194,6 +212,7 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
       title="Command Palette - Newbro"
       width={560}
       height={480}
+      closeOnBlur
       onClose={() => onOpenChange(false)}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">

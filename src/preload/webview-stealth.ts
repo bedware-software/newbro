@@ -56,7 +56,10 @@ const STEALTH_ENABLED = (() => {
 
 const STEALTH_SCRIPT = `
 (() => {
-  const log = (...a) => { try { console.log('[newbro-stealth]', ...a) } catch (_) {} };
+  // No try/catch around console.log — under any normal page state it
+  // won't throw, and if it does the failure should surface, not be
+  // silenced (we get the page's window.onerror via Electron anyway).
+  const log = (...a) => { console.log('[newbro-stealth]', ...a); };
   log('main-world injection starting');
 
   // 1. navigator.webdriver → undefined. Override on the prototype so the
@@ -259,7 +262,7 @@ const STEALTH_SCRIPT = `
     const isPopup = window.opener != null;
     if (!isPopup) {
       const noopClose = function () {
-        try { console.log('[newbro-stealth] window.close intercepted (tab, no opener)'); } catch (_) {}
+        console.log('[newbro-stealth] window.close intercepted (tab, no opener)');
       };
       Object.defineProperty(window, 'close', {
         value: noopClose,
@@ -464,11 +467,15 @@ if (STEALTH_ENABLED) try {
     try {
       const a = (target?.closest?.('a') as HTMLAnchorElement | null) ?? null
       if (a?.href) linkUrl = a.href
-    } catch (_) { /* ignore */ }
+    } catch (err) {
+      console.error('[newbro-stealth] context-menu link lookup threw:', err)
+    }
     try {
       const img = (target?.closest?.('img') as HTMLImageElement | null) ?? null
       if (img?.currentSrc || img?.src) imgUrl = img.currentSrc || img.src
-    } catch (_) { /* ignore */ }
+    } catch (err) {
+      console.error('[newbro-stealth] context-menu img lookup threw:', err)
+    }
     ipcRenderer.send('newbro-context-menu', {
       selection,
       x: Math.round(e.clientX),

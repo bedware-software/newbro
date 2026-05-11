@@ -38,7 +38,8 @@ import { log } from '../log'
 import { parseCrx, extractCrxPublicKey, deriveExtensionIdFromPublicKey } from './crx'
 import { fetchCrx, extractExtensionIdFromUrl as _extract, clearCrxFetchSession } from './store'
 import { unzipTo } from './zip'
-import { SW_SHIM_SOURCE, SW_SHIM_MAGIC, SW_SHIM_LEGACY_MAGIC, SW_SHIM_FOOTER } from './sw-shim'
+import { buildSwShimSource, SW_SHIM_MAGIC, SW_SHIM_LEGACY_MAGIC, SW_SHIM_FOOTER } from './sw-shim'
+import { getSwRpcServerInfo } from './sw-rpc-server'
 import { clearUserScriptsForExtension } from './userscripts'
 
 export interface ExtensionInfo {
@@ -253,7 +254,13 @@ function loadLocaleCatalogs(
   const defaultLocale = typeof manifest.default_locale === 'string' ? (manifest.default_locale as string) : ''
   if (!defaultLocale) return [null, null]
   let userLocale = ''
-  try { userLocale = app.getLocale() } catch { /* before-ready */ }
+  try { userLocale = app.getLocale() }
+  catch (err) {
+    // app.getLocale throws before app 'ready' — that's the expected
+    // path when an extension is read during early init. We log at info
+    // level so it's visible but doesn't get treated as a problem.
+    log.info('extensions: getLocale before app-ready, falling back to manifest default', { err: String(err) })
+  }
   // Chrome i18n resolution: try the user's exact locale first
   // (e.g. en_GB), then the language-only fallback (en), then the
   // manifest's default_locale. We collapse hyphenated BCP-47 (en-GB) into
@@ -442,6 +449,25 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
     modified = true
   }
 
+  // ── Patch 5: extend content_security_policy.extension_pages so the
+  //    SW shim's IPC channels back to main aren't blocked.
+  //
+  //    Strict-CSP extensions (Browsec et al.) ship a connect-src
+  //    allowlist that doesn't include our newbro-ipc:// scheme or our
+  //    HTTPS sentinel. Result: every fetch from the SW to those URLs
+  //    is rejected at the renderer-side CSP check BEFORE main even
+  //    sees it, the auth-poll long-poll never reaches our protocol
+  //    handler, and proxy auth challenges hit the 15s timeout.
+  //
+  //    Adding the two scheme/host literals to connect-src keeps the
+  //    extension's existing allowlist intact while letting Newbro's
+  //    own RPC through. This is the same pragmatic approach Chrome's
+  //    --load-extension dev mode takes — it relaxes CSP for the
+  //    developer-loaded code path. We don't grant any web-facing
+  //    capability here; both targets only resolve to our intercept
+  //    handlers in main.
+  if (patchExtensionCsp(manifest)) modified = true
+
   if (modified) {
     try {
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
@@ -456,6 +482,98 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
     }
   }
   return modified
+}
+
+/** Add our IPC scheme + host to the manifest's `extension_pages` CSP
+ *  connect-src so the SW shim's fetches to newbro-ipc:// and
+ *  https://newbro-ext-ipc.test aren't rejected by the extension's own
+ *  CSP before reaching main. Idempotent: a re-load that's already
+ *  patched leaves the manifest untouched.
+ *
+ *  Returns true if the manifest was actually modified. */
+const NEWBRO_CSP_CONNECT_SOURCES = ['newbro-ipc:', 'https://newbro-ext-ipc.test']
+function patchExtensionCsp(manifest: Record<string, unknown>): boolean {
+  if (manifest.manifest_version !== 3) return false
+  const raw = manifest.content_security_policy
+  // MV3 accepts BOTH shapes for content_security_policy:
+  //   - Object: { extension_pages: "...", sandbox: "..." }   (preferred)
+  //   - String: "connect-src 'self'; ..."                    (legacy fallback)
+  // Browsec ships the legacy string form. Earlier versions of this
+  // patcher overwrote a string CSP with an empty {}, replacing the
+  // extension's full allowlist with only our two sources — the
+  // Browsec auth-poll error showed this hadn't even fired (no
+  // "patched manifest CSP" log), but the bug was waiting either way.
+  // Detect shape, preserve original content under extension_pages.
+  let cspObj: Record<string, unknown>
+  let existing: string
+  if (typeof raw === 'string') {
+    cspObj = { extension_pages: raw }
+    existing = raw
+  } else if (raw && typeof raw === 'object') {
+    cspObj = raw as Record<string, unknown>
+    existing = typeof cspObj.extension_pages === 'string' ? (cspObj.extension_pages as string) : ''
+  } else {
+    cspObj = {}
+    existing = ''
+  }
+  const patched = mergeConnectSrc(existing, NEWBRO_CSP_CONNECT_SOURCES)
+  if (patched === existing && raw && typeof raw === 'object') {
+    // No change AND original was already in object shape — nothing to do.
+    return false
+  }
+  cspObj.extension_pages = patched
+  manifest.content_security_policy = cspObj
+  log.info('extensions: patched manifest CSP', {
+    sources: NEWBRO_CSP_CONNECT_SOURCES,
+    originalShape: typeof raw,
+    before: existing.length > 200 ? existing.slice(0, 200) + '…' : existing,
+    after: patched.length > 200 ? patched.slice(0, 200) + '…' : patched,
+  })
+  return true
+}
+
+/** REPLACE the connect-src directive of a CSP with a permissive one
+ *  that includes our IPC scheme + host. Other directives (script-src,
+ *  object-src, img-src, …) are preserved verbatim.
+ *
+ *  Why replacement, not merge: Browsec ships a 4700+ char connect-src
+ *  allowlist of CDNs. Empirically (verified by reading the SW's CSP-
+ *  violation error against the on-disk manifest), Chromium's CSP
+ *  enforcer for very long directives drops our appended sources, AND
+ *  even prepending didn't reliably work across Browsec's parser path.
+ *  Replacing the entire connect-src with `* newbro-ipc:
+ *  https://newbro-ext-ipc.test data: blob:` sidesteps all length
+ *  issues and ensures our scheme is allowed.
+ *
+ *  Trade-off: the extension loses whatever connect-src restrictions
+ *  it shipped with (in Browsec's case, the CDN allowlist that may
+ *  serve as a leak prevention mechanism). For Newbro's single-user,
+ *  developer-loaded use case this is the same posture Chrome's
+ *  --load-extension dev mode applies. Other directives stay strict. */
+function mergeConnectSrc(csp: string, extraSources: readonly string[]): string {
+  const directives = csp.split(';').map((d) => d.trim()).filter(Boolean)
+  // `*` covers http(s) / ws(s); custom schemes like newbro-ipc: are
+  // NOT covered by `*` per CSP3, so they're listed explicitly. data:
+  // and blob: keep the door open for inline / generated payloads
+  // (used in some chrome-extension flows we want to preserve).
+  const permissiveConnectSrc =
+    `connect-src * data: blob: 'self' ${extraSources.join(' ')}`
+  let connectIdx = -1
+  for (let i = 0; i < directives.length; i++) {
+    const name = directives[i].split(/\s+/, 1)[0]?.toLowerCase()
+    if (name === 'connect-src') { connectIdx = i; break }
+  }
+  if (connectIdx === -1) {
+    // No connect-src yet. Add a permissive one alongside whatever else
+    // the manifest already declares; seed standard MV3 base directives
+    // when the source CSP was completely empty so Chromium accepts it.
+    const seeded = directives.length > 0 ? directives.slice() : ["script-src 'self'", "object-src 'self'"]
+    seeded.push(permissiveConnectSrc)
+    return seeded.join('; ') + ';'
+  }
+  if (directives[connectIdx] === permissiveConnectSrc) return csp
+  directives[connectIdx] = permissiveConnectSrc
+  return directives.join('; ') + ';'
 }
 
 /** Prepend our chrome.tabs.create / chrome.windows.create /
@@ -475,7 +593,7 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
  *  Returns true if the file was modified — used by callers that want
  *  to log "we patched in the SW shim". MV2 background pages and
  *  extensions without `background.service_worker` are no-ops. */
-function injectSwShim(extDir: string, manifest: Record<string, unknown>): boolean {
+function injectSwShim(extDir: string, manifest: Record<string, unknown>, extId?: string): boolean {
   if (manifest.manifest_version !== 3) return false
   const bg = manifest.background as { service_worker?: string } | undefined
   if (!bg || typeof bg.service_worker !== 'string' || bg.service_worker.length === 0) return false
@@ -494,14 +612,23 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>): boolea
     })
     return false
   }
-  // Already on the current shim version — no work to do.
-  if (original.startsWith(SW_SHIM_MAGIC)) return false
-  // Strip an older shim version so we don't stack them. V2 ships a
-  // dedicated footer marker we can match exactly. V1 didn't — its
-  // outer IIFE closed with `\n})();\n` on its own line and there are
-  // no other `})();` sequences inside the V1 source, so we search for
-  // the FIRST occurrence after the V1 marker. Either way, body is
-  // everything that follows the shim's closing line.
+  // Need the loopback RPC server's port + secret. Stable across
+  // launches (sw-rpc-server.ts persists them to userData) so the
+  // shim source we'd write here is byte-identical to what's
+  // already on disk, on every launch after the first. Skip if the
+  // server isn't up yet.
+  const rpc = getSwRpcServerInfo()
+  if (!rpc) {
+    log.warn('extensions: SW shim — RPC server not started yet, skipping', { extDir, swRel })
+    return false
+  }
+  // Strip ANY existing shim (current MAGIC or older) so we can rewrite
+  // with the current port/secret. body = everything after our closing IIFE.
+  // Also consume any whitespace immediately after the shim — earlier
+  // versions wrote `shimSource + '\n' + body`, and since both shim and
+  // (re-extracted) body started with newlines, every reinjection added
+  // an extra blank line; the file accumulated blank lines indefinitely
+  // and broke byte-identity comparisons across launches.
   let body = original
   if (original.startsWith(SW_SHIM_LEGACY_MAGIC)) {
     const v1Close = '\n})();\n'
@@ -513,30 +640,49 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>): boolea
       })
       return false
     }
-    body = original.slice(closeIdx + v1Close.length)
-    log.info('extensions: SW shim — migrating V1 → V2', { extDir, swRel })
-  } else {
-    // V2+ shim with footer (future versions). When the marker doesn't
-    // match the current MAGIC, we walk to the FOOTER line and strip
-    // everything before it.
+    body = original.slice(closeIdx + v1Close.length).replace(/^[\r\n]+/, '')
+    log.info('extensions: SW shim — migrating V1 → current', { extDir, swRel })
+  } else if (original.startsWith('// __NEWBRO_SW_SHIM_')) {
+    // V2+ shim with footer. Strip the footer line AND any trailing
+    // blank lines so body always starts with the extension's actual code.
     const footerIdx = original.indexOf(SW_SHIM_FOOTER)
-    if (footerIdx !== -1 && original.indexOf(SW_SHIM_MAGIC) !== 0) {
-      // The file starts with SOME shim header (not our current MAGIC and
-      // not V1). Strip up to the line after the footer.
-      const startsWithSomeShim = original.startsWith('// __NEWBRO_SW_SHIM_')
-      if (startsWithSomeShim) {
-        const afterFooter = original.indexOf('\n', footerIdx)
-        body = afterFooter === -1 ? '' : original.slice(afterFooter + 1)
-        log.info('extensions: SW shim — replacing older shim header', { extDir, swRel })
+    if (footerIdx !== -1) {
+      let cursor = footerIdx + SW_SHIM_FOOTER.length
+      while (cursor < original.length && (original[cursor] === '\n' || original[cursor] === '\r')) {
+        cursor++
       }
+      body = original.slice(cursor)
     }
   }
+  // For now the partition isn't routable from a SW (file shared across
+  // sessions), so we pass a sentinel; the loopback server uses a global
+  // queue keyed by challengeId.
+  // shimSource ends with the FOOTER comment line and a trailing newline,
+  // so we concat directly — no extra '\n' separator needed.
+  const shimSource = buildSwShimSource(rpc.port, rpc.secret, '*')
+  const nextContent = shimSource + body
+  // Skip the write entirely when on-disk content matches what we'd
+  // produce. Avoids needlessly invalidating Chromium's MV3 service
+  // worker byte-cache: if the file's mtime / content changes, the
+  // next register() refetches the source, the byte-comparison fails,
+  // and a "new" SW spawns alongside the cached "old" one. The user-
+  // visible symptom is that VPN extensions like Browsec require a
+  // "Fix connection" click after every app restart before they
+  // actually toggle (the cached SW polls the previous launch's
+  // RPC port, hits ERR_CONNECTION_REFUSED, while the freshly-
+  // spawned SW polls the live port). With persistent port + secret,
+  // the typical case is no-op.
+  if (nextContent === original) {
+    log.info('extensions: SW shim already up to date, skipping write', {
+      extDir,
+      swRel,
+      magic: SW_SHIM_MAGIC,
+      rpcPort: rpc.port,
+    })
+    return false
+  }
   try {
-    writeFileSync(swPath, SW_SHIM_SOURCE + '\n' + body)
-    // Log the first ~25 lines of the extension's original SW. The shim is
-    // ~750 lines, so a runtime crash at e.g. line 769 maps to body line 19.
-    // Without this we have to ask the user to paste the file every time
-    // the SW dies. Truncated per line so we don't dump megabytes.
+    writeFileSync(swPath, nextContent)
     const bodyLines = body.split('\n')
     const head: { line: number; text: string }[] = []
     for (let i = 0; i < 25 && i < bodyLines.length; i++) {
@@ -545,10 +691,13 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>): boolea
     log.info('extensions: SW shim injected', {
       extDir,
       swRel,
-      shimLineCount: SW_SHIM_SOURCE.split('\n').length,
+      magic: SW_SHIM_MAGIC,
+      rpcPort: rpc.port,
+      shimLineCount: shimSource.split('\n').length,
       bodyLineCount: bodyLines.length,
       bodyHead: head,
     })
+    if (extId) swShimRewrittenExtIds.add(extId)
     return true
   } catch (err) {
     log.warn('extensions: SW shim — write failed', { extDir, swRel, err: String(err) })
@@ -700,11 +849,43 @@ function getAllSessions(): Session[] {
   return Array.from(sessions)
 }
 
+/** Extensions whose SW shim got rewritten this app boot. Used by
+ *  loadExtensionInto to invalidate Chromium's cached SW source bytes
+ *  for those extensions before re-registering — otherwise the cached
+ *  pre-rewrite SW would activate first and the new shim's
+ *  chrome.runtime.onStartup wiring (V35+) wouldn't kick in until the
+ *  user did something that forced an SW update check. Cleared per-id
+ *  on first session load (clear once is enough). */
+const swShimRewrittenExtIds = new Set<string>()
+
 async function loadExtensionInto(ses: Session, entry: PersistedEntry): Promise<void> {
   if (!entry.enabled) return
   if (!existsSync(join(entry.path, 'manifest.json'))) {
     log.warn('extensions: missing manifest on disk', entry.path)
     return
+  }
+  // If the shim was rewritten this boot, clear the cached SW
+  // registration + script bytes for this extension's origin so
+  // Chromium can't activate the stale pre-rewrite version. This is
+  // load-the-fresh-shim insurance — without it, the FIRST app launch
+  // after a shim version bump would still run the cached SW (Browsec
+  // sits idle, requires manual Turn on click) until Chromium's
+  // separate update check eventually noticed the byte difference and
+  // spawned a new SW. We DON'T clear other storage types — chrome.
+  // storage.local data must survive so the extension's persisted
+  // settings (proxy mode, country choice, on/off flag) are still there
+  // for the new SW's onStartup listener to read.
+  if (swShimRewrittenExtIds.has(entry.id)) {
+    swShimRewrittenExtIds.delete(entry.id)
+    try {
+      await ses.clearStorageData({
+        origin: `chrome-extension://${entry.id}`,
+        storages: ['serviceworkers'],
+      })
+      log.info('extensions: cleared SW storage after shim rewrite', { id: entry.id })
+    } catch (err) {
+      log.warn('extensions: clearStorageData(serviceworkers) failed', { id: entry.id, err: String(err) })
+    }
   }
   // Path-aware dedup: skip only when the SAME path is already registered.
   // After a CRX reinstall the new path differs from the stale registration,
@@ -794,9 +975,14 @@ export function readBgSourceWindow(
   try {
     const extDir = join(extensionsRoot(), extensionId)
     let entries: string[]
-    try { entries = readdirSync(extDir) } catch { return null }
+    try { entries = readdirSync(extDir) }
+    catch (err) {
+      log.warn('readBgSourceWindow: extDir readdir failed', { extensionId, err: String(err) })
+      return null
+    }
     const versions = entries.filter((e) => e && e[0] !== '.')
     const candidates = ['background.js', 'js/background.js', 'background/index.js']
+    const probeFailures: Array<{ v: string; c: string; err: string }> = []
     for (const v of versions) {
       for (const c of candidates) {
         try {
@@ -809,11 +995,23 @@ export function readBgSourceWindow(
           const start = Math.max(0, colno - half)
           const end = Math.min(line.length, colno + half)
           return `[ext=${extensionId} ver=${v} file=${c} line=${lineno} col=${colno} lineLen=${line.length}] ${line.slice(start, end)}`
-        } catch { /* try next candidate */ }
+        } catch (err) {
+          // Expected on the wrong candidate (ENOENT). Collect them so
+          // we can dump the full set if NONE matches — that's the
+          // useful diagnostic.
+          probeFailures.push({ v, c, err: String(err) })
+        }
       }
     }
+    log.warn('readBgSourceWindow: no candidate readable', {
+      extensionId,
+      lineno,
+      colno,
+      tried: probeFailures,
+    })
     return null
-  } catch {
+  } catch (err) {
+    log.warn('readBgSourceWindow: outer threw', { extensionId, err: String(err) })
     return null
   }
 }
@@ -964,7 +1162,7 @@ export async function installExtensionById(extensionId: string): Promise<Extensi
     // registerPreloadScript({ type: 'service-worker' }) doesn't actually
     // fire for chrome-extension service workers, so patching the SW
     // file on disk is our only reliable injection point.
-    injectSwShim(tmpDir, manifest)
+    injectSwShim(tmpDir, manifest, extensionId)
     const version =
       typeof manifest.version === 'string' ? (manifest.version as string) : 'unknown'
     const finalDir = join(root, extensionId, version)
@@ -1159,7 +1357,7 @@ export async function rehydrateExtensionsOnStartup(): Promise<void> {
     // a prior boot detect the magic-comment header and skip the write.
     try {
       const m = readManifest(entry.path)
-      injectSwShim(entry.path, m)
+      injectSwShim(entry.path, m, id)
     } catch (err) {
       log.warn('extensions: rehydrate SW shim inject failed', { id, err: String(err) })
     }

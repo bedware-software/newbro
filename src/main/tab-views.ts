@@ -252,6 +252,25 @@ function wireEvents(rec: TabRecord): void {
     const url = (() => { try { return wc.getURL() } catch { return '' } })()
     if (!url) return
     injectMatchingUserScripts(rec.partition, url, 'document_idle', wc)
+    // Install the chrome.storage.onChanged → SW bridge for any tab that
+    // loads an extension-owned page (options.html, diagnostics.html,
+    // dashboard.html, …). Same isolated-vs-main-world issue as the popup:
+    // chrome.storage lives in MAIN world only, and writes from that world
+    // need to reach the SW for cross-context onChanged semantics. The
+    // injected script is idempotent (window.__newbroStorageBridgeInjected
+    // guard) so a tab navigating within the same chrome-extension origin
+    // doesn't stack listeners.
+    if (url.startsWith('chrome-extension://')) {
+      const m = url.match(/^chrome-extension:\/\/([a-p]{32})\//i)
+      const extId = m ? m[1] : 'unknown'
+      installFrameStorageBridge(wc, `tab/${extId}/${rec.tabId}`).catch((err) => {
+        log.warn('tab: storage bridge install threw', {
+          tabId: rec.tabId,
+          url,
+          err: String(err),
+        })
+      })
+    }
   })
   wc.on('did-navigate', (_e, url) => {
     emit({ type: 'did-navigate', tabId: rec.tabId, url })
@@ -931,47 +950,139 @@ interface ExtensionPopupRecord {
 
 const extensionPopupByWindow = new Map<number, ExtensionPopupRecord>()
 
+/** Hidden-but-alive popups, keyed by `${windowId}::${extensionId}`.
+ *  When the user dismisses a popup we DETACH the WebContentsView from
+ *  the window's contentView (so it's invisible) but keep the
+ *  webContents alive — Browsec's popup-side store, in-flight port
+ *  connections to its SW, and any attached DevTools session all
+ *  survive. The next toggleExtensionPopup call for the same
+ *  (window, extension) pair re-attaches the cached view rather than
+ *  rebuilding from scratch. Without this caching every popup-close
+ *  destroyed the WC, popup-side state was lost, the runtime.connect
+ *  port to the SW closed, and chrome.storage updates the popup made
+ *  earlier looked stale on reopen — symptoms the user reported as
+ *  "state doesn't persist" / "it works inconsistently". */
+const hiddenExtensionPopups = new Map<string, ExtensionPopupRecord>()
+function popupCacheKey(windowId: number, extensionId: string): string {
+  return `${windowId}::${extensionId}`
+}
+
 const POPUP_DEFAULT_WIDTH = 360
 const POPUP_DEFAULT_HEIGHT = 520
 /** Padding between window edge and popup so the panel never butts up
  *  against the sash. Matches Chrome's spacing. */
 const POPUP_VIEWPORT_MARGIN = 6
-/** Chrome's popup size constraints — we mirror them exactly so popups
- *  designed against Chrome's web store render predictably. Values from
- *  electron-chrome-extensions's PopupView.BOUNDS as well as Chromium's
- *  src/extensions/browser/extension_host_delegate.cc. Names prefixed
- *  EXT_ to avoid collision with the (different) workspace popup
- *  constants further up. */
-const EXT_POPUP_MIN_WIDTH = 25
-const EXT_POPUP_MIN_HEIGHT = 25
-const EXT_POPUP_MAX_WIDTH = 800
-const EXT_POPUP_MAX_HEIGHT = 600
-
-/** Read the popup body's preferred size and resize the WebContentsView to
- *  match. Without this the popup view stays at our 360×520 default and
- *  any popup smaller (Tampermonkey, Dark Reader's filter pane) shows a
- *  visible "gutter" of empty WebContentsView around the actual UI;
- *  popups taller than 520 (Browsec country list, options pages) get
- *  clipped. Chrome's behaviour is "auto-fit, capped at 800×600". */
+/** Resize the popup WebContentsView to its content's natural size.
+ *
+ *  We tried `webContents.enablePreferredSizeMode(true)` +
+ *  `'preferred-size-changed'` (Chrome's own mechanism) but the event
+ *  never fires for our extension popup WebContents — likely because
+ *  Electron's preferred-size signal needs init paths we don't go
+ *  through. So we measure ourselves.
+ *
+ *  Naïvely reading `body.scrollWidth` doesn't work: body's `display:
+ *  block` fills the viewport, so scrollWidth reports the WebContentsView
+ *  width regardless of the actual UI size and the popup can grow but
+ *  never shrink. Instead we walk body's flow children, take the largest
+ *  intrinsic `offsetWidth` (the popup's design width is whatever its
+ *  root container set explicitly) and sum heights for the stacked total.
+ *  This reports the same number whether the view is 360 or 1200 wide. */
 async function fitExtensionPopupToContent(windowId: number): Promise<void> {
   const rec = extensionPopupByWindow.get(windowId)
   if (!rec) return
   if (rec.view.webContents.isDestroyed()) return
   try {
-    const size = (await rec.view.webContents.executeJavaScript(
+    const result = (await rec.view.webContents.executeJavaScript(
       `(() => {
-        const html = document.documentElement;
         const body = document.body;
         if (!body) return null;
-        return {
-          width: Math.max(body.scrollWidth, html.scrollWidth, body.getBoundingClientRect().width),
-          height: Math.max(body.scrollHeight, html.scrollHeight, body.getBoundingClientRect().height),
+        const html = document.documentElement;
+        const bs = getComputedStyle(body);
+        const hs = getComputedStyle(html);
+        // Paint html with body's background so the body-margin gap doesn't
+        // render as a transparent strip showing the page through. Browsers
+        // don't render html.background by default, but assigning inline
+        // here forces it.
+        if (bs.backgroundColor && bs.backgroundColor !== 'rgba(0, 0, 0, 0)') {
+          html.style.backgroundColor = bs.backgroundColor;
+        }
+        const flowChildren = Array.from(body.children).filter((c) => {
+          const cs = getComputedStyle(c);
+          return cs.display !== 'none'
+            && cs.position !== 'fixed'
+            && cs.position !== 'absolute';
+        });
+        if (flowChildren.length === 0) return null;
+        // getBoundingClientRect reflects POST-zoom rendered dimensions —
+        // Browsec's popup applies inline \`zoom: 0.85\` on its
+        // MainContainer, so offsetWidth (logical/pre-zoom) reported 402
+        // while the visible content was only ~343 wide. Sizing the
+        // WebContentsView to 402 left a ~59px invisible strip on the
+        // right: solid popup-bg color but no clickable UI inside it.
+        // rect.width/height bake zoom in, so the view tracks the
+        // rendered extent.
+        const bodyRect = body.getBoundingClientRect();
+        let maxRight = bodyRect.left;
+        let maxBottom = bodyRect.top;
+        for (const c of flowChildren) {
+          const cs = getComputedStyle(c);
+          const mr = parseFloat(cs.marginRight) || 0;
+          const mb = parseFloat(cs.marginBottom) || 0;
+          const cr = c.getBoundingClientRect();
+          if (cr.right + mr > maxRight) maxRight = cr.right + mr;
+          if (cr.bottom + mb > maxBottom) maxBottom = cr.bottom + mb;
+        }
+        // Distance from html's top-left to the right/bottom of content.
+        // Then add html's right/bottom padding+border so a popup whose
+        // root container has decorations on the inside still gets a
+        // box that fully contains them.
+        const htmlRight = (parseFloat(hs.paddingRight) || 0) + (parseFloat(hs.borderRightWidth) || 0);
+        const htmlBottom = (parseFloat(hs.paddingBottom) || 0) + (parseFloat(hs.borderBottomWidth) || 0);
+        const bodyMarginRight = parseFloat(bs.marginRight) || 0;
+        const bodyMarginBottom = parseFloat(bs.marginBottom) || 0;
+        const width = maxRight + bodyMarginRight + htmlRight;
+        const height = maxBottom + bodyMarginBottom + htmlBottom;
+        const pickColor = (s) => {
+          const m = (s.backgroundColor || '').match(/^rgba?\\(([^)]+)\\)$/);
+          if (!m) return null;
+          const parts = m[1].split(',').map((v) => parseFloat(v.trim()));
+          const [r, g, b, a = 1] = parts;
+          if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b) || a <= 0) return null;
+          const toHex = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+          return '#' + toHex(r) + toHex(g) + toHex(b);
         };
+        const bgHex = pickColor(bs) || pickColor(hs);
+        return { width, height, bgColor: bgHex };
       })()`,
-    )) as { width?: number; height?: number } | null
-    if (!size || typeof size.width !== 'number' || typeof size.height !== 'number') return
-    const w = Math.round(Math.max(EXT_POPUP_MIN_WIDTH, Math.min(EXT_POPUP_MAX_WIDTH, size.width)))
-    const h = Math.round(Math.max(EXT_POPUP_MIN_HEIGHT, Math.min(EXT_POPUP_MAX_HEIGHT, size.height)))
+    )) as { width?: number; height?: number; bgColor?: string | null } | null
+    if (!result || typeof result.width !== 'number' || typeof result.height !== 'number') return
+    // Ceil rather than round — under-sizing by a subpixel forces a
+    // scrollbar in the popup, which we'd rather avoid in exchange for
+    // an invisible 1px overshoot.
+    const w = Math.ceil(result.width)
+    const h = Math.ceil(result.height)
+    if (w <= 0 || h <= 0) return
+    log.info('extension popup: fit', {
+      extensionId: rec.extensionId,
+      w,
+      h,
+      bgColor: result.bgColor,
+      prev: { w: rec.width, h: rec.height },
+    })
+    // Match the view's background to the popup body so any unfilled gap
+    // between body's outer box and the WebContentsView (e.g. body margin
+    // on a page that didn't reset it) doesn't render as a transparent
+    // strip showing the page underneath.
+    if (result.bgColor) {
+      try { rec.view.setBackgroundColor(result.bgColor) }
+      catch (err) {
+        log.warn('extension popup: setBackgroundColor threw', {
+          extensionId: rec.extensionId,
+          bgColor: result.bgColor,
+          err: String(err),
+        })
+      }
+    }
     if (w === rec.width && h === rec.height) return
     rec.width = w
     rec.height = h
@@ -981,6 +1092,119 @@ async function fitExtensionPopupToContent(windowId: number): Promise<void> {
     rec.view.setBounds(bounds)
   } catch {
     /* page may have torn down between read and resize */
+  }
+}
+
+/** Register chrome.storage.onChanged in a chrome-extension:// frame's
+ *  MAIN world and bridge every event to main via the existing
+ *  newbro-ext-ipc.test handler.
+ *
+ *  Why this lives in main (not preload): contextIsolation:true means our
+ *  preloads run in the ISOLATED world. Chromium's chrome.storage binding
+ *  is wired to the frame's MAIN world only. Empirically (from runtime
+ *  logs), `chrome` is present in isolated world but `chrome.storage` is
+ *  absent there; 60 polling attempts × 50ms all returned hasStorage:
+ *  false. executeJavaScript runs in the MAIN world, which IS where
+ *  chrome.storage lives — and bypasses the extension's CSP.
+ *
+ *  Used by:
+ *    - openExtensionPopup (popup webContents, did-finish-load hook)
+ *    - createTab via wireEvents (any chrome-extension:// page loaded as a
+ *      regular tab, e.g. options.html, diagnostics.html, etc.)
+ *
+ *  Idempotent across reloads: the injected script guards on a
+ *  window-level flag so a renderer-internal navigation doesn't stack
+ *  duplicate listeners. The popup webContents is reused across hide/show
+ *  cycles (we cache it instead of destroying — see hideExtensionPopup),
+ *  so this is installed once per popup lifetime. For options-page tabs
+ *  the listener persists for the tab's lifetime. */
+async function installFrameStorageBridge(
+  wc: Electron.WebContents,
+  contextLabel: string,
+): Promise<void> {
+  if (wc.isDestroyed()) return
+  const code = `
+    (function () {
+      if (window.__newbroStorageBridgeInjected) return 'already-injected';
+      window.__newbroStorageBridgeInjected = true;
+      var ready = function () {
+        return typeof chrome !== 'undefined'
+          && chrome.storage
+          && chrome.storage.onChanged
+          && typeof chrome.storage.onChanged.addListener === 'function'
+          && chrome.runtime
+          && typeof chrome.runtime.id === 'string';
+      };
+      var install = function () {
+        var extId = chrome.runtime.id;
+        // chrome.storage.onChanged is a single event that fires for ALL
+        // areas (local/sync/session/managed) with the areaName argument.
+        // So a single listener covers every area — areaName flows all the
+        // way through to fireStorageChange in the SW shim, where each
+        // bridged listener gets called with the original area string.
+        chrome.storage.onChanged.addListener(function (changes, areaName) {
+          try {
+            fetch('https://newbro-ext-ipc.test/storage-bridge', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ extId: extId, areaName: areaName, changes: changes }),
+            }).catch(function () {});
+          } catch (e) { /* ignore */ }
+        });
+        try {
+          fetch('https://newbro-ext-ipc.test/storage-bridge-mainworld-installed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              extId: extId,
+              href: location.href,
+              // Surface which areas exist in this context so we can spot
+              // an extension that uses .sync/.session and find out at
+              // install time whether the bridge will cover it.
+              areas: {
+                local: !!(chrome.storage && chrome.storage.local),
+                sync: !!(chrome.storage && chrome.storage.sync),
+                session: !!(chrome.storage && chrome.storage.session),
+                managed: !!(chrome.storage && chrome.storage.managed),
+              },
+            }),
+          }).catch(function () {});
+        } catch (e) { /* ignore */ }
+      };
+      if (ready()) { install(); return 'installed-sync'; }
+      var attempts = 0;
+      var poll = function () {
+        attempts++;
+        if (ready()) { install(); return; }
+        if (attempts >= 60) {
+          try {
+            fetch('https://newbro-ext-ipc.test/storage-bridge-mainworld-gaveup', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                href: location.href,
+                hasChrome: typeof chrome !== 'undefined',
+                hasStorage: !!(typeof chrome !== 'undefined' && chrome.storage),
+                hasOnChanged: !!(typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged),
+              }),
+            }).catch(function () {});
+          } catch (e) { /* ignore */ }
+          return;
+        }
+        setTimeout(poll, 50);
+      };
+      poll();
+      return 'installing-async';
+    })();
+  `
+  try {
+    const result = await wc.executeJavaScript(code)
+    log.info('extensions: frame storage bridge injected', { contextLabel, result })
+  } catch (err) {
+    log.warn('extensions: frame storage bridge executeJavaScript failed', {
+      contextLabel,
+      err: String(err),
+    })
   }
 }
 
@@ -1000,27 +1224,86 @@ function clampPopupBounds(
   return { x, y, width, height }
 }
 
+/** Hard-destroy: tear down the webContents. Used when the popup's
+ *  owner window itself goes away — at that point Chromium will reap
+ *  the WC anyway, and any state in it is moot. NEVER use this for the
+ *  user-dismiss flow — that goes through hideExtensionPopup so the
+ *  popup's chrome.runtime port + Lit components survive between opens. */
 function destroyExtensionPopup(rec: ExtensionPopupRecord): void {
   const win = BrowserWindow.fromId(rec.windowId)
   if (win && !win.isDestroyed()) {
     try {
       win.removeListener('blur', rec.onBlur)
-    } catch {
-      /* ignore */
+    } catch (err) {
+      log.warn('destroyExtensionPopup: removeListener threw', { err: String(err) })
     }
     try {
       win.contentView.removeChildView(rec.view)
-    } catch {
-      /* ignore */
+    } catch (err) {
+      log.warn('destroyExtensionPopup: removeChildView threw', { err: String(err) })
     }
   }
+  const wc = rec.view && (rec.view as { webContents?: Electron.WebContents }).webContents
+  if (!wc) return
   try {
-    rec.view.webContents.close()
-  } catch {
+    wc.close()
+  } catch (closeErr) {
+    log.warn('destroyExtensionPopup: wc.close threw', { err: String(closeErr) })
     try {
-      ;(rec.view.webContents as unknown as { destroy?: () => void }).destroy?.()
-    } catch {
-      /* ignore */
+      ;(wc as unknown as { destroy?: () => void }).destroy?.()
+    } catch (destroyErr) {
+      log.warn('destroyExtensionPopup: wc.destroy threw', { err: String(destroyErr) })
+    }
+  }
+}
+
+/** Soft-dismiss: detach the popup view from the window so it stops
+ *  being rendered, but keep the underlying webContents alive in the
+ *  hidden cache. The window 'blur' listener is removed (it would
+ *  re-fire on the next open and immediately re-close). We DON'T
+ *  destroy / close the WC — Browsec's popup state, port connections,
+ *  and any attached DevTools session all survive until the owning
+ *  window itself closes. */
+function hideExtensionPopup(rec: ExtensionPopupRecord): void {
+  const win = BrowserWindow.fromId(rec.windowId)
+  if (win && !win.isDestroyed()) {
+    try {
+      win.removeListener('blur', rec.onBlur)
+    } catch (err) {
+      log.warn('hideExtensionPopup: removeListener threw', { err: String(err) })
+    }
+    try {
+      win.contentView.removeChildView(rec.view)
+    } catch (err) {
+      log.warn('hideExtensionPopup: removeChildView threw', { err: String(err) })
+    }
+  }
+  // `rec.view` and its `webContents` can be undefined if the popup's
+  // owner window/webContents was disposed between when blur fired and
+  // when this setImmediate ran (TM's "create new script" navigates the
+  // popup away, which can race with our soft-dismiss). Treat any
+  // already-gone state as "skip cache, nothing to keep alive".
+  const wc = rec.view && (rec.view as { webContents?: Electron.WebContents }).webContents
+  if (!wc || wc.isDestroyed()) return
+  const key = popupCacheKey(rec.windowId, rec.extensionId)
+  const existing = hiddenExtensionPopups.get(key)
+  if (existing && existing !== rec) {
+    // A previous instance for this (window, extension) is already
+    // cached — that shouldn't happen if open/close are paired, but
+    // be defensive: dispose the older one so we don't leak it.
+    destroyExtensionPopup(existing)
+  }
+  hiddenExtensionPopups.set(key, rec)
+}
+
+/** Wipe every cached popup whose windowId matches. Called from the
+ *  owner window's 'closed' listener so we don't leak webContents
+ *  pointing at a dead BrowserWindow. */
+function purgeHiddenPopupsForWindow(windowId: number): void {
+  for (const [key, rec] of hiddenExtensionPopups) {
+    if (rec.windowId === windowId) {
+      destroyExtensionPopup(rec)
+      hiddenExtensionPopups.delete(key)
     }
   }
 }
@@ -1029,9 +1312,37 @@ export function closeExtensionPopup(windowId: number): boolean {
   const rec = extensionPopupByWindow.get(windowId)
   if (!rec) return false
   extensionPopupByWindow.delete(windowId)
-  destroyExtensionPopup(rec)
+  hideExtensionPopup(rec)
   sendToWindowRenderer(windowId, 'extension-popup-closed', { extensionId: rec.extensionId })
   return true
+}
+
+/** Re-attach a cached (hidden) popup to its owner window. The
+ *  webContents is alive — we just removed the view from contentView
+ *  on close — so no reload, no port reconnect, no DevTools detach.
+ *  The caller has already pulled the record out of
+ *  hiddenExtensionPopups; we install the new anchor + blur listeners
+ *  and put the record back in extensionPopupByWindow. */
+function showCachedExtensionPopup(
+  rec: ExtensionPopupRecord,
+  ownerWindow: BrowserWindow,
+  anchor: { x: number; y: number; width: number; height: number },
+): void {
+  rec.anchor = anchor
+  ownerWindow.contentView.addChildView(rec.view)
+  rec.view.setBounds(clampPopupBounds(ownerWindow, anchor, rec.width, rec.height))
+  ownerWindow.on('blur', rec.onBlur)
+  extensionPopupByWindow.set(rec.windowId, rec)
+  // Pull keyboard focus into the popup so input fields are typeable
+  // immediately, matching the fresh-create flow's did-finish-load
+  // focus call.
+  try { rec.view.webContents.focus() }
+  catch (err) {
+    log.warn('extension popup: focus on cached re-show threw', {
+      extensionId: rec.extensionId,
+      err: String(err),
+    })
+  }
 }
 
 /** Toggle an extension's popup. If the same extension's popup is already
@@ -1054,6 +1365,29 @@ export async function toggleExtensionPopup(
 
   const ownerWindow = BrowserWindow.fromId(windowId)
   if (!ownerWindow || ownerWindow.isDestroyed()) return 'closed'
+
+  // Cache reuse: if we have a hidden popup for this (window, extension)
+  // pair from a previous open, re-attach it instead of building a new
+  // WebContentsView. Browsec's popup-side store, runtime.connect port
+  // to its SW, and any open DevTools session all stay intact — closing
+  // and reopening the popup in quick succession no longer wipes the
+  // user's selections or forces a full popup-side state reload.
+  const cacheKey = popupCacheKey(windowId, extensionId)
+  const cached = hiddenExtensionPopups.get(cacheKey)
+  if (cached) {
+    hiddenExtensionPopups.delete(cacheKey)
+    if (!cached.view.webContents.isDestroyed()) {
+      showCachedExtensionPopup(cached, ownerWindow, anchor)
+      sendToWindowRenderer(windowId, 'extension-popup-opened', { extensionId })
+      return 'opened'
+    }
+    // Cached WC was somehow destroyed (renderer crash?) — fall through
+    // and create a fresh one.
+    log.info('extension popup: cached webContents was destroyed, rebuilding', {
+      extensionId,
+      windowId,
+    })
+  }
 
   const partition = pickPartitionForWindow(windowId)
   // The partition session may not have THIS extension loaded — the install
@@ -1132,10 +1466,37 @@ export async function toggleExtensionPopup(
   const onBlur = (): void => {
     try {
       if (!view.webContents.isDestroyed() && view.webContents.isDevToolsOpened()) return
-    } catch { /* ignore */ }
+    } catch (err) {
+      // wc is gone — fall through and let closeExtensionPopup clean up
+      // whatever's left.
+      log.info('extension popup: isDevToolsOpened probe threw on blur', { err: String(err) })
+    }
     closeExtensionPopup(windowId)
   }
   ownerWindow.on('blur', onBlur)
+
+  // Close on popup-blur too — the window-blur listener above only fires
+  // when the user switches AWAY from the whole window. If they click
+  // somewhere else INSIDE the same window (a tab, the address bar, the
+  // sidebar), the window stays focused; only the popup's webContents
+  // loses focus. Without this listener the popup stays visible
+  // overlaying the page until the user explicitly closes it — the
+  // exact "popup doesn't hide, just blurs" symptom users have hit.
+  view.webContents.on('blur', () => {
+    try {
+      if (!view.webContents.isDestroyed() && view.webContents.isDevToolsOpened()) return
+    } catch (err) {
+      log.info('extension popup: isDevToolsOpened probe threw on wc blur', { err: String(err) })
+    }
+    // Defer one tick so that re-opening the same popup via toolbar
+    // click (which momentarily blurs then re-focuses) doesn't race
+    // with the close-then-reopen path. If the popup is still the
+    // active one for this window after the tick, dismiss it.
+    setImmediate(() => {
+      const cur = extensionPopupByWindow.get(windowId)
+      if (cur === rec) closeExtensionPopup(windowId)
+    })
+  })
 
   // Diagnose silent popup failures: a renderer crash, hang, or aborted
   // load all surface as "click did nothing" / "blank white panel" to the
@@ -1191,7 +1552,13 @@ export async function toggleExtensionPopup(
   // beyond an empty rectangle. Gated on env var so the production
   // experience isn't littered with devtools windows.
   if (process.env['NEWBRO_EXT_DEVTOOLS']) {
-    try { view.webContents.openDevTools({ mode: 'detach' }) } catch { /* ignore */ }
+    try { view.webContents.openDevTools({ mode: 'detach' }) }
+    catch (err) {
+      log.warn('extension popup: openDevTools env-gated path threw', {
+        extensionId,
+        err: String(err),
+      })
+    }
   }
   // Right-click → Inspect, plus Cmd/Ctrl+Shift+I shortcut. The popup
   // has no native context menu and no toolbar, so without these the
@@ -1207,7 +1574,12 @@ export async function toggleExtensionPopup(
           try {
             view.webContents.openDevTools({ mode: 'detach' })
             view.webContents.inspectElement(params.x, params.y)
-          } catch { /* ignore */ }
+          } catch (err) {
+            log.warn('extension popup: Inspect context-menu click threw', {
+              extensionId,
+              err: String(err),
+            })
+          }
         },
       },
     ])
@@ -1216,7 +1588,13 @@ export async function toggleExtensionPopup(
   view.webContents.on('before-input-event', (_e, input) => {
     const mod = process.platform === 'darwin' ? input.meta : input.control
     if (mod && input.shift && input.key.toLowerCase() === 'i') {
-      try { view.webContents.toggleDevTools() } catch { /* ignore */ }
+      try { view.webContents.toggleDevTools() }
+      catch (err) {
+        log.warn('extension popup: toggleDevTools shortcut threw', {
+          extensionId,
+          err: String(err),
+        })
+      }
     }
   })
   // Also pipe in-popup console messages into the main log
@@ -1245,53 +1623,58 @@ export async function toggleExtensionPopup(
   // load completed.
   view.webContents.once('did-finish-load', () => {
     if (!extensionPopupByWindow.has(windowId)) return
-    try { view.webContents.focus() } catch { /* ignore */ }
-    // Fit the WebContentsView to the popup's preferred size. Several
-    // attempts at increasing delays — most popups settle synchronously
-    // on first paint, but Tampermonkey/Dark Reader/Browsec hydrate
-    // their UI from chrome.storage promises and grow late, so we retry
-    // out to ~1s. Each attempt is cheap (one executeJavaScript round-
-    // trip + setBounds when changed).
+    try { view.webContents.focus() }
+    catch (err) {
+      log.warn('extension popup: focus on did-finish-load threw', {
+        extensionId,
+        err: String(err),
+      })
+    }
+    // Install chrome.storage.onChanged bridge in the popup's MAIN world.
+    //
+    // The preloads we register (session-level extension-shim, plus
+    // WEBVIEW_STEALTH_PRELOAD here) run in the ISOLATED world because
+    // contextIsolation:true. Chromium's chrome.storage binding is
+    // installed in the popup's MAIN world only — that's where the
+    // extension's own scripts run, and where Browsec's popup updates
+    // storage on country pick. From isolated world we see `chrome`
+    // (added via electron-chrome-extensions's library preload bridge)
+    // but `chrome.storage` is absent, which is why our previous
+    // preload-based polling install gave up after 3s with
+    // hasStorage:false on every attempt.
+    //
+    // executeJavaScript runs in the renderer's MAIN world and is not
+    // subject to the extension's CSP (`script-src 'self'` blocks
+    // inline <script> injection but doesn't apply to Electron's
+    // direct script execution). So we just register the listener
+    // here and POST changes to main via newbro-ext-ipc.test, where
+    // the existing 'storage-bridge' webRequest IPC handler queues
+    // them per extId for the SW long-poll.
+    installFrameStorageBridge(view.webContents, `popup/${extensionId}`).catch((err) => {
+      log.warn('extension popup: storage bridge install threw', {
+        extensionId,
+        err: String(err),
+      })
+    })
+    // Fit the WebContentsView to the popup's natural content size.
+    // Most popups settle synchronously on first paint, but Tampermonkey
+    // / Dark Reader / Browsec hydrate UI from chrome.storage promises
+    // and grow late, so we retry out to ~1.2s. Each attempt is a single
+    // executeJavaScript round-trip + setBounds when changed.
     fitExtensionPopupToContent(windowId)
     setTimeout(() => fitExtensionPopupToContent(windowId), 50)
     setTimeout(() => fitExtensionPopupToContent(windowId), 200)
     setTimeout(() => fitExtensionPopupToContent(windowId), 600)
     setTimeout(() => fitExtensionPopupToContent(windowId), 1200)
-    // Click-event instrumentation. When a Browsec/Hola button "does
-    // nothing" it can mean (a) Browsec never bound the listener, or
-    // (b) real mouse events never reach the page. We can tell which
-    // by capturing every pointerdown/click at the document with a
-    // capture-phase listener. Goes through the existing console-message
-    // pipe to main's log, so no extra IPC required.
-    view.webContents
-      .executeJavaScript(
-        `(function(){
-          if (window.__newbroClickProbeInstalled) return;
-          window.__newbroClickProbeInstalled = true;
-          function describe(el){
-            if (!el) return '(none)';
-            var t = el.tagName + (el.id ? '#' + el.id : '');
-            var cls = (el.className || '').toString().slice(0, 60);
-            if (cls) t += '.' + cls.replace(/\\s+/g, '.');
-            var txt = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 50);
-            return t + ' "' + txt + '"';
-          }
-          document.addEventListener('pointerdown', function(e){
-            try { console.log('[newbro-debug] pointerdown', describe(e.target)); } catch(_){}
-          }, true);
-          document.addEventListener('click', function(e){
-            try { console.log('[newbro-debug] click', describe(e.target)); } catch(_){}
-          }, true);
-          console.log('[newbro-debug] click probe installed');
-        })();`,
-      )
-      .catch(() => undefined)
   })
 
   // Tear down on owner-window destroy. Map cleanup happens here too in
   // case the popup outlived our explicit close (shouldn't, but defensive).
+  // Also reap any popups parked in the hidden cache for this window —
+  // their webContents would otherwise leak past the window's lifetime.
   ownerWindow.once('closed', () => {
     extensionPopupByWindow.delete(windowId)
+    purgeHiddenPopupsForWindow(windowId)
   })
 
   // Send opened notification so the renderer can update icon "active" state.
@@ -1441,8 +1824,10 @@ export function installTabPreloadListeners(): void {
     if (!rec) return null
     let url = ''
     let title = ''
-    try { url = rec.view.webContents.getURL() } catch { /* ignore */ }
-    try { title = rec.view.webContents.getTitle() } catch { /* ignore */ }
+    try { url = rec.view.webContents.getURL() }
+    catch (err) { log.warn('active-tab-info: getURL threw', { tabId: rec.tabId, err: String(err) }) }
+    try { title = rec.view.webContents.getTitle() }
+    catch (err) { log.warn('active-tab-info: getTitle threw', { tabId: rec.tabId, err: String(err) }) }
     return {
       // chrome.tabs expects a numeric id. Hash the UUID to a stable
       // positive integer; collisions are vanishingly unlikely across
@@ -1501,7 +1886,8 @@ export function installTabPreloadListeners(): void {
       items.push({
         label: 'Copy Link Address',
         click: () => {
-          try { clipboard.writeText(linkUrl) } catch { /* ignore */ }
+          try { clipboard.writeText(linkUrl) }
+          catch (err) { log.warn('context-menu: copy link clipboard write failed', String(err)) }
         },
       })
       items.push({ type: 'separator' })
@@ -1511,7 +1897,8 @@ export function installTabPreloadListeners(): void {
       items.push({
         label: 'Copy Image Address',
         click: () => {
-          try { clipboard.writeText(imgUrl) } catch { /* ignore */ }
+          try { clipboard.writeText(imgUrl) }
+          catch (err) { log.warn('context-menu: copy image clipboard write failed', String(err)) }
         },
       })
       items.push({ type: 'separator' })
@@ -1529,7 +1916,8 @@ export function installTabPreloadListeners(): void {
       items.push({
         label: 'Copy and search',
         click: () => {
-          try { clipboard.writeText(selection) } catch { /* ignore */ }
+          try { clipboard.writeText(selection) }
+          catch (err) { log.warn('context-menu: copy-and-search clipboard write failed', String(err)) }
           // Renderer owns the search-engine template; send the raw query.
           win.webContents.send('tab-context-search', selection)
         },
@@ -1692,8 +2080,10 @@ export function getActiveTabInfoForWindow(windowId: number): {
   if (!rec) return null
   let url = ''
   let title = ''
-  try { url = rec.view.webContents.getURL() } catch { /* ignore */ }
-  try { title = rec.view.webContents.getTitle() } catch { /* ignore */ }
+  try { url = rec.view.webContents.getURL() }
+  catch (err) { log.warn('getActiveTabInfoForWindow: getURL threw', { tabId: rec.tabId, err: String(err) }) }
+  try { title = rec.view.webContents.getTitle() }
+  catch (err) { log.warn('getActiveTabInfoForWindow: getTitle threw', { tabId: rec.tabId, err: String(err) }) }
   return {
     id: hashStringToInt(rec.tabId),
     url,

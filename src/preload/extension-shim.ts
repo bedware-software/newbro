@@ -25,18 +25,29 @@ function reportLoaded(stage: string): void {
       hasUserScripts:
         typeof (globalThis as { chrome?: { userScripts?: unknown } }).chrome?.userScripts !== 'undefined',
     })
-  } catch { /* ipcRenderer may be torn down */ }
+  } catch (err) {
+    // ipcRenderer.send during page teardown can throw; console.error
+    // here surfaces via the page's existing console-message → main pipe.
+    try { console.error('[newbro-ext-shim] reportLoaded ipc.send failed:', err) }
+    catch { /* console torn down too — last resort */ }
+  }
 }
 
 // Skip outside extension contexts.
 const proto = (() => {
   try {
     if (typeof location !== 'undefined' && location?.protocol) return location.protocol
-  } catch { /* ignore */ }
+  } catch (err) {
+    try { console.error('[newbro-ext-shim] location.protocol read threw:', err) }
+    catch { /* nothing more we can do */ }
+  }
   try {
     const sw = (globalThis as { location?: { protocol?: string } }).location
     if (sw?.protocol) return sw.protocol
-  } catch { /* ignore */ }
+  } catch (err) {
+    try { console.error('[newbro-ext-shim] sw location.protocol read threw:', err) }
+    catch { /* nothing more we can do */ }
+  }
   return ''
 })()
 
@@ -55,7 +66,10 @@ if (proto === 'chrome-extension:') {
         href: typeof location !== 'undefined' ? location?.href : null,
         err: String(err),
       })
-    } catch { /* ignore */ }
+    } catch (sendErr) {
+      try { console.error('[newbro-ext-shim] install threw, ipc.send also failed:', err, sendErr) }
+      catch { /* nothing more we can do */ }
+    }
   }
   reportLoaded('preload-end')
 }
@@ -175,17 +189,152 @@ function applyPatches(chrome: Record<string, unknown>): void {
       return new Promise((resolve) => {
         try {
           rawGetSelf((info: unknown) => resolve(info))
-        } catch {
+        } catch (err) {
+          console.error('[newbro-ext-shim] management.getSelf callback-style raw threw:', err)
           resolve(undefined)
         }
       })
-    } catch {
+    } catch (err) {
+      console.error('[newbro-ext-shim] management.getSelf promise-style raw threw:', err)
       return Promise.resolve(undefined)
     }
   }
   management.getSelf = (callback?: (info: unknown) => void) => {
-    const promise = callRaw().then(decorate, () => decorate({}))
-    if (typeof callback === 'function') promise.then((info) => { try { callback(info) } catch { /* ignore */ } })
+    const promise = callRaw().then(decorate, (err) => {
+      console.error('[newbro-ext-shim] management.getSelf raw rejected:', err)
+      return decorate({})
+    })
+    if (typeof callback === 'function') promise.then((info) => {
+      try { callback(info) }
+      catch (err) { console.error('[newbro-ext-shim] management.getSelf user-cb threw:', err) }
+    })
     return promise
   }
+
+  // chrome.storage.onChanged bridge to the SW. In Electron 41,
+  // chrome.storage.onChanged events fire in the writing context (this
+  // popup) but DON'T propagate cross-context to the chrome-extension
+  // service worker. Browsec's popup writes to chrome.storage.local
+  // (e.g. country picker → mode=proxy, country=hr) and its in-popup
+  // storageListener fires correctly, but the SW's identical listener
+  // never fires, so the SW never re-runs setActualPac and the proxy
+  // stays on the previous country / smart-only state. User-visible:
+  // clicking a country / OFF in the popup looks like it took, but
+  // the actual IP doesn't change.
+  //
+  // Timing trap: when our preload runs at document_start, the
+  // electron-chrome-extensions library hasn't installed
+  // chrome.storage yet (we observed hasStorage:false / hasLocal:false
+  // / hasOnChangedAddListener:false at install attempt). The lib's
+  // own preload writes chrome.storage onto an in-place chrome object
+  // — no full reassignment — so our setter-on-chrome trap doesn't
+  // fire either. Solution: poll for chrome.storage.onChanged
+  // .addListener and install when it appears. Cheap (~200ms total),
+  // bounded, idempotent.
+  installStorageBridge(chrome)
+}
+
+interface StorageBridgeGuard {
+  __newbroStorageBridgeInstalled?: boolean
+  __newbroStorageBridgePolling?: boolean
+}
+
+function installStorageBridge(chrome: Record<string, unknown>): void {
+  const guard = chrome as unknown as StorageBridgeGuard
+  if (guard.__newbroStorageBridgeInstalled) return
+  if (guard.__newbroStorageBridgePolling) return
+  guard.__newbroStorageBridgePolling = true
+
+  let attempt = 0
+  const maxAttempts = 60 // ~3s at 50ms intervals — plenty for the lib to land
+
+  const tryInstall = (): void => {
+    attempt++
+    let onChanged: { addListener?: (cb: (changes: unknown, areaName: string) => void) => void } | undefined
+    let hasStorage = false
+    let hasLocal = false
+    try {
+      const cs = chrome.storage as
+        | { local?: unknown; onChanged?: { addListener?: (cb: (changes: unknown, areaName: string) => void) => void } }
+        | undefined
+      hasStorage = !!cs
+      hasLocal = !!cs?.local
+      onChanged = cs?.onChanged
+    } catch (err) {
+      try { console.error('[newbro-ext-shim] storage-bridge probe threw:', err) }
+      catch { /* console torn down */ }
+    }
+    const hasOnChangedAddListener = typeof onChanged?.addListener === 'function'
+
+    if (hasOnChangedAddListener && onChanged) {
+      guard.__newbroStorageBridgeInstalled = true
+      guard.__newbroStorageBridgePolling = false
+      try {
+        ipcRenderer.send('newbro-ext-shim-trace', {
+          kind: 'storage-bridge-install',
+          href: typeof location !== 'undefined' ? location?.href : null,
+          hasStorage,
+          hasLocal,
+          hasOnChangedAddListener,
+          attempt,
+        })
+      } catch { /* ipc not ready */ }
+      onChanged.addListener!((changes: unknown, areaName: string) => {
+        try {
+          const runtime = chrome.runtime as { id?: string } | undefined
+          const extId = runtime?.id ?? ''
+          const keys =
+            changes && typeof changes === 'object'
+              ? Object.keys(changes as Record<string, unknown>)
+              : []
+          try {
+            ipcRenderer.send('newbro-ext-shim-trace', {
+              kind: 'storage-bridge-fire',
+              href: typeof location !== 'undefined' ? location?.href : null,
+              extId,
+              areaName,
+              keys,
+            })
+          } catch { /* ipc gone */ }
+          if (!extId || keys.length === 0) return
+          fetch('https://newbro-ext-ipc.test/storage-bridge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ extId, areaName, changes }),
+          }).catch((err: unknown) => {
+            const msg = err && (err as { message?: string }).message ? String((err as { message?: string }).message) : String(err)
+            if (msg.indexOf('Failed to fetch') !== -1) return
+            try { console.error('[newbro-ext-shim] storage-bridge fetch rejected:', msg) }
+            catch { /* console torn down */ }
+          })
+        } catch (err) {
+          try { console.error('[newbro-ext-shim] storage-bridge dispatch threw:', err) }
+          catch { /* console torn down */ }
+        }
+      })
+      return
+    }
+
+    if (attempt >= maxAttempts) {
+      guard.__newbroStorageBridgePolling = false
+      try {
+        ipcRenderer.send('newbro-ext-shim-trace', {
+          kind: 'storage-bridge-install-gaveup',
+          href: typeof location !== 'undefined' ? location?.href : null,
+          hasStorage,
+          hasLocal,
+          hasOnChangedAddListener,
+          attempt,
+        })
+      } catch { /* ipc gone */ }
+      return
+    }
+
+    setTimeout(tryInstall, 50)
+  }
+
+  // First attempt synchronous so we don't miss the case where storage
+  // IS already available when applyPatches runs (e.g. on cached
+  // popup re-show paths). Subsequent attempts back off to 50ms.
+  tryInstall()
 }
