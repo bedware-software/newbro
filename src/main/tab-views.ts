@@ -1723,6 +1723,19 @@ export function __internal_getTabRecord(tabId: string): TabRecord | undefined {
   return tabs.get(tabId)
 }
 
+/** Find a tab's webContents by Chrome's tabs.Tab.id, which we map to
+ *  Electron's webContents.id. Used by chrome.userScripts.execute and
+ *  chrome.scripting.executeScript backends to run a script in a
+ *  specific tab without going through the SW shim's chrome.tabs
+ *  bookkeeping. */
+export function getWebContentsByChromeTabId(chromeTabId: number): WebContents | null {
+  const tabId = wcIdToTabId.get(chromeTabId)
+  if (!tabId) return null
+  const rec = tabs.get(tabId)
+  if (!rec || rec.view.webContents.isDestroyed()) return null
+  return rec.view.webContents
+}
+
 // Ensure app-wide cleanup so no stray child windows linger when a tab's
 // owner window is destroyed. The BrowserWindow `closed` event is a
 // reliable teardown point.

@@ -37,6 +37,7 @@ import {
   getRecordByWebContents,
   selectTabByWebContents,
   destroyTabByWebContents,
+  getWebContentsByChromeTabId,
 } from './tab-views'
 import {
   getOrCreateExtensions,
@@ -46,7 +47,7 @@ import {
   type BrowserActionState,
 } from './chrome-extensions-bridge'
 import { ElectronChromeExtensions } from 'electron-chrome-extensions'
-import { loadEnabledExtensionsInto, readBgSourceWindow, rehydrateExtensionsOnStartup } from './extensions/manager'
+import { loadEnabledExtensionsInto, readBgSourceWindow, rehydrateExtensionsOnStartup, getExtensionEntry } from './extensions/manager'
 import { startSwCdpInspector, setSwCdpAuthHandler, type SwCdpAuthResponse } from './extensions/sw-cdp-inspector'
 import { startSwRpcServer, getSwRpcServerInfo } from './extensions/sw-rpc-server'
 import {
@@ -371,6 +372,18 @@ function waitForRuntimeMessage(extId: string, timeoutMs: number): Promise<unknow
     list.push(wake)
     waitingRuntimeMsgPolls.set(extId, list)
   })
+}
+
+/** Tiny string hash for world-id derivation. Same shape as the one in
+ *  src/main/extensions/userscripts.ts (worldIdForExtension); duplicated
+ *  here so we can pick a per-extension isolated world for the
+ *  chrome.userScripts.execute backend without exporting it. */
+function hashStringForWorld(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  }
+  return h
 }
 
 /** chrome.runtime.connect port bridge state.
@@ -3136,6 +3149,79 @@ app.whenReady().then(async () => {
     portSwSend: (portId, message) => portSwSend(portId, message),
     portSwPoll: (extId, timeoutMs) => portSwPoll(extId, timeoutMs),
     portDisconnect: (portId, side) => portDisconnect(portId, side),
+    userScriptsExecute: async (extId, injection) => {
+      // Resolve target tab(s) → list of webContents to inject into.
+      const target = (injection.target ?? {}) as {
+        tabId?: number; frameIds?: number[]; documentIds?: string[]; allFrames?: boolean
+      }
+      const tabId = typeof target.tabId === 'number' ? target.tabId : -1
+      if (tabId < 0) {
+        log.warn('rpc/userScripts.execute: no tabId', { extId, target })
+        return []
+      }
+      const wc = getWebContentsByChromeTabId(tabId)
+      if (!wc) {
+        log.warn('rpc/userScripts.execute: tab not found', { extId, tabId })
+        return []
+      }
+      // Resolve injection.js → concatenated code string. Each entry is
+      // either {code: '...'} or {file: 'rel/path/inside/ext.js'}; file
+      // paths are read off the extension directory (the same place
+      // chrome.userScripts.register's file refs come from).
+      const jsList = Array.isArray(injection.js) ? injection.js as Array<Record<string, unknown>> : []
+      const entry = getExtensionEntry(extId)
+      const pieces: string[] = []
+      for (const j of jsList) {
+        if (typeof j.code === 'string') {
+          pieces.push(j.code as string)
+        } else if (typeof j.file === 'string' && entry?.path) {
+          const rel = (j.file as string).replace(/^\/+/, '')
+          if (rel.includes('..')) continue
+          const abs = join(entry.path, rel)
+          try {
+            if (existsSync(abs)) pieces.push(readFileSync(abs, 'utf8'))
+          } catch (err) {
+            log.warn('rpc/userScripts.execute: file read threw', { extId, file: rel, err: String(err) })
+          }
+        }
+      }
+      const code = pieces.join('\n;\n')
+      if (!code) {
+        log.info('rpc/userScripts.execute: empty code', { extId, tabId })
+        return [{ frameId: 0, documentId: '', result: undefined }]
+      }
+      const world = injection.world === 'MAIN' ? 'MAIN' : 'USER_SCRIPT'
+      log.info('rpc/userScripts.execute', { extId, tabId, world, jsLen: code.length, jsHead: code.slice(0, 200) })
+      try {
+        if (world === 'MAIN') {
+          // executeJavaScript runs the script in the page's main world.
+          // It's embedder-level — bypasses page CSP entirely. This is
+          // the path real Chrome's chrome.userScripts.execute takes
+          // when world: 'MAIN' is requested, and the reason userscript
+          // managers prefer it over inline <script> injection on
+          // strict-CSP sites.
+          const result = await wc.executeJavaScript(code, false)
+          return [{ frameId: 0, documentId: '', result }]
+        }
+        // world === 'USER_SCRIPT': run in a dedicated isolated world so
+        // page globals stay invisible to the userscript and vice versa.
+        // World id is derived per-extension so subsequent execute calls
+        // from the same extension share state (matches Chrome's per-
+        // extension USER_SCRIPT world isolation).
+        const worldId = 1000 + (Math.abs(hashStringForWorld(extId)) % 1000)
+        const maybe = (wc as unknown as {
+          executeJavaScriptInIsolatedWorld?: (worldId: number, scripts: { code: string }[]) => Promise<unknown> | void
+        }).executeJavaScriptInIsolatedWorld?.(worldId, [{ code }])
+        let result: unknown = undefined
+        if (maybe && typeof (maybe as Promise<unknown>).then === 'function') {
+          result = await (maybe as Promise<unknown>)
+        }
+        return [{ frameId: 0, documentId: '', result }]
+      } catch (err) {
+        log.warn('rpc/userScripts.execute threw', { extId, tabId, world, err: String(err) })
+        return [{ frameId: 0, documentId: '', error: String(err) }]
+      }
+    },
   }).catch((err) => {
     log.error('sw-rpc-server: failed to start', { err: String(err) })
   })

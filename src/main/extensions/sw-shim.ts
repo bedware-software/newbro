@@ -462,13 +462,32 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
       return Promise.resolve();
     };
-    // Chrome 135+ chrome.userScripts.execute. Tampermonkey calls this
-    // and chains .map on the result; without it the property reads as
-    // undefined and the chain crashes.
+    // Chrome 135+ chrome.userScripts.execute. Real backend: forwards
+    // {target, js, world} to main via the loopback RPC server, which
+    // runs the code through webContents.executeJavaScript on the
+    // target tab. For world: 'MAIN', that path bypasses page CSP
+    // entirely (it's embedder-level), which is the ONLY way to inject
+    // userscripts into strict-CSP sites like yandex.ru. TM switches to
+    // this API when "Allow user scripts" is enabled in the extension's
+    // settings (mirror of Chrome's chrome://extensions Developer Mode
+    // toggle for userScripts opt-in).
     us.execute = function (injection, cb) {
-      var results = [{ frameId: 0, documentId: '', result: undefined }];
-      if (typeof cb === 'function') Promise.resolve().then(function () { cb(results); });
-      return Promise.resolve(results);
+      var p = (function () {
+        try {
+          return fetch(IPC_RPC + '/userscripts-execute', {
+            method: 'POST',
+            headers: rpcHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ extId: extId, injection: injection || {} }),
+          })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { return (j && j.results) || []; });
+        } catch (e) {
+          swLog('userScripts.execute/fetch', e);
+          return Promise.resolve([]);
+        }
+      })();
+      if (typeof cb === 'function') p.then(function (r) { try { cb(r); } catch (_) {} });
+      return p;
     };
     // chrome.userScripts.ExecutionWorld enum (Chrome MV3). TM reads
     // these constants to validate the world arg before register().

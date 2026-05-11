@@ -111,6 +111,17 @@ export interface SwRpcRoutes {
   portSwSend: (portId: string, message: unknown) => void
   portSwPoll: (extId: string, timeoutMs: number) => Promise<unknown>
   portDisconnect: (portId: string, side: 'content' | 'sw') => void
+  /** chrome.userScripts.execute({target, js, world, ...}) backend.
+   *  Bypasses host-page CSP by going through Electron's embedder-level
+   *  webContents.executeJavaScript (for world: 'MAIN') or
+   *  executeJavaScriptInIsolatedWorld (for world: 'USER_SCRIPT'). Real
+   *  Chrome's chrome.userScripts.execute is the privileged path TM
+   *  switches to when "Allow user scripts" is enabled — it's the only
+   *  way to inject scripts into pages with strict CSP. */
+  userScriptsExecute: (
+    extId: string,
+    injection: Record<string, unknown>,
+  ) => Promise<Array<{ frameId?: number; documentId?: string; result?: unknown; error?: string }>>
 }
 
 let started: SwRpcServerInfo | null = null
@@ -418,6 +429,22 @@ async function handleRequest(
       respondJson(200, { ok: true })
     } catch (err) {
       log.warn('sw-rpc-server: port-disconnect threw', { err: String(err) })
+      respondJson(500, { error: String(err) })
+    }
+    return
+  }
+
+  if (path === '/userscripts-execute' && req.method === 'POST') {
+    const body = await readBody(req)
+    try {
+      const parsed = body ? JSON.parse(body) as { extId?: string; injection?: Record<string, unknown> } : {}
+      if (typeof parsed.extId !== 'string' || parsed.extId.length === 0) {
+        respondJson(400, { error: 'no-extId' }); return
+      }
+      const results = await routes.userScriptsExecute(parsed.extId, parsed.injection ?? {})
+      respondJson(200, { results })
+    } catch (err) {
+      log.warn('sw-rpc-server: userscripts-execute threw', { err: String(err) })
       respondJson(500, { error: String(err) })
     }
     return
