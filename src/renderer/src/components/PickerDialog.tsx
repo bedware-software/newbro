@@ -44,6 +44,9 @@ interface Props {
   emptyMessage?: string
   /** Verb to put on the confirm action in the footer (e.g. "Move", "Copy"). */
   confirmVerb?: string
+  /** Item id to pre-select when the dialog opens. Falls back to the first
+   *  row if the id isn't present in the (filtered) list. */
+  initialItemId?: string
   scope: 'current' | 'all'
   onScopeChange: (scope: 'current' | 'all') => void
   scopeChoices: [ScopeChoice, ScopeChoice]
@@ -62,6 +65,7 @@ export function PickerDialog({
   items,
   emptyMessage = 'Nothing to show.',
   confirmVerb = 'Select',
+  initialItemId,
   scope,
   onScopeChange,
   scopeChoices,
@@ -79,7 +83,6 @@ export function PickerDialog({
   useEffect(() => {
     if (!open) return
     setQuery('')
-    setSelectedIndex(0)
     setTimeout(() => {
       inputRef.current?.focus()
       inputRef.current?.select()
@@ -96,9 +99,20 @@ export function PickerDialog({
     ])
   }, [query, items])
 
-  // Keep selection within bounds and reset to top whenever the result set
-  // changes (search, scope toggle).
-  useEffect(() => { setSelectedIndex(0) }, [query, scope, items])
+  // Keep selection within bounds and reset whenever the result set changes
+  // (search, scope toggle). If the caller supplied an `initialItemId` that's
+  // present in the filtered list, anchor to it; otherwise fall back to the
+  // top row.
+  useEffect(() => {
+    if (initialItemId) {
+      const idx = filtered.findIndex((i) => i.id === initialItemId)
+      if (idx !== -1) {
+        setSelectedIndex(idx)
+        return
+      }
+    }
+    setSelectedIndex(0)
+  }, [query, scope, items, filtered, initialItemId])
 
   useEffect(() => {
     const el = listRef.current?.querySelector('[data-selected="true"]')

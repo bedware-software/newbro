@@ -12,6 +12,7 @@ import { CommandPalette } from './components/CommandPalette'
 import { InputDialog } from './components/InputDialog'
 import { MoveCopyTabDialog } from './components/MoveCopyTabDialog'
 import { MoveCopyGroupDialog } from './components/MoveCopyGroupDialog'
+import { OpenExternalLinkDialog } from './components/OpenExternalLinkDialog'
 import { UpdateBanner } from './components/UpdateBanner'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 
@@ -217,6 +218,12 @@ export default function App() {
   const [groupPickerOpen, setGroupPickerOpen] = useState(false)
   const [groupPickerMode, setGroupPickerMode] = useState<'move' | 'copy'>('move')
   const [groupPickerGroupId, setGroupPickerGroupId] = useState<string | null>(null)
+  // External-link picker. The URL the user is being asked to place sits in
+  // `pendingUrl`; any URLs that arrive while the picker is already open are
+  // parked in `queue` so we never silently drop a handoff. The dialog is
+  // open whenever `pendingUrl` is non-null — no separate open flag needed.
+  const [externalUrlPending, setExternalUrlPending] = useState<string | null>(null)
+  const [externalUrlQueue, setExternalUrlQueue] = useState<string[]>([])
   const shortcutHandlerRef = useRef<((action: string) => void) | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(() => {
@@ -569,11 +576,19 @@ export default function App() {
       })
     })
 
+    // External URL handoffs (OS link click, second-instance argv, etc.)
+    // route to the picker instead of being dropped straight into the
+    // currently-active group. If the picker is already showing a previous
+    // URL, queue the newcomer so we drain them one at a time.
     const cleanupPopup = window.electronAPI.onOpenUrlAsTab((url) => {
       log.event('open-url-as-tab', url)
-      const s = useAppStore.getState()
-      if (s.activeTabGroupId) s.addTab(s.activeTabGroupId, url)
-      else if (s.activeWorkspaceId) s.addUngroupedTab(s.activeWorkspaceId, url)
+      setExternalUrlPending((current) => {
+        if (current) {
+          setExternalUrlQueue((q) => [...q, url])
+          return current
+        }
+        return url
+      })
     })
 
     const cleanupSettings = window.electronAPI.onSettingsUpdated((newSettings) => {
@@ -777,6 +792,21 @@ export default function App() {
         onClose={() => {
           setGroupPickerOpen(false)
           setGroupPickerGroupId(null)
+        }}
+      />
+      <OpenExternalLinkDialog
+        open={externalUrlPending !== null}
+        url={externalUrlPending}
+        currentWorkspaceId={activeWorkspaceId}
+        onClose={() => {
+          // Drain the queue so a backlog of OS handoffs (e.g. user clicked
+          // several links while we weren't focused) gets walked through
+          // instead of vanishing with the first dismissal.
+          setExternalUrlQueue((q) => {
+            const [next, ...rest] = q
+            setExternalUrlPending(next ?? null)
+            return rest
+          })
         }}
       />
     </>
