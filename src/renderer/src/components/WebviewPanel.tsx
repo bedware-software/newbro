@@ -330,9 +330,18 @@ export function WebviewPanel() {
   // The native view composites above the renderer DOM and would otherwise
   // eat all clicks (Refresh button, text selection) even when the overlay
   // is the only thing the user can see. Same trick the sidebar drag uses.
+  //
+  // Also pull OS keyboard focus back to the parent webContents. Without
+  // this, focus stays parked on the failed tab's (now hidden) WebContentsView;
+  // its before-input-event still gets the key but the interceptor's
+  // shortcut IPC has nowhere useful to land before the user clicks
+  // somewhere. Routing focus to the renderer lets the main-webContents
+  // interceptor run, so Cmd+T / Cmd+1…9 / Cmd+W keep working while the
+  // error overlay is visible.
   useEffect(() => {
     if (showError || showCertError) {
       window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+      window.electronAPI.focusWindowRenderer?.()
       return () => { window.dispatchEvent(new CustomEvent('newbro-tab-show')) }
     }
     return

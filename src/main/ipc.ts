@@ -17,12 +17,14 @@ import {
   moveExtensionPopup,
   setWindowBounds,
   tabExecuteJS,
+  tabFindInPage,
   tabGetState,
   tabGoBack,
   tabGoForward,
   tabNavigate,
   tabReload,
   tabStop,
+  tabStopFindInPage,
   tabToggleDevTools,
   type TabBounds,
 } from './tab-views'
@@ -214,6 +216,29 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('tab:toggle-devtools', (_e, tabId: string) => {
     tabToggleDevTools(tabId)
   })
+
+  // Find-in-page is intentionally an `on` (fire-and-forget) channel — the
+  // request ID is delivered asynchronously through the `found-in-page`
+  // event on the tab-event stream, so the renderer doesn't need an
+  // invoke-style round-trip here.
+  ipcMain.on(
+    'tab:find-in-page',
+    (
+      _e,
+      tabId: string,
+      text: string,
+      options?: { forward?: boolean; findNext?: boolean; matchCase?: boolean },
+    ) => {
+      tabFindInPage(tabId, text, options)
+    }
+  )
+
+  ipcMain.on(
+    'tab:stop-find-in-page',
+    (_e, tabId: string, action: 'clearSelection' | 'keepSelection' | 'activateSelection') => {
+      tabStopFindInPage(tabId, action)
+    }
+  )
 
   // ── Extensions ──
   ipcMain.handle('extensions:list', () => {

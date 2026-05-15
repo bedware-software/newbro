@@ -11,9 +11,26 @@ export interface Settings {
   /** Where keyboard focus lands when a new tab is created —
    *  'site' focuses the page (current behavior), 'url' focuses the URL bar. */
   newTabFocus: 'site' | 'url'
+  /** Show a small "N" badge on the first 9 sidebar tabs, signalling the
+   *  CmdOrCtrl+N quick-jump shortcut. Always-visible (not hover-gated)
+   *  because their job is to advertise the shortcut at a glance. */
+  showTabNumbers: boolean
   defaultPageUrl: string
   searchEngine: string
   proxy: ProxySettings
+  /** DNS-over-HTTPS mode.
+   *  - 'off': use the OS resolver only (system DNS, hosts file, corp VPN's
+   *           internal DNS, etc.).
+   *  - 'automatic' (default): try the OS resolver first, fall back to DoH
+   *           for queries the OS doesn't answer. Corp intranet hosts that
+   *           only exist in the VPN's internal DNS keep working.
+   *  - 'secure': route every query through DoH; the OS resolver is
+   *           bypassed entirely. Maximum privacy but breaks corp VPN
+   *           and any setup with internal-only DNS.
+   *  Chromium-level setting; takes effect at app start (configureHostResolver
+   *  must run after app.ready and stays for the app's lifetime). Changes
+   *  here require restart to apply. */
+  dohMode: 'off' | 'automatic' | 'secure'
   /** Each action accepts up to {@link MAX_BINDINGS_PER_ACTION} accelerators.
    *  An empty array means the action has no keyboard binding. The shape is
    *  always an array — pre-dual-binding saves (single string per action)
@@ -27,6 +44,7 @@ const KNOWN_LIGHT_VARIANTS = new Set(['light-default', 'light-bright', 'light-so
 const KNOWN_DARK_VARIANTS = new Set(['dark-default', 'dark-deep', 'dark-soft'])
 const KNOWN_DENSITIES = new Set(['compact', 'normal'])
 const KNOWN_NEW_TAB_FOCUS = new Set(['site', 'url'])
+const KNOWN_DOH_MODES = new Set(['off', 'automatic', 'secure'])
 
 export interface ProxySettings {
   mode: 'system' | 'direct' | 'custom'
@@ -60,6 +78,21 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   // tab's WebContents (the View menu's other DevTools item targets the
   // chrome renderer instead).
   'page-devtools': ['CmdOrCtrl+Shift+I'],
+  'find-in-page': ['CmdOrCtrl+F'],
+  // Quick-jump to the Nth visible sidebar tab (counting nested tabs in
+  // expanded groups). Collapsed groups are skipped so the numbering matches
+  // exactly what the user sees. Edge / Chrome / Firefox all bind these,
+  // but Newbro's sidebar is vertical so the numbering reflects sidebar
+  // order rather than tab-strip order.
+  'tab-1': ['CmdOrCtrl+1'],
+  'tab-2': ['CmdOrCtrl+2'],
+  'tab-3': ['CmdOrCtrl+3'],
+  'tab-4': ['CmdOrCtrl+4'],
+  'tab-5': ['CmdOrCtrl+5'],
+  'tab-6': ['CmdOrCtrl+6'],
+  'tab-7': ['CmdOrCtrl+7'],
+  'tab-8': ['CmdOrCtrl+8'],
+  'tab-9': ['CmdOrCtrl+9'],
   // Move/Copy actions ship without a default accelerator — they're driven
   // primarily through context menus and the command palette. The keys must
   // still be present so normalizeAndFilterKeybindings preserves any user-
@@ -84,6 +117,7 @@ export const DEFAULT_SETTINGS: Settings = {
   darkVariant: 'dark-default',
   density: 'normal',
   newTabFocus: 'site',
+  showTabNumbers: true,
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
   proxy: {
@@ -91,6 +125,7 @@ export const DEFAULT_SETTINGS: Settings = {
     proxyRules: '',
     proxyBypassRules: '<-loopback>',
   },
+  dohMode: 'automatic',
   keybindings: cloneDefaultKeybindings(),
 }
 
@@ -213,6 +248,9 @@ export function loadSettings(): Settings {
     newTabFocus: KNOWN_NEW_TAB_FOCUS.has(saved?.newTabFocus as string)
       ? (saved!.newTabFocus as 'site' | 'url')
       : DEFAULT_SETTINGS.newTabFocus,
+    dohMode: KNOWN_DOH_MODES.has(saved?.dohMode as string)
+      ? (saved!.dohMode as 'off' | 'automatic' | 'secure')
+      : DEFAULT_SETTINGS.dohMode,
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...savedProxy,
@@ -238,6 +276,9 @@ export function saveSettings(settings: Settings): void {
     newTabFocus: KNOWN_NEW_TAB_FOCUS.has(settings.newTabFocus)
       ? settings.newTabFocus
       : DEFAULT_SETTINGS.newTabFocus,
+    dohMode: KNOWN_DOH_MODES.has(settings.dohMode as string)
+      ? settings.dohMode
+      : DEFAULT_SETTINGS.dohMode,
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...settings.proxy,

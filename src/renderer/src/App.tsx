@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getSidebarOrder, type NewTabFocus } from './store/app-store'
+import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getVisibleTabOrder, type NewTabFocus } from './store/app-store'
 import { normalizeURL, setSearchEngine } from './lib/url'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
+import { FindBar } from './components/FindBar'
 import { SearchDialog } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
@@ -27,6 +28,7 @@ interface Settings {
   darkVariant: string
   density: Density
   newTabFocus: NewTabFocus
+  showTabNumbers: boolean
   defaultPageUrl: string
   searchEngine: string
   /** Each action accepts up to two accelerator strings. Pre-dual-binding
@@ -92,6 +94,15 @@ declare global {
       tabGetState?: (tabId: string) => Promise<{ isLoading: boolean; url: string; canGoBack: boolean; canGoForward: boolean } | null>
       tabExecuteJS?: (tabId: string, code: string) => Promise<unknown>
       tabToggleDevTools?: (tabId: string) => Promise<void>
+      tabFindInPage?: (
+        tabId: string,
+        text: string,
+        options?: { forward?: boolean; findNext?: boolean; matchCase?: boolean },
+      ) => void
+      tabStopFindInPage?: (
+        tabId: string,
+        action: 'clearSelection' | 'keepSelection' | 'activateSelection',
+      ) => void
       onTabEvent?: (callback: (evt: unknown) => void) => () => void
 
       // Extensions
@@ -204,6 +215,11 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTabRequest, setSettingsTabRequest] = useState<SettingsTabRequest | null>(null)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [findBarOpen, setFindBarOpen] = useState(false)
+  // Counter that ticks on every find-in-page shortcut so a second Cmd+F
+  // while the bar is already open re-focuses + selects the input (matches
+  // Chrome / Firefox). The FindBar runs a focus effect on every increment.
+  const [findBarFocusTick, setFindBarFocusTick] = useState(0)
   const [commentDialogOpen, setCommentDialogOpen] = useState(false)
   const [commentDefault, setCommentDefault] = useState('')
   const [newGroupDialogOpen, setNewGroupDialogOpen] = useState(false)
@@ -356,29 +372,18 @@ export default function App() {
   }, [activeWorkspaceId, getActiveWorkspace, getActiveProfile])
 
   useEffect(() => {
-    const cycleTab = (direction: 1 | -1) => {
+    const getOrderedTabIdsForActive = (): string[] => {
       const state = useAppStore.getState()
       const profile = state.profiles.find((p) => p.id === state.activeProfileId)
-      if (!profile || !state.activeWorkspaceId) return
-
+      if (!profile || !state.activeWorkspaceId) return []
       const workspace = profile.workspaces.find((w) => w.id === state.activeWorkspaceId)
-      if (!workspace) return
+      if (!workspace) return []
+      return getVisibleTabOrder(workspace)
+    }
 
-      // Build visible tab order using sidebarOrder, skipping collapsed groups
-      const order = getSidebarOrder(workspace)
-      const tabMap = new Map((workspace.tabs || []).map((t) => [t.id, t]))
-      const groupMap = new Map(workspace.tabGroups.map((g) => [g.id, g]))
-      const orderedTabIds: string[] = []
-      for (const id of order) {
-        if (tabMap.has(id)) {
-          orderedTabIds.push(id)
-        } else {
-          const group = groupMap.get(id)
-          if (group && !group.isCollapsed) {
-            for (const t of group.tabs) orderedTabIds.push(t.id)
-          }
-        }
-      }
+    const cycleTab = (direction: 1 | -1) => {
+      const orderedTabIds = getOrderedTabIdsForActive()
+      const state = useAppStore.getState()
       if (orderedTabIds.length === 0) return
 
       const currentIndex = state.activeTabId ? orderedTabIds.indexOf(state.activeTabId) : -1
@@ -393,6 +398,18 @@ export default function App() {
 
     const handleAction = (action: string) => {
       const s = useAppStore.getState()
+      // tab-1..tab-9 quick-jump: parse the digit and index into the same
+      // visible-order list cycleTab uses, so what you press matches what
+      // you see numbered in the sidebar.
+      if (action.startsWith('tab-')) {
+        const n = parseInt(action.slice('tab-'.length), 10)
+        if (Number.isInteger(n) && n >= 1 && n <= 9) {
+          const orderedTabIds = getOrderedTabIdsForActive()
+          const target = orderedTabIds[n - 1]
+          if (target) s.setActiveTab(target)
+          return
+        }
+      }
       switch (action) {
         case 'new-tab':
           if (s.activeTabGroupId) s.addTab(s.activeTabGroupId)
@@ -426,6 +443,10 @@ export default function App() {
           break
         case 'command-palette':
           setCommandPaletteOpen((v) => !v)
+          break
+        case 'find-in-page':
+          setFindBarOpen(true)
+          setFindBarFocusTick((t) => t + 1)
           break
         case 'toggle-sidebar':
           toggleSidebar()
@@ -720,8 +741,15 @@ export default function App() {
     <>
       <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        <Sidebar visible={sidebarVisible} />
-        <WebviewPanel />
+        <Sidebar visible={sidebarVisible} showTabNumbers={settings?.showTabNumbers ?? true} />
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+          <FindBar
+            open={findBarOpen}
+            focusTick={findBarFocusTick}
+            onClose={() => setFindBarOpen(false)}
+          />
+          <WebviewPanel />
+        </div>
       </div>
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} windowWorkspaceId={windowWorkspaceId} />
       <UpdateBanner />

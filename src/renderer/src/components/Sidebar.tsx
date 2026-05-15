@@ -54,15 +54,10 @@ const MIN_WIDTH = 180
 const DEFAULT_WIDTH = 256
 const SIDEBAR_WIDTH_KEY = 'newbro-sidebar-width'
 
-// Group pill text is always dark — matches Edge's behavior across the whole
-// palette. The medium-light Edge colors (see GROUP_COLORS in app-store.ts)
-// are picked so dark text stays readable regardless of hue, so we don't need
-// to flip black/white per color anymore.
-const PILL_TEXT_COLOR = '#1a1a1a'
-// Horizontal alignment between the pill and the indent guide line that
-// hangs below it is owned by globals.css now (`[data-group-children]`
-// margin-left tracks the density-aware row padding-left). Nothing in JS
-// needs to know the pixel value.
+// Pill text colour, the guide-line geometry, and the per-theme group
+// colour resolution are all owned by globals.css now (see the
+// `[data-group-*]` rules there). Nothing in JS needs the pixel value
+// or hex literal.
 
 // ── Drop target: where a dragged item will land ──
 interface DropTarget {
@@ -80,9 +75,13 @@ function loadWidth(): number {
 
 interface Props {
   visible: boolean
+  /** When true, the first 9 visible tabs show a small "N" badge advertising
+   *  the CmdOrCtrl+N quick-jump. Visible state is owned by App.tsx because
+   *  it lives in the settings store. */
+  showTabNumbers: boolean
 }
 
-export function Sidebar({ visible }: Props) {
+export function Sidebar({ visible, showTabNumbers }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -409,6 +408,29 @@ export function Sidebar({ visible }: Props) {
     else for (const t of item.group.tabs) allTabIds.push(t.id)
   }
 
+  // Visible-order positions (1..9) for the quick-jump badges. Mirrors
+  // App.tsx's CmdOrCtrl+N handler: ungrouped tabs and the children of
+  // expanded groups, in sidebar order, skipping collapsed groups. Beyond
+  // the 9th visible tab no badge is shown — the shortcut only covers 1-9.
+  const tabNumberById = useMemo(() => {
+    const m = new Map<string, number>()
+    if (!showTabNumbers) return m
+    let count = 0
+    for (const item of sidebarItems) {
+      if (item.type === 'tab') {
+        if (++count > 9) break
+        m.set(item.id, count)
+      } else if (!item.group.isCollapsed) {
+        for (const t of item.group.tabs) {
+          if (++count > 9) break
+          m.set(t.id, count)
+        }
+        if (count > 9) break
+      }
+    }
+    return m
+  }, [sidebarItems, showTabNumbers])
+
   const handleTabClick = (tabId: string, e: React.MouseEvent) => {
     if (e.metaKey || e.ctrlKey) {
       setSelectedTabIds((prev) => {
@@ -611,6 +633,7 @@ export function Sidebar({ visible }: Props) {
     const isBeingDragged = dragging?.ids.includes(tab.id) ?? false
     const selected = selectedTabIds.has(tab.id)
     const active = tab.id === activeTabId
+    const tabNumber = tabNumberById.get(tab.id)
     const showBefore = containerId === null
       ? isSidebarDropBefore(index)
       : isGroupedTabDropBefore(containerId, index)
@@ -645,25 +668,33 @@ export function Sidebar({ visible }: Props) {
         <TabFavicon favicon={tab.favicon} />
         {tab.comment && <MessageSquareText size={16} className="shrink-0 text-primary/60" />}
         <span className="flex-1 text-xs truncate">{tab.comment ? `${tab.comment} — ${tab.title}` : tab.title}</span>
-        {/* Close button: same overlay treatment as the group action buttons.
-            Floated above the row on the right so the title can use the
-            full row width without reserving a permanent 24px slot for
-            the X. Hover-only for every tab — active included — so the
-            row's right edge stays clean until the user actually mouses
-            over it. */}
-        <div
-          className="absolute right-1 top-0 bottom-0 flex items-center transition-opacity opacity-0 group-hover/tab:opacity-100 pointer-events-none group-hover/tab:pointer-events-auto"
-        >
-          <button
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation()
-              closeTab(tab.id)
-            }}
-            className="h-6 w-6 flex items-center justify-center rounded bg-card/85 backdrop-blur-sm hover:bg-destructive/20 text-muted-foreground hover:text-destructive pointer-events-auto"
-          >
-            <X size={14} />
-          </button>
+        {/* Right-edge slot: the always-visible Cmd+N badge (when this tab
+            is among the first 9 visible) and the hover-only close X share
+            a single 24×24 cell. The Cmd+N badge is sized to match the
+            group counter on the left (w-4 h-4) and centred inside the
+            cell; the close X keeps the full 24×24 click target so it
+            stays easy to hit. */}
+        <div className="absolute right-1 top-0 bottom-0 flex items-center">
+          <div className="relative h-6 w-6 flex items-center justify-center">
+            {tabNumber !== undefined && (
+              <span
+                className="w-4 h-4 inline-flex items-center justify-center rounded bg-card/85 backdrop-blur-sm text-[10px] font-medium tabular-nums text-muted-foreground group-hover/tab:opacity-0 transition-opacity pointer-events-none"
+                title={`Switch to this tab — ${isMacOS ? '⌘' : 'Ctrl+'}${tabNumber}`}
+              >
+                {tabNumber}
+              </span>
+            )}
+            <button
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                closeTab(tab.id)
+              }}
+              className="absolute inset-0 flex items-center justify-center rounded bg-card/85 backdrop-blur-sm hover:bg-destructive/20 text-muted-foreground hover:text-destructive opacity-0 group-hover/tab:opacity-100 pointer-events-none group-hover/tab:pointer-events-auto transition-opacity"
+            >
+              <X size={14} />
+            </button>
+          </div>
         </div>
       </div>
     )
@@ -675,6 +706,20 @@ export function Sidebar({ visible }: Props) {
     const showGroupBefore = isSidebarDropBefore(sidebarIdx)
     // "Drop into" highlight: when dragging a tab and the drop target is this group
     const isDropIntoTarget = isDraggingTab && dropTarget?.containerId === group.id
+    // When the group is expanded with children, the group-header row carries
+    // the bottom half of the guide line that drops from the badge centre
+    // down into the nested rows. Skipped for collapsed or empty groups —
+    // there's nothing below to connect to. Read by the [data-group-expanded]
+    // ::after rule in globals.css.
+    const expanded = !group.isCollapsed && group.tabs.length > 0
+    // Collapsed group containing the active tab gets the same accent
+    // highlight as an active tab row, so the user can still see where
+    // their current tab lives when its row isn't visible. When the
+    // group is expanded the active tab is already shown directly —
+    // highlighting the header on top would be redundant noise.
+    const containsActive = group.isCollapsed
+      && activeTabId != null
+      && group.tabs.some((t) => t.id === activeTabId)
 
     return (
       <div
@@ -682,15 +727,20 @@ export function Sidebar({ visible }: Props) {
         data-sidebar-group-row=""
         data-drop-group-header={group.id}
         data-sidebar-index={sidebarIdx}
+        {...(expanded ? { 'data-group-expanded': '' } : {})}
         className={`relative flex items-center gap-1 px-1 py-1 cursor-pointer group ${
           isBeingDragged ? 'opacity-30' : ''
         } ${
-          // During tab drag: suppress normal hover, show "drop into" highlight instead
+          // During tab drag: "drop into" highlight wins over both the active
+          // and hover states; otherwise active-containing groups stay lit and
+          // the rest get the standard hover treatment.
           isDraggingTab
             ? isDropIntoTarget
               ? 'bg-primary/30 ring-1 ring-inset ring-primary/40'
               : ''
-            : 'hover:bg-accent'
+            : containsActive
+              ? 'bg-accent text-accent-foreground'
+              : 'hover:bg-accent'
         }`}
         onMouseDown={(e) => {
           if (e.button !== 0 || isEditing) return
@@ -712,8 +762,8 @@ export function Sidebar({ visible }: Props) {
             visible (not hover-only) so collapsed groups always advertise
             their tab count. */}
         <span
+          data-group-badge=""
           className="shrink-0 w-4 h-4 inline-flex items-center justify-center rounded text-[10px] font-semibold tabular-nums leading-none"
-          style={{ backgroundColor: group.color, color: PILL_TEXT_COLOR }}
           title={`${group.tabs.length} ${group.tabs.length === 1 ? 'tab' : 'tabs'}`}
         >
           {group.tabs.length}
@@ -727,7 +777,6 @@ export function Sidebar({ visible }: Props) {
             the right for them. */}
         <span
           data-group-pill=""
-          style={{ backgroundColor: group.color, color: PILL_TEXT_COLOR }}
           className="inline-flex items-center gap-1 min-w-0 pl-1.5 pr-3 py-1 rounded-md text-xs font-medium overflow-hidden"
         >
           <span className="shrink-0 inline-flex items-center">
@@ -744,8 +793,7 @@ export function Sidebar({ visible }: Props) {
               }}
               onClick={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
-              style={{ color: PILL_TEXT_COLOR }}
-              className="flex-1 min-w-0 bg-transparent outline-none placeholder:opacity-60"
+              className="flex-1 min-w-0 bg-transparent outline-none placeholder:opacity-60 text-inherit"
               autoFocus
             />
           ) : (
@@ -821,22 +869,17 @@ export function Sidebar({ visible }: Props) {
             }
             const group = item.group
             return (
-              <div key={item.id} className="mb-0 relative" data-sidebar-block={sidebarIdx}>
+              <div
+                key={item.id}
+                data-group-container=""
+                className="mb-0 relative"
+                data-sidebar-block={sidebarIdx}
+                style={{ ['--gc' as string]: group.color }}
+              >
                 {renderGroupHeader(group as GroupItem, sidebarIdx)}
 
                 {!group.isCollapsed && (
-                  // Edge-style indent guide: 2px colored line dropping out
-                  // of the bottom of the pill. Horizontal positioning is
-                  // owned by the `[data-group-children]` CSS rule in
-                  // globals.css, which keeps the line's left edge in sync
-                  // with the row's density-aware padding-left so the line
-                  // stays continuous with the pill above in both compact
-                  // and normal modes.
-                  <div
-                    data-group-children=""
-                    className="border-l-2"
-                    style={{ borderColor: group.color }}
-                  >
+                  <div data-group-children="">
                     {group.tabs.map((tab, tabIndex) => renderTabRow(tab, group.id, tabIndex))}
                     {showAfterLastInGroup(group.id, group.tabs.length) && (
                       <div className="relative h-0">

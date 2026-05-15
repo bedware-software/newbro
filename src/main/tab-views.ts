@@ -57,6 +57,17 @@ export type TabEvent =
   // after Electron's own auto-focus of the WebContentsView). Use this — not
   // did-stop-loading — when overriding focus on load completion.
   | { type: 'did-finish-load'; tabId: string; url: string }
+  // findInPage result. `finalUpdate` is the canonical "this is the last
+  // packet for this request" marker — intermediate updates may have stale
+  // ordinals while Chromium walks the page.
+  | {
+      type: 'found-in-page'
+      tabId: string
+      requestId: number
+      activeMatchOrdinal: number
+      matches: number
+      finalUpdate: boolean
+    }
 
 /** Per-tab state machine for the two-finger horizontal swipe gesture.
  *  Lives in main so detection is fully independent of page content —
@@ -303,6 +314,16 @@ function wireEvents(rec: TabRecord): void {
   wc.on('dom-ready', () => emit({ type: 'dom-ready', tabId: rec.tabId, url: wc.getURL() }))
   wc.on('did-finish-load', () =>
     emit({ type: 'did-finish-load', tabId: rec.tabId, url: wc.getURL() })
+  )
+  wc.on('found-in-page', (_e, result) =>
+    emit({
+      type: 'found-in-page',
+      tabId: rec.tabId,
+      requestId: result.requestId,
+      activeMatchOrdinal: result.activeMatchOrdinal,
+      matches: result.matches,
+      finalUpdate: result.finalUpdate,
+    })
   )
 
   // window.open() handler. Two paths:
@@ -901,6 +922,26 @@ export function tabStop(tabId: string): void {
   const rec = tabs.get(tabId)
   if (!rec) return
   rec.view.webContents.stop()
+}
+
+export function tabFindInPage(
+  tabId: string,
+  text: string,
+  options?: { forward?: boolean; findNext?: boolean; matchCase?: boolean },
+): number {
+  const rec = tabs.get(tabId)
+  if (!rec) return 0
+  if (!text) return 0
+  return rec.view.webContents.findInPage(text, options)
+}
+
+export function tabStopFindInPage(
+  tabId: string,
+  action: 'clearSelection' | 'keepSelection' | 'activateSelection',
+): void {
+  const rec = tabs.get(tabId)
+  if (!rec) return
+  rec.view.webContents.stopFindInPage(action)
 }
 
 export function tabGetState(

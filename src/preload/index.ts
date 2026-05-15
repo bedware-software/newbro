@@ -85,6 +85,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('tab:execute-js', tabId, code),
   tabToggleDevTools: (tabId: string): Promise<void> =>
     ipcRenderer.invoke('tab:toggle-devtools', tabId),
+  // Find-in-page: fire-and-forget. Match results arrive on the existing
+  // 'tab-event' channel as { type: 'found-in-page', ... } payloads.
+  tabFindInPage: (
+    tabId: string,
+    text: string,
+    options?: { forward?: boolean; findNext?: boolean; matchCase?: boolean },
+  ): void => {
+    ipcRenderer.send('tab:find-in-page', tabId, text, options)
+  },
+  tabStopFindInPage: (
+    tabId: string,
+    action: 'clearSelection' | 'keepSelection' | 'activateSelection',
+  ): void => {
+    ipcRenderer.send('tab:stop-find-in-page', tabId, action)
+  },
 
   // Extensions
   listExtensions: (): Promise<unknown[]> => ipcRenderer.invoke('extensions:list'),

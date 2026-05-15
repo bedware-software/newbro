@@ -38,6 +38,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'forward', label: 'Navigate Forward', category: 'Navigation' },
   { id: 'reload', label: 'Reload Page', category: 'Navigation' },
   { id: 'page-devtools', label: 'Toggle Page Developer Tools', category: 'Navigation' },
+  { id: 'find-in-page', label: 'Find in Page...', category: 'Navigation' },
   { id: 'search', label: 'Search Everything', category: 'General' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'View' },
   { id: 'settings', label: 'Open Settings', category: 'General' },

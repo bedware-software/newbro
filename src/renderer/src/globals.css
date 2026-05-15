@@ -51,7 +51,7 @@
   --color-secondary-foreground: oklch(0.22 0 0);
   --color-muted: oklch(0.90 0 0);
   --color-muted-foreground: oklch(0.45 0 0);
-  --color-accent: oklch(0.955 0 0);
+  --color-accent: oklch(0.90 0 0);
   --color-accent-foreground: oklch(0.22 0 0);
   --color-destructive: oklch(0.55 0.20 25);
   --color-destructive-foreground: oklch(0.99 0 0);
@@ -76,7 +76,7 @@
     --color-secondary-foreground: oklch(0.22 0 0);
     --color-muted: oklch(0.90 0 0);
     --color-muted-foreground: oklch(0.45 0 0);
-    --color-accent: oklch(0.955 0 0);
+    --color-accent: oklch(0.90 0 0);
     --color-accent-foreground: oklch(0.22 0 0);
     --color-destructive: oklch(0.55 0.20 25);
     --color-destructive-foreground: oklch(0.99 0 0);
@@ -157,19 +157,102 @@
   padding-right: 8px;
 }
 
-/* Tab-group children container — the colored vertical guide line drops
- * out of the bottom of the group pill. The line's left edge MUST track
- * the row's padding-left so it stays vertically continuous with the
- * pill's left edge in both densities. padding-left is 0: nested tab
- * rows sit flush against the line, with their own row padding providing
- * the small gap between the line and the favicon (so the tabs don't
- * "drift" further from the line in normal mode either). */
+/* Tab-group children container — indented so its left edge aligns with
+ * the horizontal centre of the count badge above it. The 2px guide
+ * line then drops straight down from inside the badge (hidden by the
+ * badge fill) through every nested row's ::before, terminating at the
+ * vertical centre of the last row. With the line at the children's
+ * left edge and a row padding-left, the favicon column sits cleanly
+ * to the right of the line — the "nested" look the user expects, just
+ * routed through the badge centre instead of the badge's bottom-left.
+ *
+ * Indent values: compact badge spans x=4..20 → centre x=12, so the
+ * children's left edge is at x=11 (one pixel left of centre, so a 2px
+ * line lands flush over the centre). Normal badge spans x=8..24 →
+ * centre x=16 → indent 15. */
 [data-group-children] {
-  margin-left: 4px;
+  margin-left: 11px;
   padding-left: 0;
 }
 [data-density="normal"] [data-group-children] {
-  margin-left: 8px;
+  margin-left: 15px;
+}
+
+/* Bottom segment of the guide line, drawn in the group-header row
+ * from just below the badge to the row's bottom. The line's x sits at
+ * the badge's horizontal centre so it visually drops out of the
+ * counter; the line then continues through every nested row's ::before
+ * down to the bottom of the last row. */
+[data-sidebar-row][data-sidebar-group-row][data-group-expanded]::after {
+  content: "";
+  position: absolute;
+  left: 11px;            /* compact: badge centre - 1 (for 2px line) */
+  top: calc(50% + 8px);  /* row centre + half-badge-height = badge bottom */
+  bottom: 0;             /* down to row bottom = first nested row top */
+  width: 2px;
+  background: var(--gc-resolved);
+  pointer-events: none;
+}
+[data-density="normal"] [data-sidebar-row][data-sidebar-group-row][data-group-expanded]::after {
+  left: 15px;            /* normal: badge centre (x=16) - 1 */
+}
+
+/* Continuation of the guide line through every nested row. Drawn at
+ * the row's left edge (which coincides with [data-group-children]'s
+ * margin = badge centre x). Runs the full row height so consecutive
+ * rows stack into a single uninterrupted line, terminating at the
+ * bottom of the last row. */
+[data-group-children] > [data-sidebar-row]::before {
+  content: "";
+  position: absolute;
+  left: 0;               /* flush with row's left edge = line's x in sidebar */
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--gc-resolved);
+  pointer-events: none;
+}
+
+/* ── Tab-group color resolution ──
+ * The group container carries `--gc` inline (set by React from the
+ * stored hex) and resolves it to `--gc-resolved` per theme so every
+ * descendant — badge, pill, the per-row backdrop strips — reads the
+ * same colour. Dark theme uses the stored hex verbatim (the Edge-style
+ * palette is tuned for dark sidebars); light theme lifts perceptual
+ * lightness and boosts chroma so the same hues read as crisp pills on
+ * a pale surface. The transform applies to any hue without per-colour
+ * bookkeeping — gray (chroma=0) stays gray. */
+[data-group-container] {
+  --gc-resolved: var(--gc);
+}
+[data-theme="light"] [data-group-container] {
+  --gc-resolved: oklch(from var(--gc) calc(l + 0.10) calc(c * 1.45) h);
+}
+@media (prefers-color-scheme: light) {
+  [data-theme="system"] [data-group-container] {
+    --gc-resolved: oklch(from var(--gc) calc(l + 0.10) calc(c * 1.45) h);
+  }
+}
+[data-group-badge],
+[data-group-pill] {
+  background-color: var(--gc-resolved);
+  color: var(--gc-text);
+}
+
+/* Pill/badge text colour: dark on dark theme (the Edge-style palette is
+ * medium-light there, so dark text reads), white on light theme (the
+ * brightened/saturated light-theme variants need a light label to keep
+ * contrast). Inherited by the rename input nested in the pill. */
+[data-group-container] {
+  --gc-text: #1a1a1a;
+}
+[data-theme="light"] [data-group-container] {
+  --gc-text: #ffffff;
+}
+@media (prefers-color-scheme: light) {
+  [data-theme="system"] [data-group-container] {
+    --gc-text: #ffffff;
+  }
 }
 
 /* Group-header rows have a taller pill (it carries an internal py

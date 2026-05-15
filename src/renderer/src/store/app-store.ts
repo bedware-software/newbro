@@ -85,6 +85,28 @@ export function getSidebarOrder(w: Workspace): string[] {
   ]
 }
 
+/** Visible tab order in the sidebar — interleaved ungrouped tabs with the
+ *  children of expanded groups, in sidebar layout order. Collapsed groups
+ *  contribute nothing so the indexing matches exactly what the user sees.
+ *  Used by Cmd+N quick-jump (App.tsx) and the matching badge in Sidebar. */
+export function getVisibleTabOrder(w: Workspace): string[] {
+  const order = getSidebarOrder(w)
+  const tabMap = new Map((w.tabs || []).map((t) => [t.id, t]))
+  const groupMap = new Map(w.tabGroups.map((g) => [g.id, g]))
+  const out: string[] = []
+  for (const id of order) {
+    if (tabMap.has(id)) {
+      out.push(id)
+      continue
+    }
+    const group = groupMap.get(id)
+    if (group && !group.isCollapsed) {
+      for (const t of group.tabs) out.push(t.id)
+    }
+  }
+  return out
+}
+
 // ── Helpers for cross-workspace move/copy (used inside immer produce) ──
 
 /** Read-only lookup of a tab by id, scanning every profile and workspace. */
@@ -668,8 +690,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         for (const w of p.workspaces) {
           const g = w.tabGroups.find((g) => g.id === id)
           if (g) {
-            // Prevent collapsing if the active tab is inside this group
-            if (!g.isCollapsed && g.tabs.some((t) => t.id === s.activeTabId)) return
             log.debug('collapse toggle', g.name, g.isCollapsed, '->', !g.isCollapsed)
             g.isCollapsed = !g.isCollapsed
             return

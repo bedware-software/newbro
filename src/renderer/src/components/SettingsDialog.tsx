@@ -18,9 +18,11 @@ interface Settings {
   darkVariant: string
   density: Density
   newTabFocus: 'site' | 'url'
+  showTabNumbers: boolean
   defaultPageUrl: string
   searchEngine: string
   proxy: ProxySettings
+  dohMode: 'off' | 'automatic' | 'secure'
   /** Each action accepts up to {@link MAX_BINDINGS_PER_ACTION} accelerators. */
   keybindings: Record<string, string[]>
 }
@@ -118,6 +120,16 @@ const ACTION_LABELS: Record<string, string> = {
   reload: 'Reload Page',
   settings: 'Open Settings',
   'page-devtools': 'Toggle Page Developer Tools',
+  'find-in-page': 'Find in Page',
+  'tab-1': 'Switch to Tab 1',
+  'tab-2': 'Switch to Tab 2',
+  'tab-3': 'Switch to Tab 3',
+  'tab-4': 'Switch to Tab 4',
+  'tab-5': 'Switch to Tab 5',
+  'tab-6': 'Switch to Tab 6',
+  'tab-7': 'Switch to Tab 7',
+  'tab-8': 'Switch to Tab 8',
+  'tab-9': 'Switch to Tab 9',
   'move-tab': 'Move Tab',
   'copy-tab': 'Copy Tab',
   'move-group': 'Move Group',
@@ -366,9 +378,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [darkVariant, setDarkVariant] = useState<string>(DARK_VARIANTS[0].id)
   const [density, setDensity] = useState<Density>(DEFAULT_DENSITY)
   const [newTabFocus, setNewTabFocus] = useState<'site' | 'url'>('site')
+  const [showTabNumbers, setShowTabNumbers] = useState(true)
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
   const [proxy, setProxy] = useState<ProxySettings>({ ...DEFAULT_PROXY_SETTINGS })
+  const [dohMode, setDohMode] = useState<'off' | 'automatic' | 'secure'>('automatic')
   const [keybindings, setKeybindings] = useState<Record<string, string[]>>(() => cloneDefaultKeybindings())
   const [recordingTarget, setRecordingTarget] = useState<{ action: string; slot: number } | null>(null)
   const [conflictError, setConflictError] = useState<string | null>(null)
@@ -561,10 +575,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setDarkVariant(dv)
       setDensity(dens)
       setNewTabFocus(settings.newTabFocus === 'url' ? 'url' : 'site')
+      setShowTabNumbers(settings.showTabNumbers !== false)
       originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens }
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
       setProxy({ ...DEFAULT_PROXY_SETTINGS, ...settings.proxy })
+      setDohMode(
+        settings.dohMode === 'off' || settings.dohMode === 'secure' ? settings.dohMode : 'automatic'
+      )
       setKeybindings(normalizeKnownKeybindings(settings.keybindings))
     }
   }, [open, settings])
@@ -668,9 +686,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       darkVariant,
       density,
       newTabFocus,
+      showTabNumbers,
       defaultPageUrl: defaultUrl,
       searchEngine,
       proxy: normalizedProxy,
+      dohMode,
       keybindings: normalizeKnownKeybindings(keybindings),
     })
     onClose()
@@ -921,6 +941,32 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </p>
               </div>
 
+              {/* Sidebar tab-number badges */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">Tab Number Badges</label>
+                <div className="flex gap-2">
+                  {([
+                    { value: true, label: 'Show' },
+                    { value: false, label: 'Hide' },
+                  ] as const).map(({ value, label }) => (
+                    <button
+                      key={String(value)}
+                      onClick={() => setShowTabNumbers(value)}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                        showTabNumbers === value
+                          ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Show a small "1"…"9" badge on the first nine visible sidebar tabs, advertising the CmdOrCtrl+N quick-jump shortcut.
+                </p>
+              </div>
+
               {/* Search engine */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Default Search Engine</label>
@@ -1106,6 +1152,33 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       : 'Disables proxy and connects directly.'}
                   </p>
                 )}
+              </div>
+
+              {/* DNS-over-HTTPS */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">DNS-over-HTTPS</label>
+                <select
+                  value={dohMode}
+                  onChange={(e) => setDohMode(e.target.value as 'off' | 'automatic' | 'secure')}
+                  className="w-full px-3 py-2 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value="off">Off (use OS DNS only)</option>
+                  <option value="automatic">Automatic (OS DNS first, DoH as fallback) — recommended</option>
+                  <option value="secure">Secure (DoH only — breaks corporate VPN intranet)</option>
+                </select>
+                <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                  Resolves DNS through Cloudflare + Google DoH endpoints.
+                  {dohMode === 'secure' && (
+                    <>
+                      {' '}
+                      <span className="text-destructive">
+                        Warning: corporate-VPN intranet hosts (e.g. internal Jira) may stop resolving — their
+                        records exist only in the VPN&apos;s internal DNS, which DoH bypasses.
+                      </span>
+                    </>
+                  )}
+                  {' '}Restart Newbro after changing this — Chromium applies DNS configuration at startup.
+                </p>
               </div>
 
               {/* Danger Zone */}

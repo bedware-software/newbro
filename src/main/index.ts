@@ -2897,6 +2897,12 @@ function buildMenu(): void {
           accelerator: kb['reload'],
           click: (_item, win) => sendShortcutToWindow(win, 'reload'),
         },
+        { type: 'separator' },
+        {
+          label: 'Find in Page',
+          accelerator: kb['find-in-page'],
+          click: (_item, win) => sendShortcutToWindow(win, 'find-in-page'),
+        },
       ],
     },
     {
@@ -2981,23 +2987,29 @@ app.whenReady().then(async () => {
   configureSession(session.defaultSession, 'persist:default')
   applyProxySettingsToAllSessions(loadSettings())
 
-  // Force DNS-over-HTTPS (Cloudflare + Google) for every Chromium DNS
-  // lookup in the app. The user's system DNS was returning
-  // net::ERR_NAME_NOT_RESOLVED for hosts an extension legitimately
-  // needs to reach (Browsec → google-analytics.com), which is what the
-  // ext-fetch-failed diagnostic finally surfaced. `secureDnsMode: 'secure'`
-  // disables the system-DNS fallback entirely — without that the resolver
-  // still tries the broken upstream first. Must run after app.ready;
-  // calling earlier throws.
+  // DNS-over-HTTPS (Cloudflare + Google). Mode is user-configurable
+  // via Settings → DNS. 'automatic' default preserves OS resolver
+  // (corp VPN DNS, hosts file) and uses DoH as fallback. 'secure'
+  // bypasses OS resolver entirely — maximum privacy but breaks corp
+  // intranet hosts. 'off' leaves DNS untouched.
+  //
+  // Must run after app.ready; calling earlier throws. Changes via
+  // Settings require app restart to take effect (Chromium-level
+  // configuration applies at startup).
   try {
-    app.configureHostResolver({
-      secureDnsMode: 'secure',
-      secureDnsServers: [
-        'https://cloudflare-dns.com/dns-query',
-        'https://dns.google/dns-query',
-      ],
-    })
-    log.info('dns: DNS-over-HTTPS enabled', { mode: 'secure' })
+    const dohMode = loadSettings().dohMode
+    if (dohMode === 'off') {
+      log.info('dns: DNS-over-HTTPS disabled (settings)', { mode: 'off' })
+    } else {
+      app.configureHostResolver({
+        secureDnsMode: dohMode,
+        secureDnsServers: [
+          'https://cloudflare-dns.com/dns-query',
+          'https://dns.google/dns-query',
+        ],
+      })
+      log.info('dns: DNS-over-HTTPS enabled', { mode: dohMode })
+    }
   } catch (err) {
     log.warn('dns: configureHostResolver failed', String(err))
   }
