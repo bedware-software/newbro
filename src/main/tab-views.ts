@@ -374,8 +374,15 @@ function wireEvents(rec: TabRecord): void {
       }
     }
 
-    log.info('tab window-open: routing as new tab', { tabId: rec.tabId, url, disposition })
-    sendToWindowRenderer(rec.windowId, 'open-url-as-tab', url)
+    // Chromium tags Cmd/Ctrl+Click as 'background-tab' and Shift+Cmd+Click
+    // as 'foreground-tab'. A plain LMB on a target="_blank" link arrives
+    // as 'default' — that one switches to the new tab so the page's own
+    // "click → see new content" flow keeps working unsurprisingly.
+    const channel = disposition === 'background-tab'
+      ? 'open-url-as-tab-background'
+      : 'open-url-as-tab'
+    log.info('tab window-open: routing as new tab', { tabId: rec.tabId, url, disposition, channel })
+    sendToWindowRenderer(rec.windowId, channel, url)
     return { action: 'deny' }
   })
 
@@ -411,7 +418,12 @@ function wireEvents(rec: TabRecord): void {
           },
         }
       }
-      sendToWindowRenderer(rec.windowId, 'open-url-as-tab', d.url)
+      // Same disposition-based routing as the parent setWindowOpenHandler
+      // — Cmd+Click inside a child popup also opens in background.
+      const childChannel = d.disposition === 'background-tab'
+        ? 'open-url-as-tab-background'
+        : 'open-url-as-tab'
+      sendToWindowRenderer(rec.windowId, childChannel, d.url)
       return { action: 'deny' }
     })
     childWindow.once('closed', () => {
@@ -637,6 +649,12 @@ export function createTab(opts: {
   partition: string
   url: string
   active: boolean
+  /** When true, the tab starts loading immediately even if `active` is
+   *  false. Used for user-opened background tabs (Cmd+Click, middle-
+   *  click, RMB → Open in New Tab) so the page is already ready when
+   *  the user switches to it. Restored / programmatic tabs leave this
+   *  false to preserve the existing lazy-load behaviour. */
+  eagerLoad?: boolean
 }): void {
   if (tabs.has(opts.tabId)) return
   const win = BrowserWindow.fromId(opts.windowId)
@@ -733,6 +751,12 @@ export function createTab(opts: {
     } catch {
       /* ignore */
     }
+  } else if (opts.eagerLoad) {
+    // User-opened background tab — start loading now so the page is
+    // ready when they switch to it. Skip the focus call: the tab is
+    // intentionally not active and shouldn't pull keyboard focus from
+    // the page the user is still reading.
+    loadIfNeeded(rec, opts.url)
   } else {
     // Keep lazy: inactive tabs stay at about:blank until first activation.
     // We don't even call loadURL so the guest webContents is effectively
@@ -1906,7 +1930,9 @@ export function installTabPreloadListeners(): void {
     if (typeof url !== 'string' || !url) return
     const rec = tabs.get(tabId)
     if (!rec) return
-    sendToWindowRenderer(rec.windowId, 'open-url-as-tab', url)
+    // Middle-click handoff from the stealth preload — Chrome / Firefox
+    // open middle-clicked links in the background.
+    sendToWindowRenderer(rec.windowId, 'open-url-as-tab-background', url)
   })
 
   ipcMain.on('newbro-context-menu', (event, payload: unknown) => {
@@ -1935,7 +1961,9 @@ export function installTabPreloadListeners(): void {
     if (linkUrl) {
       items.push({
         label: 'Open Link in New Tab',
-        click: () => sendToWindowRenderer(rec.windowId, 'open-url-as-tab', linkUrl),
+        // Matches Chrome / Firefox: the explicit "open in new tab" menu
+        // entry never steals focus from the current page.
+        click: () => sendToWindowRenderer(rec.windowId, 'open-url-as-tab-background', linkUrl),
       })
       items.push({
         label: 'Copy Link Address',

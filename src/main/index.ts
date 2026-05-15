@@ -869,7 +869,12 @@ function dispatchExternalUrl(url: string): void {
   if (target.isMinimized()) target.restore()
   target.show()
   target.focus()
-  target.webContents.send('open-url-as-tab', url)
+  // Use the dedicated 'open-external-url' channel — the renderer routes
+  // this through the picker dialog so the user can choose a workspace /
+  // group. The plain 'open-url-as-tab' channel is reserved for in-app
+  // new-tab handoffs (Cmd+Click, target=_blank, extension chrome.tabs
+  // .create, etc.) which should land directly without a prompt.
+  target.webContents.send('open-external-url', url)
   log.info('dispatchExternalUrl: routed to window', { url, windowId: target.id })
 }
 

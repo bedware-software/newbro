@@ -52,6 +52,21 @@ export function consumeNewTabUrlFocus(tabId: string): boolean {
   return true
 }
 
+// Tabs added in background (activate=false) that should still start
+// loading immediately — otherwise the page stays at about:blank until
+// the user switches to it, which defeats the point of opening it in
+// the background. WebviewPanel drains this set when it forwards the
+// tab to main via tabCreate.
+const pendingEagerLoad = new Set<string>()
+function markTabForEagerLoad(tabId: string): void {
+  pendingEagerLoad.add(tabId)
+}
+export function consumeEagerLoad(tabId: string): boolean {
+  if (!pendingEagerLoad.has(tabId)) return false
+  pendingEagerLoad.delete(tabId)
+  return true
+}
+
 function makeTab(url?: string): Tab {
   return { id: uuid(), title: 'New Tab', url: url || defaultNewTabUrl, favicon: '' }
 }
@@ -327,7 +342,11 @@ export interface AppState {
   toggleTabGroupCollapse: (id: string) => void
 
   // Tab actions
-  addTab: (tabGroupId: string, url?: string) => void
+  /** `activate` (default true) controls whether the new tab becomes the
+   *  active tab. Background callers (Cmd+Click, target=_blank, RMB →
+   *  Open in New Tab) pass false so the user's current page stays in
+   *  view, matching the default behaviour of other browsers. */
+  addTab: (tabGroupId: string, url?: string, activate?: boolean) => void
   closeTab: (id: string) => void
   setActiveTab: (id: string) => void
   updateTabUrl: (id: string, url: string) => void
@@ -336,7 +355,8 @@ export interface AppState {
   setTabComment: (id: string, comment: string) => void
 
   // Ungrouped tab actions
-  addUngroupedTab: (workspaceId: string, url?: string) => void
+  /** Same `activate` semantics as {@link addTab}. */
+  addUngroupedTab: (workspaceId: string, url?: string, activate?: boolean) => void
   ungroupTab: (tabId: string) => void
   ungroupAll: (groupId: string) => void
   closeGroup: (groupId: string) => void
@@ -771,10 +791,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   // ── Tab ──
-  addTab: (tabGroupId, url) => {
+  addTab: (tabGroupId, url, activate = true) => {
     const tab = makeTab(url)
-    log.action('addTab', { tabGroupId, url, tabId: tab.id })
-    markNewTabForUrlFocusIfEnabled(tab.id)
+    log.action('addTab', { tabGroupId, url, tabId: tab.id, activate })
+    if (activate) markNewTabForUrlFocusIfEnabled(tab.id)
+    else markTabForEagerLoad(tab.id)
     set(produce((s: AppState) => {
       for (const p of s.profiles) {
         for (const w of p.workspaces) {
@@ -787,8 +808,10 @@ export const useAppStore = create<AppState>((set, get) => ({
               g.tabs.push(tab)
             }
             g.isCollapsed = false // ensure group is expanded so new tab is visible
-            s.activeTabId = tab.id
-            s.activeTabGroupId = tabGroupId
+            if (activate) {
+              s.activeTabId = tab.id
+              s.activeTabGroupId = tabGroupId
+            }
             return
           }
         }
@@ -915,10 +938,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   })),
 
   // ── Ungrouped tabs ──
-  addUngroupedTab: (workspaceId, url) => {
+  addUngroupedTab: (workspaceId, url, activate = true) => {
     const tab = makeTab(url)
-    log.action('addUngroupedTab', { workspaceId, url, tabId: tab.id })
-    markNewTabForUrlFocusIfEnabled(tab.id)
+    log.action('addUngroupedTab', { workspaceId, url, tabId: tab.id, activate })
+    if (activate) markNewTabForUrlFocusIfEnabled(tab.id)
+    else markTabForEagerLoad(tab.id)
     set(produce((s: AppState) => {
       for (const p of s.profiles) {
         const w = p.workspaces.find((w) => w.id === workspaceId)
@@ -932,8 +956,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           } else {
             order.push(tab.id)
           }
-          s.activeTabId = tab.id
-          s.activeTabGroupId = null
+          if (activate) {
+            s.activeTabId = tab.id
+            s.activeTabGroupId = null
+          }
           return
         }
       }

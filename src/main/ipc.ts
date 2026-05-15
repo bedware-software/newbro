@@ -161,10 +161,17 @@ export function registerIpcHandlers(): void {
   // main runs each tab as a WebContentsView child of the owning window's
   // contentView. See src/main/tab-views.ts for the implementation and why
   // we replaced <webview> tags.
-  ipcMain.handle('tab:create', (_e, tabId: string, partition: string, url: string, active: boolean) => {
+  ipcMain.handle('tab:create', (
+    _e,
+    tabId: string,
+    partition: string,
+    url: string,
+    active: boolean,
+    eagerLoad?: boolean,
+  ) => {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (!win) return
-    createTab({ windowId: win.id, tabId, partition, url, active })
+    createTab({ windowId: win.id, tabId, partition, url, active, eagerLoad: !!eagerLoad })
   })
 
   ipcMain.handle('tab:destroy', (_e, tabId: string) => {

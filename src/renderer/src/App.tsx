@@ -73,6 +73,8 @@ declare global {
       onShortcut: (callback: (action: string) => void) => () => void
       onStateUpdated: (callback: (state: unknown) => void) => () => void
       onOpenUrlAsTab: (callback: (url: string) => void) => () => void
+      onOpenUrlAsTabBackground: (callback: (url: string) => void) => () => void
+      onOpenExternalUrl: (callback: (url: string) => void) => () => void
       onSettingsUpdated: (callback: (settings: unknown) => void) => () => void
       onActivateTab: (callback: (tabId: string) => void) => () => void
       checkForUpdates: () => Promise<UpdateStatus>
@@ -598,12 +600,63 @@ export default function App() {
       })
     })
 
-    // External URL handoffs (OS link click, second-instance argv, etc.)
-    // route to the picker instead of being dropped straight into the
-    // currently-active group. If the picker is already showing a previous
-    // URL, queue the newcomer so we drain them one at a time.
+    // Lands an in-app new-tab handoff in the active group of the current
+    // workspace (falling back to the workspace's ungrouped surface), in
+    // either foreground or background. Shared between the foreground
+    // and background IPC channels — only the `background` arg differs.
+    const placeIncomingTab = (url: string, background: boolean): void => {
+      const s = useAppStore.getState()
+      const wsId = s.activeWorkspaceId
+      const groupId = s.activeTabGroupId
+      // Verify the active group actually lives in the active workspace
+      // before reusing it — activeTabGroupId is global state and can
+      // briefly point at a group from a different workspace during
+      // workspace switches.
+      let groupInWorkspace = false
+      if (wsId && groupId) {
+        for (const p of s.profiles) {
+          const w = p.workspaces.find((w) => w.id === wsId)
+          if (w && w.tabGroups.some((g) => g.id === groupId)) {
+            groupInWorkspace = true
+            break
+          }
+        }
+      }
+      const activate = !background
+      if (groupInWorkspace && groupId) {
+        s.addTab(groupId, url, activate)
+      } else if (wsId) {
+        s.addUngroupedTab(wsId, url, activate)
+      }
+    }
+
+    // Foreground new-tab handoffs (plain LMB on target="_blank",
+    // Shift+Cmd+Click, programmatic chrome.tabs.create, etc.). Switches
+    // to the new tab — matches Chrome / Firefox default for unmodified
+    // clicks that produce a new tab.
     const cleanupPopup = window.electronAPI.onOpenUrlAsTab((url) => {
       log.event('open-url-as-tab', url)
+      placeIncomingTab(url, /* background */ false)
+    })
+
+    // Background new-tab handoffs (Cmd/Ctrl+Click, middle-click, RMB →
+    // Open in New Tab). Opens behind the current tab. The background
+    // tab is also flagged for eager loading in the store so the page
+    // starts fetching immediately instead of waiting for the user to
+    // switch — without this, the user would land on a blank page when
+    // they finally pick it up.
+    const cleanupBackground = window.electronAPI.onOpenUrlAsTabBackground((url) => {
+      log.event('open-url-as-tab-background', url)
+      placeIncomingTab(url, /* background */ true)
+    })
+
+    // OS-routed handoffs (default-browser link click, second-instance
+    // argv, etc.) — different channel. Route to the picker so the user
+    // can choose where the incoming link lands. If the picker is already
+    // showing a previous URL, queue the newcomer so we drain them one
+    // at a time.
+    const cleanupExternal = window.electronAPI.onOpenExternalUrl((url) => {
+      log.event('open-external-url', url)
       setExternalUrlPending((current) => {
         if (current) {
           setExternalUrlQueue((q) => [...q, url])
@@ -672,6 +725,8 @@ export default function App() {
       cleanupShortcut()
       cleanupState()
       cleanupPopup()
+      cleanupBackground()
+      cleanupExternal()
       cleanupSettings()
       cleanupActivateTab()
       cleanupContextSearch?.()

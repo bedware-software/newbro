@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useAppStore, consumeNewTabUrlFocus } from '../store/app-store'
+import { useAppStore, consumeNewTabUrlFocus, consumeEagerLoad } from '../store/app-store'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
 
@@ -144,12 +144,15 @@ export function WebviewPanel() {
       }
     }
 
-    // Create newly-seen tabs (lazy: only the active one eager-loads)
+    // Create newly-seen tabs (lazy: only the active one eager-loads,
+    // plus any tab the store has flagged for eager-load — currently
+    // user-opened background tabs).
     for (const tab of currentTabs) {
       if (!createdTabsRef.current.has(tab.id)) {
         const isActiveNow = tab.id === activeTabId
+        const eagerLoad = consumeEagerLoad(tab.id)
         window.electronAPI.setupSession?.(tab.partition)
-        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow)
+        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad)
         createdTabsRef.current.add(tab.id)
         if (isActiveNow) activatedTabsRef.current.add(tab.id)
       }

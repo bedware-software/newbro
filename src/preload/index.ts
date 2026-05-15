@@ -69,8 +69,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Tab hosting (WebContentsView in main). The renderer owns layout and
   // lifecycle *decisions*; main runs the actual page.
-  tabCreate: (tabId: string, partition: string, url: string, active: boolean): Promise<void> =>
-    ipcRenderer.invoke('tab:create', tabId, partition, url, active),
+  tabCreate: (
+    tabId: string,
+    partition: string,
+    url: string,
+    active: boolean,
+    /** When true, the tab starts loading immediately even if `active`
+     *  is false. Used for background tabs opened by user action
+     *  (Cmd+Click, middle-click, RMB → Open in New Tab) so the page is
+     *  ready by the time the user switches to it. Omit (or pass false)
+     *  for restored / programmatic tabs that should stay lazy. */
+    eagerLoad = false,
+  ): Promise<void> =>
+    ipcRenderer.invoke('tab:create', tabId, partition, url, active, eagerLoad),
   tabDestroy: (tabId: string): Promise<void> => ipcRenderer.invoke('tab:destroy', tabId),
   tabActivate: (tabId: string, url: string): Promise<void> => ipcRenderer.invoke('tab:activate', tabId, url),
   // Fire-and-forget: high-frequency from ResizeObserver / sidebar toggles.
@@ -174,6 +185,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_e: Electron.IpcRendererEvent, url: string) => callback(url)
     ipcRenderer.on('open-url-as-tab', handler)
     return () => { ipcRenderer.removeListener('open-url-as-tab', handler) }
+  },
+  // Background variant of open-url-as-tab — Cmd+Click, middle-click, and
+  // RMB → "Open in New Tab" route here so the new tab opens behind the
+  // current one. Separate channel (rather than a flag on the same one)
+  // keeps each sender's intent explicit at the call site.
+  onOpenUrlAsTabBackground: (callback: (url: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, url: string) => callback(url)
+    ipcRenderer.on('open-url-as-tab-background', handler)
+    return () => { ipcRenderer.removeListener('open-url-as-tab-background', handler) }
+  },
+  // OS-routed handoffs (default-browser link clicks, second-instance argv,
+  // etc.) — separate channel so the renderer can route these to the
+  // workspace/group picker. In-app new-tab actions stay on
+  // open-url-as-tab and land directly.
+  onOpenExternalUrl: (callback: (url: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, url: string) => callback(url)
+    ipcRenderer.on('open-external-url', handler)
+    return () => { ipcRenderer.removeListener('open-external-url', handler) }
   },
   onSettingsUpdated: (callback: (settings: unknown) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, settings: unknown) => callback(settings)
