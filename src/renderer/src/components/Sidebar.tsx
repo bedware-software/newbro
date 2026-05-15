@@ -4,7 +4,7 @@ import { log } from '../lib/log'
 import { InputDialog } from './InputDialog'
 import { TabFavicon } from './TabFavicon'
 import {
-  ChevronRight, ChevronDown, Plus, X, FolderPlus, MessageSquareText,
+  ChevronRight, ChevronDown, Plus, X, MessageSquareText,
 } from 'lucide-react'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 
@@ -185,9 +185,11 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
   const [editValue, setEditValue] = useState('')
   const [selectedTabIds, setSelectedTabIds] = useState<Set<string>>(new Set())
   const lastClickedTabRef = useRef<string | null>(null)
-  const [groupFromSelectionOpen, setGroupFromSelectionOpen] = useState(false)
   const [groupFromContextOpen, setGroupFromContextOpen] = useState(false)
-  const [contextTabForGroup, setContextTabForGroup] = useState<string | null>(null)
+  // Tab ids feeding the "New Group…" prompt. Populated from the multi-
+  // selection when the right-clicked tab is part of it; otherwise just
+  // the right-clicked tab alone.
+  const [pendingGroupTabIds, setPendingGroupTabIds] = useState<string[]>([])
   const [commentDialogOpen, setCommentDialogOpen] = useState(false)
   const [commentTabId, setCommentTabId] = useState<string | null>(null)
   const [commentDefault, setCommentDefault] = useState('')
@@ -435,6 +437,17 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     if (e.metaKey || e.ctrlKey) {
       setSelectedTabIds((prev) => {
         const next = new Set(prev)
+        // First Cmd/Ctrl+Click bootstraps the multi-selection with the
+        // active tab. Without this, "New Group from Selection" (and any
+        // other action that targets selectedTabIds) silently drops the
+        // active tab — Shift+Click already gets this right because
+        // lastClickedTabRef.current points at the active tab after a
+        // regular click. Skip the seed when the user is Cmd-clicking
+        // the active tab itself (otherwise toggling it would never
+        // remove it).
+        if (prev.size === 0 && activeTabId != null && activeTabId !== tabId) {
+          next.add(activeTabId)
+        }
         if (next.has(tabId)) next.delete(tabId)
         else next.add(tabId)
         return next
@@ -477,6 +490,17 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       || workspace.tabGroups.flatMap((g) => g.tabs).find((t) => t.id === tabId)
     const hasComment = !!tab?.comment
     const closeShortcut = [isMacOS ? '⌘' : 'Ctrl', 'W']
+    // Snapshot the multi-selection at the moment of right-click so the
+    // menu labels and the eventual target list match what the user saw
+    // when they opened the menu, regardless of any state changes that
+    // happen while the async dropdown is open. The "act on the whole
+    // selection" path only kicks in when the right-clicked tab IS in
+    // the selection — right-clicking outside is treated as a focused
+    // action on that one tab. The same target list feeds close, move,
+    // copy, and new-group so all four feel consistent.
+    const useSelection = selectedTabIds.has(tabId) && selectedTabIds.size > 1
+    const actionTargets = useSelection ? [...selectedTabIds] : [tabId]
+    const targetCount = actionTargets.length
 
     // Header shows the tab's title (truncated by the popup) so the user has
     // visual confirmation of WHICH tab they're acting on — useful when the
@@ -486,12 +510,26 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     })()
 
     const actions: DropdownAction[] = [
-      { id: 'close', label: 'Close Tab', iconName: 'X', shortcut: closeShortcut },
+      {
+        id: 'close',
+        label: useSelection ? `Close ${targetCount} Tabs` : 'Close Tab',
+        iconName: 'X',
+        // Cmd/Ctrl+W only closes the active tab, so the shortcut hint
+        // is only accurate in the single-target case. Suppress it for
+        // multi-select to avoid misleading the user.
+        ...(useSelection ? {} : { shortcut: closeShortcut }),
+      },
     ]
     if (!isUngrouped) {
       actions.push({ id: 'ungroup', label: 'Ungroup Tab', iconName: 'FolderMinus' })
     }
-    actions.push({ id: 'new-group', label: 'Add to New Group…', iconName: 'FolderPlus' })
+    actions.push({
+      id: 'new-group',
+      label: useSelection
+        ? `Add ${targetCount} Tabs to New Group…`
+        : 'Add to New Group…',
+      iconName: 'FolderPlus',
+    })
     actions.push({
       id: 'set-comment',
       label: hasComment ? 'Edit Comment…' : 'Set Comment…',
@@ -503,11 +541,15 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     }
     actions.push({
       id: 'move-tab',
-      label: 'Move Tab…',
+      label: useSelection ? `Move ${targetCount} Tabs…` : 'Move Tab…',
       iconName: 'FolderInput',
       divider: 'before',
     })
-    actions.push({ id: 'copy-tab', label: 'Copy Tab…', iconName: 'Copy' })
+    actions.push({
+      id: 'copy-tab',
+      label: useSelection ? `Copy ${targetCount} Tabs…` : 'Copy Tab…',
+      iconName: 'Copy',
+    })
 
     const result = await openDropdownAsync({
       kind: 'menu',
@@ -518,21 +560,29 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     })
     if (!result || result.type !== 'action') return
     const action = result.actionId
-    if (action === 'close') closeTab(tabId)
+    if (action === 'close') {
+      for (const id of actionTargets) closeTab(id)
+      if (useSelection) setSelectedTabIds(new Set())
+    }
     else if (action === 'ungroup') ungroupTab(tabId)
-    else if (action === 'new-group') { setContextTabForGroup(tabId); setGroupFromContextOpen(true) }
+    else if (action === 'new-group') {
+      setPendingGroupTabIds(actionTargets)
+      setGroupFromContextOpen(true)
+    }
     else if (action === 'set-comment') { setCommentTabId(tabId); setCommentDefault(tab?.comment || ''); setCommentDialogOpen(true) }
     else if (action === 'remove-comment') setTabComment(tabId, '')
     else if (action === 'move-tab' || action === 'copy-tab') {
-      // App owns the picker dialog state. We forward the right-clicked tab
-      // id via a CustomEvent so App can open the dialog targeting THIS tab
-      // — the keyboard shortcut path always targets the active tab, but
-      // context menu lets the user act on any tab.
+      // App owns the picker dialog state. We forward the resolved target
+      // list via a CustomEvent so App can open the dialog targeting these
+      // tabs — the keyboard shortcut path always targets the active tab,
+      // but context menu lets the user act on any tab or the whole
+      // multi-selection.
       window.dispatchEvent(
         new CustomEvent('newbro:open-move-copy-tab', {
-          detail: { mode: action === 'move-tab' ? 'move' : 'copy', tabId },
+          detail: { mode: action === 'move-tab' ? 'move' : 'copy', tabIds: actionTargets },
         }),
       )
+      if (useSelection) setSelectedTabIds(new Set())
     }
   }
 
@@ -625,7 +675,6 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     )
   }
 
-  const hasSelection = selectedTabIds.size > 0
   const isDraggingTab = dragging?.type === 'tab'
   const isDraggingGroup = dragging?.type === 'group'
 
@@ -843,25 +892,6 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
   return (
     <>
       <div ref={sidebarRef} style={{ width }} className="bg-toolbar border-r border-border flex flex-col shrink-0 overflow-hidden select-none relative">
-        {hasSelection && (
-          <div className="flex items-center gap-1 px-1.5 py-1 border-b border-border bg-accent/30">
-            <span className="text-[10px] text-muted-foreground flex-1">{selectedTabIds.size} selected</span>
-            <button
-              onClick={() => setGroupFromSelectionOpen(true)}
-              className="h-6 px-2 flex items-center gap-1 rounded text-[10px] font-medium bg-primary text-primary-foreground hover:opacity-90"
-              title="Move to new group"
-            >
-              <FolderPlus size={14} /> Group
-            </button>
-            <button
-              onClick={() => setSelectedTabIds(new Set())}
-              className="h-6 w-6 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
-
         <div className="flex-1 overflow-y-auto pt-0 pb-0.5">
           {sidebarItems.map((item, sidebarIdx) => {
             if (item.type === 'tab') {
@@ -934,28 +964,22 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
 
 
       <InputDialog
-        open={groupFromSelectionOpen}
-        title={`Group ${selectedTabIds.size} tabs`}
-        placeholder="Group name"
-        onConfirm={(name) => {
-          moveTabsToNewGroup([...selectedTabIds], name)
-          setSelectedTabIds(new Set())
-          setGroupFromSelectionOpen(false)
-        }}
-        onCancel={() => setGroupFromSelectionOpen(false)}
-      />
-
-      <InputDialog
         open={groupFromContextOpen}
-        title="New Group"
+        title={pendingGroupTabIds.length > 1 ? `Group ${pendingGroupTabIds.length} tabs` : 'New Group'}
         placeholder="Group name"
         onConfirm={(name) => {
-          if (contextTabForGroup) moveTabsToNewGroup([contextTabForGroup], name)
-          setContextTabForGroup(null)
+          if (pendingGroupTabIds.length > 0) {
+            moveTabsToNewGroup(pendingGroupTabIds, name)
+            // Multi-tab group consumed the selection — clear it so the
+            // moved tabs don't keep their selected highlight in their
+            // new container.
+            if (pendingGroupTabIds.length > 1) setSelectedTabIds(new Set())
+          }
+          setPendingGroupTabIds([])
           setGroupFromContextOpen(false)
         }}
         onCancel={() => {
-          setContextTabForGroup(null)
+          setPendingGroupTabIds([])
           setGroupFromContextOpen(false)
         }}
       />

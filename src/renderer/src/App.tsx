@@ -231,7 +231,7 @@ export default function App() {
   // active tab/group rather than a stale one.
   const [tabPickerOpen, setTabPickerOpen] = useState(false)
   const [tabPickerMode, setTabPickerMode] = useState<'move' | 'copy'>('move')
-  const [tabPickerTabId, setTabPickerTabId] = useState<string | null>(null)
+  const [tabPickerTabIds, setTabPickerTabIds] = useState<string[]>([])
   const [groupPickerOpen, setGroupPickerOpen] = useState(false)
   const [groupPickerMode, setGroupPickerMode] = useState<'move' | 'copy'>('move')
   const [groupPickerGroupId, setGroupPickerGroupId] = useState<string | null>(null)
@@ -500,14 +500,14 @@ export default function App() {
         case 'move-tab':
           if (s.activeTabId) {
             setTabPickerMode('move')
-            setTabPickerTabId(s.activeTabId)
+            setTabPickerTabIds([s.activeTabId])
             setTabPickerOpen(true)
           }
           break
         case 'copy-tab':
           if (s.activeTabId) {
             setTabPickerMode('copy')
-            setTabPickerTabId(s.activeTabId)
+            setTabPickerTabIds([s.activeTabId])
             setTabPickerOpen(true)
           }
           break
@@ -652,10 +652,10 @@ export default function App() {
     // into App's setters directly so the cross-component contract stays
     // narrow — App is the sole owner of the dialogs' open/source state.
     const handleOpenMoveCopyTab = (e: Event): void => {
-      const detail = (e as CustomEvent<{ mode: 'move' | 'copy'; tabId: string }>).detail
-      if (!detail?.tabId) return
+      const detail = (e as CustomEvent<{ mode: 'move' | 'copy'; tabIds: string[] }>).detail
+      if (!detail?.tabIds || detail.tabIds.length === 0) return
       setTabPickerMode(detail.mode)
-      setTabPickerTabId(detail.tabId)
+      setTabPickerTabIds(detail.tabIds)
       setTabPickerOpen(true)
     }
     const handleOpenMoveCopyGroup = (e: Event): void => {
@@ -806,11 +806,11 @@ export default function App() {
       <MoveCopyTabDialog
         open={tabPickerOpen}
         mode={tabPickerMode}
-        tabId={tabPickerTabId}
+        tabIds={tabPickerTabIds}
         currentWorkspaceId={activeWorkspaceId}
         onClose={() => {
           setTabPickerOpen(false)
-          setTabPickerTabId(null)
+          setTabPickerTabIds([])
         }}
       />
       <MoveCopyGroupDialog
