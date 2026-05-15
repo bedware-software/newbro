@@ -34,7 +34,20 @@ export function InputDialog({ open, title, placeholder, defaultValue = '', confi
   if (!open) return null
 
   return (
-    <DetachedWindow open={open} title={title} width={440} height={210} resizable={false} onClose={onCancel}>
+    <DetachedWindow
+      open={open}
+      title={title}
+      width={440}
+      height={210}
+      resizable={false}
+      // Click-away dismiss so the dialog behaves like a real modal —
+      // without this it can hide behind the main window and the user
+      // has to alt-tab to find it. Esc + Cancel still work as the
+      // explicit dismiss paths; closeOnBlur is the "I clicked
+      // somewhere else" path.
+      closeOnBlur
+      onClose={onCancel}
+    >
       <div className="h-full bg-popover text-popover-foreground p-4 flex flex-col">
         <h3 className="text-sm font-semibold text-foreground mb-3">{title}</h3>
         <input
