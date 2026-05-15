@@ -55,7 +55,17 @@ interface DropdownSpecPayload {
 
 interface PopupRecord {
   win: BrowserWindow
-  parentId: number
+  // Direct BrowserWindow reference — events get routed back via
+  // `parent.webContents.send(...)`. Earlier we stored
+  // `parent.webContents.id` and tried to recover the parent via
+  // `BrowserWindow.fromId`, but `fromId` takes a `BrowserWindow.id`
+  // (different counter from `webContents.id`); for the first window
+  // they often coincidentally match, for the second+ window they
+  // diverge and `fromId` returns null, so popup events from those
+  // windows silently dropped. The Map key is still the webContents id
+  // (one popup per parent webContents) — only the routing changes.
+  parent: BrowserWindow
+  parentWebContentsId: number
   // Opener id of the trigger that opened the currently-shown popup. Echoed
   // back on every event so the parent renderer can route to the right
   // component (multiple Dropdowns share a single popup window).
@@ -78,10 +88,12 @@ interface PopupRecord {
   lastSize: { width: number; height: number } | null
 }
 
+// Keyed by parent.webContents.id — one popup window per parent renderer.
 const popups = new Map<number, PopupRecord>()
-// Parent windowId currently displaying a popup, so popup-event IPC (which
-// arrives on the popup's webContents) can be routed back to its parent.
-let currentParentId: number | null = null
+// Parent's webContents id currently displaying a popup, so popup-event IPC
+// (which arrives on the popup's webContents) can be routed back to its
+// parent.
+let currentParentWebContentsId: number | null = null
 
 // Generous initial size so the popup can render its full content from the
 // first paint, even before the popup-resize round-trip arrives. Both axes
@@ -107,8 +119,8 @@ function popupHtmlPath(): { url?: string; file?: string } {
 }
 
 function getOrCreatePopup(parent: BrowserWindow): PopupRecord {
-  const parentId = parent.webContents.id
-  const existing = popups.get(parentId)
+  const parentWebContentsId = parent.webContents.id
+  const existing = popups.get(parentWebContentsId)
   if (existing && !existing.win.isDestroyed()) return existing
 
   const win = new BrowserWindow({
@@ -145,7 +157,8 @@ function getOrCreatePopup(parent: BrowserWindow): PopupRecord {
 
   const record: PopupRecord = {
     win,
-    parentId,
+    parent,
+    parentWebContentsId,
     currentOpenerId: null,
     closingProgrammatically: false,
     loaded: false,
@@ -154,7 +167,7 @@ function getOrCreatePopup(parent: BrowserWindow): PopupRecord {
     lastPosition: null,
     lastSize: null,
   }
-  popups.set(parentId, record)
+  popups.set(parentWebContentsId, record)
 
   win.webContents.once('did-finish-load', () => {
     record.loaded = true
@@ -174,8 +187,8 @@ function getOrCreatePopup(parent: BrowserWindow): PopupRecord {
   // Tear down when the parent window is destroyed.
   parent.once('closed', () => {
     if (!win.isDestroyed()) win.destroy()
-    popups.delete(parentId)
-    if (currentParentId === parentId) currentParentId = null
+    popups.delete(parentWebContentsId)
+    if (currentParentWebContentsId === parentWebContentsId) currentParentWebContentsId = null
   })
 
   return record
@@ -271,7 +284,7 @@ function openPopup(parent: BrowserWindow, spec: DropdownSpecPayload): void {
     if (record.win.isDestroyed()) return
     record.win.webContents.send('dropdown:popup-spec', spec)
     positionPopup(record, parent)
-    currentParentId = record.parentId
+    currentParentWebContentsId = record.parentWebContentsId
     record.closingProgrammatically = false
     record.win.show()
     record.win.focus()
@@ -296,13 +309,12 @@ function closePopup(record: PopupRecord, fromBlur: boolean): void {
   // own state. Programmatic close from a popup-event already triggered a
   // forwarded event upstream, so no second cancel is needed.
   if (fromBlur && closingOpenerId) {
-    const parent = BrowserWindow.fromId(record.parentId)
-    if (parent && !parent.isDestroyed()) {
-      parent.webContents.send('dropdown:event', { type: 'cancel', openerId: closingOpenerId })
+    if (!record.parent.isDestroyed()) {
+      record.parent.webContents.send('dropdown:event', { type: 'cancel', openerId: closingOpenerId })
     }
   }
   record.currentOpenerId = null
-  if (currentParentId === record.parentId) currentParentId = null
+  if (currentParentWebContentsId === record.parentWebContentsId) currentParentWebContentsId = null
 }
 
 function closeAnyOpen(): void {
@@ -344,9 +356,8 @@ export function registerDropdownIpc(): void {
     if (!owner) return
     const openerId = owner.currentOpenerId
     if (!openerId) return
-    const parent = BrowserWindow.fromId(owner.parentId)
-    if (parent && !parent.isDestroyed()) {
-      parent.webContents.send('dropdown:event', { ...evt, openerId })
+    if (!owner.parent.isDestroyed()) {
+      owner.parent.webContents.send('dropdown:event', { ...evt, openerId })
     }
     if (evt.type !== 'reorder') {
       closePopup(owner, /* fromBlur */ false)
@@ -358,9 +369,8 @@ export function registerDropdownIpc(): void {
     const owner = findOwnerByWebContents(event.sender.id)
     if (!owner) return
     owner.lastSize = size
-    const parent = BrowserWindow.fromId(owner.parentId)
-    if (parent && !parent.isDestroyed()) {
-      positionPopup(owner, parent)
+    if (!owner.parent.isDestroyed()) {
+      positionPopup(owner, owner.parent)
     }
   })
 
