@@ -903,12 +903,11 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
     if (isLoading) {
       window.electronAPI.tabStop?.(activeTabId)
     } else {
-      const targetUrl = activeTab?.url || ''
-      if (targetUrl) {
-        window.electronAPI.tabNavigate?.(activeTabId, targetUrl)
-      } else {
-        window.electronAPI.tabReload?.(activeTabId, true)
-      }
+      // Reload, not re-navigate. tabNavigate(currentUrl) would push a
+      // fresh history entry on every refresh click — matches neither
+      // Chrome nor the URL-bar Enter-on-unchanged-URL path. See the
+      // 'reload' case in App.tsx for the same reasoning.
+      window.electronAPI.tabReload?.(activeTabId, true)
     }
   }
 

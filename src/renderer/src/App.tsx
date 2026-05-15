@@ -462,13 +462,13 @@ export default function App() {
         }
         case 'reload': {
           if (!s.activeTabId) break
-          const activeTab = s.getActiveTab()
-          const targetUrl = activeTab?.url || ''
-          if (targetUrl) {
-            window.electronAPI.tabNavigate?.(s.activeTabId, targetUrl)
-          } else {
-            window.electronAPI.tabReload?.(s.activeTabId, true)
-          }
+          // Reload, not re-navigate. Going through tabNavigate(currentUrl)
+          // would push a fresh history entry every time the user hits Cmd+R
+          // and diverge from the URL-bar-Enter-on-unchanged-URL path, which
+          // already lands here via tabReload. Match Chrome's behaviour and
+          // keep all three refresh entry points (Cmd+R, refresh icon,
+          // Enter on unchanged URL) on the same call.
+          window.electronAPI.tabReload?.(s.activeTabId, true)
           break
         }
         case 'page-devtools':
