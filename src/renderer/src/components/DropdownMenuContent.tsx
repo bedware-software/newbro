@@ -11,8 +11,8 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-
 import { CSS } from '@dnd-kit/utilities'
 import {
   User, Layout, Search, Settings, Download, Info, LogOut, Plus, Pencil, Trash2, Menu, Globe, Import,
-  X, FolderPlus, FolderMinus, FolderInput, Folder, Copy, MessageSquare, MessageSquareOff, FilePlus,
-  Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose,
+  Upload, X, FolderPlus, FolderMinus, FolderInput, Folder, Copy, MessageSquare, MessageSquareOff,
+  FilePlus, Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose,
 } from 'lucide-react'
 import type {
   DropdownAction,
@@ -26,8 +26,8 @@ import type {
 // popup resolves them here. Keep in sync with IconName in dropdown-protocol.ts.
 const ICONS: Record<IconName, typeof User> = {
   User, Layout, Search, Settings, Download, Info, LogOut, Plus, Pencil, Trash2, Menu, Globe, Import,
-  X, FolderPlus, FolderMinus, FolderInput, Folder, Copy, MessageSquare, MessageSquareOff, FilePlus,
-  Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose,
+  Upload, X, FolderPlus, FolderMinus, FolderInput, Folder, Copy, MessageSquare, MessageSquareOff,
+  FilePlus, Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose,
 }
 
 function resolveIcon(name: IconName | undefined, fallback: typeof User = User): typeof User {

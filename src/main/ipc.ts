@@ -513,6 +513,21 @@ export function registerIpcHandlers(): void {
     return content
   })
 
+  ipcMain.handle(
+    'dialog:save-bookmark-file',
+    async (_e, html: string, suggestedName: string) => {
+      const win = BrowserWindow.fromWebContents(_e.sender)
+      const result = await dialog.showSaveDialog(win!, {
+        title: 'Export Workspaces',
+        defaultPath: suggestedName,
+        filters: [{ name: 'HTML Files', extensions: ['html'] }],
+      })
+      if (result.canceled || !result.filePath) return false
+      fs.writeFileSync(result.filePath, html, 'utf-8')
+      return true
+    }
+  )
+
   ipcMain.on('app:quit', () => {
     app.quit()
   })

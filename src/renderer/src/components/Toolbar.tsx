@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect } from 'react'
-import { useAppStore, saveStateNow, findWorkspaceCandidates } from '../store/app-store'
+import { useAppStore, saveStateNow, findWorkspaceCandidates, buildBookmarkHTML } from '../store/app-store'
 import { normalizeURL } from '../lib/url'
 import { log } from '../lib/log'
 import { InputDialog } from './InputDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CertificatePopup } from './CertificatePopup'
 import { ImportWorkspaceDialog } from './ImportWorkspaceDialog'
-import type { WorkspaceCandidate } from '../store/types'
+import { ExportWorkspaceDialog } from './ExportWorkspaceDialog'
+import type { Workspace, WorkspaceCandidate } from '../store/types'
 import type { DropdownAction, DropdownEvent, DropdownSpec, IconName } from './dropdown-protocol'
 import { openDropdownAsync } from './dropdown-protocol'
 import {
@@ -92,7 +93,9 @@ interface DropdownTriggerProps {
   canDelete?: boolean
   // Extra action rows shown below the items + "New" button. Each gets a
   // stable id used to route the popup's 'action' event back to its onClick.
-  actions?: { id: string; label: string; iconName: IconName; onClick: () => void }[]
+  // `disabled` mirrors the IPC DropdownAction flag so callers can grey out
+  // actions whose preconditions aren't met (e.g. Export with zero workspaces).
+  actions?: { id: string; label: string; iconName: IconName; onClick: () => void; disabled?: boolean; disabledTitle?: string }[]
 }
 
 function Dropdown(props: DropdownTriggerProps) {
@@ -142,7 +145,13 @@ function Dropdown(props: DropdownTriggerProps) {
       deletable: !!onDelete,
       canDelete,
       newAction: onNew ? { label: newLabel || 'Create New' } : undefined,
-      actions: actions?.map((a): DropdownAction => ({ id: a.id, label: a.label, iconName: a.iconName })),
+      actions: actions?.map((a): DropdownAction => ({
+        id: a.id,
+        label: a.label,
+        iconName: a.iconName,
+        ...(a.disabled ? { disabled: true } : {}),
+        ...(a.disabledTitle ? { disabledTitle: a.disabledTitle } : {}),
+      })),
     }
     window.electronAPI.openDropdown?.(spec)
     setOpen(true)
@@ -698,6 +707,9 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [importCandidates, setImportCandidates] = useState<WorkspaceCandidate[]>([])
 
+  // Export workspace dialog state
+  const [exportDialogOpen, setExportDialogOpen] = useState(false)
+
   const [isLoading, setIsLoading] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
   const [certPopupOpen, setCertPopupOpen] = useState(false)
@@ -1063,6 +1075,33 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
     setImportCandidates([])
   }
 
+  const handleExportWorkspace = () => {
+    if (!activeProfile || activeProfile.workspaces.length === 0) return
+    setExportDialogOpen(true)
+  }
+
+  const handleExportConfirm = async (selected: Workspace[]) => {
+    setExportDialogOpen(false)
+    if (selected.length === 0) return
+    const html = buildBookmarkHTML(selected)
+    // Default filename: a single workspace exports as `<name>.html`;
+    // multi-select falls back to a profile-scoped name so the user can
+    // spot the file at a glance in their downloads folder. Sanitise the
+    // base name so reserved filesystem characters (`/ \ : * ? " < > |`)
+    // can't reach the OS save dialog — they'd be silently stripped or
+    // outright rejected on Windows.
+    const sanitise = (s: string): string => s.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'Workspace'
+    const suggestedName = selected.length === 1
+      ? `${sanitise(selected[0].name)}.html`
+      : `${sanitise(activeProfile?.name || 'Newbro')} Workspaces.html`
+    const saved = await window.electronAPI.saveBookmarkFile(html, suggestedName)
+    log.action('exportWorkspaces', {
+      profileId: activeProfileId,
+      count: selected.length,
+      saved,
+    })
+  }
+
   return (
     <>
       <div
@@ -1105,7 +1144,10 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
           label="Workspace"
           onNew={openWorkspaceDialog}
           newLabel="New Workspace"
-          actions={[{ id: 'import-workspace', label: 'Import Workspace', iconName: 'Import', onClick: handleImportWorkspace }]}
+          actions={[
+            { id: 'import-workspace', label: 'Import Workspace', iconName: 'Import', onClick: handleImportWorkspace },
+            { id: 'export-workspace', label: 'Export Workspaces', iconName: 'Upload', onClick: handleExportWorkspace, disabled: (activeProfile?.workspaces.length || 0) === 0 },
+          ]}
         />
 
         <div className="w-px h-5 bg-border shrink-0" />
@@ -1243,6 +1285,13 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         candidates={importCandidates}
         onConfirm={handleImportConfirm}
         onCancel={() => { setImportDialogOpen(false); setImportCandidates([]) }}
+      />
+
+      <ExportWorkspaceDialog
+        open={exportDialogOpen}
+        workspaces={activeProfile?.workspaces || []}
+        onConfirm={handleExportConfirm}
+        onCancel={() => setExportDialogOpen(false)}
       />
 
       {certPopupOpen && (

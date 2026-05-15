@@ -17,6 +17,7 @@ export type IconName =
   | 'Menu'
   | 'Globe'
   | 'Import'
+  | 'Upload'
   | 'X'
   | 'FolderPlus'
   | 'FolderMinus'

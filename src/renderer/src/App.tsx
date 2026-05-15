@@ -68,6 +68,7 @@ declare global {
       getDefaultBrowserStatus: () => Promise<DefaultBrowserStatus>
       setAsDefaultBrowser: () => Promise<SetAsDefaultBrowserResult>
       openBookmarkFile: () => Promise<string | null>
+      saveBookmarkFile: (html: string, suggestedName: string) => Promise<boolean>
       detachedWindowShow: () => void
       onShortcut: (callback: (action: string) => void) => () => void
       onStateUpdated: (callback: (state: unknown) => void) => () => void

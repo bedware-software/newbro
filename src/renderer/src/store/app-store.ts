@@ -507,6 +507,76 @@ export function findWorkspaceCandidates(html: string): WorkspaceCandidate[] {
   return candidates
 }
 
+/**
+ * Inverse of {@link findWorkspaceCandidates}: serialise workspaces to a
+ * Netscape bookmark HTML file. Each workspace becomes a top-level folder;
+ * ungrouped tabs become <DT><A> entries inside it, and tab groups become
+ * one-level-nested subfolders. Items are emitted in `sidebarOrder` so a
+ * round-trip through findWorkspaceCandidates preserves the user's layout.
+ *
+ * isCollapsed and lastActiveTabId are intentionally not serialised — the
+ * Netscape format has no field for either, and the importer sets every
+ * group to collapsed on the way back in. Tab comments are also dropped
+ * for the same reason (the importer doesn't read them), to keep the
+ * export strictly symmetric with what we know we can re-ingest.
+ */
+export function buildBookmarkHTML(workspaces: Workspace[]): string {
+  const esc = (s: string): string =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+
+  const out: string[] = [
+    '<!DOCTYPE NETSCAPE-Bookmark-file-1>',
+    '<!-- This is an automatically generated file. Do Not Edit. -->',
+    '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">',
+    '<TITLE>Bookmarks</TITLE>',
+    '<H1>Bookmarks</H1>',
+    '<DL><p>',
+  ]
+
+  const emitTab = (t: Tab, indent: string): void => {
+    const attrs = [`HREF="${esc(t.url)}"`]
+    if (t.favicon) attrs.push(`ICON="${esc(t.favicon)}"`)
+    out.push(`${indent}<DT><A ${attrs.join(' ')}>${esc(t.title)}</A>`)
+  }
+
+  for (const ws of workspaces) {
+    out.push(`    <DT><H3>${esc(ws.name)}</H3>`)
+    out.push('    <DL><p>')
+
+    const tabMap = new Map(ws.tabs.map((t) => [t.id, t]))
+    const groupMap = new Map(ws.tabGroups.map((g) => [g.id, g]))
+    // Fall back to a naive concatenation when sidebarOrder is missing or
+    // empty — older workspaces saved before sidebarOrder existed still
+    // export sensibly.
+    const order = ws.sidebarOrder && ws.sidebarOrder.length > 0
+      ? ws.sidebarOrder
+      : [...ws.tabs.map((t) => t.id), ...ws.tabGroups.map((g) => g.id)]
+
+    for (const id of order) {
+      const tab = tabMap.get(id)
+      if (tab) {
+        emitTab(tab, '        ')
+        continue
+      }
+      const group = groupMap.get(id)
+      if (!group) continue
+      out.push(`        <DT><H3>${esc(group.name)}</H3>`)
+      out.push('        <DL><p>')
+      for (const t of group.tabs) emitTab(t, '            ')
+      out.push('        </DL><p>')
+    }
+
+    out.push('    </DL><p>')
+  }
+
+  out.push('</DL><p>')
+  return out.join('\n') + '\n'
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   ...defaultState(),
 

@@ -51,6 +51,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Import
   openBookmarkFile: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-bookmark-file'),
 
+  // Export
+  saveBookmarkFile: (html: string, suggestedName: string): Promise<boolean> =>
+    ipcRenderer.invoke('dialog:save-bookmark-file', html, suggestedName),
+
   // Exit
   quit: (): void => { ipcRenderer.send('app:quit') },
 
