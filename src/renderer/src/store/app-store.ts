@@ -122,6 +122,42 @@ export function getVisibleTabOrder(w: Workspace): string[] {
   return out
 }
 
+// ── Per-workspace tab activation history ──
+// In-memory only (not persisted). Closing the active tab walks this stack
+// to pick the most-recently-selected prior tab instead of an adjacent one.
+const tabHistoryByWorkspace = new Map<string, string[]>()
+const TAB_HISTORY_LIMIT = 50
+
+function pushTabHistory(workspaceId: string, tabId: string): void {
+  let hist = tabHistoryByWorkspace.get(workspaceId)
+  if (!hist) { hist = []; tabHistoryByWorkspace.set(workspaceId, hist) }
+  const i = hist.indexOf(tabId)
+  if (i !== -1) hist.splice(i, 1)
+  hist.push(tabId)
+  if (hist.length > TAB_HISTORY_LIMIT) hist.splice(0, hist.length - TAB_HISTORY_LIMIT)
+}
+
+function dropFromTabHistory(workspaceId: string, tabId: string): void {
+  const hist = tabHistoryByWorkspace.get(workspaceId)
+  if (!hist) return
+  for (let i = hist.length - 1; i >= 0; i--) {
+    if (hist[i] === tabId) hist.splice(i, 1)
+  }
+}
+
+/** Most-recent tab in this workspace's history that still exists, excluding `excludeId`. */
+function findHistoricalTabId(w: Workspace, excludeId: string): string | null {
+  const hist = tabHistoryByWorkspace.get(w.id)
+  if (!hist) return null
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const id = hist[i]
+    if (id === excludeId) continue
+    if (w.tabs?.some((t) => t.id === id)) return id
+    if (w.tabGroups.some((g) => g.tabs.some((t) => t.id === id))) return id
+  }
+  return null
+}
+
 // ── Helpers for cross-workspace move/copy (used inside immer produce) ──
 
 /** Read-only lookup of a tab by id, scanning every profile and workspace. */
@@ -831,9 +867,14 @@ export const useAppStore = create<AppState>((set, get) => ({
             const oi = order.indexOf(id)
             if (oi !== -1) order.splice(oi, 1)
             if (s.activeTabId === id) {
+              // Prefer the previously-selected tab so closing feels MRU,
+              // not "jump to adjacent." Fall back to adjacent if history
+              // has nothing usable (e.g., first tab ever in workspace).
+              const historical = findHistoricalTabId(w, id)
               const next = w.tabs[uIdx] || w.tabs[uIdx - 1]
-              s.activeTabId = next?.id || w.tabGroups[0]?.tabs[0]?.id || null
+              s.activeTabId = historical || next?.id || w.tabGroups[0]?.tabs[0]?.id || null
             }
+            dropFromTabHistory(w.id, id)
             return
           }
         }
@@ -843,9 +884,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (idx !== -1) {
             g.tabs.splice(idx, 1)
             if (s.activeTabId === id) {
+              const historical = findHistoricalTabId(w, id)
               const next = g.tabs[idx] || g.tabs[idx - 1]
-              s.activeTabId = next?.id || null
+              s.activeTabId = historical || next?.id || null
             }
+            dropFromTabHistory(w.id, id)
             // Remove empty groups
             if (g.tabs.length === 0) {
               const gIdx = w.tabGroups.indexOf(g)
@@ -1553,6 +1596,10 @@ useAppStore.subscribe(() => {
     }
   }
   if (!ownerWorkspaceId) return
+
+  // Record the activation in the workspace's history stack so closeTab
+  // can fall back to the previously-selected tab instead of an adjacent one.
+  pushTabHistory(ownerWorkspaceId, tabId)
 
   // Only write if it's actually changing, to avoid pointless save churn.
   const owner = state.profiles.flatMap((p) => p.workspaces).find((w) => w.id === ownerWorkspaceId)
