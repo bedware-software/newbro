@@ -1129,6 +1129,72 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
     })
   }
 
+  // Command-palette entry points that piggy-back on Toolbar-owned flows
+  // (file picker, candidate parsing, ExportWorkspaceDialog state, the
+  // rename InputDialog, the delete ConfirmDialog, the save-bookmark-file
+  // IPC). Refs keep the listeners thin while still dispatching the
+  // latest closure — empty-deps capture would freeze activeProfile /
+  // activeWorkspaceId on the first render. MUST be declared after every
+  // handler in this block; `const` TDZ means useRef(handleX) at the top
+  // of the component would throw ReferenceError before handleX existed,
+  // blanking the renderer.
+  const handleImportRef = useRef(handleImportWorkspace)
+  const handleExportRef = useRef(handleExportWorkspace)
+  const handleEditProfileRef = useRef(handleEditProfile)
+  const handleDeleteProfileRef = useRef(handleDeleteProfile)
+  const handleEditWorkspaceRef = useRef(handleEditWorkspace)
+  const handleDeleteWorkspaceRef = useRef(handleDeleteWorkspace)
+  const activeProfileRef = useRef(activeProfile)
+  const activeWorkspaceIdRef = useRef(activeWorkspaceId)
+  handleImportRef.current = handleImportWorkspace
+  handleExportRef.current = handleExportWorkspace
+  handleEditProfileRef.current = handleEditProfile
+  handleDeleteProfileRef.current = handleDeleteProfile
+  handleEditWorkspaceRef.current = handleEditWorkspace
+  handleDeleteWorkspaceRef.current = handleDeleteWorkspace
+  activeProfileRef.current = activeProfile
+  activeWorkspaceIdRef.current = activeWorkspaceId
+  useEffect(() => {
+    const onImport = () => { void handleImportRef.current() }
+    const onExport = () => { handleExportRef.current() }
+    const onRenameProfile = () => {
+      const p = activeProfileRef.current
+      if (p) handleEditProfileRef.current(p.id, p.name)
+    }
+    const onDeleteProfile = () => {
+      const p = activeProfileRef.current
+      if (p) handleDeleteProfileRef.current(p.id, p.name)
+    }
+    const onRenameWorkspace = () => {
+      const p = activeProfileRef.current
+      const wsId = activeWorkspaceIdRef.current
+      if (!p || !wsId) return
+      const ws = p.workspaces.find((w) => w.id === wsId)
+      if (ws) handleEditWorkspaceRef.current(ws.id, ws.name)
+    }
+    const onDeleteWorkspace = () => {
+      const p = activeProfileRef.current
+      const wsId = activeWorkspaceIdRef.current
+      if (!p || !wsId) return
+      const ws = p.workspaces.find((w) => w.id === wsId)
+      if (ws) handleDeleteWorkspaceRef.current(ws.id, ws.name)
+    }
+    window.addEventListener('newbro-open-import-workspaces', onImport)
+    window.addEventListener('newbro-open-export-workspaces', onExport)
+    window.addEventListener('newbro-rename-active-profile', onRenameProfile)
+    window.addEventListener('newbro-delete-active-profile', onDeleteProfile)
+    window.addEventListener('newbro-rename-active-workspace', onRenameWorkspace)
+    window.addEventListener('newbro-delete-active-workspace', onDeleteWorkspace)
+    return () => {
+      window.removeEventListener('newbro-open-import-workspaces', onImport)
+      window.removeEventListener('newbro-open-export-workspaces', onExport)
+      window.removeEventListener('newbro-rename-active-profile', onRenameProfile)
+      window.removeEventListener('newbro-delete-active-profile', onDeleteProfile)
+      window.removeEventListener('newbro-rename-active-workspace', onRenameWorkspace)
+      window.removeEventListener('newbro-delete-active-workspace', onDeleteWorkspace)
+    }
+  }, [])
+
   return (
     <>
       <div
@@ -1337,6 +1403,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
       <ExportWorkspaceDialog
         open={exportDialogOpen}
         workspaces={activeProfile?.workspaces || []}
+        profileName={activeProfile?.name}
         onConfirm={handleExportConfirm}
         onCancel={() => setExportDialogOpen(false)}
       />

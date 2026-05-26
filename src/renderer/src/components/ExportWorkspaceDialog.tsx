@@ -6,11 +6,15 @@ import { DetachedWindow } from './DetachedWindow'
 interface Props {
   open: boolean
   workspaces: Workspace[]
+  /** Active profile name. Shown in the title + subtitle so the user knows
+   *  which profile's workspaces they're exporting — important once you
+   *  have more than one profile and several similarly-named workspaces. */
+  profileName?: string
   onConfirm: (selected: Workspace[]) => void
   onCancel: () => void
 }
 
-export function ExportWorkspaceDialog({ open, workspaces, onConfirm, onCancel }: Props) {
+export function ExportWorkspaceDialog({ open, workspaces, profileName, onConfirm, onCancel }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const confirmRef = useRef<HTMLButtonElement>(null)
@@ -89,8 +93,8 @@ export function ExportWorkspaceDialog({ open, workspaces, onConfirm, onCancel }:
             <div className="text-sm font-semibold text-foreground">Export Workspaces</div>
             <div className="text-[11px] text-muted-foreground truncate">
               {workspaces.length === 0
-                ? 'No workspaces to export.'
-                : `${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'} in this profile — click to preview`}
+                ? `No workspaces to export${profileName ? ` (${profileName})` : ''}.`
+                : `${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'} in this profile${profileName ? ` (${profileName})` : ''}`}
             </div>
           </div>
           {workspaces.length > 0 && (

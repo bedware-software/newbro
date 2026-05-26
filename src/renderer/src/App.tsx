@@ -524,6 +524,33 @@ export default function App() {
           // just ping it via a window event rather than duplicating the UI.
           window.dispatchEvent(new Event('newbro-open-new-workspace-dialog'))
           break
+        case 'import-workspaces':
+          // Same pattern as new-workspace: the Toolbar owns the file picker
+          // + ImportWorkspaceDialog state, we just trigger it from afar.
+          window.dispatchEvent(new Event('newbro-open-import-workspaces'))
+          break
+        case 'export-workspaces':
+          // Same pattern: the Toolbar owns the ExportWorkspaceDialog and the
+          // save-bookmark-file IPC call.
+          window.dispatchEvent(new Event('newbro-open-export-workspaces'))
+          break
+        case 'rename-profile':
+          // Toolbar owns the rename InputDialog + the rename-profile case
+          // in handleDialogConfirm. The listener side picks "active profile"
+          // as the rename target — same thing the user would get from the
+          // profile-dropdown row.
+          window.dispatchEvent(new Event('newbro-rename-active-profile'))
+          break
+        case 'delete-profile':
+          // Toolbar owns the confirm dialog + window-close cascade.
+          window.dispatchEvent(new Event('newbro-delete-active-profile'))
+          break
+        case 'rename-workspace':
+          window.dispatchEvent(new Event('newbro-rename-active-workspace'))
+          break
+        case 'delete-workspace':
+          window.dispatchEvent(new Event('newbro-delete-active-workspace'))
+          break
         case 'set-comment': {
           const tab = s.getActiveTab()
           if (tab) {
