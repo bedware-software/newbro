@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog, app, Menu, session, screen } from 'electron'
+import { ipcMain, BrowserWindow, dialog, app, Menu, session, screen, clipboard } from 'electron'
 import * as tls from 'tls'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -40,6 +40,7 @@ import {
 } from './extensions/manager'
 import { registerDropdownIpc } from './dropdown-window'
 import { registerDefaultBrowserIpc } from './default-browser'
+import { registerDownloadsIpc } from './downloads'
 
 interface CertInfo {
   subject: { CN?: string; O?: string; OU?: string }
@@ -731,6 +732,17 @@ function alive(p) {
     return app.getVersion()
   })
 
+  // Clipboard write — fire-and-forget. Renderer-side
+  // `navigator.clipboard.writeText` fails silently from DetachedWindow
+  // popups because the parent renderer isn't the focused document at
+  // click time. Routing through main bypasses the secure-context /
+  // focus requirements entirely.
+  ipcMain.on('clipboard:write-text', (_e, text: string) => {
+    try { clipboard.writeText(text) }
+    catch (err) { log.warn('clipboard:write-text failed', String(err)) }
+  })
+
   registerDropdownIpc()
   registerDefaultBrowserIpc()
+  registerDownloadsIpc()
 }

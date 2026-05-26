@@ -30,6 +30,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Logging — fire-and-forget (no await needed)
   logWrite: (level: string, msg: string): void => { ipcRenderer.send('log:write', level, msg) },
 
+  // Clipboard write via main — needed for DetachedWindow popups where
+  // navigator.clipboard fails because the parent renderer document isn't
+  // focused. Fire-and-forget.
+  clipboardWriteText: (text: string): void => { ipcRenderer.send('clipboard:write-text', text) },
+
   // Certificate info
   getCertInfo: (url: string): Promise<unknown> => ipcRenderer.invoke('cert:get-info', url),
   bypassCertForUrl: (url: string): Promise<void> => ipcRenderer.invoke('cert:bypass-origin', url),
@@ -148,6 +153,34 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_e: Electron.IpcRendererEvent, payload: { extensionId: string }) => callback(payload)
     ipcRenderer.on('extension-popup-closed', handler)
     return () => { ipcRenderer.removeListener('extension-popup-closed', handler) }
+  },
+
+  // Downloads — manager backed by per-session 'will-download' in main.
+  // List returns both in-flight and history entries (history is persisted
+  // across restarts); pause/resume/cancel are no-ops once a download has
+  // finished (the DownloadItem reference is dropped on 'done').
+  downloadsList: (): Promise<unknown[]> => ipcRenderer.invoke('downloads:list'),
+  downloadsPause: (id: string): Promise<boolean> => ipcRenderer.invoke('downloads:pause', id),
+  downloadsResume: (id: string): Promise<boolean> => ipcRenderer.invoke('downloads:resume', id),
+  downloadsCancel: (id: string): Promise<boolean> => ipcRenderer.invoke('downloads:cancel', id),
+  downloadsRemove: (id: string): Promise<boolean> => ipcRenderer.invoke('downloads:remove', id),
+  downloadsClear: (): Promise<boolean> => ipcRenderer.invoke('downloads:clear'),
+  downloadsShowInFolder: (id: string): Promise<boolean> => ipcRenderer.invoke('downloads:show-in-folder', id),
+  downloadsOpenFile: (id: string): Promise<boolean> => ipcRenderer.invoke('downloads:open-file', id),
+  downloadsRefresh: (): Promise<unknown[]> => ipcRenderer.invoke('downloads:refresh'),
+  onDownloadsUpdated: (callback: (entries: unknown[]) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, entries: unknown[]) => callback(entries)
+    ipcRenderer.on('downloads:updated', handler)
+    return () => { ipcRenderer.removeListener('downloads:updated', handler) }
+  },
+  // Main emits this when a tab was created solely to trigger a download
+  // (target="_blank" → empty tab → Content-Disposition: attachment). The
+  // renderer closes that tab so the user doesn't end up with a blank
+  // tab sitting next to their download.
+  onCloseBlankDownloadTab: (callback: (tabId: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, tabId: string) => callback(tabId)
+    ipcRenderer.on('downloads:close-blank-tab', handler)
+    return () => { ipcRenderer.removeListener('downloads:close-blank-tab', handler) }
   },
 
   // Dynamic browser-action state — main process broadcasts updates whenever

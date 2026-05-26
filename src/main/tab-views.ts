@@ -1788,6 +1788,18 @@ export function __internal_getTabRecord(tabId: string): TabRecord | undefined {
   return tabs.get(tabId)
 }
 
+/** Reverse lookup: find the tab record whose WebContentsView owns this
+ *  WebContents. Used by the downloads manager to close a tab that was
+ *  opened solely to trigger a download (target="_blank" → fresh tab →
+ *  immediate Content-Disposition: attachment) so the user isn't left with
+ *  a useless blank tab next to their download. */
+export function findTabByWebContents(wc: WebContents): { tabId: string; windowId: number } | null {
+  for (const [tabId, rec] of tabs) {
+    if (rec.view.webContents === wc) return { tabId, windowId: rec.windowId }
+  }
+  return null
+}
+
 /** Find a tab's webContents by Chrome's tabs.Tab.id, which we map to
  *  Electron's webContents.id. Used by chrome.userScripts.execute and
  *  chrome.scripting.executeScript backends to run a script in a

@@ -17,9 +17,54 @@ interface Props {
   // parent window or another app). Armed only after the popup first gains
   // focus, so the show-sequence's transient blurs don't dismiss it.
   closeOnBlur?: boolean
+  /** When set, remember the popup's size + position across opens, keyed by
+   *  this string. Saved to localStorage on resize, drag-end, and unmount.
+   *  Saved bounds override the `width` / `height` props on subsequent
+   *  opens — the props become "first-launch defaults". */
+  persistKey?: string
   onClose: () => void
   onWindowChange?: (popup: Window | null) => void
   children: ReactNode
+}
+
+interface SavedBounds {
+  width: number
+  height: number
+  left?: number
+  top?: number
+}
+
+const PERSIST_MIN_W = 200
+const PERSIST_MIN_H = 200
+
+function readSavedBounds(key: string): SavedBounds | null {
+  try {
+    const raw = window.localStorage.getItem(`detached-bounds:${key}`)
+    if (!raw) return null
+    const v = JSON.parse(raw) as Partial<SavedBounds>
+    if (
+      typeof v.width === 'number' && typeof v.height === 'number' &&
+      v.width >= PERSIST_MIN_W && v.height >= PERSIST_MIN_H
+    ) {
+      return {
+        width: v.width,
+        height: v.height,
+        left: typeof v.left === 'number' ? v.left : undefined,
+        top: typeof v.top === 'number' ? v.top : undefined,
+      }
+    }
+  } catch {
+    /* corrupt entry — fall back to defaults */
+  }
+  return null
+}
+
+function writeSavedBounds(key: string, b: SavedBounds): void {
+  try {
+    window.localStorage.setItem(`detached-bounds:${key}`, JSON.stringify(b))
+  } catch (err) {
+    log.warn('detached-window: failed to persist bounds', { key, err: String(err) })
+  }
 }
 
 function syncThemeToPopup(popupDoc: Document): void {
@@ -46,6 +91,7 @@ export function DetachedWindow({
   resizable = true,
   closeOnEscape = true,
   closeOnBlur = false,
+  persistKey,
   onClose,
   onWindowChange,
   children,
@@ -67,8 +113,14 @@ export function DetachedWindow({
   useEffect(() => {
     if (!open) return
 
-    const left = Math.max(0, window.screenX + Math.round((window.outerWidth - width) / 2))
-    const top = Math.max(0, window.screenY + Math.round((window.outerHeight - height) / 2))
+    // Saved bounds (if any) override the prop defaults. The width/height
+    // props then act as first-launch fallbacks; once the user resizes /
+    // moves, those values stick across opens via localStorage.
+    const saved = persistKey ? readSavedBounds(persistKey) : null
+    const finalWidth = saved?.width ?? width
+    const finalHeight = saved?.height ?? height
+    const left = saved?.left ?? Math.max(0, window.screenX + Math.round((window.outerWidth - finalWidth) / 2))
+    const top = saved?.top ?? Math.max(0, window.screenY + Math.round((window.outerHeight - finalHeight) / 2))
 
     const popup = window.open(
       '',
@@ -77,8 +129,8 @@ export function DetachedWindow({
         'popup=yes',
         `left=${left}`,
         `top=${top}`,
-        `width=${width}`,
-        `height=${height}`,
+        `width=${finalWidth}`,
+        `height=${finalHeight}`,
         `resizable=${resizable ? 'yes' : 'no'}`,
         'scrollbars=no',
         'toolbar=no',
@@ -128,6 +180,27 @@ export function DetachedWindow({
     // main to snapshot the popup's bounds + cursor; on mousemove we tell it
     // to reposition. See src/main/ipc.ts for why we can't use popup.moveTo /
     // setPosition and why width/height must be captured once.
+    // Debounced bounds persistence. Resize fires many events per drag of an
+    // edge; we coalesce them into one localStorage write per quiet window.
+    let persistTimer: ReturnType<typeof setTimeout> | null = null
+    const captureBoundsNow = () => {
+      if (!persistKey || popup.closed) return
+      writeSavedBounds(persistKey, {
+        width: popup.outerWidth,
+        height: popup.outerHeight,
+        left: popup.screenX,
+        top: popup.screenY,
+      })
+    }
+    const schedulePersist = () => {
+      if (!persistKey) return
+      if (persistTimer) clearTimeout(persistTimer)
+      persistTimer = setTimeout(captureBoundsNow, 200)
+    }
+
+    const handleResize = () => schedulePersist()
+    if (persistKey) popup.addEventListener('resize', handleResize)
+
     let dragState: {
       startScreenX: number
       startScreenY: number
@@ -136,6 +209,7 @@ export function DetachedWindow({
     let rafPending = false
 
     const stopDragging = () => {
+      const wasDragging = !!dragState && dragState.moved
       if (dragState) {
         window.electronAPI.detachedWindowDragEnd()
       }
@@ -143,6 +217,7 @@ export function DetachedWindow({
       rafPending = false
       popup.document.body.style.userSelect = ''
       popup.document.body.style.cursor = ''
+      if (wasDragging) schedulePersist()
     }
 
     const handleMouseDown = (e: MouseEvent) => {
@@ -214,6 +289,11 @@ export function DetachedWindow({
       popup.removeEventListener('blur', stopDragging)
       popup.removeEventListener('focus', handleFocus)
       popup.removeEventListener('blur', handleBlurClose)
+      if (persistKey) popup.removeEventListener('resize', handleResize)
+      // Flush any pending persist + capture one last set of bounds so a
+      // resize-then-close right after each other still saves the new size.
+      if (persistTimer) { clearTimeout(persistTimer); persistTimer = null }
+      captureBoundsNow()
       stopDragging()
       onWindowChangeRef.current?.(null)
       setContainerEl(null)
@@ -224,7 +304,7 @@ export function DetachedWindow({
         suppressBeforeUnloadRef.current = false
       }
     }
-  }, [open, width, height, resizable, closeOnEscape, closeOnBlur])
+  }, [open, width, height, resizable, closeOnEscape, closeOnBlur, persistKey])
 
   // Show the popup window once React has rendered content into the portal.
   // Double-rAF ensures the browser has committed the paint before we reveal.

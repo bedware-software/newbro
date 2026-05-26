@@ -62,6 +62,7 @@ declare global {
       getCertInfo: (url: string) => Promise<unknown>
       bypassCertForUrl: (url: string) => Promise<void>
       logWrite: (level: string, msg: string) => void
+      clipboardWriteText: (text: string) => void
       loadSettings: () => Promise<Settings>
       saveSettings: (settings: Settings) => Promise<void>
       wipeAllData: () => Promise<void>
@@ -125,8 +126,43 @@ declare global {
       dropdownPopupEvent?: (evt: unknown) => void
       dropdownPopupResize?: (size: { width: number; height: number }) => void
       onDropdownPopupSpec?: (callback: (spec: unknown) => void) => () => void
+
+      // Downloads (per-session 'will-download' in main; see src/main/downloads.ts)
+      downloadsList?: () => Promise<DownloadEntry[]>
+      downloadsPause?: (id: string) => Promise<boolean>
+      downloadsResume?: (id: string) => Promise<boolean>
+      downloadsCancel?: (id: string) => Promise<boolean>
+      downloadsRemove?: (id: string) => Promise<boolean>
+      downloadsClear?: () => Promise<boolean>
+      downloadsShowInFolder?: (id: string) => Promise<boolean>
+      downloadsOpenFile?: (id: string) => Promise<boolean>
+      downloadsRefresh?: () => Promise<DownloadEntry[]>
+      onDownloadsUpdated?: (callback: (entries: DownloadEntry[]) => void) => () => void
+      onCloseBlankDownloadTab?: (callback: (tabId: string) => void) => () => void
     }
   }
+}
+
+export type DownloadState =
+  | 'progressing'
+  | 'paused'
+  | 'completed'
+  | 'cancelled'
+  | 'interrupted'
+
+export interface DownloadEntry {
+  id: string
+  url: string
+  filename: string
+  savePath: string
+  mimeType: string
+  totalBytes: number
+  receivedBytes: number
+  state: DownloadState
+  startedAt: number
+  endedAt?: number
+  originUrl?: string
+  bytesPerSecond?: number
 }
 
 interface DefaultBrowserStatus {
@@ -639,6 +675,15 @@ export default function App() {
       placeIncomingTab(url, /* background */ false)
     })
 
+    // Main asks us to close a tab that was created solely to trigger a
+    // download (see src/main/downloads.ts). We route through closeTab so
+    // the store's sidebar order, active-tab fallback, and history all
+    // update consistently.
+    const cleanupBlankDownloadTab = window.electronAPI.onCloseBlankDownloadTab?.((tabId) => {
+      log.event('downloads:close-blank-tab', tabId)
+      useAppStore.getState().closeTab(tabId)
+    })
+
     // Background new-tab handoffs (Cmd/Ctrl+Click, middle-click, RMB →
     // Open in New Tab). Opens behind the current tab. The background
     // tab is also flagged for eager loading in the store so the page
@@ -726,6 +771,7 @@ export default function App() {
       cleanupState()
       cleanupPopup()
       cleanupBackground()
+      cleanupBlankDownloadTab?.()
       cleanupExternal()
       cleanupSettings()
       cleanupActivateTab()

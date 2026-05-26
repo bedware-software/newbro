@@ -5,6 +5,7 @@ import { log } from '../lib/log'
 import { InputDialog } from './InputDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CertificatePopup } from './CertificatePopup'
+import { DownloadsPanel } from './DownloadsPanel'
 import { ImportWorkspaceDialog } from './ImportWorkspaceDialog'
 import { ExportWorkspaceDialog } from './ExportWorkspaceDialog'
 import type { Workspace, WorkspaceCandidate } from '../store/types'
@@ -13,8 +14,9 @@ import { openDropdownAsync } from './dropdown-protocol'
 import {
   ChevronLeft, ChevronRight, RotateCw, X, ChevronDown,
   User, Layout, Lock, Unlock, ShieldAlert,
-  Menu, Globe, Copy, Check, Puzzle, Search,
+  Menu, Globe, Copy, Check, Puzzle, Search, Download as DownloadIcon,
 } from 'lucide-react'
+import type { DownloadEntry } from '../App'
 
 // Trigger-side icon registry. Only the icons used on dropdown trigger
 // buttons appear here — row icons are resolved inside the popup window
@@ -714,6 +716,32 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   const [canGoForward, setCanGoForward] = useState(false)
   const [certPopupOpen, setCertPopupOpen] = useState(false)
 
+  // Downloads — open state for the panel + a cached active-count so the
+  // toolbar button shows a progress dot while there's a download in flight.
+  // The badge tracks live downloads only (history doesn't count); it stays
+  // in sync via the global onDownloadsUpdated broadcast.
+  const [downloadsPanelOpen, setDownloadsPanelOpen] = useState(false)
+  const [activeDownloads, setActiveDownloads] = useState(0)
+  useEffect(() => {
+    let alive = true
+    const tally = (list: DownloadEntry[] | undefined): number => {
+      if (!list) return 0
+      let n = 0
+      for (const e of list) {
+        if (e.state === 'progressing' || e.state === 'paused') n++
+      }
+      return n
+    }
+    void window.electronAPI.downloadsList?.().then((list) => {
+      if (!alive) return
+      setActiveDownloads(tally(list as DownloadEntry[] | undefined))
+    })
+    const cleanup = window.electronAPI.onDownloadsUpdated?.((list) => {
+      setActiveDownloads(tally(list as DownloadEntry[] | undefined))
+    })
+    return () => { alive = false; cleanup?.() }
+  }, [])
+
   // Security state: 'secure' (valid HTTPS), 'insecure' (HTTP), 'warning' (cert error), 'internal' (about:, file:, etc.)
   type SecurityState = 'secure' | 'insecure' | 'warning' | 'internal'
   const [security, setSecurity] = useState<SecurityState>('internal')
@@ -1161,6 +1189,26 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
           <Search size={15} />
         </button>
 
+        {/* Downloads — opens a detached panel with active + recent downloads.
+            A small dot in the corner signals downloads in progress so the user
+            can spot activity even when the panel isn't open. */}
+        <button
+          onClick={() => setDownloadsPanelOpen((v) => !v)}
+          className="relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          title={activeDownloads > 0 ? `${activeDownloads} active download${activeDownloads === 1 ? '' : 's'}` : 'Downloads'}
+        >
+          <DownloadIcon size={15} />
+          {activeDownloads > 0 && (
+            <span
+              className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-semibold leading-[14px] text-center pointer-events-none"
+              aria-label={`${activeDownloads} active downloads`}
+            >
+              {activeDownloads > 9 ? '9+' : activeDownloads}
+            </span>
+          )}
+        </button>
+
         {/* Nav buttons */}
         <button
           onClick={handleBack}
@@ -1301,6 +1349,8 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
           onClose={() => setCertPopupOpen(false)}
         />
       )}
+
+      <DownloadsPanel open={downloadsPanelOpen} onClose={() => setDownloadsPanelOpen(false)} />
     </>
   )
 }

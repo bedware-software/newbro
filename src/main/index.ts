@@ -27,6 +27,7 @@ import {
   type OpenWindowEntry,
 } from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
+import { attachDownloadHandler } from './downloads'
 import { log } from './log'
 import {
   registerWorkspaceWindowForTabs,
@@ -1220,6 +1221,9 @@ function configureSession(ses: Electron.Session, partition: string): void {
     .replace(/\s*Newbro\/\S+/g, '')
   ses.setUserAgent(cleanUA)
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(true))
+  // Listen for file downloads so the renderer's downloads panel can show
+  // progress + history. Idempotent — guarded inside attachDownloadHandler.
+  attachDownloadHandler(ses)
   applyProxyToSession(ses, loadSettings())
   // Restore the VPN extension's last-known proxy BEFORE any tab in this
   // partition starts navigating — otherwise tab loads that fire between
