@@ -155,6 +155,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener('extension-popup-closed', handler) }
   },
 
+  // URL visit history (for address-bar autocomplete). list() returns the
+  // full LRU snapshot; the renderer keeps a local mirror via the
+  // onHistoryUpdated broadcast so per-keystroke lookups stay synchronous.
+  historyList: (): Promise<unknown[]> => ipcRenderer.invoke('history:list'),
+  historyClear: (): Promise<boolean> => ipcRenderer.invoke('history:clear'),
+  onHistoryUpdated: (callback: (entries: unknown[]) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, entries: unknown[]) => callback(entries)
+    ipcRenderer.on('history:updated', handler)
+    return () => { ipcRenderer.removeListener('history:updated', handler) }
+  },
+
   // Downloads — manager backed by per-session 'will-download' in main.
   // List returns both in-flight and history entries (history is persisted
   // across restarts); pause/resume/cancel are no-ops once a download has

@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { useAppStore, saveStateNow, findWorkspaceCandidates, buildBookmarkHTML } from '../store/app-store'
 import { normalizeURL } from '../lib/url'
 import { log } from '../lib/log'
+import { suggestFor, subscribe as subscribeHistory, type Suggestion } from '../lib/history'
 import { InputDialog } from './InputDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CertificatePopup } from './CertificatePopup'
@@ -691,6 +692,28 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   const [urlValue, setUrlValue] = useState(activeTab?.url || '')
   const urlRef = useRef<HTMLInputElement>(null)
 
+  // Address-bar autocomplete state. The "typed" portion is what the user
+  // actually typed (no protocol guessing, no suggestion); the suggestion's
+  // suffix is appended to the input value and shown selected so further
+  // typing replaces it naturally. Tab accepts the suggestion (collapses the
+  // selection to the end). Empty suggestion = no autocomplete active.
+  //
+  // - autoActive: true while the user is editing in the URL bar. We don't
+  //   want history suggestions overriding the URL we sync from active tab
+  //   navigation, only when the user is actively typing.
+  // - suggestion: holds the matched URL plus its tail and navigation target
+  //   so Enter can dispatch to the right place even after Tab.
+  const [autoActive, setAutoActive] = useState(false)
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null)
+  const typedRef = useRef<string>('')
+  // Subscribe to history-cache updates so suggestions reflect the latest
+  // snapshot from main. We don't read it directly here — suggestFor() pulls
+  // from the cache at call time — but this re-renders the address-bar
+  // effects when the cache changes so a freshly-visited URL becomes
+  // available immediately.
+  const [, setHistoryTick] = useState(0)
+  useEffect(() => subscribeHistory(() => setHistoryTick((n) => n + 1)), [])
+
   // Create/rename dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogTitle, setDialogTitle] = useState('')
@@ -766,6 +789,15 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
 
   useEffect(() => {
     const url = activeTab?.url || ''
+    // While the user is actively editing the address bar, don't let
+    // background tab.url updates (did-navigate fired by a backgrounded tab,
+    // a redirect on the current tab settling after the user already started
+    // typing, etc.) clobber their input. Security state still tracks the
+    // real URL.
+    if (autoActive) {
+      if (activeTabId) updateSecurity(url, activeTabId)
+      return
+    }
     // Preserve the "select-all" state across a value sync. When the user
     // opens a new tab with the "focus URL bar" preference, we focus +
     // select-all the input. Any subsequent activeTab.url update from the
@@ -783,6 +815,8 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
       input.selectionStart === 0 &&
       input.selectionEnd === input.value.length
     setUrlValue(url)
+    setSuggestion(null)
+    typedRef.current = ''
     if (activeTabId) updateSecurity(url, activeTabId)
     if (hadFullSelection) {
       setTimeout(() => {
@@ -792,7 +826,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
         catch (err) { console.warn('Toolbar: urlRef.select() threw:', err) }
       }, 0)
     }
-  }, [activeTab?.url, activeTabId, certBypassedOrigins])
+  }, [activeTab?.url, activeTabId, certBypassedOrigins, autoActive])
 
   // Derive security state from URL
   const updateSecurity = (url: string, tabId: string) => {
@@ -907,8 +941,17 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   }, [activeTabId])
 
   const handleNavigate = async () => {
-    const resolved = normalizeURL(urlValue)
+    // If the user pressed Enter with a live autocomplete suggestion, treat
+    // their accepted URL as the navigation target — not the bare typed
+    // prefix that's also still in the value pre-acceptance. We commit the
+    // suggestion's canonical URL (which still goes through normalizeURL so
+    // bare hosts get https:// prepended).
+    const inputText = suggestion ? suggestion.url : urlValue
+    const resolved = normalizeURL(inputText)
     if (!resolved || !activeTabId) return
+    setSuggestion(null)
+    setAutoActive(false)
+    typedRef.current = ''
     // Ask main for the live URL so hitting Enter on an unchanged URL triggers
     // a reload (matches old <webview>.reload behavior), not a redundant load.
     const state = await window.electronAPI.tabGetState?.(activeTabId)
@@ -918,6 +961,86 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
       window.electronAPI.tabNavigate?.(activeTabId, resolved)
     }
     useAppStore.getState().updateTabUrl(activeTabId, resolved)
+  }
+
+  // When a suggestion is active, set the input's selection to cover the
+  // appended suffix so further typing replaces it (same trick Chrome /
+  // Firefox use). Runs in layout effect so it lands before paint and the
+  // user never sees the unselected appended chars flicker.
+  useLayoutEffect(() => {
+    const input = urlRef.current
+    if (!input) return
+    if (!suggestion || !autoActive) return
+    if (document.activeElement !== input) return
+    const typedLen = urlValue.length - suggestion.suffix.length
+    if (typedLen < 0) return
+    try { input.setSelectionRange(typedLen, urlValue.length) }
+    catch (err) { console.warn('Toolbar: url suggestion setSelectionRange threw:', err) }
+  }, [urlValue, suggestion, autoActive])
+
+  // Compute the next state after an edit. Detects deletion vs insertion
+  // from InputEvent.inputType so backspace doesn't immediately re-suggest
+  // the same URL the user just deleted from (which would be infuriating).
+  // Returns the typed portion plus an optional suggestion to surface.
+  const handleUrlChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
+    const next = e.target.value
+    const inputType = (e.nativeEvent as InputEvent).inputType
+    const isDeletion = inputType ? inputType.startsWith('delete') : next.length < typedRef.current.length
+    const isPaste = inputType === 'insertFromPaste'
+    const isComposition = inputType === 'insertCompositionText'
+
+    typedRef.current = next
+    if (isDeletion || isPaste || isComposition) {
+      // No autocomplete after delete / paste / IME. The user either wants
+      // the bare value they ended up with, or we'd interfere with the
+      // composition session.
+      setUrlValue(next)
+      setSuggestion(null)
+      return
+    }
+
+    const match = suggestFor(next)
+    if (!match) {
+      setUrlValue(next)
+      setSuggestion(null)
+      return
+    }
+    setUrlValue(next + match.suffix)
+    setSuggestion(match)
+  }
+
+  const handleUrlKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === 'Enter') {
+      // Enter accepts whatever's showing — the navigation handler reads
+      // suggestion.url when a suggestion is present so a partial-typed
+      // value still navigates to the matched URL.
+      handleNavigate()
+      return
+    }
+    if (e.key === 'Tab' && suggestion) {
+      // Accept the suggestion: collapse selection to end, keep the value.
+      // preventDefault so Tab doesn't move focus to the next element.
+      e.preventDefault()
+      const input = urlRef.current
+      typedRef.current = urlValue
+      setSuggestion(null)
+      if (input) {
+        const end = urlValue.length
+        try { input.setSelectionRange(end, end) }
+        catch (err) { console.warn('Toolbar: url Tab accept setSelectionRange threw:', err) }
+      }
+      return
+    }
+    if (e.key === 'Escape' && suggestion) {
+      // Clear the suggestion but keep the typed text — matches the
+      // browser convention of "back out of autocomplete without losing
+      // what I typed."
+      e.preventDefault()
+      const typed = typedRef.current
+      setUrlValue(typed)
+      setSuggestion(null)
+      return
+    }
   }
 
   const handleBack = () => {
@@ -1346,8 +1469,14 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
             ref={urlRef}
             type="text"
             value={urlValue}
-            onChange={(e) => setUrlValue(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleNavigate() }}
+            onChange={handleUrlChange}
+            onKeyDown={handleUrlKeyDown}
+            onFocus={() => {
+              // Mark the address bar as active so background tab.url syncs
+              // don't clobber whatever the user is typing. Cleared on blur.
+              setAutoActive(true)
+              typedRef.current = urlValue
+            }}
             onBlur={(e) => {
               // Browsers keep the visual selection highlight on a blurred
               // input (just dimmed). Collapse the selection to position 0
@@ -1355,6 +1484,16 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
               // moves away — matches typical address-bar behavior.
               try { e.currentTarget.setSelectionRange(0, 0) }
               catch (err) { console.warn('Toolbar: url onBlur setSelectionRange threw:', err) }
+              // Clear autocomplete state on blur so the URL bar revisits
+              // the active tab's URL on next focus / activeTab change.
+              setAutoActive(false)
+              if (suggestion) {
+                // Drop the auto-appended suffix back to just what the user
+                // actually typed; otherwise the next time we sync from
+                // activeTab.url we'd briefly show a stale suggestion.
+                setUrlValue(typedRef.current)
+                setSuggestion(null)
+              }
             }}
             placeholder="Enter URL or search..."
             spellCheck={false}

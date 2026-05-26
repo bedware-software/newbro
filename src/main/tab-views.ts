@@ -22,6 +22,7 @@ import { BrowserWindow, Menu, WebContentsView, clipboard, ipcMain, session, app 
 import type { Session, WebContents } from 'electron'
 import { join } from 'path'
 import { log } from './log'
+import { addVisit as addHistoryVisit, updateTitle as updateHistoryTitle } from './history'
 import { setupPartitionSession, shouldDropExtConsoleMessage } from './index'
 import { ensureExtensionInSession } from './extensions/manager'
 import { injectMatchingUserScripts } from './extensions/userscripts'
@@ -286,14 +287,29 @@ function wireEvents(rec: TabRecord): void {
   wc.on('did-navigate', (_e, url) => {
     emit({ type: 'did-navigate', tabId: rec.tabId, url })
     emitNavState()
+    // Record an autocomplete entry for the URL bar. did-navigate fires once
+    // per main-frame commit, so each real navigation is counted exactly once;
+    // in-page hash changes go through did-navigate-in-page (skipped here on
+    // purpose — they'd inflate the LRU with anchor variants of the same
+    // page). The history module itself filters non-http schemes.
+    try { addHistoryVisit(url) }
+    catch (err) { log.warn('history.addVisit failed', String(err)) }
   })
   wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
     emit({ type: 'did-navigate-in-page', tabId: rec.tabId, url, isMainFrame })
     emitNavState()
   })
-  wc.on('page-title-updated', (_e, title) =>
+  wc.on('page-title-updated', (_e, title) => {
     emit({ type: 'page-title-updated', tabId: rec.tabId, title })
-  )
+    // Backfill the title onto the history entry — only updates the matching
+    // URL if it's already in the store; no-op otherwise.
+    try {
+      const url = wc.getURL()
+      if (url) updateHistoryTitle(url, title)
+    } catch (err) {
+      log.warn('history.updateTitle failed', String(err))
+    }
+  })
   wc.on('page-favicon-updated', (_e, favicons) =>
     emit({ type: 'page-favicon-updated', tabId: rec.tabId, favicons })
   )

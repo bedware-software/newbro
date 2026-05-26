@@ -3,6 +3,7 @@ import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getV
 import { normalizeURL, setSearchEngine } from './lib/url'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
+import { setHistory } from './lib/history'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
@@ -139,8 +140,20 @@ declare global {
       downloadsRefresh?: () => Promise<DownloadEntry[]>
       onDownloadsUpdated?: (callback: (entries: DownloadEntry[]) => void) => () => void
       onCloseBlankDownloadTab?: (callback: (tabId: string) => void) => () => void
+
+      // URL visit history for address-bar autocomplete (src/main/history.ts).
+      historyList?: () => Promise<HistoryEntry[]>
+      historyClear?: () => Promise<boolean>
+      onHistoryUpdated?: (callback: (entries: HistoryEntry[]) => void) => () => void
     }
   }
+}
+
+export interface HistoryEntry {
+  url: string
+  title?: string
+  visitedAt: number
+  visits: number
 }
 
 export type DownloadState =
@@ -396,6 +409,22 @@ export default function App() {
     }
     load()
   }, [hydrate, windowProfileId, windowWorkspaceId, windowTabId, loadAndApplySettings])
+
+  // Address-bar autocomplete cache. Pull the full URL history snapshot once
+  // at boot and keep it in sync with the per-update broadcast from main.
+  // Suggestions resolve against this local mirror so keystrokes don't pay
+  // an IPC round-trip — see src/renderer/src/lib/history.ts.
+  useEffect(() => {
+    let alive = true
+    void window.electronAPI.historyList?.().then((list) => {
+      if (!alive) return
+      setHistory((list as HistoryEntry[]) || [])
+    })
+    const cleanup = window.electronAPI.onHistoryUpdated?.((list) => {
+      setHistory((list as HistoryEntry[]) || [])
+    })
+    return () => { alive = false; cleanup?.() }
+  }, [])
 
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const activeProfileId = useAppStore((s) => s.activeProfileId)

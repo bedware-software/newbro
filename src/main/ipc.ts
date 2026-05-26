@@ -41,6 +41,7 @@ import {
 import { registerDropdownIpc } from './dropdown-window'
 import { registerDefaultBrowserIpc } from './default-browser'
 import { registerDownloadsIpc } from './downloads'
+import { registerHistoryIpc } from './history'
 
 interface CertInfo {
   subject: { CN?: string; O?: string; OU?: string }
@@ -745,4 +746,5 @@ function alive(p) {
   registerDropdownIpc()
   registerDefaultBrowserIpc()
   registerDownloadsIpc()
+  registerHistoryIpc()
 }
