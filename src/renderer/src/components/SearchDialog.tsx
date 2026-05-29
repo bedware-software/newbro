@@ -66,12 +66,20 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
 
   const results = useMemo(() => {
     if (!query.trim()) return items.slice(0, 250)
-    return fuzzyFilter(query, items, (item) => [
-      { value: item.name, weight: 1 },
-      { value: item.comment, weight: 0.9 },
-      { value: item.url, weight: 0.5 },
-      { value: item.path, weight: 0.3 },
-    ])
+    return fuzzyFilter(query, items, (item) => {
+      // Combined haystack so queries can subsequence across path + url + comment
+      // (path already contains profile > workspace > group > title).
+      const haystack = [item.path, item.url, item.comment]
+        .filter((s): s is string => !!s && s !== 'about:blank')
+        .join(' ')
+      return [
+        { value: item.name, weight: 1 },
+        { value: item.comment, weight: 0.9 },
+        { value: item.url, weight: 0.5 },
+        { value: item.path, weight: 0.3 },
+        { value: haystack, weight: 0.5 },
+      ]
+    })
   }, [query, items])
 
   // Count totals per type from all items (not just visible results)
