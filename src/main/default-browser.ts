@@ -45,8 +45,15 @@ const CAPABILITIES_PATH = `Software\\Clients\\StartMenuInternet\\${REG_TOKEN}\\C
 const CAPABILITIES_KEY = `HKCU\\${CAPABILITIES_PATH}`
 const PROGID_KEY = `HKCU\\Software\\Classes\\${PROG_ID}`
 const REGISTERED_APPS_KEY = 'HKCU\\Software\\RegisteredApplications'
-const USERCHOICE_BASE =
-  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Shell\\Associations\\UrlAssociations'
+// The authoritative per-protocol default lives under the user's Shell
+// associations. URL UserChoice is recorded WITHOUT a "CurrentVersion" segment
+// — unlike file-extension UserChoice, which sits under
+// CurrentVersion\Explorer\FileExts (an easy path to confuse). We probe both
+// spellings so detection is robust across Windows builds.
+const USERCHOICE_BASES = [
+  'HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations',
+  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Shell\\Associations\\UrlAssociations',
+] as const
 
 export interface DefaultBrowserStatus {
   platform: NodeJS.Platform
@@ -165,19 +172,22 @@ export function ensureWindowsBrowserRegistered(opts: { force?: boolean } = {}): 
  *  records when the user picks a handler. Absent until the user makes a choice
  *  (a system fallback like Edge does not write it). */
 async function readUserChoiceProgId(proto: string): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync('reg', [
-      'query',
-      `${USERCHOICE_BASE}\\${proto}\\UserChoice`,
-      '/v',
-      'ProgId',
-    ])
-    // Line: "    ProgId    REG_SZ    NewbroHTML"
-    const m = stdout.match(/ProgId\s+REG_SZ\s+(.+?)\s*$/m)
-    return m ? m[1].trim() : null
-  } catch {
-    return null
+  for (const base of USERCHOICE_BASES) {
+    try {
+      const { stdout } = await execFileAsync('reg', [
+        'query',
+        `${base}\\${proto}\\UserChoice`,
+        '/v',
+        'ProgId',
+      ])
+      // Line: "    ProgId    REG_SZ    NewbroHTML"
+      const m = stdout.match(/ProgId\s+REG_SZ\s+(.+?)\s*$/m)
+      if (m) return m[1].trim()
+    } catch {
+      // Key absent at this spelling — fall through to the next.
+    }
   }
+  return null
 }
 
 async function readStatus(): Promise<DefaultBrowserStatus> {
