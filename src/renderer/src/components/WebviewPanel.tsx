@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAppStore, consumeNewTabUrlFocus, consumeEagerLoad } from '../store/app-store'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
+import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, type LucideIcon } from 'lucide-react'
 
 // Tab rendering lives in the main process now, as a WebContentsView per tab
 // attached to the window's root contentView. This component is a thin layout
@@ -90,6 +91,60 @@ function applyScrollbarStyle(tabId: string): void {
 
 /** Focus + select the toolbar URL bar. Used when the user prefers the
  *  URL input to have focus after opening a new tab. */
+
+/** Map a Chromium net-error code to a themed, human-readable explanation.
+ *  Mirrors the buckets Chrome's own error page uses (offline / not-found /
+ *  unreachable / timed-out) so the copy matches the actual failure instead
+ *  of always claiming the site "took too long to respond". */
+function describeLoadError(
+  code: number,
+  host: string
+): { Icon: LucideIcon; title: string; message: ReactNode; suggestions: string[] } {
+  const site = <span className="font-medium text-foreground">{host || 'This site'}</span>
+  switch (code) {
+    case -106: // ERR_INTERNET_DISCONNECTED
+    case -21: // ERR_NETWORK_CHANGED
+      return {
+        Icon: WifiOff,
+        title: "You're offline",
+        message: <>Newbro can&apos;t load this page because your device isn&apos;t connected to the internet.</>,
+        suggestions: ['Checking the network cables, modem, and router', 'Reconnecting to Wi-Fi'],
+      }
+    case -105: // ERR_NAME_NOT_RESOLVED
+    case -137: // ERR_NAME_RESOLUTION_FAILED
+    case -300: // ERR_INVALID_URL
+      return {
+        Icon: SearchX,
+        title: "This site can't be found",
+        message: <>{site}&apos;s server IP address could not be found.</>,
+        suggestions: ['Checking the address for typos', 'Running a network diagnostic'],
+      }
+    case -102: // ERR_CONNECTION_REFUSED
+      return {
+        Icon: Unplug,
+        title: "This site can't be reached",
+        message: <>{site} refused to connect.</>,
+        suggestions: ['Checking the connection', 'Checking the proxy and the firewall'],
+      }
+    case -101: // ERR_CONNECTION_RESET
+    case -104: // ERR_CONNECTION_FAILED
+    case -109: // ERR_ADDRESS_UNREACHABLE
+    case -324: // ERR_EMPTY_RESPONSE
+      return {
+        Icon: Unplug,
+        title: "This site can't be reached",
+        message: <>The connection to {site} was interrupted.</>,
+        suggestions: ['Checking the connection', 'Checking the proxy and the firewall'],
+      }
+    default: // -7 ERR_TIMED_OUT, -118 ERR_CONNECTION_TIMED_OUT, and the rest
+      return {
+        Icon: CloudOff,
+        title: "Hmmm… can't reach this page",
+        message: <>{site} took too long to respond.</>,
+        suggestions: ['Checking the connection', 'Checking the proxy and the firewall'],
+      }
+  }
+}
 
 export function WebviewPanel() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -355,6 +410,8 @@ export function WebviewPanel() {
     try { return new URL(activeError.url).hostname } catch { return activeError.url }
   })()
 
+  const errorInfo = activeError ? describeLoadError(activeError.code, failedHost) : null
+
   const handleRetry = (): void => {
     if (!activeError) return
     setErrors((prev) => { const m = new Map(prev); m.delete(activeError.tabId); return m })
@@ -388,25 +445,35 @@ export function WebviewPanel() {
           here would overlap the tab view in unpredictable ways. */}
       <div ref={containerRef} style={{ flex: 1 }} />
 
-      {showError && activeError && (
-        <div className="absolute inset-0 z-50 bg-[#eaecf1] text-[#11151f] flex items-center justify-center">
-          <div className="w-full max-w-[640px] px-8">
-            <h2 className="text-4xl font-semibold mb-4">Hmmm... can&apos;t reach this page</h2>
-            <p className="text-2xl mb-6">
-              <strong>{failedHost || 'This site'}</strong> took too long to respond
-            </p>
-            <p className="text-lg font-semibold mb-2">Try:</p>
-            <ul className="list-disc pl-6 text-base space-y-1 mb-6">
-              <li>Checking the connection</li>
-              <li>Checking the proxy and the firewall</li>
+      {showError && activeError && errorInfo && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">
+          <div className="w-full max-w-[440px] px-8">
+            <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+              <errorInfo.Icon size={26} strokeWidth={1.75} />
+            </div>
+            <h2 className="mb-2 text-2xl font-semibold tracking-tight">{errorInfo.title}</h2>
+            <p className="mb-6 text-sm leading-relaxed text-muted-foreground">{errorInfo.message}</p>
+            <p className="mb-2 text-xs font-medium text-foreground">Try:</p>
+            <ul className="mb-7 space-y-1.5">
+              {errorInfo.suggestions.map((s) => (
+                <li key={s} className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-muted-foreground/60" />
+                  <span>{s}</span>
+                </li>
+              ))}
             </ul>
-            <p className="text-sm text-[#586070] mb-6">{activeError.description} ({activeError.code})</p>
-            <button
-              onClick={handleRetry}
-              className="px-6 py-2.5 rounded bg-[#2f6ecb] text-white text-sm font-semibold hover:bg-[#245fb5]"
-            >
-              Refresh
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleRetry}
+                className="flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+              >
+                <RotateCw size={15} />
+                Reload
+              </button>
+              <span className="font-mono text-xs text-muted-foreground">
+                {activeError.description} ({activeError.code})
+              </span>
+            </div>
           </div>
         </div>
       )}
@@ -443,25 +510,27 @@ function CertWarningOverlay({
     console.warn('WebviewPanel: cert-error hostname parse failed', { url, err: String(err) })
   }
   return (
-    <div className="absolute inset-0 z-50 bg-[#eaecf1] text-[#11151f] flex items-center justify-center">
-      <div className="w-full max-w-[640px] px-8">
-        <div className="w-16 h-16 mb-6 rounded-full bg-red-600 text-white flex items-center justify-center text-4xl font-bold leading-none">!</div>
-        <h2 className="text-4xl font-semibold mb-4">Your connection isn&apos;t private</h2>
-        <p className="text-base mb-4">
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">
+      <div className="w-full max-w-[440px] px-8">
+        <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-destructive/15 text-destructive">
+          <ShieldAlert size={26} strokeWidth={1.75} />
+        </div>
+        <h2 className="mb-2 text-2xl font-semibold tracking-tight">Your connection isn&apos;t private</h2>
+        <p className="mb-4 text-sm leading-relaxed text-muted-foreground">
           Attackers might be trying to steal your information from{' '}
-          <strong>{hostname}</strong> (for example, passwords, messages, or credit cards).
+          <span className="font-medium text-foreground">{hostname}</span> (for example, passwords, messages, or credit cards).
         </p>
-        <p className="text-sm text-[#586070] mb-8 font-mono">{code}</p>
+        <p className="mb-7 font-mono text-xs text-muted-foreground">{code}</p>
         <div className="flex items-center gap-4">
           <button
             onClick={onBack}
-            className="px-6 py-2.5 rounded bg-[#2f6ecb] text-white text-sm font-semibold hover:bg-[#245fb5]"
+            className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             Back to safety
           </button>
           <button
             onClick={onContinue}
-            className="px-2 py-2.5 text-sm text-[#586070] hover:text-[#11151f] underline"
+            className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
           >
             Continue to {hostname} (unsafe)
           </button>
