@@ -360,23 +360,35 @@ if (STEALTH_ENABLED) {
   }
 }
 
-// ── Two-finger horizontal swipe → back/forward (overlay rendering) ───────
-// Detection runs in the main process via webContents.on('input-event'),
-// which sees wheel events BEFORE the page does — independent of any site
-// JS that might preventDefault wheel events (Confluence, Jira, GitLab,
-// Sheets, etc.) or use non-document scroll containers that make
-// document.scrollingElement.scrollLeft a meaningless overscroll signal.
+// ── Two-finger horizontal swipe → back/forward ──────────────────────────
+// Detection AND overlay rendering both live here, in the page's isolated-
+// world preload. It must: the only place the horizontal scroll delta
+// (WheelEvent.deltaX) is available is the DOM. Electron's main-process
+// `webContents.on('input-event')` delivers the base InputEvent — `type`
+// and `modifiers` only, with NO deltaX/deltaY/hasPreciseScrollingDeltas —
+// so a main-side wheel reader literally can't measure the swipe (this was
+// the bug: it read `wheel.deltaX`, always got undefined → 0, and never
+// engaged).
 //
-// This preload now only renders the visual indicator. Main pushes
-// 'newbro-gesture-update' { visible, direction, progress, armed } as the
-// gesture progresses; we draw a circle that slides in from the matching
-// edge proportional to progress and turns blue once `armed` is true.
+// We listen on `window` in the CAPTURE phase with passive:false so we see
+// the deltas before any page handler AND can preventDefault to stop the
+// page scrolling / Chromium rubber-banding while the swipe is in flight.
+// preventDefault does not stop us receiving the event, so sites that
+// preventDefault wheels (Confluence/Jira/GitLab) can't hide the gesture
+// from us. We accumulate dx directly rather than checking a scroll-edge,
+// so non-document scroll containers don't matter.
 //
-// The overlay div lives in the page document but is created here in the
-// isolated-world preload (so site CSS resets and DOM mutation can't
-// fight us) and uses z-index 2147483647 + pointer-events:none so it
-// stacks above all page content without intercepting interaction.
+// Main pushes the current history bounds via 'newbro-gesture-bounds' so we
+// don't engage a direction the tab can't go; on commit we reuse the
+// existing 'newbro-nav' channel (the same one the mouse side-buttons use).
+//
+// The overlay div lives in the page document, created here so site CSS
+// resets can't fight it; z-index 2147483647 + pointer-events:none stacks
+// it above all content without intercepting interaction.
 if (STEALTH_ENABLED) try {
+  const TRIGGER_PX = 100      // accumulated dx that fires navigation
+  const ENGAGE_PX = 6         // min accumulated dx before the overlay shows
+  const SESSION_GAP_MS = 140  // wheel inactivity that ends a swipe session
   const REST_INSET_PX = 28    // distance from viewport edge once fully in
   const HIDDEN_OFFSET_PX = 64 // distance past viewport edge when invisible
 
@@ -419,19 +431,11 @@ if (STEALTH_ENABLED) try {
     if (overlay) overlay.style.opacity = '0'
   }
 
-  ipcRenderer.on('newbro-gesture-update', (_e, payload: unknown) => {
-    const p = payload as
-      | { visible: false }
-      | { visible: true; direction: 'back' | 'forward'; progress: number; armed: boolean }
-      | null
-    if (!p || p.visible === false) {
-      hideOverlay()
-      return
-    }
+  const paintOverlay = (direction: 'back' | 'forward', progress: number, armed: boolean): void => {
     const el = ensureOverlay()
-    const progress = Math.max(0, Math.min(1, p.progress))
-    const inset = -HIDDEN_OFFSET_PX + (HIDDEN_OFFSET_PX + REST_INSET_PX) * progress
-    if (p.direction === 'back') {
+    const p = Math.max(0, Math.min(1, progress))
+    const inset = -HIDDEN_OFFSET_PX + (HIDDEN_OFFSET_PX + REST_INSET_PX) * p
+    if (direction === 'back') {
       el.style.left = `${inset}px`
       el.style.right = ''
       el.innerHTML = ICON_BACK
@@ -442,11 +446,111 @@ if (STEALTH_ENABLED) try {
     }
     el.style.transform = 'translateY(-50%)'
     el.style.opacity = '1'
-    el.style.background = p.armed ? 'rgba(37,99,235,0.95)' : 'rgba(30,30,30,0.92)'
+    el.style.background = armed ? 'rgba(37,99,235,0.95)' : 'rgba(30,30,30,0.92)'
+  }
+
+  // History bounds, pushed from main on every navigation (emitNavState).
+  let canGoBack = false
+  let canGoForward = false
+  ipcRenderer.on('newbro-gesture-bounds', (_e, payload: unknown) => {
+    const p = (payload ?? {}) as { canGoBack?: unknown; canGoForward?: unknown }
+    canGoBack = p.canGoBack === true
+    canGoForward = p.canGoForward === true
   })
+
+  // Per-swipe state machine.
+  let engaged = false
+  let committed = false                       // already navigated this session
+  let direction: 'back' | 'forward' | null = null
+  let position = 0                            // accumulated outward distance
+  let sessionTimer: ReturnType<typeof setTimeout> | null = null
+
+  const endSession = (): void => {
+    sessionTimer = null
+    engaged = false
+    committed = false
+    direction = null
+    position = 0
+    hideOverlay()
+  }
+
+  window.addEventListener(
+    'wheel',
+    (e: WheelEvent) => {
+      // A burst of wheel events is one swipe; a gap ends it. This is how we
+      // re-arm `committed` and tear down the overlay after the finger lifts
+      // (incl. the trailing momentum events macOS keeps sending).
+      if (sessionTimer) clearTimeout(sessionTimer)
+      sessionTimer = setTimeout(endSession, SESSION_GAP_MS)
+
+      // Modifier wheels are zoom / alt-tools — never claim them.
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) {
+        if (engaged) { engaged = false; direction = null; position = 0; hideOverlay() }
+        return
+      }
+
+      // Already navigated in this swipe — swallow the rest so the page and
+      // Chromium's rubber-band stay quiet until the session ends.
+      if (committed) { e.preventDefault(); return }
+
+      // Classic line-mode mouse wheels (deltaMode 1/2) aren't swipes.
+      if (e.deltaMode !== 0) return
+
+      const dx = e.deltaX
+      const dy = e.deltaY
+      if (Math.abs(dx) < 1) return
+      // Reject mostly-vertical scrolls with tiny horizontal jitter.
+      if (!engaged && Math.abs(dx) < Math.abs(dy) * 1.5) return
+
+      if (!engaged) {
+        // dx<0 = fingers moving right (content right) = "back"; dx>0 = "forward".
+        const dir: 'back' | 'forward' = dx < 0 ? 'back' : 'forward'
+        if (dir === 'back' && !canGoBack) return
+        if (dir === 'forward' && !canGoForward) return
+        direction = dir
+        position = 0
+        engaged = true
+      }
+
+      // We own the gesture now — stop the page from scrolling sideways and
+      // stop Chromium's native overscroll animation.
+      e.preventDefault()
+
+      const delta = direction === 'back' ? -dx : dx
+      position += delta
+      if (position <= 0) {
+        // Pulled all the way back — disengage so a fresh overscroll within
+        // the same session can pick a (possibly different) direction.
+        position = 0
+        engaged = false
+        direction = null
+        hideOverlay()
+        return
+      }
+      if (position < ENGAGE_PX) {
+        hideOverlay()
+        return
+      }
+
+      paintOverlay(direction!, position / TRIGGER_PX, position >= TRIGGER_PX)
+
+      // Eager commit at the threshold (we can't see true finger-lift in
+      // time because momentum events keep arriving). Pull-back-to-cancel
+      // still works for anything below TRIGGER_PX.
+      if (position >= TRIGGER_PX && direction) {
+        const dir = direction
+        committed = true
+        engaged = false
+        direction = null
+        hideOverlay()
+        ipcRenderer.send('newbro-nav', dir)
+      }
+    },
+    { capture: true, passive: false },
+  )
 } catch (err) {
   // eslint-disable-next-line no-console
-  console.log('[newbro-stealth] swipe-overlay wiring failed:', err)
+  console.log('[newbro-stealth] swipe-gesture wiring failed:', err)
 }
 
 // ── Right-click → host context menu ──────────────────────────────────
