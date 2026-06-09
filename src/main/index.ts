@@ -12,7 +12,7 @@ import { APP_NAME } from './branding'
 // missed by one process-life: the lib was already in Node's require cache
 // by the time the ready handler fired.
 import './extensions/patch-lib-deps'
-import { app, BrowserWindow, session, Menu, nativeImage, screen, protocol } from 'electron'
+import { app, BrowserWindow, session, Menu, nativeImage, screen, protocol, systemPreferences } from 'electron'
 import { dirname, join } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
@@ -39,7 +39,9 @@ import {
   selectTabByWebContents,
   destroyTabByWebContents,
   getWebContentsByChromeTabId,
+  findTabByWebContents,
 } from './tab-views'
+import { getGrant, setGrant, type PermissionKind } from './permissions-store'
 import {
   getOrCreateExtensions,
   isLibrarySelectTabSuppressed,
@@ -1210,9 +1212,218 @@ const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
  *  Tampermonkey's Dashboard-button click handler runs). */
 const EXTENSION_SHIM_PRELOAD = join(__dirname, '../preload/extension-shim.js')
 
-/** Configure a session: strip Electron branding from the UA, allow permissions,
- *  apply proxy settings. Applied to both the default session and partitioned
- *  webview sessions. */
+// ── Site permissions ───────────────────────────────────────────────────
+// The permission gate. Electron's default (and our previous behaviour) was
+// to blanket-grant every permission a page asked for. We now gate the
+// user-meaningful ones (mic / camera / location / notifications / clipboard /
+// MIDI) behind a per-site decision: a remembered grant in permissions-store,
+// else the global default in settings (`permissionDefaults`), else an in-page
+// prompt routed to the owning window's renderer. Everything else Electron
+// asks about (fullscreen, pointerLock, openExternal, the OAuth window.open
+// flow, downloads, …) is still allowed unconditionally so nothing regresses.
+
+interface PendingPermission {
+  /** Resolve the request handler's callback with the user's decision. */
+  settle: (granted: boolean) => void
+  partition: string
+  origin: string
+  kinds: PermissionKind[]
+}
+const pendingPermissions = new Map<string, PendingPermission>()
+let permissionReqSeq = 0
+
+/** Loose shape covering both handlers' `details`: the request handler passes
+ *  `mediaTypes` (array), the check handler passes `mediaType` (single). */
+interface PermissionDetails {
+  requestingUrl?: string
+  mediaTypes?: string[]
+  mediaType?: string
+}
+
+/** Map an Electron permission string (+details) to the managed kinds it
+ *  represents. Returns [] for permissions we don't gate — the caller allows
+ *  those unconditionally. */
+function mapPermissionToKinds(permission: string, details?: PermissionDetails | null): PermissionKind[] {
+  switch (permission) {
+    case 'media': {
+      const types = details?.mediaTypes ?? (details?.mediaType ? [details.mediaType] : [])
+      const kinds: PermissionKind[] = []
+      if (types.includes('audio')) kinds.push('microphone')
+      if (types.includes('video')) kinds.push('camera')
+      // A media request with no specified type is treated as mic+camera so
+      // we never silently allow capture we meant to gate.
+      return kinds.length ? kinds : ['microphone', 'camera']
+    }
+    case 'audioCapture':
+      return ['microphone']
+    case 'videoCapture':
+      return ['camera']
+    case 'geolocation':
+      return ['geolocation']
+    case 'notifications':
+      return ['notifications']
+    case 'clipboard-read':
+      return ['clipboard']
+    case 'midi':
+    case 'midiSysex':
+      return ['midi']
+    default:
+      return []
+  }
+}
+
+/** http(s) origin for the requesting page, or null for schemes we don't gate
+ *  (extension pages, file://, internal). Null => allow unconditionally. */
+function gatedOrigin(url: string | undefined): string | null {
+  if (!url) return null
+  try {
+    const u = new URL(url)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    return u.origin
+  } catch {
+    return null
+  }
+}
+
+function safeGetUrl(wc: Electron.WebContents): string | undefined {
+  try {
+    return wc.getURL()
+  } catch {
+    return undefined
+  }
+}
+
+/** macOS gates mic/camera behind a system (TCC) prompt on top of the per-site
+ *  grant. Granting at the Electron level alone makes getUserMedia fail
+ *  silently — this surfaces the OS prompt the first time and reports whether
+ *  the OS ultimately allows access. No-op off macOS. */
+async function ensureOsMediaAccess(kinds: PermissionKind[]): Promise<boolean> {
+  if (process.platform !== 'darwin') return true
+  for (const kind of kinds) {
+    if (kind !== 'microphone' && kind !== 'camera') continue
+    const mediaType = kind === 'microphone' ? 'microphone' : 'camera'
+    const status = systemPreferences.getMediaAccessStatus(mediaType)
+    if (status === 'granted') continue
+    if (status === 'denied' || status === 'restricted') {
+      log.warn('permissions: OS media access blocked — user must change System Settings', { kind, status })
+      return false
+    }
+    // 'not-determined' → surface the OS prompt.
+    try {
+      const ok = await systemPreferences.askForMediaAccess(mediaType)
+      if (!ok) return false
+    } catch (err) {
+      log.warn('permissions: askForMediaAccess threw', { kind, err: String(err) })
+      return false
+    }
+  }
+  return true
+}
+
+/** Ask the owning window's renderer to show the Allow/Block prompt and wait
+ *  for the click. Resolves false if we can't surface a prompt (the requester
+ *  isn't a tab, or its window/tab went away before answering). */
+function promptForPermission(
+  wc: Electron.WebContents,
+  partition: string,
+  origin: string,
+  kinds: PermissionKind[],
+): Promise<boolean> {
+  const ctx = findTabByWebContents(wc)
+  if (!ctx) {
+    log.info('permissions: no tab for requester — denying ask', { origin, kinds })
+    return Promise.resolve(false)
+  }
+  const win = BrowserWindow.fromId(ctx.windowId)
+  if (!win || win.isDestroyed()) return Promise.resolve(false)
+  const requestId = `perm-${++permissionReqSeq}`
+  return new Promise<boolean>((resolve) => {
+    const settle = (granted: boolean): void => {
+      if (!pendingPermissions.has(requestId)) return
+      pendingPermissions.delete(requestId)
+      resolve(granted)
+    }
+    pendingPermissions.set(requestId, { settle, partition, origin, kinds })
+    // If the requesting page goes away before the user answers, stop waiting.
+    wc.once('destroyed', () => settle(false))
+    win.webContents.send('permission:request', { requestId, origin, kinds, tabId: ctx.tabId })
+  })
+}
+
+async function decidePermission(
+  wc: Electron.WebContents,
+  permission: string,
+  details: PermissionDetails | null | undefined,
+  partition: string,
+): Promise<boolean> {
+  const kinds = mapPermissionToKinds(permission, details)
+  if (kinds.length === 0) return true // unmanaged → preserve allow-all
+
+  const origin = gatedOrigin(details?.requestingUrl) ?? gatedOrigin(safeGetUrl(wc))
+  if (!origin) return true // non-web origin (extension / internal) → allow
+
+  const defaults = loadSettings().permissionDefaults
+  let needPrompt = false
+  for (const kind of kinds) {
+    const decision = getGrant(partition, origin, kind) ?? defaults[kind] ?? 'ask'
+    if (decision === 'block') return false // any blocked kind denies the whole request
+    if (decision === 'ask') needPrompt = true
+  }
+
+  const granted = needPrompt ? await promptForPermission(wc, partition, origin, kinds) : true
+  if (!granted) return false
+  // Granted at the app level — for media, the OS must agree too.
+  return ensureOsMediaAccess(kinds)
+}
+
+function installPermissionHandlers(ses: Electron.Session, partition: string): void {
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    decidePermission(wc, permission, details as PermissionDetails | undefined, partition)
+      .then(callback)
+      .catch((err) => {
+        log.warn('permissions: decide threw — denying', { permission, err: String(err) })
+        callback(false)
+      })
+  })
+  // Synchronous checks (navigator.permissions.query, Notification.permission,
+  // enumerateDevices label gating). Reflect the resolved state: granted only
+  // when an explicit allow exists; unmanaged permissions stay permissive to
+  // match the request handler's allow-all-others stance.
+  ses.setPermissionCheckHandler((_wc, permission, requestingOrigin, details) => {
+    const kinds = mapPermissionToKinds(permission, details as PermissionDetails | undefined)
+    if (kinds.length === 0) return true
+    const origin =
+      gatedOrigin(requestingOrigin) ?? gatedOrigin((details as PermissionDetails)?.requestingUrl)
+    if (!origin) return true
+    const defaults = loadSettings().permissionDefaults
+    return kinds.every(
+      (kind) => (getGrant(partition, origin, kind) ?? defaults[kind] ?? 'ask') === 'allow',
+    )
+  })
+}
+
+/** Called from the renderer (via ipc) when the user clicks Allow/Block on a
+ *  permission prompt. `remember` persists the decision per (profile, origin,
+ *  kind); a one-off dismiss leaves the default untouched so the site can ask
+ *  again later. */
+export function resolvePermissionRequest(
+  requestId: string,
+  decision: 'allow' | 'block',
+  remember: boolean,
+): void {
+  const pending = pendingPermissions.get(requestId)
+  if (!pending) return
+  if (remember) {
+    for (const kind of pending.kinds) {
+      setGrant(pending.partition, pending.origin, kind, decision)
+    }
+  }
+  pending.settle(decision === 'allow')
+}
+
+/** Configure a session: strip Electron branding from the UA, gate site
+ *  permissions, apply proxy settings. Applied to both the default session and
+ *  partitioned webview sessions. */
 function configureSession(ses: Electron.Session, partition: string): void {
   const rawUA = ses.getUserAgent()
   const cleanUA = rawUA
@@ -1220,7 +1431,7 @@ function configureSession(ses: Electron.Session, partition: string): void {
     .replace(/\s*newbro-browser\/\S+/g, '')
     .replace(/\s*Newbro\/\S+/g, '')
   ses.setUserAgent(cleanUA)
-  ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(true))
+  installPermissionHandlers(ses, partition)
   // Listen for file downloads so the renderer's downloads panel can show
   // progress + history. Idempotent — guarded inside attachDownloadHandler.
   attachDownloadHandler(ses)

@@ -79,6 +79,10 @@ interface TabRecord {
   /** The last bounds assigned by the renderer. Cached so we can
    *  restore them when re-activating after hide (width=0 trick). */
   lastBounds: TabBounds
+  /** Mirrors webPreferences.focusOnNavigation. False for "focus URL on
+   *  new tab" tabs, whose page must not auto-grab the keyboard on load —
+   *  tabNavigate re-focuses the page for those on a real user navigation. */
+  autoFocusOnNav: boolean
 }
 
 const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
@@ -475,6 +479,12 @@ export function createTab(opts: {
    *  the user switches to it. Restored / programmatic tabs leave this
    *  false to preserve the existing lazy-load behaviour. */
   eagerLoad?: boolean
+  /** When true, keep OS keyboard focus on the renderer instead of handing
+   *  it to the new page — the "focus URL on new tab" preference. The
+   *  renderer then focuses the toolbar URL bar. Without this the page
+   *  would grab focus as it settles, forcing the URL-bar focus to be
+   *  deferred and letting the load clobber whatever the user typed. */
+  focusUrlBar?: boolean
 }): void {
   if (tabs.has(opts.tabId)) return
   const win = BrowserWindow.fromId(opts.windowId)
@@ -496,6 +506,14 @@ export function createTab(opts: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // "Focus URL on new tab": Electron focuses a WebContents whenever it
+      // navigates (default true). For these tabs that load-time focus is
+      // exactly what steals OS keyboard focus away from the toolbar URL
+      // bar as the page settles. Disable it so the page never grabs the
+      // keyboard on load; the renderer keeps focus on the URL bar. User
+      // navigations (Enter in the URL bar) re-focus the page explicitly in
+      // tabNavigate, so this only suppresses the unwanted auto-focus.
+      focusOnNavigation: !opts.focusUrlBar,
     },
   })
 
@@ -514,6 +532,7 @@ export function createTab(opts: {
     view,
     activated: false,
     lastBounds: HIDDEN_BOUNDS,
+    autoFocusOnNav: !opts.focusUrlBar,
   }
   tabs.set(opts.tabId, rec)
   wcIdToTabId.set(view.webContents.id, opts.tabId)
@@ -561,14 +580,27 @@ export function createTab(opts: {
   if (opts.active) {
     setActiveTab(opts.windowId, opts.tabId)
     loadIfNeeded(rec, opts.url)
-    // Hand OS keyboard focus to the new tab's webContents so the user can
-    // start typing into the page right away — this is the "focus site"
-    // default. The "focus URL on new tab" override fires later, on the
-    // tab's first did-finish-load (see WebviewPanel.tsx).
-    try {
-      rec.view.webContents.focus()
-    } catch {
-      /* ignore */
+    if (opts.focusUrlBar) {
+      // "Focus URL on new tab": keep OS keyboard focus on the parent
+      // renderer so the toolbar URL bar can own it from the very start.
+      // The renderer focuses the URL bar immediately (see WebviewPanel).
+      // Crucially we do NOT focus the page here — otherwise it would steal
+      // OS focus as it settles, blur the URL bar, and clobber the user's
+      // typing. The page still loads; it just doesn't grab the keyboard.
+      try {
+        win.webContents.focus()
+      } catch {
+        /* ignore */
+      }
+    } else {
+      // Hand OS keyboard focus to the new tab's webContents so the user can
+      // start typing into the page right away — this is the "focus site"
+      // default.
+      try {
+        rec.view.webContents.focus()
+      } catch {
+        /* ignore */
+      }
     }
   } else if (opts.eagerLoad) {
     // User-opened background tab — start loading now so the page is
@@ -738,6 +770,18 @@ export function tabNavigate(tabId: string, url: string): void {
   if (!rec) return
   rec.activated = true
   void startTabNavigation(rec, url)
+  // "Focus URL on new tab" tabs are created with focusOnNavigation:false so
+  // the initial page load can't steal keyboard focus from the URL bar. But a
+  // navigation triggered here is a real user action (Enter in the URL bar,
+  // error-page retry, cert continue) after which focus SHOULD move to the
+  // page — so re-focus it explicitly, since the disabled auto-focus won't.
+  if (!rec.autoFocusOnNav) {
+    try {
+      rec.view.webContents.focus()
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export function tabGoBack(tabId: string): void {

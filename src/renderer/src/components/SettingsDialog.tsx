@@ -1,10 +1,17 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
 import { useAppStore } from '../store/app-store'
+import {
+  PERMISSION_KINDS,
+  PERMISSION_LABEL,
+  type PermissionKind,
+  type PermissionPolicy,
+  type PermissionGrant,
+} from '../lib/permissions'
 
 interface ProxySettings {
   mode: 'system' | 'direct' | 'custom'
@@ -25,9 +32,23 @@ interface Settings {
   dohMode: 'off' | 'automatic' | 'secure'
   /** Each action accepts up to {@link MAX_BINDINGS_PER_ACTION} accelerators. */
   keybindings: Record<string, string[]>
+  permissionDefaults: Record<PermissionKind, PermissionPolicy>
 }
 
 const MAX_BINDINGS_PER_ACTION = 2
+
+function buildDefaultPermissionDefaults(): Record<PermissionKind, PermissionPolicy> {
+  return Object.fromEntries(PERMISSION_KINDS.map((k) => [k, 'ask'])) as Record<
+    PermissionKind,
+    PermissionPolicy
+  >
+}
+
+const PERMISSION_POLICY_LABEL: Record<PermissionPolicy, string> = {
+  ask: 'Ask first',
+  allow: 'Allow',
+  block: 'Block',
+}
 
 interface AppearancePreview {
   theme: ThemeChoice
@@ -252,7 +273,7 @@ function formatAccelerator(accel: string): React.ReactNode {
   )
 }
 
-export type SettingsTab = 'general' | 'appearance' | 'shortcuts' | 'extensions' | 'about'
+export type SettingsTab = 'general' | 'appearance' | 'shortcuts' | 'extensions' | 'permissions' | 'about'
 type Tab = SettingsTab
 
 /**
@@ -384,6 +405,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [proxy, setProxy] = useState<ProxySettings>({ ...DEFAULT_PROXY_SETTINGS })
   const [dohMode, setDohMode] = useState<'off' | 'automatic' | 'secure'>('automatic')
   const [keybindings, setKeybindings] = useState<Record<string, string[]>>(() => cloneDefaultKeybindings())
+  const [permissionDefaults, setPermissionDefaults] = useState<Record<PermissionKind, PermissionPolicy>>(
+    () => buildDefaultPermissionDefaults(),
+  )
+  // Per-site exceptions live in their own main-process store (not in Settings),
+  // so they load/clear independently of the Save button.
+  const [permissionGrants, setPermissionGrants] = useState<PermissionGrant[]>([])
+  const profiles = useAppStore((s) => s.profiles)
   const [recordingTarget, setRecordingTarget] = useState<{ action: string; slot: number } | null>(null)
   const [conflictError, setConflictError] = useState<string | null>(null)
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
@@ -584,8 +612,36 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
         settings.dohMode === 'off' || settings.dohMode === 'secure' ? settings.dohMode : 'automatic'
       )
       setKeybindings(normalizeKnownKeybindings(settings.keybindings))
+      setPermissionDefaults({
+        ...buildDefaultPermissionDefaults(),
+        ...(settings.permissionDefaults || {}),
+      })
     }
   }, [open, settings])
+
+  // Load the per-site permission exceptions when that tab is shown (and
+  // refresh on open) so the list reflects decisions made since last view.
+  useEffect(() => {
+    if (!open || activeTab !== 'permissions') return
+    window.electronAPI.permissionsList?.().then(setPermissionGrants).catch(() => {})
+  }, [open, activeTab])
+
+  const clearPermissionGrant = useCallback((grant: PermissionGrant) => {
+    window.electronAPI
+      .permissionsClear?.(grant.partition, grant.origin, grant.kind)
+      .then(setPermissionGrants)
+      .catch(() => {})
+  }, [])
+
+  const clearAllPermissionGrants = useCallback(() => {
+    window.electronAPI.permissionsClearAll?.().then(setPermissionGrants).catch(() => {})
+  }, [])
+
+  const profileNameForPartition = useCallback(
+    (partition: string): string =>
+      profiles.find((p) => p.partition === partition)?.name ?? partition,
+    [profiles],
+  )
 
   // Apply a recorded accelerator into a specific (action, slot). Rejects
   // and surfaces an inline error if the new combo is already bound to a
@@ -692,6 +748,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       proxy: normalizedProxy,
       dohMode,
       keybindings: normalizeKnownKeybindings(keybindings),
+      permissionDefaults,
     })
     onClose()
   }
@@ -755,6 +812,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   { id: 'appearance', label: 'Appearance', icon: Palette },
                   { id: 'shortcuts', label: 'Keyboard Shortcuts', icon: Keyboard },
                   { id: 'extensions', label: 'Extensions', icon: Puzzle },
+                  { id: 'permissions', label: 'Site permissions', icon: ShieldCheck },
                 ] as { id: Tab; label: string; icon: LucideIcon }[]
               ).map(({ id, label, icon: Icon }) => (
                 <button
@@ -1457,6 +1515,101 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     </div>
                   )
                 })}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'permissions' && (
+            <div className="space-y-8 max-w-2xl">
+              {/* Default behavior per capability */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">Default behavior</label>
+                <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
+                  What happens when a site asks to use a capability and you haven&apos;t
+                  already chosen for that site. &ldquo;Ask first&rdquo; shows a prompt; your
+                  per-site choices are remembered under Exceptions below.
+                </p>
+                <div className="rounded-lg border border-border divide-y divide-border">
+                  {PERMISSION_KINDS.map((kind) => (
+                    <div key={kind} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                      <span className="text-sm text-foreground">{PERMISSION_LABEL[kind]}</span>
+                      <select
+                        value={permissionDefaults[kind]}
+                        onChange={(e) =>
+                          setPermissionDefaults((prev) => ({
+                            ...prev,
+                            [kind]: e.target.value as PermissionPolicy,
+                          }))
+                        }
+                        className="w-32 px-2 py-1.5 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        {(['ask', 'allow', 'block'] as PermissionPolicy[]).map((p) => (
+                          <option key={p} value={p}>{PERMISSION_POLICY_LABEL[p]}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-2">
+                  Changes to defaults take effect after you click Save.
+                </p>
+              </div>
+
+              {/* Per-site exceptions */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-foreground">Exceptions</label>
+                  {permissionGrants.length > 0 && (
+                    <button
+                      onClick={clearAllPermissionGrants}
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      Clear all
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
+                  Sites you&apos;ve allowed or blocked. Removing an entry makes the site
+                  ask again next time. These apply immediately.
+                </p>
+                {permissionGrants.length === 0 ? (
+                  <p className="text-xs text-muted-foreground rounded-lg border border-dashed border-border px-3 py-6 text-center">
+                    No saved site permissions yet.
+                  </p>
+                ) : (
+                  <div className="rounded-lg border border-border divide-y divide-border">
+                    {permissionGrants.map((g) => (
+                      <div
+                        key={`${g.partition} ${g.origin} ${g.kind}`}
+                        className="flex items-center gap-3 px-3 py-2.5"
+                      >
+                        <Globe size={14} className="shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm text-foreground">{g.origin}</div>
+                          <div className="truncate text-[11px] text-muted-foreground">
+                            {PERMISSION_LABEL[g.kind]} · {profileNameForPartition(g.partition)}
+                          </div>
+                        </div>
+                        <span
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            g.decision === 'allow'
+                              ? 'bg-primary/15 text-primary'
+                              : 'bg-destructive/15 text-destructive'
+                          }`}
+                        >
+                          {g.decision === 'allow' ? 'Allowed' : 'Blocked'}
+                        </span>
+                        <button
+                          aria-label="Remove"
+                          onClick={() => clearPermissionGrant(g)}
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}

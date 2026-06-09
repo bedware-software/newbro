@@ -5,7 +5,8 @@ import * as path from 'path'
 import { spawn } from 'child_process'
 import { loadState, saveState } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
-import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition } from './index'
+import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest } from './index'
+import { listGrants, clearGrant, clearAllGrants, type PermissionKind } from './permissions-store'
 import { log } from './log'
 import { checkForUpdatesNow, downloadUpdateNow, installUpdateNow, getLatestStatus } from './updater'
 import {
@@ -170,10 +171,11 @@ export function registerIpcHandlers(): void {
     url: string,
     active: boolean,
     eagerLoad?: boolean,
+    focusUrlBar?: boolean,
   ) => {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (!win) return
-    createTab({ windowId: win.id, tabId, partition, url, active, eagerLoad: !!eagerLoad })
+    createTab({ windowId: win.id, tabId, partition, url, active, eagerLoad: !!eagerLoad, focusUrlBar: !!focusUrlBar })
   })
 
   ipcMain.handle('tab:destroy', (_e, tabId: string) => {
@@ -508,6 +510,29 @@ export function registerIpcHandlers(): void {
         win.webContents.send('settings:updated', nextSettings)
       }
     }
+  })
+
+  // ── Site permissions ──
+  // Renderer reports the user's Allow/Block click on a permission prompt.
+  ipcMain.handle(
+    'permission:respond',
+    (_e, requestId: string, decision: 'allow' | 'block', remember: boolean) => {
+      log.ipc('permission:respond', `${requestId} ${decision} remember=${remember}`)
+      resolvePermissionRequest(requestId, decision, remember)
+    },
+  )
+  // Settings → Site permissions: list / clear remembered per-site decisions.
+  ipcMain.handle('permissions:list', () => listGrants())
+  ipcMain.handle(
+    'permissions:clear',
+    (_e, partition: string, origin: string, kind: PermissionKind) => {
+      clearGrant(partition, origin, kind)
+      return listGrants()
+    },
+  )
+  ipcMain.handle('permissions:clear-all', () => {
+    clearAllGrants()
+    return listGrants()
   })
 
   ipcMain.handle('dialog:open-bookmark-file', async (_e) => {

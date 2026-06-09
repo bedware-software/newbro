@@ -17,6 +17,7 @@ import { MoveCopyGroupDialog } from './components/MoveCopyGroupDialog'
 import { OpenExternalLinkDialog } from './components/OpenExternalLinkDialog'
 import { UpdateBanner } from './components/UpdateBanner'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
+import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
 
 interface Settings {
   proxy: {
@@ -32,9 +33,12 @@ interface Settings {
   showTabNumbers: boolean
   defaultPageUrl: string
   searchEngine: string
+  dohMode: 'off' | 'automatic' | 'secure'
   /** Each action accepts up to two accelerator strings. Pre-dual-binding
    *  saves are migrated to one-element arrays in the main process. */
   keybindings: Record<string, string[]>
+  /** Default policy per gated permission kind (mic, camera, …). */
+  permissionDefaults: Record<PermissionKind, PermissionPolicy>
 }
 
 function normalizeNewTabFocus(value: string | undefined): NewTabFocus {
@@ -87,7 +91,7 @@ declare global {
       onUpdaterStatus: (callback: (status: UpdateStatus) => void) => () => void
 
       // Tab hosting (WebContentsView in main)
-      tabCreate?: (tabId: string, partition: string, url: string, active: boolean) => Promise<void>
+      tabCreate?: (tabId: string, partition: string, url: string, active: boolean, eagerLoad?: boolean, focusUrlBar?: boolean) => Promise<void>
       tabDestroy?: (tabId: string) => Promise<void>
       tabActivate?: (tabId: string, url: string) => Promise<void>
       tabSetBounds?: (bounds: { x: number; y: number; width: number; height: number }) => void
@@ -145,6 +149,15 @@ declare global {
       historyList?: () => Promise<HistoryEntry[]>
       historyClear?: () => Promise<boolean>
       onHistoryUpdated?: (callback: (entries: HistoryEntry[]) => void) => () => void
+
+      // Site permissions (src/main/permissions-store.ts + the index.ts gate).
+      onPermissionRequest?: (
+        callback: (payload: { requestId: string; origin: string; kinds: PermissionKind[]; tabId: string }) => void,
+      ) => () => void
+      respondPermission?: (requestId: string, decision: 'allow' | 'block', remember: boolean) => Promise<void>
+      permissionsList?: () => Promise<PermissionGrant[]>
+      permissionsClear?: (partition: string, origin: string, kind: PermissionKind) => Promise<PermissionGrant[]>
+      permissionsClearAll?: () => Promise<PermissionGrant[]>
     }
   }
 }
@@ -897,7 +910,7 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar visible={sidebarVisible} showTabNumbers={settings?.showTabNumbers ?? true} />
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>

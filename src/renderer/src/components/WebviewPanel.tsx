@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAppStore, consumeNewTabUrlFocus, consumeEagerLoad } from '../store/app-store'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
-import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, type LucideIcon } from 'lucide-react'
+import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, Mic, Camera, MapPin, Bell, Clipboard, Music, X, type LucideIcon } from 'lucide-react'
+import { describePermissionKinds, type PermissionKind } from '../lib/permissions'
 
 // Tab rendering lives in the main process now, as a WebContentsView per tab
 // attached to the window's root contentView. This component is a thin layout
@@ -29,6 +30,15 @@ interface CertError {
   code: number
   /** Electron's errorDescription, e.g. "ERR_CERT_AUTHORITY_INVALID" */
   description: string
+}
+
+/** A pending permission prompt routed from main. Shown as an infobar over the
+ *  requesting tab; the user's click is reported back via respondPermission. */
+interface PermissionRequest {
+  requestId: string
+  origin: string
+  kinds: PermissionKind[]
+  tabId: string
 }
 
 type TabEvent =
@@ -150,6 +160,9 @@ export function WebviewPanel() {
   const containerRef = useRef<HTMLDivElement>(null)
   const [errors, setErrors] = useState<Map<string, LoadError>>(new Map())
   const [certErrors, setCertErrors] = useState<Map<string, CertError>>(new Map())
+  // Pending permission prompts (mic/camera/location/…). One infobar shows at
+  // a time, for whichever pending request belongs to the active tab.
+  const [permPrompts, setPermPrompts] = useState<PermissionRequest[]>([])
   // Tabs we've already asked main to create, so we can diff against the store
   // and avoid duplicate create/destroy calls.
   const createdTabsRef = useRef<Set<string>>(new Set())
@@ -199,15 +212,30 @@ export function WebviewPanel() {
       }
     }
 
+    // Drop pending permission prompts whose tab no longer exists (main also
+    // denies these when the tab's webContents is destroyed). Return the prior
+    // array unchanged when nothing was pruned so we don't force a re-render.
+    setPermPrompts((prev) => {
+      const next = prev.filter((p) => currentTabIds.has(p.tabId))
+      return next.length === prev.length ? prev : next
+    })
+
     // Create newly-seen tabs (lazy: only the active one eager-loads,
     // plus any tab the store has flagged for eager-load — currently
     // user-opened background tabs).
+    let focusUrlBarForNewTab = false
     for (const tab of currentTabs) {
       if (!createdTabsRef.current.has(tab.id)) {
         const isActiveNow = tab.id === activeTabId
         const eagerLoad = consumeEagerLoad(tab.id)
+        // "Focus URL on new tab": consume the single-shot flag now so we
+        // can (a) tell main to keep OS keyboard focus on the renderer
+        // instead of handing it to the page, and (b) focus the URL bar
+        // ourselves right after activation below.
+        const wantsUrlFocus = isActiveNow && consumeNewTabUrlFocus(tab.id)
+        if (wantsUrlFocus) focusUrlBarForNewTab = true
         window.electronAPI.setupSession?.(tab.partition)
-        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad)
+        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad, wantsUrlFocus)
         createdTabsRef.current.add(tab.id)
         if (isActiveNow) activatedTabsRef.current.add(tab.id)
       }
@@ -218,11 +246,15 @@ export function WebviewPanel() {
       const tab = currentTabs.find((t) => t.id === activeTabId)
       const url = tab?.url || 'about:blank'
       window.electronAPI.tabActivate?.(activeTabId, url)
-      // The "Focus URL on new tab" override no longer fires here — running
-      // it pre-load gets clobbered when Electron auto-focuses the
-      // WebContentsView as the page settles. We wait for did-finish-load
-      // (handled in the tab-event listener below) so our focus call wins.
       activatedTabsRef.current.add(activeTabId)
+      // Focus the URL bar immediately for a brand-new "focus URL" tab,
+      // rather than waiting for did-finish-load. Because we asked main to
+      // keep OS focus on the renderer (focusUrlBar passed to tabCreate),
+      // the page never steals focus as it settles, so this focus sticks
+      // and whatever the user types is never clobbered by the load.
+      if (focusUrlBarForNewTab) {
+        focusAndSelectUrlBar()
+      }
     }
   }, [profiles, activeTabId, activeWorkspaceId, activeProfileId])
 
@@ -344,20 +376,29 @@ export function WebviewPanel() {
           break
         }
         case 'did-finish-load': {
-          // "Focus URL on new tab" is delivered here, not at activation time
-          // — did-finish-load fires AFTER the page's onload event AND after
-          // any auto-focus Electron does on the WebContentsView, so our
-          // focus call sticks. consumeNewTabUrlFocus is single-shot per
-          // tab id, so subsequent navigations within the same tab don't
-          // re-grab focus to the URL bar.
-          if (consumeNewTabUrlFocus(evt.tabId)) {
-            focusAndSelectUrlBar()
-          }
+          // "Focus URL on new tab" used to be deferred here, because main
+          // handed OS focus to the page on activation and an early focus
+          // call got clobbered as the page settled. Main now keeps focus
+          // on the renderer for "focus URL" tabs (see createTab), so the
+          // focus happens immediately in the reconcile effect above and
+          // nothing is needed here.
           break
         }
         default:
           break
       }
+    })
+    return cleanup
+  }, [])
+
+  // Receive permission prompts from main. Queue them; the active-tab one is
+  // rendered as an infobar. De-dupe by requestId so a re-render can't stack
+  // duplicates.
+  useEffect(() => {
+    const cleanup = window.electronAPI.onPermissionRequest?.((payload) => {
+      setPermPrompts((prev) =>
+        prev.some((p) => p.requestId === payload.requestId) ? prev : [...prev, payload]
+      )
     })
     return cleanup
   }, [])
@@ -383,6 +424,20 @@ export function WebviewPanel() {
   const activeCertError = activeTabId ? certErrors.get(activeTabId) ?? null : null
   const showCertError = activeCertError !== null
   const showError = activeError !== null && !showCertError
+  // Show the prompt belonging to the active tab (requests almost always come
+  // from the focused page). Others stay queued until their tab is foregrounded.
+  const activePrompt = activeTabId
+    ? permPrompts.find((p) => p.tabId === activeTabId) ?? null
+    : null
+
+  const handlePermissionDecision = (
+    req: PermissionRequest,
+    decision: 'allow' | 'block',
+    remember: boolean,
+  ): void => {
+    window.electronAPI.respondPermission?.(req.requestId, decision, remember)
+    setPermPrompts((prev) => prev.filter((p) => p.requestId !== req.requestId))
+  }
 
   // Hide the active tab's WebContentsView while an error overlay is up.
   // The native view composites above the renderer DOM and would otherwise
@@ -439,11 +494,22 @@ export function WebviewPanel() {
   }
 
   return (
-    <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+      {/* Permission prompt sits ABOVE the tab-view placeholder in normal flow,
+          so it shrinks the placeholder's rect and the ResizeObserver pushes
+          the WebContentsView down — keeping the bar visible (the native view
+          composites over any renderer DOM that overlaps it). */}
+      {activePrompt && (
+        <PermissionInfobar
+          key={activePrompt.requestId}
+          request={activePrompt}
+          onDecide={(decision, remember) => handlePermissionDecision(activePrompt, decision, remember)}
+        />
+      )}
       {/* Transparent placeholder whose rect defines where main paints the
           active tab's WebContentsView. Must remain empty — any child DOM
           here would overlap the tab view in unpredictable ways. */}
-      <div ref={containerRef} style={{ flex: 1 }} />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0 }} />
 
       {showError && activeError && errorInfo && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">
@@ -535,6 +601,66 @@ function CertWarningOverlay({
             Continue to {hostname} (unsafe)
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+const PERMISSION_ICON: Record<PermissionKind, LucideIcon> = {
+  microphone: Mic,
+  camera: Camera,
+  geolocation: MapPin,
+  notifications: Bell,
+  clipboard: Clipboard,
+  midi: Music,
+}
+
+/** Chrome-style permission prompt, rendered as a bar at the top of the page
+ *  area. Allow / Block remember the choice for the site; the X dismisses it
+ *  once (the site can ask again). */
+function PermissionInfobar({
+  request,
+  onDecide,
+}: {
+  request: PermissionRequest
+  onDecide: (decision: 'allow' | 'block', remember: boolean) => void
+}) {
+  let host = request.origin
+  try {
+    host = new URL(request.origin).hostname
+  } catch {
+    /* malformed origin — fall back to the raw string */
+  }
+  const Icon = PERMISSION_ICON[request.kinds[0]] ?? Mic
+  return (
+    <div className="flex items-center gap-3 border-b border-border bg-card px-4 py-2.5 text-foreground">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+        <Icon size={16} strokeWidth={1.75} />
+      </div>
+      <p className="min-w-0 flex-1 truncate text-sm">
+        <span className="font-medium">{host}</span>{' '}
+        <span className="text-muted-foreground">wants to {describePermissionKinds(request.kinds)}</span>
+      </p>
+      <div className="flex shrink-0 items-center gap-2">
+        <button
+          onClick={() => onDecide('block', true)}
+          className="h-8 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
+        >
+          Block
+        </button>
+        <button
+          onClick={() => onDecide('allow', true)}
+          className="h-8 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+        >
+          Allow
+        </button>
+        <button
+          aria-label="Dismiss"
+          onClick={() => onDecide('block', false)}
+          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
+        >
+          <X size={16} />
+        </button>
       </div>
     </div>
   )

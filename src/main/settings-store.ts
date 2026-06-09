@@ -1,4 +1,5 @@
 import Store from 'electron-store'
+import { PERMISSION_KINDS, type PermissionKind, type PermissionPolicy } from './permissions-store'
 
 export interface Settings {
   theme: 'light' | 'dark' | 'system'
@@ -36,6 +37,10 @@ export interface Settings {
    *  always an array — pre-dual-binding saves (single string per action)
    *  are migrated on load by {@link normalizeAndFilterKeybindings}. */
   keybindings: Record<string, string[]>
+  /** Default policy per gated permission kind, used when a site has no
+   *  remembered per-site decision. 'ask' shows the in-page prompt; 'allow' /
+   *  'block' apply silently. Per-site decisions live in permissions-store. */
+  permissionDefaults: Record<PermissionKind, PermissionPolicy>
 }
 
 export const MAX_BINDINGS_PER_ACTION = 2
@@ -45,6 +50,30 @@ const KNOWN_DARK_VARIANTS = new Set(['dark-default', 'dark-deep', 'dark-soft'])
 const KNOWN_DENSITIES = new Set(['compact', 'normal'])
 const KNOWN_NEW_TAB_FOCUS = new Set(['site', 'url'])
 const KNOWN_DOH_MODES = new Set(['off', 'automatic', 'secure'])
+const KNOWN_PERMISSION_POLICIES = new Set<PermissionPolicy>(['ask', 'allow', 'block'])
+
+function buildDefaultPermissionDefaults(): Record<PermissionKind, PermissionPolicy> {
+  const out = {} as Record<PermissionKind, PermissionPolicy>
+  for (const kind of PERMISSION_KINDS) out[kind] = 'ask'
+  return out
+}
+
+/** Coerce a stored permissionDefaults blob into a complete, valid map: every
+ *  known kind present, every value one of ask/allow/block, unknown keys
+ *  dropped, missing keys defaulted to 'ask'. */
+function normalizePermissionDefaults(
+  raw: Partial<Record<string, unknown>> | undefined,
+): Record<PermissionKind, PermissionPolicy> {
+  const out = buildDefaultPermissionDefaults()
+  if (!raw) return out
+  for (const kind of PERMISSION_KINDS) {
+    const value = raw[kind]
+    if (typeof value === 'string' && KNOWN_PERMISSION_POLICIES.has(value as PermissionPolicy)) {
+      out[kind] = value as PermissionPolicy
+    }
+  }
+  return out
+}
 
 export interface ProxySettings {
   mode: 'system' | 'direct' | 'custom'
@@ -127,6 +156,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   dohMode: 'automatic',
   keybindings: cloneDefaultKeybindings(),
+  permissionDefaults: buildDefaultPermissionDefaults(),
 }
 
 const LEGACY_KEYBINDING_KEYS: Record<string, string[]> = {
@@ -257,6 +287,9 @@ export function loadSettings(): Settings {
       mode,
     },
     keybindings: { ...cloneDefaultKeybindings(), ...migratedKeybindings },
+    permissionDefaults: normalizePermissionDefaults(
+      saved?.permissionDefaults as Record<string, unknown> | undefined,
+    ),
   }
 }
 
@@ -287,6 +320,9 @@ export function saveSettings(settings: Settings): void {
       ...cloneDefaultKeybindings(),
       ...normalizeAndFilterKeybindings(settings.keybindings as Record<string, unknown>),
     },
+    permissionDefaults: normalizePermissionDefaults(
+      settings.permissionDefaults as Record<string, unknown> | undefined,
+    ),
   }
   store.set('settings', normalizedSettings)
 }

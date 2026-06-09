@@ -43,6 +43,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadSettings: (): Promise<unknown> => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings: unknown): Promise<void> => ipcRenderer.invoke('settings:save', settings),
 
+  // Site permissions. Main sends 'permission:request' when a page asks for a
+  // gated capability (mic, camera, location, …) with no remembered decision;
+  // respondPermission carries the user's Allow/Block click back. The list /
+  // clear methods back the Settings → Site permissions exceptions UI.
+  onPermissionRequest: (
+    callback: (payload: { requestId: string; origin: string; kinds: string[]; tabId: string }) => void,
+  ) => {
+    const handler = (
+      _e: Electron.IpcRendererEvent,
+      payload: { requestId: string; origin: string; kinds: string[]; tabId: string },
+    ): void => callback(payload)
+    ipcRenderer.on('permission:request', handler)
+    return () => { ipcRenderer.removeListener('permission:request', handler) }
+  },
+  respondPermission: (
+    requestId: string,
+    decision: 'allow' | 'block',
+    remember: boolean,
+  ): Promise<void> => ipcRenderer.invoke('permission:respond', requestId, decision, remember),
+  permissionsList: (): Promise<unknown[]> => ipcRenderer.invoke('permissions:list'),
+  permissionsClear: (partition: string, origin: string, kind: string): Promise<unknown[]> =>
+    ipcRenderer.invoke('permissions:clear', partition, origin, kind),
+  permissionsClearAll: (): Promise<unknown[]> => ipcRenderer.invoke('permissions:clear-all'),
+
   // Danger zone: wipe the entire userData directory and relaunch.
   wipeAllData: (): Promise<void> => ipcRenderer.invoke('app:wipe-data'),
 
@@ -85,8 +109,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
      *  ready by the time the user switches to it. Omit (or pass false)
      *  for restored / programmatic tabs that should stay lazy. */
     eagerLoad = false,
+    /** When true, main keeps OS keyboard focus on the renderer instead of
+     *  the new page so the toolbar URL bar can own it — the "focus URL on
+     *  new tab" preference. The renderer focuses the URL bar itself. */
+    focusUrlBar = false,
   ): Promise<void> =>
-    ipcRenderer.invoke('tab:create', tabId, partition, url, active, eagerLoad),
+    ipcRenderer.invoke('tab:create', tabId, partition, url, active, eagerLoad, focusUrlBar),
   tabDestroy: (tabId: string): Promise<void> => ipcRenderer.invoke('tab:destroy', tabId),
   tabActivate: (tabId: string, url: string): Promise<void> => ipcRenderer.invoke('tab:activate', tabId, url),
   // Fire-and-forget: high-frequency from ResizeObserver / sidebar toggles.

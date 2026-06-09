@@ -38,6 +38,7 @@ interface Props {
   onOpenSettings: () => void
   onOpenAbout: () => void
   onOpenSearch: () => void
+  onManageExtensions: () => void
 }
 
 // Stable opener id per Dropdown / AppMenu instance. Echoed back on every
@@ -106,6 +107,11 @@ function Dropdown(props: DropdownTriggerProps) {
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLDivElement>(null)
+  // Whether the popup was open at the instant the trigger was pressed. Captured
+  // on mousedown because clicking the trigger steals focus from the popup, whose
+  // blur fires a 'cancel' that flips `open` to false before onClick runs — see
+  // handleToggle for why reading `open` alone would re-open instead of close.
+  const pressedOpenRef = useRef(false)
   const Icon = resolveTriggerIcon(iconName)
   const selected = items.find((i) => i.id === value)
 
@@ -127,7 +133,13 @@ function Dropdown(props: DropdownTriggerProps) {
   })
 
   const handleToggle = (): void => {
-    if (open) {
+    // `open` can be a stale false here: the same click that's toggling the menu
+    // also blurred the popup, and the resulting 'cancel' already flipped `open`.
+    // pressedOpenRef (set on mousedown, before that cancel can land) is the
+    // race-free signal for "was it open when pressed?".
+    const wasOpen = open || pressedOpenRef.current
+    pressedOpenRef.current = false
+    if (wasOpen) {
       window.electronAPI.closeDropdown?.()
       setOpen(false)
       return
@@ -163,6 +175,7 @@ function Dropdown(props: DropdownTriggerProps) {
   return (
     <div ref={triggerRef} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <button
+        onMouseDown={() => { pressedOpenRef.current = open }}
         onClick={handleToggle}
         className="shrink-0 flex items-center gap-1.5 h-8 px-2.5 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium transition-colors"
       >
@@ -253,9 +266,10 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
   )
 }
 
-/** Render pinned, enabled extensions that declare `action` as clickable
- *  icons. Click toggles the popup; right-click opens a Chrome-style context
- *  menu (pin/unpin, disable, options, remove, manage). */
+/** Render a leading "Manage extensions" button followed by the pinned,
+ *  enabled extensions that declare `action` as clickable icons. Click an
+ *  icon to toggle its popup; right-click opens a Chrome-style context menu
+ *  (pin/unpin, disable, options, remove, manage). */
 /** Live, per-extension state pushed by main from the BrowserActionAPI in
  *  electron-chrome-extensions. Mirrors what chrome.action.setIcon /
  *  setBadgeText / setTitle / setPopup mutate. */
@@ -282,10 +296,10 @@ interface BrowserActionState {
 
 function ExtensionActions({
   activeTabId,
-  onOpenSettings,
+  onManageExtensions,
 }: {
   activeTabId: string | null
-  onOpenSettings: () => void
+  onManageExtensions: () => void
 }) {
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([])
   const [actionState, setActionState] = useState<BrowserActionState>({
@@ -358,7 +372,6 @@ function ExtensionActions({
   }, [openPopupId])
 
   const visible = extensions.filter((e) => e.enabled && e.hasAction && (e.pinned ?? true))
-  if (visible.length === 0) return null
 
   const buttonAnchor = (id: string): { x: number; y: number; width: number; height: number } => {
     const btn = buttonRefs.current.get(id)
@@ -423,7 +436,7 @@ function ExtensionActions({
         await api?.uninstallExtension?.(ext.id)
         break
       case 'manage':
-        onOpenSettings()
+        onManageExtensions()
         break
     }
   }
@@ -434,6 +447,16 @@ function ExtensionActions({
       className="flex items-center gap-1"
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
+      {/* Leading "Manage extensions" button — opens Settings → Extensions.
+          Always shown (even with no pinned extensions) so it stays a
+          reliable entry point, mirroring Chrome's puzzle-piece menu. */}
+      <button
+        onClick={onManageExtensions}
+        title="Manage extensions"
+        className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground transition-colors"
+      >
+        <Puzzle size={15} />
+      </button>
       {visible.map((ext) => {
         const isOpen = openPopupId === ext.id
         const action = actionState.actions.find((a) => a.id === ext.id)
@@ -515,6 +538,9 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   const [open, setOpen] = useState(false)
   const [updatesUnsupported, setUpdatesUnsupported] = useState(false)
   const triggerRef = useRef<HTMLDivElement>(null)
+  // See Dropdown's pressedOpenRef: captures the open-state on mousedown so the
+  // toggle isn't fooled by the blur-driven 'cancel' that races the click.
+  const pressedOpenRef = useRef(false)
 
   // Track whether the running build supports auto-updates. The main process
   // marks unpacked / dev builds with phase: 'unsupported'; we read it once
@@ -574,7 +600,12 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   }
 
   const handleToggle = (): void => {
-    if (open) {
+    // `open` may already be a stale false (the click that's toggling the menu
+    // blurred the popup, whose 'cancel' flipped it). pressedOpenRef, set on
+    // mousedown before that cancel lands, is the race-free "was it open?" signal.
+    const wasOpen = open || pressedOpenRef.current
+    pressedOpenRef.current = false
+    if (wasOpen) {
       window.electronAPI.closeDropdown?.()
       setOpen(false)
       return
@@ -596,6 +627,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   return (
     <div ref={triggerRef} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <button
+        onMouseDown={() => { pressedOpenRef.current = open }}
         onClick={handleToggle}
         className="h-8 px-2 shrink-0 flex items-center gap-1 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium"
       >
@@ -668,7 +700,7 @@ function ActiveTabTitle({ title, favicon, comment }: { title: string; favicon?: 
   )
 }
 
-export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch }: Props) {
+export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions }: Props) {
   const isMac = navigator.platform.includes('Mac')
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
@@ -1507,11 +1539,12 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
           <ActiveTabTitle title={activeTab.title} favicon={activeTab.favicon} comment={activeTab.comment} />
         </>)}
 
-        {/* Extension action icons sit at the far right of the toolbar
-            (after the tab-title chip) so they don't compete with the URL
-            bar for space. Click toggles the popup; right-click opens a
-            Chrome-style context menu. Pinned extensions only. */}
-        <ExtensionActions activeTabId={activeTabId} onOpenSettings={onOpenSettings} />
+        {/* Extensions cluster sits at the far right of the toolbar (after
+            the tab-title chip) so it doesn't compete with the URL bar for
+            space. A leading "Manage extensions" button opens Settings →
+            Extensions; the pinned extension icons follow it. Click an icon
+            to toggle its popup; right-click for a Chrome-style context menu. */}
+        <ExtensionActions activeTabId={activeTabId} onManageExtensions={onManageExtensions} />
       </div>
 
       <InputDialog
