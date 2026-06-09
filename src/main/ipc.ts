@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog, app, Menu, session, screen, clipboard } from 'electron'
+import { ipcMain, BrowserWindow, dialog, app, Menu, session, screen, clipboard, shell } from 'electron'
 import * as tls from 'tls'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -6,13 +6,14 @@ import { spawn } from 'child_process'
 import { loadState, saveState } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
 import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest } from './index'
-import { listGrants, clearGrant, clearAllGrants, type PermissionKind } from './permissions-store'
+import { listGrants, setGrant, clearGrant, clearAllGrants, type PermissionKind, type PermissionDecision } from './permissions-store'
 import { log } from './log'
 import { checkForUpdatesNow, downloadUpdateNow, installUpdateNow, getLatestStatus } from './updater'
 import {
   activateTab,
   createTab,
   destroyTab,
+  focusTab,
   toggleExtensionPopup,
   closeExtensionPopup,
   moveExtensionPopup,
@@ -186,6 +187,13 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (!win) return
     activateTab(win.id, tabId, url)
+  })
+
+  // Move OS keyboard focus into the active tab's page (e.g. when the user
+  // presses Esc in the URL bar). Distinct from tab:activate, which only
+  // focuses on a fresh activation and no-ops for the already-active tab.
+  ipcMain.handle('tab:focus', (_e, tabId: string) => {
+    focusTab(tabId)
   })
 
   // High-frequency: bounds update on resize/sidebar toggle. `send` (no
@@ -521,8 +529,15 @@ export function registerIpcHandlers(): void {
       resolvePermissionRequest(requestId, decision, remember)
     },
   )
-  // Settings → Site permissions: list / clear remembered per-site decisions.
+  // Settings → Site permissions: list / set / clear remembered per-site decisions.
   ipcMain.handle('permissions:list', () => listGrants())
+  ipcMain.handle(
+    'permissions:set',
+    (_e, partition: string, origin: string, kind: PermissionKind, decision: PermissionDecision) => {
+      setGrant(partition, origin, kind, decision)
+      return listGrants()
+    },
+  )
   ipcMain.handle(
     'permissions:clear',
     (_e, partition: string, origin: string, kind: PermissionKind) => {
@@ -533,6 +548,16 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('permissions:clear-all', () => {
     clearAllGrants()
     return listGrants()
+  })
+  // Open the OS privacy pane for mic/camera so the user can lift a system-level
+  // (TCC on macOS) block the app can't grant itself.
+  ipcMain.handle('permissions:open-os-settings', (_e, kind: 'microphone' | 'camera') => {
+    if (process.platform === 'darwin') {
+      const pane = kind === 'camera' ? 'Privacy_Camera' : 'Privacy_Microphone'
+      void shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`)
+    } else if (process.platform === 'win32') {
+      void shell.openExternal(kind === 'camera' ? 'ms-settings:privacy-webcam' : 'ms-settings:privacy-microphone')
+    }
   })
 
   ipcMain.handle('dialog:open-bookmark-file', async (_e) => {

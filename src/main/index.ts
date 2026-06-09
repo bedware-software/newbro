@@ -1293,31 +1293,47 @@ function safeGetUrl(wc: Electron.WebContents): string | undefined {
   }
 }
 
+type OsMediaKind = 'microphone' | 'camera'
+
 /** macOS gates mic/camera behind a system (TCC) prompt on top of the per-site
  *  grant. Granting at the Electron level alone makes getUserMedia fail
- *  silently — this surfaces the OS prompt the first time and reports whether
- *  the OS ultimately allows access. No-op off macOS. */
-async function ensureOsMediaAccess(kinds: PermissionKind[]): Promise<boolean> {
-  if (process.platform !== 'darwin') return true
+ *  silently — this surfaces the OS prompt the first time and returns the media
+ *  kinds the OS ultimately *refuses* (status denied/restricted, or a fresh
+ *  prompt was declined). Empty result = all clear. No-op off macOS. */
+async function ensureOsMediaAccess(kinds: PermissionKind[]): Promise<OsMediaKind[]> {
+  if (process.platform !== 'darwin') return []
+  const blocked: OsMediaKind[] = []
   for (const kind of kinds) {
     if (kind !== 'microphone' && kind !== 'camera') continue
-    const mediaType = kind === 'microphone' ? 'microphone' : 'camera'
-    const status = systemPreferences.getMediaAccessStatus(mediaType)
+    const status = systemPreferences.getMediaAccessStatus(kind)
     if (status === 'granted') continue
     if (status === 'denied' || status === 'restricted') {
-      log.warn('permissions: OS media access blocked — user must change System Settings', { kind, status })
-      return false
+      // Already denied at the OS level — macOS won't re-prompt; the user has
+      // to flip it in System Settings. Surface it (see notifyOsMediaBlocked).
+      log.warn('permissions: OS media access blocked — enable in System Settings', { kind, status })
+      blocked.push(kind)
+      continue
     }
     // 'not-determined' → surface the OS prompt.
     try {
-      const ok = await systemPreferences.askForMediaAccess(mediaType)
-      if (!ok) return false
+      const ok = await systemPreferences.askForMediaAccess(kind)
+      if (!ok) blocked.push(kind)
     } catch (err) {
       log.warn('permissions: askForMediaAccess threw', { kind, err: String(err) })
-      return false
+      blocked.push(kind)
     }
   }
-  return true
+  return blocked
+}
+
+/** Tell the requesting tab's window that macOS is blocking media so the
+ *  renderer can show an actionable "Open System Settings" bar. */
+function notifyOsMediaBlocked(wc: Electron.WebContents, kinds: OsMediaKind[]): void {
+  const ctx = findTabByWebContents(wc)
+  if (!ctx) return
+  const win = BrowserWindow.fromId(ctx.windowId)
+  if (!win || win.isDestroyed()) return
+  win.webContents.send('permission:os-blocked', { tabId: ctx.tabId, kinds })
 }
 
 /** Ask the owning window's renderer to show the Allow/Block prompt and wait
@@ -1364,16 +1380,27 @@ async function decidePermission(
 
   const defaults = loadSettings().permissionDefaults
   let needPrompt = false
+  let blocked = false
   for (const kind of kinds) {
     const decision = getGrant(partition, origin, kind) ?? defaults[kind] ?? 'ask'
-    if (decision === 'block') return false // any blocked kind denies the whole request
-    if (decision === 'ask') needPrompt = true
+    if (decision === 'block') blocked = true
+    else if (decision === 'ask') needPrompt = true
   }
+  log.info('permissions: request', { permission, origin, kinds, blocked, needPrompt })
+  if (blocked) return false // any blocked kind denies the whole request
 
   const granted = needPrompt ? await promptForPermission(wc, partition, origin, kinds) : true
   if (!granted) return false
-  // Granted at the app level — for media, the OS must agree too.
-  return ensureOsMediaAccess(kinds)
+  // Granted at the app level — for media, the OS must agree too. This is also
+  // why we must NOT use setPermissionCheckHandler (see installPermissionHandlers):
+  // askForMediaAccess only runs on this request path.
+  const osBlocked = await ensureOsMediaAccess(kinds)
+  if (osBlocked.length > 0) {
+    log.warn('permissions: granted in-app but OS denied media access', { origin, kinds: osBlocked })
+    notifyOsMediaBlocked(wc, osBlocked)
+    return false
+  }
+  return true
 }
 
 function installPermissionHandlers(ses: Electron.Session, partition: string): void {
@@ -1385,21 +1412,17 @@ function installPermissionHandlers(ses: Electron.Session, partition: string): vo
         callback(false)
       })
   })
-  // Synchronous checks (navigator.permissions.query, Notification.permission,
-  // enumerateDevices label gating). Reflect the resolved state: granted only
-  // when an explicit allow exists; unmanaged permissions stay permissive to
-  // match the request handler's allow-all-others stance.
-  ses.setPermissionCheckHandler((_wc, permission, requestingOrigin, details) => {
-    const kinds = mapPermissionToKinds(permission, details as PermissionDetails | undefined)
-    if (kinds.length === 0) return true
-    const origin =
-      gatedOrigin(requestingOrigin) ?? gatedOrigin((details as PermissionDetails)?.requestingUrl)
-    if (!origin) return true
-    const defaults = loadSettings().permissionDefaults
-    return kinds.every(
-      (kind) => (getGrant(partition, origin, kind) ?? defaults[kind] ?? 'ask') === 'allow',
-    )
-  })
+  // Deliberately NO setPermissionCheckHandler. Electron's check handler is a
+  // synchronous boolean with no "ask" state: returning false makes Chromium
+  // reject getUserMedia *immediately* without ever calling the request handler
+  // (so no prompt fires), and returning true makes Chromium treat the
+  // permission as already-granted and *skip* the request handler (so the
+  // macOS askForMediaAccess in decidePermission never runs and capture fails
+  // silently at the OS layer). Leaving it unset lets media reach the request
+  // handler, which is the only place we can both prompt and trigger the OS
+  // permission. The trade-off — navigator.permissions.query not reflecting a
+  // blocked site — is cosmetic; getUserMedia is still gated by the request
+  // handler, which returns false for blocked kinds.
 }
 
 /** Called from the renderer (via ipc) when the user clicks Allow/Block on a

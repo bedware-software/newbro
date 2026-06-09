@@ -412,6 +412,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // so they load/clear independently of the Save button.
   const [permissionGrants, setPermissionGrants] = useState<PermissionGrant[]>([])
   const profiles = useAppStore((s) => s.profiles)
+  // Manual "add a site" form (for when a site never triggers an auto-prompt).
+  const [addSiteOrigin, setAddSiteOrigin] = useState('')
+  const [addSiteKind, setAddSiteKind] = useState<PermissionKind>('microphone')
+  const [addSiteDecision, setAddSiteDecision] = useState<'allow' | 'block'>('allow')
+  const [addSitePartition, setAddSitePartition] = useState('')
+  const [addSiteError, setAddSiteError] = useState<string | null>(null)
   const [recordingTarget, setRecordingTarget] = useState<{ action: string; slot: number } | null>(null)
   const [conflictError, setConflictError] = useState<string | null>(null)
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
@@ -636,6 +642,33 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const clearAllPermissionGrants = useCallback(() => {
     window.electronAPI.permissionsClearAll?.().then(setPermissionGrants).catch(() => {})
   }, [])
+
+  const handleAddSite = useCallback(() => {
+    const partition = addSitePartition || profiles[0]?.partition
+    if (!partition) {
+      setAddSiteError('No profile available to attach the rule to.')
+      return
+    }
+    let raw = addSiteOrigin.trim()
+    if (!raw) {
+      setAddSiteError('Enter a site, e.g. https://meet.google.com')
+      return
+    }
+    if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`
+    let origin: string
+    try {
+      origin = new URL(raw).origin
+    } catch {
+      setAddSiteError("That doesn't look like a valid site URL.")
+      return
+    }
+    setAddSiteError(null)
+    window.electronAPI
+      .permissionsSet?.(partition, origin, addSiteKind, addSiteDecision)
+      .then(setPermissionGrants)
+      .catch(() => {})
+    setAddSiteOrigin('')
+  }, [addSitePartition, profiles, addSiteOrigin, addSiteKind, addSiteDecision])
 
   const profileNameForPartition = useCallback(
     (partition: string): string =>
@@ -1572,6 +1605,57 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   Sites you&apos;ve allowed or blocked. Removing an entry makes the site
                   ask again next time. These apply immediately.
                 </p>
+
+                {/* Add a site manually */}
+                <div className="rounded-lg border border-border p-3 mb-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {profiles.length > 1 && (
+                      <select
+                        value={addSitePartition || profiles[0]?.partition || ''}
+                        onChange={(e) => setAddSitePartition(e.target.value)}
+                        className="h-9 px-2 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                        title="Profile"
+                      >
+                        {profiles.map((p) => (
+                          <option key={p.id} value={p.partition}>{p.name}</option>
+                        ))}
+                      </select>
+                    )}
+                    <input
+                      type="text"
+                      value={addSiteOrigin}
+                      onChange={(e) => { setAddSiteOrigin(e.target.value); setAddSiteError(null) }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleAddSite() }}
+                      placeholder="https://meet.google.com"
+                      className="flex-1 min-w-[180px] h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                    />
+                    <select
+                      value={addSiteKind}
+                      onChange={(e) => setAddSiteKind(e.target.value as PermissionKind)}
+                      className="h-9 px-2 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                    >
+                      {PERMISSION_KINDS.map((k) => (
+                        <option key={k} value={k}>{PERMISSION_LABEL[k]}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={addSiteDecision}
+                      onChange={(e) => setAddSiteDecision(e.target.value as 'allow' | 'block')}
+                      className="h-9 px-2 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                    >
+                      <option value="allow">Allow</option>
+                      <option value="block">Block</option>
+                    </select>
+                    <button
+                      onClick={handleAddSite}
+                      className="h-9 inline-flex items-center gap-1 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+                    >
+                      <Plus size={14} /> Add
+                    </button>
+                  </div>
+                  {addSiteError && <p className="text-[11px] text-destructive mt-2">{addSiteError}</p>}
+                </div>
+
                 {permissionGrants.length === 0 ? (
                   <p className="text-xs text-muted-foreground rounded-lg border border-dashed border-border px-3 py-6 text-center">
                     No saved site permissions yet.

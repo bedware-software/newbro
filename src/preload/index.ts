@@ -63,9 +63,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
     remember: boolean,
   ): Promise<void> => ipcRenderer.invoke('permission:respond', requestId, decision, remember),
   permissionsList: (): Promise<unknown[]> => ipcRenderer.invoke('permissions:list'),
+  permissionsSet: (
+    partition: string,
+    origin: string,
+    kind: string,
+    decision: 'allow' | 'block',
+  ): Promise<unknown[]> => ipcRenderer.invoke('permissions:set', partition, origin, kind, decision),
   permissionsClear: (partition: string, origin: string, kind: string): Promise<unknown[]> =>
     ipcRenderer.invoke('permissions:clear', partition, origin, kind),
   permissionsClearAll: (): Promise<unknown[]> => ipcRenderer.invoke('permissions:clear-all'),
+  // Fired when macOS/Windows blocks media at the OS level despite an in-app
+  // grant — the renderer shows a bar pointing the user at System Settings.
+  onPermissionOsBlocked: (
+    callback: (payload: { tabId: string; kinds: string[] }) => void,
+  ) => {
+    const handler = (
+      _e: Electron.IpcRendererEvent,
+      payload: { tabId: string; kinds: string[] },
+    ): void => callback(payload)
+    ipcRenderer.on('permission:os-blocked', handler)
+    return () => { ipcRenderer.removeListener('permission:os-blocked', handler) }
+  },
+  openOsPermissionSettings: (kind: 'microphone' | 'camera'): Promise<void> =>
+    ipcRenderer.invoke('permissions:open-os-settings', kind),
 
   // Danger zone: wipe the entire userData directory and relaunch.
   wipeAllData: (): Promise<void> => ipcRenderer.invoke('app:wipe-data'),
@@ -117,6 +137,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('tab:create', tabId, partition, url, active, eagerLoad, focusUrlBar),
   tabDestroy: (tabId: string): Promise<void> => ipcRenderer.invoke('tab:destroy', tabId),
   tabActivate: (tabId: string, url: string): Promise<void> => ipcRenderer.invoke('tab:activate', tabId, url),
+  // Move OS keyboard focus into the tab's page (used by the Esc handler so
+  // keystrokes leave the URL bar and reach the site).
+  tabFocus: (tabId: string): Promise<void> => ipcRenderer.invoke('tab:focus', tabId),
   // Fire-and-forget: high-frequency from ResizeObserver / sidebar toggles.
   tabSetBounds: (bounds: { x: number; y: number; width: number; height: number }): void => {
     ipcRenderer.send('tab:bounds', bounds)

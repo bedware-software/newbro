@@ -94,6 +94,7 @@ declare global {
       tabCreate?: (tabId: string, partition: string, url: string, active: boolean, eagerLoad?: boolean, focusUrlBar?: boolean) => Promise<void>
       tabDestroy?: (tabId: string) => Promise<void>
       tabActivate?: (tabId: string, url: string) => Promise<void>
+      tabFocus?: (tabId: string) => Promise<void>
       tabSetBounds?: (bounds: { x: number; y: number; width: number; height: number }) => void
       tabNavigate?: (tabId: string, url: string) => Promise<void>
       tabGoBack?: (tabId: string) => Promise<void>
@@ -156,8 +157,18 @@ declare global {
       ) => () => void
       respondPermission?: (requestId: string, decision: 'allow' | 'block', remember: boolean) => Promise<void>
       permissionsList?: () => Promise<PermissionGrant[]>
+      permissionsSet?: (
+        partition: string,
+        origin: string,
+        kind: PermissionKind,
+        decision: 'allow' | 'block',
+      ) => Promise<PermissionGrant[]>
       permissionsClear?: (partition: string, origin: string, kind: PermissionKind) => Promise<PermissionGrant[]>
       permissionsClearAll?: () => Promise<PermissionGrant[]>
+      onPermissionOsBlocked?: (
+        callback: (payload: { tabId: string; kinds: PermissionKind[] }) => void,
+      ) => () => void
+      openOsPermissionSettings?: (kind: 'microphone' | 'camera') => Promise<void>
     }
   }
 }
@@ -880,10 +891,11 @@ export default function App() {
       // already owns keystrokes.
       if (!active || active === document.body) return
       active.blur?.()
-      // Re-activating the tab nudges main to call wc.focus() so the page
-      // actually starts receiving input again.
-      const tab = s.getActiveTab()
-      window.electronAPI.tabActivate?.(s.activeTabId, tab?.url || '')
+      // Hand OS keyboard focus to the active tab's page so keystrokes go to
+      // the site. tabActivate only focuses on a *new* activation (it no-ops
+      // for the already-active tab, which is exactly this case), so use the
+      // dedicated focus call instead.
+      window.electronAPI.tabFocus?.(s.activeTabId)
     }
     window.addEventListener('keydown', handleEscape)
     return () => window.removeEventListener('keydown', handleEscape)

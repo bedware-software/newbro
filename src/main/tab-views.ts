@@ -683,6 +683,21 @@ export function activateTab(windowId: number, tabId: string, url: string): void 
   }
 }
 
+/** Hand OS keyboard focus to a tab's page unconditionally. Unlike
+ *  activateTab (which only focuses on a *new* activation), this works for
+ *  the already-active tab — used by the renderer's Escape handler to move
+ *  focus from the URL bar / chrome back into the site so keystrokes reach
+ *  the page. */
+export function focusTab(tabId: string): void {
+  const rec = tabs.get(tabId)
+  if (!rec) return
+  try {
+    rec.view.webContents.focus()
+  } catch {
+    /* ignore */
+  }
+}
+
 function setActiveTab(windowId: number, tabId: string): void {
   const prev = activeTabByWindow.get(windowId)
   if (prev === tabId) return // already active — no need to re-bound or notify

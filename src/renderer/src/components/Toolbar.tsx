@@ -1064,10 +1064,13 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
       return
     }
     if (e.key === 'Escape' && suggestion) {
-      // Clear the suggestion but keep the typed text — matches the
-      // browser convention of "back out of autocomplete without losing
-      // what I typed."
+      // First Esc: back out of autocomplete, keep the typed text, and stay
+      // in the URL bar — the browser convention of "dismiss the suggestion
+      // without losing what I typed." stopPropagation keeps the global Esc
+      // handler (App.tsx) from also firing and yanking focus to the page;
+      // a second Esc (now with no suggestion) does that instead.
       e.preventDefault()
+      e.stopPropagation()
       const typed = typedRef.current
       setUrlValue(typed)
       setSuggestion(null)
