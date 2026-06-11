@@ -69,6 +69,12 @@ export type TabEvent =
       matches: number
       finalUpdate: boolean
     }
+  // Page HTML fullscreen (video playback). The fullscreen element fills
+  // only the tab's view rect, so the window chrome stays on screen — the
+  // renderer reacts by hiding the sidebar and painting the toolbar pure
+  // black ("cinema mode") until the page leaves fullscreen.
+  | { type: 'enter-html-full-screen'; tabId: string }
+  | { type: 'leave-html-full-screen'; tabId: string }
 
 interface TabRecord {
   tabId: string
@@ -286,6 +292,14 @@ function wireEvents(rec: TabRecord): void {
   wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
     emit({ type: 'did-navigate-in-page', tabId: rec.tabId, url, isMainFrame })
     emitNavState()
+  })
+  wc.on('enter-html-full-screen', () => {
+    log.info('tab enter-html-full-screen', { tabId: rec.tabId })
+    emit({ type: 'enter-html-full-screen', tabId: rec.tabId })
+  })
+  wc.on('leave-html-full-screen', () => {
+    log.info('tab leave-html-full-screen', { tabId: rec.tabId })
+    emit({ type: 'leave-html-full-screen', tabId: rec.tabId })
   })
   wc.on('page-title-updated', (_e, title) => {
     emit({ type: 'page-title-updated', tabId: rec.tabId, title })

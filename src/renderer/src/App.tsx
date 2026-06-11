@@ -334,6 +334,58 @@ export default function App() {
     })
   }, [])
 
+  // Page-fullscreen "cinema mode". A video going fullscreen fills only the
+  // tab's view rect, so the window chrome stays on screen. We lean into
+  // that: hide the sidebar for extra width and let the Toolbar drop to
+  // pure black (data-cinema) so it blends with the video's letterbox
+  // bars; both are restored when the page leaves fullscreen.
+  const [pageFullscreen, setPageFullscreen] = useState(false)
+  const fullscreenTabRef = useRef<string | null>(null)
+  const sidebarBeforeFullscreenRef = useRef<boolean | null>(null)
+
+  useEffect(() => {
+    const exitCinema = (): void => {
+      if (fullscreenTabRef.current === null) return
+      fullscreenTabRef.current = null
+      setPageFullscreen(false)
+      const saved = sidebarBeforeFullscreenRef.current
+      sidebarBeforeFullscreenRef.current = null
+      // Restore without touching localStorage — the persisted preference
+      // must reflect the user's own toggle, not our temporary hide.
+      if (saved !== null) setSidebarVisible(saved)
+    }
+    const cleanupEvents = window.electronAPI.onTabEvent?.((raw) => {
+      const evt = raw as { type?: string; tabId?: string }
+      if (evt.type === 'enter-html-full-screen' && evt.tabId) {
+        if (fullscreenTabRef.current === null) {
+          setSidebarVisible((v) => {
+            sidebarBeforeFullscreenRef.current = v
+            return false
+          })
+        }
+        fullscreenTabRef.current = evt.tabId
+        setPageFullscreen(true)
+      } else if (evt.type === 'leave-html-full-screen' && evt.tabId === fullscreenTabRef.current) {
+        exitCinema()
+      }
+    })
+    // Switching to another tab (or closing the fullscreen one) doesn't
+    // reliably emit leave-html-full-screen — restore the chrome ourselves.
+    const unsubActive = useAppStore.subscribe((state, prev) => {
+      if (
+        state.activeTabId !== prev.activeTabId &&
+        fullscreenTabRef.current !== null &&
+        state.activeTabId !== fullscreenTabRef.current
+      ) {
+        exitCinema()
+      }
+    })
+    return () => {
+      cleanupEvents?.()
+      unsubActive()
+    }
+  }, [])
+
   const loadAndApplySettings = useCallback(async () => {
     try {
       const s = await window.electronAPI.loadSettings()
@@ -927,7 +979,7 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} pageFullscreen={pageFullscreen} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar visible={sidebarVisible} showTabNumbers={settings?.showTabNumbers ?? true} />
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>

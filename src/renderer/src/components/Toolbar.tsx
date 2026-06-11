@@ -34,6 +34,9 @@ const isMacOS = navigator.platform.toLowerCase().includes('mac')
 interface Props {
   windowWorkspaceId: string | null
   sidebarVisible: boolean
+  /** Active tab's page is in HTML fullscreen (video playback) — the bar
+   *  stays visible but re-themes to pure black via [data-cinema]. */
+  pageFullscreen?: boolean
   onToggleSidebar: () => void
   onOpenSettings: () => void
   onOpenAbout: () => void
@@ -700,7 +703,7 @@ function ActiveTabTitle({ title, favicon, comment }: { title: string; favicon?: 
   )
 }
 
-export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions }: Props) {
+export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions }: Props) {
   const isMac = navigator.platform.includes('Mac')
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
@@ -1356,6 +1359,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, onToggleSidebar, on
   return (
     <>
       <div
+        data-cinema={pageFullscreen ? '' : undefined}
         className="flex items-center gap-2 h-12 border-b border-border bg-toolbar shrink-0"
         style={{
           paddingLeft: isMac ? 80 : 8,

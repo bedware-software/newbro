@@ -143,6 +143,28 @@
   --color-toolbar: oklch(0.27 0 0);
 }
 
+/* ── Cinema mode ──
+ * Set on the Toolbar root while the active tab's page is in HTML
+ * fullscreen (video playback). The bar deliberately stays visible — its
+ * surfaces drop to pure black so it blends into the video's letterbox
+ * bars, regardless of the active theme family/variant. Scoped variable
+ * override: every themed utility inside the bar re-resolves to these. */
+[data-cinema] {
+  --color-background: oklch(0.10 0 0);
+  --color-foreground: oklch(0.85 0 0);
+  --color-card: oklch(0.10 0 0);
+  --color-card-foreground: oklch(0.85 0 0);
+  --color-secondary: oklch(0.18 0 0);
+  --color-secondary-foreground: oklch(0.82 0 0);
+  --color-muted: oklch(0.25 0 0);
+  --color-muted-foreground: oklch(0.62 0 0);
+  --color-accent: oklch(0.18 0 0);
+  --color-accent-foreground: oklch(0.82 0 0);
+  --color-border: oklch(0 0 0);
+  --color-input: oklch(0.18 0 0);
+  --color-toolbar: oklch(0 0 0);
+}
+
 /* ── Layout density ──
  * `normal` (default) gives sidebar rows toolbar-height padding so they
  * breathe like the top chrome. `compact` is the legacy tighter look.
