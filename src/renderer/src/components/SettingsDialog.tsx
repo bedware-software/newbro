@@ -96,6 +96,7 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   reload: ['CmdOrCtrl+R'],
   settings: ['CmdOrCtrl+,'],
   'page-devtools': ['CmdOrCtrl+Shift+I'],
+  'save-page': ['CmdOrCtrl+S'],
   // Move/Copy actions ship unbound — they're surfaced through context menus
   // and the command palette by default. An empty array keeps the parsing
   // path in main/index.ts a no-op (parseAcceleratorShortcut returns null)
@@ -142,6 +143,7 @@ const ACTION_LABELS: Record<string, string> = {
   settings: 'Open Settings',
   'page-devtools': 'Toggle Page Developer Tools',
   'find-in-page': 'Find in Page',
+  'save-page': 'Save Page As',
   'tab-1': 'Switch to Tab 1',
   'tab-2': 'Switch to Tab 2',
   'tab-3': 'Switch to Tab 3',

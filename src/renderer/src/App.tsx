@@ -104,6 +104,7 @@ declare global {
       tabGetState?: (tabId: string) => Promise<{ isLoading: boolean; url: string; canGoBack: boolean; canGoForward: boolean } | null>
       tabExecuteJS?: (tabId: string, code: string) => Promise<unknown>
       tabToggleDevTools?: (tabId: string) => Promise<void>
+      tabSavePage?: (tabId: string) => Promise<boolean>
       tabFindInPage?: (
         tabId: string,
         text: string,
@@ -564,6 +565,10 @@ export default function App() {
         }
         case 'page-devtools':
           if (s.activeTabId) window.electronAPI.tabToggleDevTools?.(s.activeTabId)
+          break
+        case 'save-page':
+          // Main owns the dialog + Chromium save call; fire-and-forget here.
+          if (s.activeTabId) window.electronAPI.tabSavePage?.(s.activeTabId)
           break
         case 'next-tab':
           cycleTab(1)

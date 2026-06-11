@@ -156,6 +156,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('tab:execute-js', tabId, code),
   tabToggleDevTools: (tabId: string): Promise<void> =>
     ipcRenderer.invoke('tab:toggle-devtools', tabId),
+  tabSavePage: (tabId: string): Promise<boolean> =>
+    ipcRenderer.invoke('tab:save-page', tabId),
   // Find-in-page: fire-and-forget. Match results arrive on the existing
   // 'tab-event' channel as { type: 'found-in-page', ... } payloads.
   tabFindInPage: (

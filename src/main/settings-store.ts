@@ -108,6 +108,9 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   // chrome renderer instead).
   'page-devtools': ['CmdOrCtrl+Shift+I'],
   'find-in-page': ['CmdOrCtrl+F'],
+  // Chromium-standard Save Page As. Saving is the only way to get a
+  // viewed text/plain file (example.txt) onto the local FS.
+  'save-page': ['CmdOrCtrl+S'],
   // Quick-jump to the Nth visible sidebar tab (counting nested tabs in
   // expanded groups). Collapsed groups are skipped so the numbering matches
   // exactly what the user sees. Edge / Chrome / Firefox all bind these,

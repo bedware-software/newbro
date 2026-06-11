@@ -25,6 +25,7 @@ import {
   tabGoForward,
   tabNavigate,
   tabReload,
+  tabSavePage,
   tabStop,
   tabStopFindInPage,
   tabToggleDevTools,
@@ -234,6 +235,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('tab:toggle-devtools', (_e, tabId: string) => {
     tabToggleDevTools(tabId)
+  })
+
+  ipcMain.handle('tab:save-page', (_e, tabId: string) => {
+    return tabSavePage(tabId)
   })
 
   // Find-in-page is intentionally an `on` (fire-and-forget) channel — the

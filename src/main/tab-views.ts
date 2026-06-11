@@ -18,7 +18,7 @@
 // channel. The renderer's electronAPI.onTabEvent listener turns those
 // back into store updates and error-banner state.
 
-import { BrowserWindow, Menu, WebContentsView, clipboard, ipcMain, session, app } from 'electron'
+import { BrowserWindow, Menu, WebContentsView, clipboard, dialog, ipcMain, session, app } from 'electron'
 import type { Session, WebContents } from 'electron'
 import { join } from 'path'
 import { log } from './log'
@@ -814,6 +814,56 @@ export function tabGoForward(tabId: string): void {
   if (!rec) return
   const nav = rec.view.webContents.navigationHistory
   if (nav.canGoForward()) nav.goForward()
+}
+
+/** Cmd+S / palette "Save Page As…". Suggests a filename from the URL's
+ *  last path segment (so a viewed example.txt saves as example.txt) or
+ *  the page title for extension-less routes, then hands the chosen path
+ *  to Chromium's save machinery. 'HTMLOnly' saves the main resource's
+ *  ORIGINAL bytes — raw text for text/plain documents, served HTML for
+ *  pages; choosing a .mhtml name saves a full single-file snapshot. */
+export async function tabSavePage(tabId: string): Promise<boolean> {
+  const rec = tabs.get(tabId)
+  if (!rec) return false
+  const win = BrowserWindow.fromId(rec.windowId)
+  if (!win || win.isDestroyed()) return false
+  const wc = rec.view.webContents
+
+  let base = ''
+  try {
+    const u = new URL(wc.getURL())
+    base = decodeURIComponent(u.pathname.split('/').pop() || '')
+  } catch (err) {
+    log.warn('save-page: URL parse failed', { tabId, err: String(err) })
+  }
+  // Routes without a file-ish last segment ("/wiki/Electron", "/") get a
+  // title-derived .html name instead.
+  if (!base.includes('.')) {
+    const title = wc.getTitle().replace(/[\\/:*?"<>|]+/g, ' ').trim()
+    base = `${title || base || 'page'}.html`
+  }
+
+  const isHtmlName = /\.(html?|mhtml)$/i.test(base)
+  const result = await dialog.showSaveDialog(win, {
+    title: 'Save Page',
+    defaultPath: base,
+    filters: isHtmlName
+      ? [
+          { name: 'Webpage, HTML Only', extensions: ['html', 'htm'] },
+          { name: 'Web Archive, Single File', extensions: ['mhtml'] },
+        ]
+      : [{ name: 'All Files', extensions: ['*'] }],
+  })
+  if (result.canceled || !result.filePath) return false
+  const saveType = /\.mhtml$/i.test(result.filePath) ? 'MHTML' : 'HTMLOnly'
+  try {
+    await wc.savePage(result.filePath, saveType)
+    log.info('save-page: saved', { tabId, path: result.filePath, saveType })
+    return true
+  } catch (err) {
+    log.warn('save-page: savePage failed', { tabId, path: result.filePath, err: String(err) })
+    return false
+  }
 }
 
 export function tabReload(tabId: string, ignoreCache: boolean): void {
@@ -1897,8 +1947,20 @@ export function installTabPreloadListeners(): void {
           win.webContents.send('tab-context-search', selection)
         },
       })
-      items.push({ type: 'separator' })
     }
+
+    // Paste is offered unconditionally: editability can't be detected
+    // reliably from the click target (web consoles like xterm.js render
+    // to a canvas and keep focus on a hidden textarea), and wc.paste()
+    // is simply a no-op when nothing editable has focus.
+    items.push({
+      label: 'Paste',
+      click: () => {
+        try { wc.paste() }
+        catch (err) { log.warn('context-menu: paste failed', String(err)) }
+      },
+    })
+    items.push({ type: 'separator' })
 
     items.push({
       label: 'Back',

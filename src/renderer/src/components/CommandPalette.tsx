@@ -45,6 +45,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'reload', label: 'Reload Page', category: 'Navigation' },
   { id: 'page-devtools', label: 'Toggle Page Developer Tools', category: 'Navigation' },
   { id: 'find-in-page', label: 'Find in Page...', category: 'Navigation' },
+  { id: 'save-page', label: 'Save Page As…', category: 'Navigation' },
   { id: 'search', label: 'Search Everything', category: 'General' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'View' },
   { id: 'settings', label: 'Open Settings', category: 'General' },
@@ -317,6 +318,7 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   'reload': 'CmdOrCtrl+R',
   'settings': 'CmdOrCtrl+,',
   'page-devtools': 'CmdOrCtrl+Shift+I',
+  'save-page': 'CmdOrCtrl+S',
 }
 
 function getDefaultBinding(id: string): string | undefined {
