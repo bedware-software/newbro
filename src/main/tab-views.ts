@@ -173,7 +173,10 @@ function wireEvents(rec: TabRecord): void {
   // the tab. We don't know yet whether Electron is propagating window.close()
   // from a child WebContentsView up to the parent BrowserWindow or whether
   // some other code path is involved — these logs let us tell.
-  wc.on('close', () => {
+  // WebContents emits 'close' at runtime (this log line fires regularly)
+  // but electron.d.ts doesn't declare the event — go through the
+  // EventEmitter base signature.
+  ;(wc as NodeJS.EventEmitter).on('close', () => {
     log.info('tab wc close', {
       tabId: rec.tabId,
       windowId: rec.windowId,

@@ -722,7 +722,10 @@ function installLoginHandlerOnce(): void {
     const challengeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     const detailsLite = {
       url: requestDetails.url,
-      method: requestDetails.method,
+      // electron.d.ts types the login details as {url, pid} only; `method`
+      // is not part of the documented shape, so read it defensively —
+      // undefined just drops the field from the challenge payload.
+      method: (requestDetails as Electron.AuthenticationResponseDetails & { method?: string }).method,
       isProxy: authInfo.isProxy,
       scheme: authInfo.scheme,
       realm: authInfo.realm,
@@ -2940,7 +2943,10 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   // from a child WebContentsView bubbles up). Surfacing it explicitly tells
   // us whether the BrowserWindow's close is renderer-driven or coming from
   // somewhere else in the main process.
-  win.webContents.on('close', () => {
+  // WebContents emits 'close' at runtime (this log line fires regularly)
+  // but electron.d.ts doesn't declare the event — go through the
+  // EventEmitter base signature.
+  ;(win.webContents as NodeJS.EventEmitter).on('close', () => {
     log.info('main wc close', { windowId: win.id, workspaceId })
   })
   win.webContents.on('destroyed', () => {

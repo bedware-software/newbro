@@ -394,10 +394,29 @@ if (STEALTH_ENABLED) try {
 
   let overlay: HTMLDivElement | null = null
 
-  const ICON_BACK =
-    '<svg width="33" height="33" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18 9 12l6-6"/></svg>'
-  const ICON_FORWARD =
-    '<svg width="33" height="33" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>'
+  // Icons are DOM-built, NOT innerHTML strings: pages that enforce Trusted
+  // Types via CSP (Gmail / all Google apps) make every string→innerHTML
+  // assignment throw, and that exception used to kill the wheel handler
+  // mid-swipe — the gesture engaged, preventDefault'ed the scroll, then
+  // died before the commit, so swipes felt completely dead on those sites.
+  const makeChevron = (d: string): SVGSVGElement => {
+    const SVG_NS = 'http://www.w3.org/2000/svg'
+    const svg = document.createElementNS(SVG_NS, 'svg')
+    svg.setAttribute('width', '33')
+    svg.setAttribute('height', '33')
+    svg.setAttribute('viewBox', '0 0 24 24')
+    svg.setAttribute('fill', 'none')
+    svg.setAttribute('stroke', 'currentColor')
+    svg.setAttribute('stroke-width', '2.5')
+    svg.setAttribute('stroke-linecap', 'round')
+    svg.setAttribute('stroke-linejoin', 'round')
+    const path = document.createElementNS(SVG_NS, 'path')
+    path.setAttribute('d', d)
+    svg.appendChild(path)
+    return svg
+  }
+  const ICON_BACK = makeChevron('M15 18 9 12l6-6')
+  const ICON_FORWARD = makeChevron('m9 18 6-6-6-6')
 
   const ensureOverlay = (): HTMLDivElement => {
     if (overlay && overlay.isConnected) return overlay
@@ -431,22 +450,21 @@ if (STEALTH_ENABLED) try {
     if (overlay) overlay.style.opacity = '0'
   }
 
-  const paintOverlay = (direction: 'back' | 'forward', progress: number, armed: boolean): void => {
+  const paintOverlay = (direction: 'back' | 'forward', progress: number): void => {
     const el = ensureOverlay()
     const p = Math.max(0, Math.min(1, progress))
     const inset = -HIDDEN_OFFSET_PX + (HIDDEN_OFFSET_PX + REST_INSET_PX) * p
+    const icon = direction === 'back' ? ICON_BACK : ICON_FORWARD
     if (direction === 'back') {
       el.style.left = `${inset}px`
       el.style.right = ''
-      el.innerHTML = ICON_BACK
     } else {
       el.style.right = `${inset}px`
       el.style.left = ''
-      el.innerHTML = ICON_FORWARD
     }
+    if (el.firstChild !== icon) el.replaceChildren(icon)
     el.style.transform = 'translateY(-50%)'
     el.style.opacity = '1'
-    el.style.background = armed ? 'rgba(37,99,235,0.95)' : 'rgba(30,30,30,0.92)'
   }
 
   // History bounds, pushed from main on every navigation (emitNavState).
@@ -461,6 +479,8 @@ if (STEALTH_ENABLED) try {
   // Per-swipe state machine.
   let engaged = false
   let committed = false                       // already navigated this session
+  let committedDxSign = 0                     // dx sign of the committed swipe (its tail keeps it)
+  let tailMinAbsDx = Infinity                 // decay floor of the momentum tail since commit
   let direction: 'back' | 'forward' | null = null
   let position = 0                            // accumulated outward distance
   let sessionTimer: ReturnType<typeof setTimeout> | null = null
@@ -469,6 +489,8 @@ if (STEALTH_ENABLED) try {
     sessionTimer = null
     engaged = false
     committed = false
+    committedDxSign = 0
+    tailMinAbsDx = Infinity
     direction = null
     position = 0
     hideOverlay()
@@ -489,18 +511,44 @@ if (STEALTH_ENABLED) try {
         return
       }
 
-      // Already navigated in this swipe — swallow the rest so the page and
-      // Chromium's rubber-band stay quiet until the session ends.
-      if (committed) { e.preventDefault(); return }
-
       // Classic line-mode mouse wheels (deltaMode 1/2) aren't swipes.
       if (e.deltaMode !== 0) return
 
       const dx = e.deltaX
       const dy = e.deltaY
-      if (Math.abs(dx) < 1) return
+      const adx = Math.abs(dx)
+
+      // Already navigated in this swipe — swallow the macOS momentum tail
+      // so it can't scroll the page or re-trigger a second navigation. But
+      // on in-page navigators (Gmail and other hash/pushState SPAs) the
+      // document — and this state machine — survives the commit, and every
+      // swallowed event also extends the session, so without an escape
+      // hatch a NEW swipe begun during the tail is eaten too, forcing a
+      // multi-second pause between consecutive gestures. (Real navigations
+      // never hit this: the fresh document resets the state.) Momentum
+      // physics gives us the escape: tail deltas decay toward zero and
+      // never flip sign, so a sign flip or a delta rising well above the
+      // decay floor is a new finger-down swipe — reset and engage normally.
+      if (committed) {
+        // Clearly-vertical events aren't tail (the tail inherits the
+        // swipe's horizontal dominance) — that's the user scrolling.
+        if (Math.abs(dy) > adx * 2) return
+        const isNewSwipe =
+          (dx !== 0 && Math.sign(dx) !== committedDxSign) ||
+          (adx > 8 && adx > tailMinAbsDx * 3)
+        if (!isNewSwipe) {
+          if (adx >= 1 && adx < tailMinAbsDx) tailMinAbsDx = adx
+          e.preventDefault()
+          return
+        }
+        committed = false
+        committedDxSign = 0
+        tailMinAbsDx = Infinity
+      }
+
+      if (adx < 1) return
       // Reject mostly-vertical scrolls with tiny horizontal jitter.
-      if (!engaged && Math.abs(dx) < Math.abs(dy) * 1.5) return
+      if (!engaged && adx < Math.abs(dy) * 1.5) return
 
       if (!engaged) {
         // dx<0 = fingers moving right (content right) = "back"; dx>0 = "forward".
@@ -532,19 +580,24 @@ if (STEALTH_ENABLED) try {
         return
       }
 
-      paintOverlay(direction!, position / TRIGGER_PX, position >= TRIGGER_PX)
-
       // Eager commit at the threshold (we can't see true finger-lift in
       // time because momentum events keep arriving). Pull-back-to-cancel
-      // still works for anything below TRIGGER_PX.
+      // still works for anything below TRIGGER_PX. Commit BEFORE painting
+      // so an overlay/DOM failure can never swallow the navigation.
       if (position >= TRIGGER_PX && direction) {
         const dir = direction
         committed = true
+        // 'back' engages on dx<0, so its tail keeps dx<0; mirror for 'forward'.
+        committedDxSign = dir === 'back' ? -1 : 1
+        tailMinAbsDx = Infinity
         engaged = false
         direction = null
         hideOverlay()
         ipcRenderer.send('newbro-nav', dir)
+        return
       }
+
+      paintOverlay(direction!, position / TRIGGER_PX)
     },
     { capture: true, passive: false },
   )

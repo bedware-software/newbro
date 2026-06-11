@@ -597,7 +597,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('app:get-paths', () => {
     return {
       userData: app.getPath('userData'),
-      cache: app.getPath('cache'),
+      // 'cache' is served by the runtime path service (returns the Chromium
+      // cache dir) but is missing from electron.d.ts's getPath name union.
+      cache: (app.getPath as (name: string) => string)('cache'),
       logs: app.getPath('logs'),
       appName: app.getName(),
     }
