@@ -125,10 +125,11 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'tab-7': ['CmdOrCtrl+7'],
   'tab-8': ['CmdOrCtrl+8'],
   'tab-9': ['CmdOrCtrl+9'],
-  // Move/Copy actions ship without a default accelerator — they're driven
-  // primarily through context menus and the command palette. The keys must
-  // still be present so normalizeAndFilterKeybindings preserves any user-
+  // Move/Copy/Duplicate actions ship without a default accelerator — they're
+  // driven primarily through context menus and the command palette. The keys
+  // must still be present so normalizeAndFilterKeybindings preserves any user-
   // recorded binding (it iterates Object.keys(DEFAULT_KEYBINDINGS)).
+  'duplicate-tab': [],
   'move-tab': [],
   'copy-tab': [],
   'move-group': [],

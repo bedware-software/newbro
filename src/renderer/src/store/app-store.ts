@@ -71,6 +71,17 @@ function makeTab(url?: string): Tab {
   return { id: uuid(), title: 'New Tab', url: url || defaultNewTabUrl, favicon: '' }
 }
 
+/** Copy of a tab under a fresh id. Used by duplicate and cross-workspace copy. */
+function cloneTab(original: Tab): Tab {
+  return {
+    id: uuid(),
+    title: original.title,
+    url: original.url,
+    favicon: original.favicon,
+    ...(original.comment ? { comment: original.comment } : {}),
+  }
+}
+
 function makeTabGroup(name = 'New Group', tabs?: Tab[]): TabGroup {
   return {
     id: uuid(),
@@ -383,6 +394,9 @@ export interface AppState {
    *  Open in New Tab) pass false so the user's current page stays in
    *  view, matching the default behaviour of other browsers. */
   addTab: (tabGroupId: string, url?: string, activate?: boolean) => void
+  /** Clones the tab (url, title, favicon, comment) right after the original
+   *  in its group or ungrouped list, and switches to the copy. */
+  duplicateTab: (id: string) => void
   closeTab: (id: string) => void
   setActiveTab: (id: string) => void
   updateTabUrl: (id: string, url: string) => void
@@ -852,6 +866,43 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
         }
       }
+    }))
+  },
+
+  duplicateTab: (id) => {
+    log.action('duplicateTab', { tabId: id })
+    set(produce((s: AppState) => {
+      for (const p of s.profiles) {
+        for (const w of p.workspaces) {
+          // Check ungrouped tabs
+          if (w.tabs) {
+            const uIdx = w.tabs.findIndex((t) => t.id === id)
+            if (uIdx !== -1) {
+              const clone = cloneTab(w.tabs[uIdx])
+              w.tabs.splice(uIdx + 1, 0, clone)
+              const order = ensureSidebarOrder(w)
+              const oi = order.indexOf(id)
+              order.splice(oi === -1 ? order.length : oi + 1, 0, clone.id)
+              s.activeTabId = clone.id
+              s.activeTabGroupId = null
+              return
+            }
+          }
+          // Check grouped tabs
+          for (const g of w.tabGroups) {
+            const idx = g.tabs.findIndex((t) => t.id === id)
+            if (idx !== -1) {
+              const clone = cloneTab(g.tabs[idx])
+              g.tabs.splice(idx + 1, 0, clone)
+              g.isCollapsed = false // make sure the copy is visible
+              s.activeTabId = clone.id
+              s.activeTabGroupId = g.id
+              return
+            }
+          }
+        }
+      }
+      log.warn('duplicateTab: tab not found', id)
     }))
   },
 
@@ -1404,14 +1455,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!original) return
     const dst = findWorkspaceById(s, targetWorkspaceId)
     if (!dst) return
-    const clone: Tab = {
-      id: uuid(),
-      title: original.title,
-      url: original.url,
-      favicon: original.favicon,
-      ...(original.comment ? { comment: original.comment } : {}),
-    }
-    insertTabIntoTarget(dst, clone, targetGroupId)
+    insertTabIntoTarget(dst, cloneTab(original), targetGroupId)
   })),
 
   moveGroupAcross: (groupId, targetWorkspaceId) => set(produce((s: AppState) => {

@@ -563,6 +563,9 @@ export default function App() {
         case 'close-tab':
           if (s.activeTabId) s.closeTab(s.activeTabId)
           break
+        case 'duplicate-tab':
+          if (s.activeTabId) s.duplicateTab(s.activeTabId)
+          break
         case 'focus-url': {
           // The shared helper also asks main to pull OS keyboard focus back
           // to the parent webContents — necessary because tab pages live in

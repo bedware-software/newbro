@@ -97,10 +97,11 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   settings: ['CmdOrCtrl+,'],
   'page-devtools': ['CmdOrCtrl+Shift+I'],
   'save-page': ['CmdOrCtrl+S'],
-  // Move/Copy actions ship unbound — they're surfaced through context menus
-  // and the command palette by default. An empty array keeps the parsing
-  // path in main/index.ts a no-op (parseAcceleratorShortcut returns null)
-  // until the user records a binding here.
+  // Move/Copy/Duplicate actions ship unbound — they're surfaced through
+  // context menus and the command palette by default. An empty array keeps
+  // the parsing path in main/index.ts a no-op (parseAcceleratorShortcut
+  // returns null) until the user records a binding here.
+  'duplicate-tab': [],
   'move-tab': [],
   'copy-tab': [],
   'move-group': [],
@@ -153,6 +154,7 @@ const ACTION_LABELS: Record<string, string> = {
   'tab-7': 'Switch to Tab 7',
   'tab-8': 'Switch to Tab 8',
   'tab-9': 'Switch to Tab 9',
+  'duplicate-tab': 'Duplicate Tab',
   'move-tab': 'Move Tab',
   'copy-tab': 'Copy Tab',
   'move-group': 'Move Group',

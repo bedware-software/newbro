@@ -19,6 +19,7 @@ interface CommandItem {
 
 const COMMANDS: CommandItem[] = [
   { id: 'close-tab', label: 'Close', category: 'Active Tab' },
+  { id: 'duplicate-tab', label: 'Duplicate', category: 'Active Tab' },
   { id: 'set-comment', label: 'Set Comment', category: 'Active Tab' },
   { id: 'remove-comment', label: 'Remove Comment', category: 'Active Tab' },
   { id: 'move-tab', label: 'Move Tab...', category: 'Active Tab' },
