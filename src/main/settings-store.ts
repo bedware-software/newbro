@@ -91,6 +91,7 @@ export const SEARCH_ENGINES: Record<string, string> = {
 export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'new-tab': ['CmdOrCtrl+T'],
   'close-tab': ['CmdOrCtrl+W'],
+  'reopen-closed-tab': ['CmdOrCtrl+Shift+T'],
   'close-window': ['CmdOrCtrl+Shift+W'],
   'new-workspace': ['CmdOrCtrl+Shift+N'],
   'next-tab': ['CmdOrCtrl+Tab'],

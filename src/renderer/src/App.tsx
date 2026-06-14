@@ -565,6 +565,9 @@ export default function App() {
         case 'close-tab':
           if (s.activeTabId) s.closeTab(s.activeTabId)
           break
+        case 'reopen-closed-tab':
+          s.reopenClosedTab(windowWorkspaceId ?? undefined)
+          break
         case 'duplicate-tab':
           if (s.activeTabId) s.duplicateTab(s.activeTabId)
           break

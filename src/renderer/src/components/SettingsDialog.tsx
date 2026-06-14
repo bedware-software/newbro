@@ -83,6 +83,7 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
 const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'new-tab': ['CmdOrCtrl+T'],
   'close-tab': ['CmdOrCtrl+W'],
+  'reopen-closed-tab': ['CmdOrCtrl+Shift+T'],
   'close-window': ['CmdOrCtrl+Shift+W'],
   'new-workspace': ['CmdOrCtrl+Shift+N'],
   'next-tab': ['CmdOrCtrl+Tab'],
@@ -130,6 +131,7 @@ function isCustomBinding(action: string, current: string[]): boolean {
 const ACTION_LABELS: Record<string, string> = {
   'new-tab': 'New Tab',
   'close-tab': 'Close Tab',
+  'reopen-closed-tab': 'Reopen Closed Tab',
   'close-window': 'Close Window',
   'new-workspace': 'New Workspace',
   'next-tab': 'Next Tab',

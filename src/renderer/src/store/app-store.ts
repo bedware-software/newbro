@@ -169,6 +169,35 @@ function findHistoricalTabId(w: Workspace, excludeId: string): string | null {
   return null
 }
 
+// ── Per-workspace closed-tab history ──
+// In-memory only (not persisted, like tab activation history above). Each
+// close pushes a snapshot so Ctrl+Shift+T can pop the most-recent one back.
+// Stored newest-last (chronological); reopen pops from the end.
+interface ClosedTabEntry {
+  tab: Tab
+  /** Source container: a group id, or null for an ungrouped (Root) tab. */
+  groupId: string | null
+  /** Index within the source container (group.tabs or workspace.tabs). */
+  index: number
+  /** Index within the workspace's sidebarOrder at close time (ungrouped only; -1 for grouped). */
+  orderIndex: number
+}
+const closedTabsByWorkspace = new Map<string, ClosedTabEntry[]>()
+const CLOSED_TAB_LIMIT = 20
+
+function pushClosedTab(workspaceId: string, entry: ClosedTabEntry): void {
+  let stack = closedTabsByWorkspace.get(workspaceId)
+  if (!stack) { stack = []; closedTabsByWorkspace.set(workspaceId, stack) }
+  stack.push(entry)
+  if (stack.length > CLOSED_TAB_LIMIT) stack.splice(0, stack.length - CLOSED_TAB_LIMIT)
+}
+
+function popClosedTab(workspaceId: string): ClosedTabEntry | null {
+  const stack = closedTabsByWorkspace.get(workspaceId)
+  if (!stack || stack.length === 0) return null
+  return stack.pop() ?? null
+}
+
 // ── Helpers for cross-workspace move/copy (used inside immer produce) ──
 
 /** Read-only lookup of a tab by id, scanning every profile and workspace. */
@@ -398,6 +427,10 @@ export interface AppState {
    *  in its group or ungrouped list, and switches to the copy. */
   duplicateTab: (id: string) => void
   closeTab: (id: string) => void
+  /** Pop the most-recently-closed tab in `workspaceId` (default: the active
+   *  workspace) back into existence, restoring its original group/position
+   *  where possible, and activate it. No-op when the stack is empty. */
+  reopenClosedTab: (workspaceId?: string) => void
   setActiveTab: (id: string) => void
   updateTabUrl: (id: string, url: string) => void
   updateTabTitle: (id: string, title: string) => void
@@ -913,9 +946,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (w.tabs) {
           const uIdx = w.tabs.findIndex((t) => t.id === id)
           if (uIdx !== -1) {
-            w.tabs.splice(uIdx, 1)
             const order = ensureSidebarOrder(w)
             const oi = order.indexOf(id)
+            pushClosedTab(w.id, { tab: { ...w.tabs[uIdx] }, groupId: null, index: uIdx, orderIndex: oi })
+            w.tabs.splice(uIdx, 1)
             if (oi !== -1) order.splice(oi, 1)
             if (s.activeTabId === id) {
               // Prefer the previously-selected tab so closing feels MRU,
@@ -933,6 +967,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         for (const g of w.tabGroups) {
           const idx = g.tabs.findIndex((t) => t.id === id)
           if (idx !== -1) {
+            pushClosedTab(w.id, { tab: { ...g.tabs[idx] }, groupId: g.id, index: idx, orderIndex: -1 })
             g.tabs.splice(idx, 1)
             if (s.activeTabId === id) {
               const historical = findHistoricalTabId(w, id)
@@ -953,6 +988,38 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
     }
+  })),
+
+  reopenClosedTab: (workspaceId) => set(produce((s: AppState) => {
+    const wsId = workspaceId ?? s.activeWorkspaceId
+    if (!wsId) return
+    const entry = popClosedTab(wsId)
+    if (!entry) return
+    const w = findWorkspaceById(s, wsId)
+    if (!w) return
+    // Fresh id: the original tab (and its WebContentsView) was torn down on
+    // close, so we restore the page's url/title/comment under a new identity.
+    const restored = cloneTab(entry.tab)
+
+    // Prefer the original group + slot. If the group was removed (e.g. it
+    // emptied when this tab closed), fall back to ungrouped.
+    if (entry.groupId) {
+      const g = w.tabGroups.find((g) => g.id === entry.groupId)
+      if (g) {
+        g.tabs.splice(Math.min(entry.index, g.tabs.length), 0, restored)
+        g.isCollapsed = false
+        s.activeTabId = restored.id
+        s.activeTabGroupId = g.id
+        return
+      }
+    }
+    if (!w.tabs) w.tabs = []
+    w.tabs.splice(Math.min(entry.index, w.tabs.length), 0, restored)
+    const order = ensureSidebarOrder(w)
+    const at = entry.orderIndex >= 0 ? Math.min(entry.orderIndex, order.length) : order.length
+    order.splice(at, 0, restored.id)
+    s.activeTabId = restored.id
+    s.activeTabGroupId = null
   })),
 
   setActiveTab: (id) => set(produce((s: AppState) => {

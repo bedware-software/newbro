@@ -28,6 +28,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'move-group', label: 'Move Group...', category: 'Active Group' },
   { id: 'copy-group', label: 'Copy Group...', category: 'Active Group' },
   { id: 'new-tab', label: 'New Tab', category: 'Tabs' },
+  { id: 'reopen-closed-tab', label: 'Reopen Closed Tab', category: 'Tabs' },
   { id: 'next-tab', label: 'Next Tab', category: 'Tabs' },
   { id: 'prev-tab', label: 'Previous Tab', category: 'Tabs' },
   { id: 'new-workspace', label: 'New Workspace', category: 'Workspaces' },
@@ -306,6 +307,7 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
 const DEFAULT_BINDINGS: Record<string, string> = {
   'new-tab': 'CmdOrCtrl+T',
   'close-tab': 'CmdOrCtrl+W',
+  'reopen-closed-tab': 'CmdOrCtrl+Shift+T',
   'close-window': 'CmdOrCtrl+Shift+W',
   'new-workspace': 'CmdOrCtrl+Shift+N',
   'next-tab': 'CmdOrCtrl+Tab',
