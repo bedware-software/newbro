@@ -20,6 +20,7 @@ const store = new Store({
     openWorkspaceIds: [] as string[],
     openWindows: [] as OpenWindowEntry[],
     workspaceBounds: {} as Record<string, WorkspaceBounds>,
+    lastUsedWorkspaceByProfile: {} as Record<string, string>,
   }
 })
 
@@ -45,6 +46,21 @@ export function loadOpenWindows(): OpenWindowEntry[] {
 
 export function saveOpenWindows(entries: OpenWindowEntry[]): void {
   store.set('openWindows', entries)
+}
+
+export function loadLastUsedWorkspace(profileId: string): string | null {
+  if (!profileId) return null
+  const all = (store.get('lastUsedWorkspaceByProfile') as Record<string, string>) || {}
+  return all[profileId] ?? null
+}
+
+export function saveLastUsedWorkspace(profileId: string, workspaceId: string): void {
+  if (!profileId || !workspaceId) return
+  const all = (store.get('lastUsedWorkspaceByProfile') as Record<string, string>) || {}
+  // Focus events repeat for the same window; skip the disk write when unchanged.
+  if (all[profileId] === workspaceId) return
+  all[profileId] = workspaceId
+  store.set('lastUsedWorkspaceByProfile', all)
 }
 
 export function loadWorkspaceBounds(workspaceId: string): WorkspaceBounds | null {

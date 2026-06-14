@@ -52,6 +52,8 @@ declare global {
       saveState: (state: unknown) => Promise<void>
       setupSession: (partition: string) => Promise<void>
       openWorkspaceWindow: (profileId: string, workspaceId: string, workspaceName: string, targetTabId?: string) => Promise<void>
+      getOpenWorkspaceWindows: () => Promise<{ profileId: string; workspaceId: string }[]>
+      getLastUsedWorkspace: (profileId: string) => Promise<string | null>
       setWindowTitle: (title: string) => Promise<void>
       setTitleBarOverlay: (options: { color: string; symbolColor: string; height: number }) => Promise<void>
       closeWindow: () => Promise<void>

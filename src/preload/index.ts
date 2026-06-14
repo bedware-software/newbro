@@ -6,6 +6,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setupSession: (partition: string): Promise<void> => ipcRenderer.invoke('session:setup', partition),
   openWorkspaceWindow: (profileId: string, workspaceId: string, workspaceName: string, targetTabId?: string): Promise<void> =>
     ipcRenderer.invoke('workspace:open-window', profileId, workspaceId, workspaceName, targetTabId),
+  getOpenWorkspaceWindows: (): Promise<{ profileId: string; workspaceId: string }[]> =>
+    ipcRenderer.invoke('workspace:get-open-windows'),
+  getLastUsedWorkspace: (profileId: string): Promise<string | null> =>
+    ipcRenderer.invoke('workspace:get-last-used', profileId),
   setWindowTitle: (title: string): Promise<void> => ipcRenderer.invoke('window:set-title', title),
   setTitleBarOverlay: (options: { color: string; symbolColor: string; height: number }): Promise<void> =>
     ipcRenderer.invoke('window:set-titlebar-overlay', options),

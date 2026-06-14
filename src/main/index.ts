@@ -24,6 +24,7 @@ import {
   saveOpenWindows,
   loadWorkspaceBounds,
   saveWorkspaceBounds,
+  saveLastUsedWorkspace,
   type OpenWindowEntry,
 } from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
@@ -843,6 +844,20 @@ function pickUrlFromArgv(argv: string[]): string | null {
 // per workspace window in `createWorkspaceWindow`, and seeded on window
 // creation so it's never stale at the moment of the first OS handoff.
 let lastActiveWorkspaceId: string | null = null
+
+/** Live snapshot of currently-open workspace windows, most-recently-active
+ *  first so callers that need to focus "any" window of a profile pick the
+ *  one the user touched last. */
+export function getOpenWorkspaceWindows(): OpenWindowEntry[] {
+  const entries: OpenWindowEntry[] = []
+  for (const [wsId, win] of workspaceWindows) {
+    if (win.isDestroyed()) continue
+    const entry = { profileId: workspaceProfiles.get(wsId) ?? '', workspaceId: wsId }
+    if (wsId === lastActiveWorkspaceId) entries.unshift(entry)
+    else entries.push(entry)
+  }
+  return entries
+}
 
 function getTargetWorkspaceWindow(): BrowserWindow | null {
   // Prefer the most-recently-active workspace — what "the current window"
@@ -2750,6 +2765,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   const existing = workspaceWindows.get(workspaceId)
   if (existing && !existing.isDestroyed()) {
     log.window('window already exists, focusing', workspaceId)
+    if (existing.isMinimized()) existing.restore()
     existing.focus()
     if (targetTabId) {
       existing.webContents.send('activate-tab', targetTabId)
@@ -2821,7 +2837,13 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   // immediately after launch routes here even before the OS dispatches a
   // focus event.
   lastActiveWorkspaceId = workspaceId
-  win.on('focus', () => { lastActiveWorkspaceId = workspaceId })
+  saveLastUsedWorkspace(profileId, workspaceId)
+  win.on('focus', () => {
+    lastActiveWorkspaceId = workspaceId
+    // Resolve the profile at focus time — it may have been late-bound via
+    // bindWebContentsToPartition after this window was created.
+    saveLastUsedWorkspace(workspaceProfiles.get(workspaceId) ?? '', workspaceId)
+  })
   installShortcutInterceptor(win.webContents, win)
 
   // Route the mouse side buttons (XButton1/XButton2 on Windows, matching

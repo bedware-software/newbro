@@ -3,9 +3,9 @@ import * as tls from 'tls'
 import * as fs from 'fs'
 import * as path from 'path'
 import { spawn } from 'child_process'
-import { loadState, saveState } from './store'
+import { loadState, saveState, loadLastUsedWorkspace } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
-import { setupPartitionSession, createWorkspaceWindow, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest } from './index'
+import { setupPartitionSession, createWorkspaceWindow, getOpenWorkspaceWindows, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest } from './index'
 import { listGrants, setGrant, clearGrant, clearAllGrants, type PermissionKind, type PermissionDecision } from './permissions-store'
 import { log } from './log'
 import { checkForUpdatesNow, downloadUpdateNow, installUpdateNow, getLatestStatus } from './updater'
@@ -355,6 +355,13 @@ export function registerIpcHandlers(): void {
     log.ipc('workspace:open-window', { profileId, workspaceId, workspaceName, targetTabId })
     createWorkspaceWindow(profileId, workspaceId, workspaceName, targetTabId)
   })
+
+  // Live list of open workspace windows (most-recently-active first) plus the
+  // per-profile last-used workspace — the Search Everywhere profile action uses
+  // these to focus an existing window or open exactly one workspace.
+  ipcMain.handle('workspace:get-open-windows', () => getOpenWorkspaceWindows())
+
+  ipcMain.handle('workspace:get-last-used', (_e, profileId: string) => loadLastUsedWorkspace(profileId))
 
   ipcMain.handle('window:set-title', (_e, title: string) => {
     const win = BrowserWindow.fromWebContents(_e.sender)

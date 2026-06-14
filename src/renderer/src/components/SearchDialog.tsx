@@ -30,39 +30,63 @@ const FILTER_TYPES = ['profile', 'workspace', 'tabGroup', 'tab'] as const
 
 type FilterType = (typeof FILTER_TYPES)[number]
 
-const STORAGE_KEY = 'newbro-search-filters'
+/** Exclusive filter selection — 'all' or exactly one item type. */
+type FilterSelection = 'all' | FilterType
 
-function loadFilters(): Set<FilterType> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return new Set(JSON.parse(raw) as FilterType[])
-  } catch {
-    // ignore invalid local state
+/** Where tab groups / tabs are searched: every workspace or only the one this window shows. */
+type SearchScope = 'all' | 'current'
+
+const FILTER_STORAGE_KEY = 'newbro-search-filter'
+const SCOPE_STORAGE_KEY = 'newbro-search-scope'
+
+function loadFilter(): FilterSelection {
+  const raw = localStorage.getItem(FILTER_STORAGE_KEY)
+  if (raw === 'all' || (FILTER_TYPES as readonly string[]).includes(raw ?? '')) {
+    return raw as FilterSelection
   }
-  return new Set(FILTER_TYPES)
+  return 'all'
 }
 
-function saveFilters(filters: Set<FilterType>) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify([...filters]))
+function saveFilter(filter: FilterSelection) {
+  localStorage.setItem(FILTER_STORAGE_KEY, filter)
+}
+
+function loadScope(): SearchScope {
+  // Default to the window's own workspace — searching tabs/groups usually means
+  // "find something in what I'm looking at" rather than across every profile.
+  return localStorage.getItem(SCOPE_STORAGE_KEY) === 'all' ? 'all' : 'current'
+}
+
+function saveScope(scope: SearchScope) {
+  localStorage.setItem(SCOPE_STORAGE_KEY, scope)
 }
 
 const isMac = navigator.platform.includes('Mac')
-const OPT = isMac ? '\u2325' : 'Alt+'
+const MOD = isMac ? '⌘' : 'Ctrl+'
 
 export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const [filters, setFilters] = useState<Set<FilterType>>(loadFilters)
+  const [filter, setFilter] = useState<FilterSelection>(loadFilter)
+  const [scope, setScope] = useState<SearchScope>(loadScope)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
   const getAllSearchableItems = useAppStore((s) => s.getAllSearchableItems)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
 
+  // The workspace scope only narrows item types that live inside a workspace.
+  const scopeApplies = filter === 'tabGroup' || filter === 'tab'
+  const scopedToCurrent = scopeApplies && scope === 'current' && !!windowWorkspaceId
+
   const items = useMemo(() => {
     const all = getAllSearchableItems()
-    return all.filter((item) => filters.has(item.type as FilterType))
-  }, [getAllSearchableItems, open, filters])
+    const typed = filter === 'all' ? all : all.filter((item) => item.type === filter)
+    if (scopedToCurrent) {
+      return typed.filter((item) => item.workspaceId === windowWorkspaceId)
+    }
+    return typed
+  }, [getAllSearchableItems, open, filter, scopedToCurrent, windowWorkspaceId])
 
   const results = useMemo(() => {
     if (!query.trim()) return items.slice(0, 250)
@@ -82,13 +106,16 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
     })
   }, [query, items])
 
-  // Count totals per type from all items (not just visible results)
+  // Count totals per type within the active scope (not just visible results)
   const allItems = useMemo(() => getAllSearchableItems(), [getAllSearchableItems, open])
   const totalCounts = useMemo(() => {
     const counts: Record<string, number> = {}
-    for (const item of allItems) counts[item.type] = (counts[item.type] || 0) + 1
+    for (const item of allItems) {
+      if (scopedToCurrent && item.workspaceId !== windowWorkspaceId) continue
+      counts[item.type] = (counts[item.type] || 0) + 1
+    }
     return counts
-  }, [allItems])
+  }, [allItems, scopedToCurrent, windowWorkspaceId])
 
   const grouped = useMemo(() => {
     const groups: Record<string, SearchableItem[]> = {}
@@ -117,44 +144,29 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
 
   useEffect(() => {
     setSelectedIndex(0)
-  }, [query, filters])
+  }, [query, filter, scope])
 
   useEffect(() => {
     const el = listRef.current?.querySelector(`[data-index="${selectedIndex}"]`)
     el?.scrollIntoView({ block: 'nearest' })
   }, [selectedIndex])
 
-  const toggleFilter = useCallback((type: FilterType) => {
-    setFilters((prev) => {
-      const next = new Set(prev)
-      if (next.has(type)) {
-        if (next.size === 1) return prev
-        next.delete(type)
-      } else {
-        next.add(type)
-      }
-      saveFilters(next)
-      return next
-    })
+  const selectFilter = useCallback((selection: FilterSelection) => {
+    setFilter(selection)
+    saveFilter(selection)
+    // Chip clicks move focus to the button; pull it back so typing and the
+    // filter hotkeys keep working. No-op when invoked from the keyboard.
+    inputRef.current?.focus()
   }, [])
 
-  const selectFilter = useCallback((type: FilterType) => {
-    setFilters(() => {
-      const next = new Set<FilterType>([type])
-      saveFilters(next)
+  const toggleScope = useCallback(() => {
+    setScope((prev) => {
+      const next = prev === 'all' ? 'current' : 'all'
+      saveScope(next)
       return next
     })
+    inputRef.current?.focus()
   }, [])
-
-  const selectAllFilters = useCallback(() => {
-    setFilters(() => {
-      const next = new Set<FilterType>(FILTER_TYPES)
-      saveFilters(next)
-      return next
-    })
-  }, [])
-
-  const allActive = filters.size === FILTER_TYPES.length
 
   const handleSelect = useCallback(async (item: SearchableItem) => {
     log.action('search:select', { type: item.type, id: item.id, name: item.name })
@@ -162,9 +174,21 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
     if (item.type === 'profile') {
       const profiles = useAppStore.getState().profiles
       const profile = profiles.find((p) => p.id === item.profileId)
-      if (profile) {
+      if (profile && profile.workspaces.length > 0) {
         await saveStateNow()
-        for (const ws of profile.workspaces) {
+        // If any window of this profile is already open, focus the
+        // most-recently-active one; otherwise open exactly one workspace —
+        // the last used (falling back to the first).
+        const byId = new Map(profile.workspaces.map((w) => [w.id, w]))
+        const openWindows = await window.electronAPI.getOpenWorkspaceWindows()
+        const openWs = openWindows
+          .map((entry) => byId.get(entry.workspaceId))
+          .find((w) => w !== undefined)
+        if (openWs) {
+          window.electronAPI.openWorkspaceWindow(profile.id, openWs.id, openWs.name)
+        } else {
+          const lastUsedId = await window.electronAPI.getLastUsedWorkspace(profile.id)
+          const ws = (lastUsedId && byId.get(lastUsedId)) || profile.workspaces[0]
           window.electronAPI.openWorkspaceWindow(profile.id, ws.id, ws.name)
         }
       }
@@ -215,25 +239,30 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
   }
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    const digit = codeToDigit(e.code)
+    // Filter hotkeys: ⌘ on Mac, Ctrl on Windows/Linux. Excluding the other
+    // platform's modifier (incl. Alt on Windows) keeps AltGr (Ctrl+Alt) out.
+    const mod = isMac ? e.metaKey : e.ctrlKey
+    const otherMod = isMac ? e.altKey || e.ctrlKey : e.metaKey || e.altKey
 
-    if (e.code === 'Backquote' && e.altKey && !e.metaKey && !e.ctrlKey) {
-      e.preventDefault()
-      selectAllFilters()
-      return
-    }
-
-    if (digit !== null && digit >= 1 && digit <= FILTER_TYPES.length) {
-      if (e.altKey && !e.metaKey && !e.ctrlKey) {
+    if (mod && !otherMod) {
+      const digit = codeToDigit(e.code)
+      if (digit !== null && digit >= 1 && digit <= FILTER_TYPES.length) {
         e.preventDefault()
         selectFilter(FILTER_TYPES[digit - 1])
         return
       }
-      if (e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.code === 'KeyR') {
         e.preventDefault()
-        toggleFilter(FILTER_TYPES[digit - 1])
+        selectFilter('all')
         return
       }
+    }
+
+    if (e.key === 'Tab' && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      // Keep focus in the search input; Tab is the scope toggle here.
+      e.preventDefault()
+      if (scopeApplies) toggleScope()
+      return
     }
 
     if (e.key === 'ArrowDown') {
@@ -248,7 +277,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
     } else if (e.key === 'Escape') {
       onOpenChange(false)
     }
-  }, [flatResults, selectedIndex, handleSelect, onOpenChange, toggleFilter, selectFilter, selectAllFilters])
+  }, [flatResults, selectedIndex, handleSelect, onOpenChange, selectFilter, toggleScope, scopeApplies])
 
   if (!open) return null
 
@@ -285,24 +314,24 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
 
         <div className="flex items-center gap-1 px-4 py-2 border-b border-border shrink-0">
           <button
-            onClick={() => selectAllFilters()}
+            onClick={() => selectFilter('all')}
             className={`flex items-center gap-1 h-6 px-2 rounded-full text-[10px] font-medium transition-colors ${
-              allActive
+              filter === 'all'
                 ? 'bg-primary/20 text-primary border border-primary/30'
                 : 'bg-secondary text-muted-foreground border border-transparent hover:bg-accent'
             }`}
           >
             <Asterisk size={10} />
             All
-            <span className="opacity-50 ml-0.5">{OPT}~</span>
+            <span className="opacity-50 ml-0.5">{MOD}R</span>
           </button>
           {FILTER_TYPES.map((type, i) => {
             const Icon = TYPE_ICONS[type]
-            const active = filters.has(type)
+            const active = filter === type
             return (
               <button
                 key={type}
-                onClick={() => toggleFilter(type)}
+                onClick={() => selectFilter(type)}
                 className={`flex items-center gap-1 h-6 px-2 rounded-full text-[10px] font-medium transition-colors ${
                   active
                     ? 'bg-primary/20 text-primary border border-primary/30'
@@ -311,10 +340,33 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
               >
                 <Icon size={10} />
                 {TYPE_LABELS[type]}
-                <span className="opacity-50 ml-0.5">{OPT}{i + 1}</span>
+                <span className="opacity-50 ml-0.5">{MOD}{i + 1}</span>
               </button>
             )
           })}
+          {scopeApplies && (
+            <button
+              onClick={toggleScope}
+              title="Toggle search scope (Tab)"
+              role="switch"
+              aria-checked={scope === 'current'}
+              className="ml-auto flex items-center gap-1.5 h-6 px-2 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {scope === 'current' ? 'This workspace' : 'All workspaces'}
+              <span
+                className={`relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full px-0.5 transition-colors ${
+                  scope === 'current' ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`h-2.5 w-2.5 rounded-full bg-white shadow-sm transition-transform ${
+                    scope === 'current' ? 'translate-x-[10px]' : 'translate-x-0'
+                  }`}
+                />
+              </span>
+              <span className="opacity-50">⇥</span>
+            </button>
+          )}
         </div>
 
         <div ref={listRef} className="flex-1 overflow-y-auto min-h-0">
@@ -377,8 +429,11 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
             <span className="flex items-center gap-1">Open <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
-            <span className="flex items-center gap-1">Select Filter <kbd>{isMac ? '⌥' : 'Alt'}</kbd><kbd>~/1…4</kbd></span>
-            <span className="flex items-center gap-1">Toggle Filter <kbd>{isMac ? '⌃' : 'Ctrl'}</kbd><kbd>1…4</kbd></span>
+            <span className="flex items-center gap-1">Filter <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>1…4</kbd></span>
+            <span className="flex items-center gap-1">All <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>R</kbd></span>
+            {scopeApplies && (
+              <span className="flex items-center gap-1">Scope <kbd>Tab</kbd></span>
+            )}
           </div>
           <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>
         </div>
