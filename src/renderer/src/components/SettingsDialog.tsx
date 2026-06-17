@@ -107,6 +107,8 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'copy-tab': [],
   'move-group': [],
   'copy-group': [],
+  'add-to-bookshelf': [],
+  'toggle-bookshelf': [],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -161,6 +163,8 @@ const ACTION_LABELS: Record<string, string> = {
   'copy-tab': 'Copy Tab',
   'move-group': 'Move Group',
   'copy-group': 'Copy Group',
+  'add-to-bookshelf': 'Add to Bookshelf',
+  'toggle-bookshelf': 'Toggle Bookshelf',
 }
 
 interface Props {

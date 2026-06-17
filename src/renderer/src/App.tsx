@@ -11,6 +11,7 @@ import { FindBar } from './components/FindBar'
 import { SearchDialog } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
+import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
 import { InputDialog } from './components/InputDialog'
 import { MoveCopyTabDialog } from './components/MoveCopyTabDialog'
 import { MoveCopyGroupDialog } from './components/MoveCopyGroupDialog'
@@ -154,6 +155,18 @@ declare global {
       historyClear?: () => Promise<boolean>
       onHistoryUpdated?: (callback: (entries: HistoryEntry[]) => void) => () => void
 
+      // Per-profile Bookshelf reading queue (src/main/bookshelf.ts).
+      bookshelfList?: (profileId: string) => Promise<{ readings: Reading[]; groups: ReadingGroup[] }>
+      bookshelfAdd?: (profileId: string, input: { url: string; title?: string; favicon?: string }) => Promise<Reading | null>
+      bookshelfUpdate?: (profileId: string, id: string, patch: { title?: string; status?: 'toread' | 'archived' }) => Promise<boolean>
+      bookshelfRemove?: (profileId: string, id: string) => Promise<boolean>
+      bookshelfMoveReading?: (profileId: string, readingId: string, groupId: string | null) => Promise<boolean>
+      bookshelfAddGroup?: (profileId: string, name: string) => Promise<ReadingGroup | null>
+      bookshelfUpdateGroup?: (profileId: string, id: string, patch: { name?: string; color?: string; isCollapsed?: boolean }) => Promise<boolean>
+      bookshelfRemoveGroup?: (profileId: string, id: string, deleteReadings: boolean) => Promise<boolean>
+      bookshelfSaveOffline?: (profileId: string, id: string, partition: string) => Promise<boolean>
+      onBookshelfUpdated?: (callback: (payload: { profileId: string; readings: Reading[]; groups: ReadingGroup[] }) => void) => () => void
+
       // Site permissions (src/main/permissions-store.ts + the index.ts gate).
       onPermissionRequest?: (
         callback: (payload: { requestId: string; origin: string; kinds: PermissionKind[]; tabId: string }) => void,
@@ -294,6 +307,9 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTabRequest, setSettingsTabRequest] = useState<SettingsTabRequest | null>(null)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  // Right-hand Bookshelf sidebar visibility, persisted per machine.
+  const [bookshelfOpen, setBookshelfOpen] = useState<boolean>(() => localStorage.getItem('newbro-bookshelf-open') === '1')
+  useEffect(() => { localStorage.setItem('newbro-bookshelf-open', bookshelfOpen ? '1' : '0') }, [bookshelfOpen])
   const [findBarOpen, setFindBarOpen] = useState(false)
   // Counter that ticks on every find-in-page shortcut so a second Cmd+F
   // while the bar is already open re-focuses + selects the input (matches
@@ -567,6 +583,23 @@ export default function App() {
           break
         case 'reopen-closed-tab':
           s.reopenClosedTab(windowWorkspaceId ?? undefined)
+          break
+        case 'add-to-bookshelf': {
+          const tab = s.getActiveTab()
+          const pid = windowProfileId ?? s.activeProfileId
+          log.action('add-to-bookshelf', {
+            hasTab: !!tab,
+            pid,
+            bridge: typeof window.electronAPI.bookshelfAdd,
+          })
+          if (tab && pid && window.electronAPI.bookshelfAdd) {
+            window.electronAPI.bookshelfAdd(pid, { url: tab.url, title: tab.title, favicon: tab.favicon })
+            setBookshelfOpen(true)
+          }
+          break
+        }
+        case 'toggle-bookshelf':
+          setBookshelfOpen((v) => !v)
           break
         case 'duplicate-tab':
           if (s.activeTabId) s.duplicateTab(s.activeTabId)
@@ -998,6 +1031,7 @@ export default function App() {
           />
           <WebviewPanel />
         </div>
+        <Bookshelf open={bookshelfOpen} profileId={windowProfileId ?? activeProfileId} onClose={() => setBookshelfOpen(false)} />
       </div>
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} windowWorkspaceId={windowWorkspaceId} />
       <UpdateBanner />

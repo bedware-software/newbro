@@ -135,6 +135,9 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'copy-tab': [],
   'move-group': [],
   'copy-group': [],
+  // Bookshelf actions ship unbound — driven through the command palette.
+  'add-to-bookshelf': [],
+  'toggle-bookshelf': [],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {

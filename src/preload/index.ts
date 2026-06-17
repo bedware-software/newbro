@@ -223,6 +223,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener('history:updated', handler) }
   },
 
+  // Per-profile Bookshelf reading queue (src/main/bookshelf.ts). Each window
+  // mirrors its own profile's list and refreshes on the onBookshelfUpdated
+  // broadcast (filtered by profileId on the renderer side).
+  bookshelfList: (profileId: string): Promise<unknown> => ipcRenderer.invoke('bookshelf:list', profileId),
+  bookshelfAdd: (profileId: string, input: { url: string; title?: string; favicon?: string }): Promise<unknown> =>
+    ipcRenderer.invoke('bookshelf:add', profileId, input),
+  bookshelfUpdate: (profileId: string, id: string, patch: { title?: string; status?: 'toread' | 'archived' }): Promise<boolean> =>
+    ipcRenderer.invoke('bookshelf:update', profileId, id, patch),
+  bookshelfRemove: (profileId: string, id: string): Promise<boolean> => ipcRenderer.invoke('bookshelf:remove', profileId, id),
+  bookshelfMoveReading: (profileId: string, readingId: string, groupId: string | null): Promise<boolean> =>
+    ipcRenderer.invoke('bookshelf:move-reading', profileId, readingId, groupId),
+  bookshelfAddGroup: (profileId: string, name: string): Promise<unknown> => ipcRenderer.invoke('bookshelf:add-group', profileId, name),
+  bookshelfUpdateGroup: (profileId: string, id: string, patch: { name?: string; color?: string; isCollapsed?: boolean }): Promise<boolean> =>
+    ipcRenderer.invoke('bookshelf:update-group', profileId, id, patch),
+  bookshelfRemoveGroup: (profileId: string, id: string, deleteReadings: boolean): Promise<boolean> =>
+    ipcRenderer.invoke('bookshelf:remove-group', profileId, id, deleteReadings),
+  bookshelfSaveOffline: (profileId: string, id: string, partition: string): Promise<boolean> =>
+    ipcRenderer.invoke('bookshelf:save-offline', profileId, id, partition),
+  onBookshelfUpdated: (callback: (payload: { profileId: string; readings: unknown[]; groups: unknown[] }) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, payload: { profileId: string; readings: unknown[]; groups: unknown[] }) => callback(payload)
+    ipcRenderer.on('bookshelf:updated', handler)
+    return () => { ipcRenderer.removeListener('bookshelf:updated', handler) }
+  },
+
   // Downloads — manager backed by per-session 'will-download' in main.
   // List returns both in-flight and history entries (history is persisted
   // across restarts); pause/resume/cancel are no-ops once a download has

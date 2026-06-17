@@ -31,6 +31,8 @@ const COMMANDS: CommandItem[] = [
   { id: 'reopen-closed-tab', label: 'Reopen Closed Tab', category: 'Tabs' },
   { id: 'next-tab', label: 'Next Tab', category: 'Tabs' },
   { id: 'prev-tab', label: 'Previous Tab', category: 'Tabs' },
+  { id: 'add-to-bookshelf', label: 'Add to Bookshelf', category: 'Bookshelf' },
+  { id: 'toggle-bookshelf', label: 'Toggle Bookshelf', category: 'Bookshelf' },
   { id: 'new-workspace', label: 'New Workspace', category: 'Workspaces' },
   { id: 'close-workspace', label: 'Close Workspace', category: 'Workspaces' },
   { id: 'rename-workspace', label: 'Rename Workspace…', category: 'Workspaces' },
