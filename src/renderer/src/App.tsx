@@ -46,6 +46,20 @@ function normalizeNewTabFocus(value: string | undefined): NewTabFocus {
   return value === 'url' ? 'url' : 'site'
 }
 
+export type SyncCategory = 'state' | 'settings' | 'bookshelf' | 'history' | 'permissions' | 'extensions'
+
+/** Combined config + runtime status for the synced-folder cloud sync. Returned
+ *  by every cloud-sync IPC call and pushed on the onCloudSyncStatus channel. */
+export interface CloudSyncInfo {
+  enabled: boolean
+  folderPath: string
+  deviceId: string
+  categories: Record<SyncCategory, boolean>
+  state: 'disabled' | 'idle' | 'syncing' | 'error'
+  lastSync: number
+  error: string | null
+}
+
 declare global {
   interface Window {
     electronAPI: {
@@ -75,6 +89,12 @@ declare global {
       clipboardWriteText: (text: string) => void
       loadSettings: () => Promise<Settings>
       saveSettings: (settings: Settings) => Promise<void>
+      cloudSyncGetInfo: () => Promise<CloudSyncInfo>
+      cloudSyncSetFolder: () => Promise<CloudSyncInfo>
+      cloudSyncSetEnabled: (enabled: boolean) => Promise<CloudSyncInfo>
+      cloudSyncSetCategories: (patch: Partial<Record<SyncCategory, boolean>>) => Promise<CloudSyncInfo>
+      cloudSyncNow: () => Promise<CloudSyncInfo>
+      onCloudSyncStatus: (callback: (info: CloudSyncInfo) => void) => () => void
       wipeAllData: () => Promise<void>
       getDefaultBrowserStatus: () => Promise<DefaultBrowserStatus>
       setAsDefaultBrowser: () => Promise<SetAsDefaultBrowserResult>
@@ -138,6 +158,14 @@ declare global {
       dropdownPopupEvent?: (evt: unknown) => void
       dropdownPopupResize?: (size: { width: number; height: number }) => void
       onDropdownPopupSpec?: (callback: (spec: unknown) => void) => () => void
+
+      // Update toast popup (separate transparent BrowserWindow)
+      showUpdateToast?: (spec: unknown) => void
+      hideUpdateToast?: () => void
+      onUpdateToastEvent?: (callback: (evt: unknown) => void) => () => void
+      updateToastPopupEvent?: (evt: unknown) => void
+      updateToastPopupResize?: (size: { width: number; height: number }) => void
+      onUpdateToastPopupSpec?: (callback: (spec: unknown) => void) => () => void
 
       // Downloads (per-session 'will-download' in main; see src/main/downloads.ts)
       downloadsList?: () => Promise<DownloadEntry[]>
@@ -338,6 +366,7 @@ export default function App() {
   const [externalUrlPending, setExternalUrlPending] = useState<string | null>(null)
   const [externalUrlQueue, setExternalUrlQueue] = useState<string[]>([])
   const shortcutHandlerRef = useRef<((action: string) => void) | null>(null)
+  const webviewColumnRef = useRef<HTMLDivElement>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(() => {
     const v = localStorage.getItem(SIDEBAR_VISIBLE_KEY)
@@ -1052,17 +1081,14 @@ export default function App() {
       <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} pageFullscreen={pageFullscreen} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar visible={sidebarVisible} showTabNumbers={settings?.showTabNumbers ?? true} />
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+        <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
           <FindBar
             open={findBarOpen}
             focusTick={findBarFocusTick}
             onClose={() => setFindBarOpen(false)}
           />
           <WebviewPanel />
-          {/* Docked in the webview column's flow (not fixed): its presence
-              shrinks the tab WebContentsView so the banner is never covered
-              or clipped by the native view or the bookshelf. */}
-          {!pageFullscreen && <UpdateBanner />}
+          <UpdateBanner targetRef={webviewColumnRef} disabled={pageFullscreen} />
         </div>
         {/* Hide the bookshelf while a page is in fullscreen (cinema mode) so
             the tab view can fill the full width — it reappears with its prior

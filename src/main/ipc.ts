@@ -6,7 +6,12 @@ import { spawn } from 'child_process'
 import { loadState, saveState, loadLastUsedWorkspace } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
 import { setupPartitionSession, createWorkspaceWindow, getOpenWorkspaceWindows, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest } from './index'
-import { listGrants, setGrant, clearGrant, clearAllGrants, type PermissionKind, type PermissionDecision } from './permissions-store'
+import { listGrants, setGrant, clearGrant, clearAllGrants, exportGrants, replaceGrants, type PermissionKind, type PermissionDecision } from './permissions-store'
+import {
+  registerSyncCategory,
+  registerCloudSyncIpc,
+  notifyCloudChange,
+} from './cloud-sync'
 import { log } from './log'
 import { checkForUpdatesNow, downloadUpdateNow, installUpdateNow, getLatestStatus } from './updater'
 import {
@@ -40,12 +45,15 @@ import {
   openOptionsPageUrl,
   getActionPopupPathForTab,
   extractExtensionIdFromUrl,
+  exportExtensionManifest,
+  applyExtensionManifest,
 } from './extensions/manager'
 import { registerDropdownIpc } from './dropdown-window'
+import { registerUpdateToastIpc } from './update-toast-window'
 import { registerDefaultBrowserIpc } from './default-browser'
 import { registerDownloadsIpc } from './downloads'
-import { registerHistoryIpc } from './history'
-import { registerBookshelfIpc } from './bookshelf'
+import { registerHistoryIpc, exportEntries, replaceEntries } from './history'
+import { registerBookshelfIpc, exportShelves, importShelves } from './bookshelf'
 
 interface CertInfo {
   subject: { CN?: string; O?: string; OU?: string }
@@ -126,6 +134,19 @@ let detachedDragSession: {
   startCursorY: number
 } | null = null
 
+/** Persist a settings object and apply all of its side-effects: proxy rules,
+ *  menu accelerators, and a broadcast to every window. Shared between the
+ *  `settings:save` IPC handler (user edits) and the cloud-sync apply path
+ *  (settings adopted from another device). */
+function applyIncomingSettings(settings: Settings): void {
+  saveSettings(settings)
+  applyProxySettingsToAllSessions(settings)
+  rebuildMenu()
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('settings:updated', settings)
+  }
+}
+
 export function registerIpcHandlers(): void {
   ipcMain.handle('store:load', () => {
     const state = loadState()
@@ -136,6 +157,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('store:save', (_e, state: unknown) => {
     log.ipc('store:save', 'saving state')
     saveState(state)
+    notifyCloudChange('state')
     const senderWindow = BrowserWindow.fromWebContents(_e.sender)
     const allWindows = BrowserWindow.getAllWindows()
     const otherCount = allWindows.filter(w => w !== senderWindow && !w.isDestroyed()).length
@@ -546,18 +568,8 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('settings:save', (_e, settings: unknown) => {
     log.ipc('settings:save')
-    const nextSettings = settings as Settings
-    saveSettings(nextSettings)
-    applyProxySettingsToAllSessions(nextSettings)
-    // Rebuild menu with new keybindings
-    rebuildMenu()
-    // Broadcast settings to all windows
-    const allWindows = BrowserWindow.getAllWindows()
-    for (const win of allWindows) {
-      if (!win.isDestroyed()) {
-        win.webContents.send('settings:updated', nextSettings)
-      }
-    }
+    applyIncomingSettings(settings as Settings)
+    notifyCloudChange('settings')
   })
 
   // ── Site permissions ──
@@ -836,8 +848,50 @@ function alive(p) {
   })
 
   registerDropdownIpc()
+  registerUpdateToastIpc()
   registerDefaultBrowserIpc()
   registerDownloadsIpc()
   registerHistoryIpc()
   registerBookshelfIpc()
+
+  // ── Cloud sync ──
+  // Wire each data set's read/apply adapter, then expose the cloud-sync IPC.
+  // initCloudSync() runs from index.ts right after this, before windows open.
+  //
+  // State syncs the workspace/tab tree only (`profiles`) — the active*
+  // selections are per-window/device and would otherwise churn the synced file
+  // on every tab switch.
+  registerSyncCategory('state', {
+    read: () => ({ profiles: (loadState() as { profiles?: unknown } | null)?.profiles ?? [] }),
+    write: (data) => {
+      const incoming = (data as { profiles?: unknown }) || {}
+      const cur = (loadState() as Record<string, unknown> | null) || {}
+      const next = { ...cur, profiles: incoming.profiles ?? [] }
+      saveState(next)
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('state:updated', { profiles: next.profiles })
+      }
+    },
+  })
+  registerSyncCategory('settings', {
+    read: () => loadSettings(),
+    write: (data) => applyIncomingSettings(data as Settings),
+  })
+  registerSyncCategory('bookshelf', {
+    read: () => exportShelves(),
+    write: (data) => importShelves(data as Record<string, unknown>),
+  })
+  registerSyncCategory('history', {
+    read: () => exportEntries(),
+    write: (data) => replaceEntries(data),
+  })
+  registerSyncCategory('permissions', {
+    read: () => exportGrants(),
+    write: (data) => replaceGrants(data),
+  })
+  registerSyncCategory('extensions', {
+    read: () => exportExtensionManifest(),
+    write: (data) => applyExtensionManifest(data),
+  })
+  registerCloudSyncIpc()
 }

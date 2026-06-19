@@ -41,6 +41,7 @@ import { unzipTo } from './zip'
 import { buildSwShimSource, SW_SHIM_MAGIC, SW_SHIM_LEGACY_MAGIC, SW_SHIM_FOOTER } from './sw-shim'
 import { getSwRpcServerInfo } from './sw-rpc-server'
 import { clearUserScriptsForExtension } from './userscripts'
+import { notifyCloudChange } from '../cloud-sync'
 
 export interface ExtensionInfo {
   id: string
@@ -1089,6 +1090,56 @@ function broadcastExtensionsChanged(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send('extensions:changed', list)
+    }
+  }
+  notifyCloudChange('extensions')
+}
+
+// ── Cloud sync adapters ──
+// Extensions sync as a portable manifest — the installed IDs plus their
+// enabled/pinned state — never the unpacked bytes (those are large, version-
+// specific, and carry device-local paths). A receiving device reconciles by
+// re-downloading anything it's missing via installExtensionById (the same path
+// the manual install + startup rehydrate use).
+
+export interface ExtensionManifestEntry {
+  id: string
+  enabled: boolean
+  pinned: boolean
+}
+
+export function exportExtensionManifest(): ExtensionManifestEntry[] {
+  return Object.values(store.get('extensions'))
+    .map((e) => ({ id: e.id, enabled: e.enabled ?? true, pinned: e.pinned ?? true }))
+    .sort((a, b) => a.id.localeCompare(b.id))
+}
+
+/** Reconcile the locally-installed set toward an incoming manifest: install
+ *  anything missing, apply enabled/pinned for shared IDs, and uninstall extras
+ *  so the set mirrors. Best-effort and async — a delisted extension simply
+ *  fails to reinstall (logged) rather than aborting the whole reconcile. */
+export async function applyExtensionManifest(incoming: unknown): Promise<void> {
+  const list = Array.isArray(incoming) ? (incoming as ExtensionManifestEntry[]) : []
+  const wanted = new Map<string, ExtensionManifestEntry>()
+  for (const e of list) {
+    if (e && typeof e.id === 'string' && /^[a-p]{32}$/.test(e.id)) wanted.set(e.id, e)
+  }
+  const haveIds = new Set(Object.keys(store.get('extensions')))
+
+  // Remove extras (present locally, absent from the synced manifest).
+  for (const id of haveIds) {
+    if (!wanted.has(id)) {
+      try { await uninstallExtension(id) } catch (err) { log.warn('cloud-sync: uninstall failed', { id, err: String(err) }) }
+    }
+  }
+  // Install missing, then apply state for everything wanted.
+  for (const [id, want] of wanted) {
+    try {
+      if (!haveIds.has(id)) await installExtensionById(id)
+      await setExtensionEnabled(id, want.enabled)
+      await setExtensionPinned(id, want.pinned)
+    } catch (err) {
+      log.warn('cloud-sync: extension reconcile failed', { id, err: String(err) })
     }
   }
 }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import type { CloudSyncInfo, SyncCategory } from '../App'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
@@ -285,8 +286,26 @@ function formatAccelerator(accel: string): React.ReactNode {
   )
 }
 
-export type SettingsTab = 'general' | 'appearance' | 'shortcuts' | 'extensions' | 'permissions' | 'about'
+export type SettingsTab = 'general' | 'appearance' | 'shortcuts' | 'extensions' | 'permissions' | 'sync' | 'about'
 type Tab = SettingsTab
+
+/** Order + labels for the Cloud Sync category checkboxes. */
+const SYNC_CATEGORY_LABELS: { id: SyncCategory; label: string; hint: string }[] = [
+  { id: 'state', label: 'Tabs & workspaces', hint: 'Profiles, workspaces, tab groups and tabs' },
+  { id: 'bookshelf', label: 'Bookshelf', hint: 'Reading queue and groups' },
+  { id: 'settings', label: 'Settings & keybindings', hint: 'Appearance, search, shortcuts, proxy' },
+  { id: 'history', label: 'History', hint: 'Address-bar autocomplete history' },
+  { id: 'permissions', label: 'Site permissions', hint: 'Per-site mic / camera / location decisions' },
+  { id: 'extensions', label: 'Extensions', hint: 'Installed extensions (re-downloaded per device)' },
+]
+
+function syncStatusLabel(info: CloudSyncInfo | null): string {
+  if (!info || !info.enabled) return 'Off'
+  if (info.state === 'syncing') return 'Syncing…'
+  if (info.state === 'error') return `Error: ${info.error ?? 'sync failed'}`
+  if (info.lastSync) return `Last synced ${new Date(info.lastSync).toLocaleString()}`
+  return 'Idle'
+}
 
 /**
  * Versioned request from the parent to switch to a specific tab. The
@@ -644,6 +663,30 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     window.electronAPI.permissionsList?.().then(setPermissionGrants).catch(() => {})
   }, [open, activeTab])
 
+  // ── Cloud sync (synced-folder) ──
+  const [syncInfo, setSyncInfo] = useState<CloudSyncInfo | null>(null)
+  // Fetch current config/status on open, and live-subscribe to status pushes
+  // (a background sync, or a change from another window).
+  useEffect(() => {
+    if (!open) return
+    window.electronAPI.cloudSyncGetInfo?.().then((i) => setSyncInfo(i)).catch(() => {})
+    const cleanup = window.electronAPI.onCloudSyncStatus?.((i) => setSyncInfo(i))
+    return cleanup
+  }, [open])
+
+  const chooseSyncFolder = useCallback(() => {
+    window.electronAPI.cloudSyncSetFolder?.().then(setSyncInfo).catch(() => {})
+  }, [])
+  const setSyncEnabled = useCallback((enabled: boolean) => {
+    window.electronAPI.cloudSyncSetEnabled?.(enabled).then(setSyncInfo).catch(() => {})
+  }, [])
+  const toggleSyncCategory = useCallback((cat: SyncCategory, on: boolean) => {
+    window.electronAPI.cloudSyncSetCategories?.({ [cat]: on }).then(setSyncInfo).catch(() => {})
+  }, [])
+  const runSyncNow = useCallback(() => {
+    window.electronAPI.cloudSyncNow?.().then(setSyncInfo).catch(() => {})
+  }, [])
+
   const clearPermissionGrant = useCallback((grant: PermissionGrant) => {
     window.electronAPI
       .permissionsClear?.(grant.partition, grant.origin, grant.kind)
@@ -858,6 +901,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   { id: 'shortcuts', label: 'Keyboard Shortcuts', icon: Keyboard },
                   { id: 'extensions', label: 'Extensions', icon: Puzzle },
                   { id: 'permissions', label: 'Site permissions', icon: ShieldCheck },
+                  { id: 'sync', label: 'Cloud Sync', icon: Cloud },
                 ] as { id: Tab; label: string; icon: LucideIcon }[]
               ).map(({ id, label, icon: Icon }) => (
                 <button
@@ -997,6 +1041,101 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   ))}
                 </div>
               </div>
+            </div>
+          )}
+
+          {activeTab === 'sync' && (
+            <div className="space-y-8">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground mb-1">Cloud Sync</h3>
+                <p className="text-[11px] text-muted-foreground mb-3">
+                  Sync your data across devices through a folder that OneDrive, Dropbox, or Google
+                  Drive already keeps in the cloud. No account needed — newbro just reads and writes
+                  JSON files in the folder you pick.
+                </p>
+
+                {/* Enable toggle */}
+                <label className="flex items-center gap-2.5 mb-4 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!syncInfo?.enabled}
+                    disabled={!syncInfo?.folderPath}
+                    onChange={(e) => setSyncEnabled(e.target.checked)}
+                    className="h-4 w-4 accent-primary"
+                  />
+                  <span className="text-sm text-foreground">Enable cloud sync</span>
+                  {!syncInfo?.folderPath && (
+                    <span className="text-[11px] text-muted-foreground">(choose a folder first)</span>
+                  )}
+                </label>
+
+                {/* Folder picker */}
+                <div className="mb-1">
+                  <div className="text-[11px] font-medium text-muted-foreground mb-1.5">Sync folder</div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0 text-xs font-mono px-2.5 py-1.5 rounded-md bg-secondary text-secondary-foreground truncate">
+                      {syncInfo?.folderPath || 'Not set'}
+                    </div>
+                    <button
+                      onClick={chooseSyncFolder}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted shrink-0"
+                    >
+                      <FolderOpen size={14} />
+                      Choose folder…
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-1.5">
+                    Pick a folder inside OneDrive / Dropbox / Google Drive so the files reach your
+                    other devices.
+                  </p>
+                </div>
+              </div>
+
+              {/* What to sync */}
+              <div>
+                <h3 className="text-sm font-semibold text-foreground mb-1">What to sync</h3>
+                <p className="text-[11px] text-muted-foreground mb-3">
+                  Window positions, logins / cookies, and offline saved pages stay on each device.
+                </p>
+                <div className="space-y-2">
+                  {SYNC_CATEGORY_LABELS.map(({ id, label, hint }) => (
+                    <label key={id} className="flex items-start gap-2.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={syncInfo?.categories?.[id] ?? true}
+                        disabled={!syncInfo?.enabled}
+                        onChange={(e) => toggleSyncCategory(id, e.target.checked)}
+                        className="h-4 w-4 mt-0.5 accent-primary"
+                      />
+                      <span>
+                        <span className="text-sm text-foreground block leading-tight">{label}</span>
+                        <span className="text-[11px] text-muted-foreground">{hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Status + manual sync */}
+              <div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={runSyncNow}
+                    disabled={!syncInfo?.enabled || syncInfo?.state === 'syncing'}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <RefreshCw size={14} className={syncInfo?.state === 'syncing' ? 'animate-spin' : ''} />
+                    Sync now
+                  </button>
+                  <span className="text-[11px] text-muted-foreground">{syncStatusLabel(syncInfo)}</span>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-muted-foreground">
+                If two devices change the same thing, the most recent change wins. Extensions are
+                re-downloaded from the Chrome Web Store on each device (needs internet); their own
+                data and logins are not synced.
+              </p>
             </div>
           )}
 

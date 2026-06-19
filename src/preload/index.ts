@@ -52,6 +52,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadSettings: (): Promise<unknown> => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings: unknown): Promise<void> => ipcRenderer.invoke('settings:save', settings),
 
+  // Cloud sync (synced-folder). Config + status come back as one info object;
+  // onCloudSyncStatus pushes the same shape whenever it changes.
+  cloudSyncGetInfo: (): Promise<unknown> => ipcRenderer.invoke('cloud-sync:get-info'),
+  cloudSyncSetFolder: (): Promise<unknown> => ipcRenderer.invoke('cloud-sync:set-folder'),
+  cloudSyncSetEnabled: (enabled: boolean): Promise<unknown> => ipcRenderer.invoke('cloud-sync:set-enabled', enabled),
+  cloudSyncSetCategories: (patch: Record<string, boolean>): Promise<unknown> =>
+    ipcRenderer.invoke('cloud-sync:set-categories', patch),
+  cloudSyncNow: (): Promise<unknown> => ipcRenderer.invoke('cloud-sync:now'),
+  onCloudSyncStatus: (callback: (info: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, info: unknown): void => callback(info)
+    ipcRenderer.on('cloud-sync:status', handler)
+    return () => { ipcRenderer.removeListener('cloud-sync:status', handler) }
+  },
+
   // Site permissions. Main sends 'permission:request' when a page asks for a
   // gated capability (mic, camera, location, …) with no remembered decision;
   // respondPermission carries the user's Allow/Block click back. The list /
@@ -386,5 +400,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_e: Electron.IpcRendererEvent, spec: unknown) => callback(spec)
     ipcRenderer.on('dropdown:popup-spec', handler)
     return () => { ipcRenderer.removeListener('dropdown:popup-spec', handler) }
+  },
+
+  // ── Update toast popup (separate transparent BrowserWindow) ──
+  showUpdateToast: (spec: unknown): void => { ipcRenderer.send('update-toast:show', spec) },
+  hideUpdateToast: (): void => { ipcRenderer.send('update-toast:hide') },
+  onUpdateToastEvent: (callback: (evt: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, evt: unknown) => callback(evt)
+    ipcRenderer.on('update-toast:event', handler)
+    return () => { ipcRenderer.removeListener('update-toast:event', handler) }
+  },
+  updateToastPopupEvent: (evt: unknown): void => { ipcRenderer.send('update-toast:popup-event', evt) },
+  updateToastPopupResize: (size: { width: number; height: number }): void => {
+    ipcRenderer.send('update-toast:popup-resize', size)
+  },
+  onUpdateToastPopupSpec: (callback: (spec: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, spec: unknown) => callback(spec)
+    ipcRenderer.on('update-toast:popup-spec', handler)
+    return () => { ipcRenderer.removeListener('update-toast:popup-spec', handler) }
   },
 })

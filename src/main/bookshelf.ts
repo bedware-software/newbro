@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { log } from './log'
+import { notifyCloudChange } from './cloud-sync'
 
 export type ReadingStatus = 'toread' | 'archived'
 
@@ -110,6 +111,19 @@ function scheduleBroadcast(profileId: string): void {
 function commit(profileId: string, shelf: Shelf): void {
   persistShelf(profileId, shelf)
   scheduleBroadcast(profileId)
+  notifyCloudChange('bookshelf')
+}
+
+// ── Cloud sync adapters ──
+// The whole per-profile map is one sync category. exportShelves reads it;
+// importShelves replaces it and refreshes every window's right-hand sidebar.
+export function exportShelves(): Record<string, unknown> {
+  return loadAll()
+}
+
+export function importShelves(all: Record<string, unknown>): void {
+  store.set('byProfile', all && typeof all === 'object' ? all : {})
+  for (const pid of Object.keys(all || {})) scheduleBroadcast(pid)
 }
 
 /** Add a reading. Re-adding an existing URL refreshes its title/favicon,

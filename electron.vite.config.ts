@@ -30,7 +30,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
-          dropdown: resolve(__dirname, 'src/renderer/dropdown.html')
+          dropdown: resolve(__dirname, 'src/renderer/dropdown.html'),
+          'update-toast': resolve(__dirname, 'src/renderer/update-toast.html')
         }
       }
     },

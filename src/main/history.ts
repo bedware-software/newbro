@@ -13,6 +13,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import Store from 'electron-store'
 import { log } from './log'
+import { notifyCloudChange } from './cloud-sync'
 
 export interface HistoryEntry {
   /** Canonical URL with protocol (what tab navigation actually loaded). */
@@ -44,6 +45,7 @@ function load(): HistoryEntry[] {
 function persist(entries: HistoryEntry[]): void {
   cached = entries
   store.set('entries', entries)
+  notifyCloudChange('history')
 }
 
 let broadcastPending: ReturnType<typeof setTimeout> | null = null
@@ -105,6 +107,20 @@ export function updateTitle(url: string, title: string): void {
 
 export function listEntries(): HistoryEntry[] {
   return load()
+}
+
+// ── Cloud sync adapters ──
+export function exportEntries(): HistoryEntry[] {
+  return load()
+}
+
+/** Replace the whole history list with an incoming (synced) snapshot, capping
+ *  to the LRU limit, and refresh every window's autocomplete mirror. */
+export function replaceEntries(entries: unknown): void {
+  const list = Array.isArray(entries) ? (entries as HistoryEntry[]) : []
+  if (list.length > HISTORY_LIMIT) list.length = HISTORY_LIMIT
+  persist(list)
+  scheduleBroadcast()
 }
 
 export function clearHistory(): void {

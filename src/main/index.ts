@@ -18,6 +18,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers, registerDetachedPopup } from './ipc'
 import { setupAutoUpdater } from './updater'
+import { initCloudSync, flushPushSync } from './cloud-sync'
 import {
   loadState,
   loadOpenWindows,
@@ -3604,6 +3605,14 @@ app.whenReady().then(async () => {
   registerIpcHandlers()
   installTabPreloadListeners()
   setupAutoUpdater()
+  // Pull synced data (tabs/workspaces, settings, …) before the first windows
+  // open, so restored windows reflect the latest cloud state. Best-effort —
+  // a sync failure must never block startup.
+  try {
+    await initCloudSync()
+  } catch (err) {
+    log.warn('cloud-sync: init failed', String(err))
+  }
   openInitialWindows()
 
   if (BrowserWindow.getAllWindows().length === 0) {
@@ -3621,6 +3630,9 @@ app.on('before-quit', () => {
   }
   log.info('before-quit: saving open windows', { entries })
   saveOpenWindows(entries)
+  // Flush any debounced sync pushes synchronously — async work won't finish
+  // once the app starts tearing down.
+  try { flushPushSync() } catch (err) { log.warn('cloud-sync: flush failed', String(err)) }
 })
 
 app.on('window-all-closed', () => {
