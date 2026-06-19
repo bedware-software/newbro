@@ -165,6 +165,15 @@
   --color-toolbar: oklch(0 0 0);
 }
 
+/* ── Page fullscreen (video) ──
+ * Set on <html> while the active tab is in cinema mode. The page preload
+ * handles normal fullscreen requests, but native fallback paths can still
+ * expose the renderer backdrop around the tab view; keep it black. */
+html[data-page-fullscreen],
+html[data-page-fullscreen] body {
+  background-color: #000 !important;
+}
+
 /* ── Layout density ──
  * `normal` (default) gives sidebar rows toolbar-height padding so they
  * breathe like the top chrome. `compact` is the legacy tighter look.

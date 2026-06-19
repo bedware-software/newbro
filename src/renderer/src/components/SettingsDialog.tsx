@@ -97,6 +97,7 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   reload: ['CmdOrCtrl+R'],
   settings: ['CmdOrCtrl+,'],
   'page-devtools': ['CmdOrCtrl+Shift+I'],
+  'ui-devtools': [],
   'save-page': ['CmdOrCtrl+S'],
   // Move/Copy/Duplicate actions ship unbound — they're surfaced through
   // context menus and the command palette by default. An empty array keeps
@@ -108,7 +109,7 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'move-group': [],
   'copy-group': [],
   'add-to-bookshelf': [],
-  'toggle-bookshelf': [],
+  'toggle-bookshelf': ['CmdOrCtrl+Shift+B'],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -147,6 +148,7 @@ const ACTION_LABELS: Record<string, string> = {
   reload: 'Reload Page',
   settings: 'Open Settings',
   'page-devtools': 'Toggle Page Developer Tools',
+  'ui-devtools': 'Toggle UI Developer Tools',
   'find-in-page': 'Find in Page',
   'save-page': 'Save Page As',
   'tab-1': 'Switch to Tab 1',

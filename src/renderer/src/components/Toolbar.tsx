@@ -447,7 +447,7 @@ function ExtensionActions({
   return (
     <div
       ref={containerRef}
-      className="flex items-center gap-1"
+      className="flex shrink-0 items-center gap-1 overflow-visible"
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
       {/* Leading "Manage extensions" button — opens Settings → Extensions.
@@ -567,6 +567,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
     'toggle-sidebar': onToggleSidebar,
     'search': onOpenSearch,
     'settings': onOpenSettings,
+    'ui-devtools': () => { window.electronAPI.toggleUiDevTools?.() },
     'check-updates': () => { (window as any).electronAPI.checkForUpdates?.() },
     'about': onOpenAbout,
     'exit': () => window.electronAPI.quit(),
@@ -590,6 +591,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
       },
       { id: 'search', label: 'Search Everything', iconName: 'Search', shortcut: [modKey, 'O'] },
       { id: 'settings', label: 'Settings', iconName: 'Settings', shortcut: [modKey, ','] },
+      { id: 'ui-devtools', label: 'UI Developer Tools', iconName: 'Settings', divider: 'before' },
       {
         id: 'check-updates',
         label: updatesUnsupported ? 'Updates Unavailable (Dev Build)' : 'Check for Updates…',
@@ -1363,7 +1365,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
         className="flex items-center gap-2 h-12 border-b border-border bg-toolbar shrink-0"
         style={{
           paddingLeft: isMac ? 80 : 8,
-          paddingRight: isMac ? 8 : 142,
+          paddingRight: pageFullscreen ? 8 : isMac ? 8 : 142,
           paddingTop: 10,
           paddingBottom: 10,
           WebkitAppRegion: 'drag',

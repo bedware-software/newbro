@@ -173,6 +173,13 @@ export function DetachedWindow({
     }
     const handleKeyDown = (e: KeyboardEvent) => {
       if (closeOnEscape && e.key === 'Escape') onCloseRef.current()
+      // F12 / Ctrl+Shift+I opens DevTools for THIS popup (it's its own window,
+      // so the main "Toggle UI Developer Tools" can't reach it). getFocusedWindow
+      // in main resolves to this popup since it has focus.
+      else if (e.key === 'F12' || ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'I' || e.key === 'i'))) {
+        e.preventDefault()
+        window.electronAPI.toggleFocusedDevTools?.()
+      }
     }
 
     // Drag is driven by the main process — it's the only coordinate space

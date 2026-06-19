@@ -54,6 +54,290 @@ const STEALTH_ENABLED = (() => {
   return true
 })()
 
+const PSEUDO_FULLSCREEN_EVENT = '__newbro_pseudo_fullscreen__'
+
+const PSEUDO_FULLSCREEN_SCRIPT = `
+(() => {
+  const EVENT_NAME = ${JSON.stringify(PSEUDO_FULLSCREEN_EVENT)};
+  const INSTALL_KEY = '__newbroPseudoFullscreenInstalled';
+  const ROOT_ATTR = 'data-newbro-pseudo-fullscreen';
+  const TARGET_ATTR = 'data-newbro-pseudo-fullscreen-target';
+  const STYLE_ID = 'newbro-pseudo-fullscreen-style';
+
+  if (window[INSTALL_KEY]) return;
+  Object.defineProperty(window, INSTALL_KEY, { value: true, configurable: false });
+
+  let fullscreenElement = null;
+  let fullscreenTarget = null;
+
+  const log = (...a) => { console.log('[newbro-fullscreen]', ...a); };
+  const getDescriptor = (owner, prop) => {
+    try { return Object.getOwnPropertyDescriptor(owner, prop); }
+    catch (_) { return undefined; }
+  };
+
+  const native = {
+    requestFullscreen: Element.prototype.requestFullscreen,
+    webkitRequestFullscreen: Element.prototype.webkitRequestFullscreen,
+    webkitRequestFullScreen: Element.prototype.webkitRequestFullScreen,
+    mozRequestFullScreen: Element.prototype.mozRequestFullScreen,
+    msRequestFullscreen: Element.prototype.msRequestFullscreen,
+    exitFullscreen: Document.prototype.exitFullscreen,
+    webkitExitFullscreen: Document.prototype.webkitExitFullscreen,
+    webkitCancelFullScreen: Document.prototype.webkitCancelFullScreen,
+    mozCancelFullScreen: Document.prototype.mozCancelFullScreen,
+    msExitFullscreen: Document.prototype.msExitFullscreen,
+    fullscreenElement: getDescriptor(Document.prototype, 'fullscreenElement')?.get,
+    webkitFullscreenElement: getDescriptor(Document.prototype, 'webkitFullscreenElement')?.get,
+    mozFullScreenElement: getDescriptor(Document.prototype, 'mozFullScreenElement')?.get,
+    msFullscreenElement: getDescriptor(Document.prototype, 'msFullscreenElement')?.get,
+    fullscreenEnabled: getDescriptor(Document.prototype, 'fullscreenEnabled')?.get,
+    webkitFullscreenEnabled: getDescriptor(Document.prototype, 'webkitFullscreenEnabled')?.get,
+    mozFullScreenEnabled: getDescriptor(Document.prototype, 'mozFullScreenEnabled')?.get,
+    msFullscreenEnabled: getDescriptor(Document.prototype, 'msFullscreenEnabled')?.get,
+    webkitIsFullScreen: getDescriptor(Document.prototype, 'webkitIsFullScreen')?.get,
+    mozFullScreen: getDescriptor(Document.prototype, 'mozFullScreen')?.get,
+  };
+
+  const describeElement = (element) => {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
+    let rect = null;
+    try {
+      const r = element.getBoundingClientRect();
+      rect = {
+        x: Math.round(r.x),
+        y: Math.round(r.y),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+        right: Math.round(r.right),
+        bottom: Math.round(r.bottom),
+      };
+    } catch (_) { /* ignore */ }
+    return {
+      tag: String(element.tagName || '').toLowerCase(),
+      id: typeof element.id === 'string' ? element.id : '',
+      classes: typeof element.className === 'string' ? element.className.slice(0, 180) : '',
+      rect,
+    };
+  };
+
+  const getMetrics = () => ({
+    href: location.href,
+    viewport: {
+      width: window.innerWidth || document.documentElement.clientWidth || 0,
+      height: window.innerHeight || document.documentElement.clientHeight || 0,
+      devicePixelRatio: window.devicePixelRatio || 1,
+    },
+    screen: {
+      width: window.screen?.width || 0,
+      height: window.screen?.height || 0,
+      availWidth: window.screen?.availWidth || 0,
+      availHeight: window.screen?.availHeight || 0,
+    },
+    element: describeElement(fullscreenElement),
+    target: describeElement(fullscreenTarget),
+  });
+
+  const notifyHost = (active, phase) => {
+    try {
+      window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: { active, phase, metrics: getMetrics() } }));
+    } catch (err) {
+      log('notify failed', err);
+    }
+  };
+
+  const ensureStyle = () => {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = [
+      'html[' + ROOT_ATTR + '], html[' + ROOT_ATTR + '] body { overflow:hidden !important; background:#000 !important; }',
+      '[' + TARGET_ATTR + '] { position:fixed !important; inset:0 !important; width:100vw !important; height:100vh !important; max-width:none !important; max-height:none !important; margin:0 !important; padding:0 !important; overflow:hidden !important; transform:none !important; z-index:2147483647 !important; background:#000 !important; box-sizing:border-box !important; }',
+      'video[' + TARGET_ATTR + '] { object-fit:contain !important; }',
+    ].join('\\n');
+    (document.head || document.documentElement).appendChild(style);
+  };
+
+  const resolveFullscreenTarget = (element) => {
+    return element;
+  };
+
+  const applyFullscreenAttributes = () => {
+    try { fullscreenTarget?.setAttribute(TARGET_ATTR, ''); } catch (_) { /* ignore */ }
+  };
+
+  const refreshLayout = () => {
+    if (!fullscreenTarget) return;
+    applyFullscreenAttributes();
+  };
+
+  const nudgePageLayout = () => {
+    const run = () => {
+      refreshLayout();
+      try { window.dispatchEvent(new Event('resize')); } catch (_) { /* ignore */ }
+    };
+    run();
+    try { requestAnimationFrame(refreshLayout); } catch (_) { /* ignore */ }
+    setTimeout(run, 80);
+    setTimeout(run, 250);
+    setTimeout(run, 700);
+  };
+
+  const fireFullscreenChange = (target) => {
+    const names = [
+      'fullscreenchange',
+      'webkitfullscreenchange',
+      'mozfullscreenchange',
+      'MSFullscreenChange',
+    ];
+    Promise.resolve().then(() => {
+      for (const name of names) {
+        try {
+          const event = new Event(name, { bubbles: true });
+          (target || document).dispatchEvent(event);
+        } catch (_) { /* ignore */ }
+      }
+    });
+  };
+
+  const clearTarget = () => {
+    const oldElement = fullscreenElement;
+    const oldTarget = fullscreenTarget;
+    fullscreenElement = null;
+    fullscreenTarget = null;
+    try { oldTarget?.removeAttribute(TARGET_ATTR); } catch (_) { /* ignore */ }
+    try { document.documentElement.removeAttribute(ROOT_ATTR); } catch (_) { /* ignore */ }
+    notifyHost(false, 'leave');
+    fireFullscreenChange(oldElement || oldTarget);
+  };
+
+  const enterPseudoFullscreen = (element) => {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) {
+      return Promise.reject(new TypeError('Element.requestFullscreen called on a non-element'));
+    }
+    const target = resolveFullscreenTarget(element);
+    if (fullscreenElement === element && fullscreenTarget === target) {
+      nudgePageLayout();
+      return Promise.resolve();
+    }
+    if (fullscreenTarget) clearTarget();
+    fullscreenElement = element;
+    fullscreenTarget = target;
+    ensureStyle();
+    applyFullscreenAttributes();
+    try { document.documentElement.setAttribute(ROOT_ATTR, ''); } catch (_) { /* ignore */ }
+    notifyHost(true, 'enter');
+    nudgePageLayout();
+    fireFullscreenChange(element);
+    return Promise.resolve();
+  };
+
+  const exitPseudoFullscreen = () => {
+    if (!fullscreenTarget) return Promise.resolve();
+    clearTarget();
+    return Promise.resolve();
+  };
+
+  const defineGetter = (prop, getter) => {
+    try {
+      Object.defineProperty(Document.prototype, prop, { configurable: true, get: getter });
+    } catch (err) {
+      log('getter patch failed', prop, err);
+    }
+  };
+
+  defineGetter('fullscreenElement', function () {
+    return this === document && fullscreenElement ? fullscreenElement : native.fullscreenElement?.call(this) ?? null;
+  });
+  defineGetter('webkitFullscreenElement', function () {
+    return this === document && fullscreenElement ? fullscreenElement : native.webkitFullscreenElement?.call(this) ?? null;
+  });
+  defineGetter('mozFullScreenElement', function () {
+    return this === document && fullscreenElement ? fullscreenElement : native.mozFullScreenElement?.call(this) ?? null;
+  });
+  defineGetter('msFullscreenElement', function () {
+    return this === document && fullscreenElement ? fullscreenElement : native.msFullscreenElement?.call(this) ?? null;
+  });
+  defineGetter('fullscreenEnabled', function () {
+    return this === document ? true : native.fullscreenEnabled?.call(this) ?? true;
+  });
+  defineGetter('webkitFullscreenEnabled', function () {
+    return this === document ? true : native.webkitFullscreenEnabled?.call(this) ?? true;
+  });
+  defineGetter('mozFullScreenEnabled', function () {
+    return this === document ? true : native.mozFullScreenEnabled?.call(this) ?? true;
+  });
+  defineGetter('msFullscreenEnabled', function () {
+    return this === document ? true : native.msFullscreenEnabled?.call(this) ?? true;
+  });
+  defineGetter('webkitIsFullScreen', function () {
+    return this === document && fullscreenElement ? true : native.webkitIsFullScreen?.call(this) ?? false;
+  });
+  defineGetter('mozFullScreen', function () {
+    return this === document && fullscreenElement ? true : native.mozFullScreen?.call(this) ?? false;
+  });
+
+  const request = function () { return enterPseudoFullscreen(this); };
+  const exit = function () {
+    if (this === document && fullscreenTarget) return exitPseudoFullscreen();
+    if (native.exitFullscreen) return native.exitFullscreen.call(this);
+    return Promise.resolve();
+  };
+
+  try { Element.prototype.requestFullscreen = request; } catch (err) { log('requestFullscreen patch failed', err); }
+  try { Element.prototype.webkitRequestFullscreen = request; } catch (_) { /* ignore */ }
+  try { Element.prototype.webkitRequestFullScreen = request; } catch (_) { /* ignore */ }
+  try { Element.prototype.mozRequestFullScreen = request; } catch (_) { /* ignore */ }
+  try { Element.prototype.msRequestFullscreen = request; } catch (_) { /* ignore */ }
+  try { Document.prototype.exitFullscreen = exit; } catch (err) { log('exitFullscreen patch failed', err); }
+  try { Document.prototype.webkitExitFullscreen = exit; } catch (_) { /* ignore */ }
+  try { Document.prototype.webkitCancelFullScreen = exit; } catch (_) { /* ignore */ }
+  try { Document.prototype.mozCancelFullScreen = exit; } catch (_) { /* ignore */ }
+  try { Document.prototype.msExitFullscreen = exit; } catch (_) { /* ignore */ }
+
+  document.addEventListener('keydown', (event) => {
+    if (!fullscreenTarget || event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    exitPseudoFullscreen();
+  }, true);
+
+  window.addEventListener('resize', refreshLayout, true);
+
+  window.addEventListener('pagehide', () => {
+    if (fullscreenTarget) notifyHost(false, 'pagehide');
+  }, true);
+})();
+`
+
+function installPseudoFullscreen(): void {
+  let active = false
+  try {
+    window.addEventListener(PSEUDO_FULLSCREEN_EVENT, (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: unknown; phase?: unknown; metrics?: unknown }>).detail
+      const next = detail?.active === true
+      active = next
+      ipcRenderer.send('newbro-pseudo-fullscreen', {
+        active: next,
+        phase: typeof detail?.phase === 'string' ? detail.phase : undefined,
+        metrics: detail?.metrics,
+      })
+    }, true)
+    window.addEventListener('pagehide', () => {
+      if (!active) return
+      active = false
+      ipcRenderer.send('newbro-pseudo-fullscreen', false)
+    }, true)
+    webFrame.executeJavaScript(PSEUDO_FULLSCREEN_SCRIPT, false).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.log('[newbro-fullscreen] executeJavaScript rejected:', err)
+    })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.log('[newbro-fullscreen] install threw:', err)
+  }
+}
+
 const STEALTH_SCRIPT = `
 (() => {
   // No try/catch around console.log — under any normal page state it
@@ -277,6 +561,7 @@ const STEALTH_SCRIPT = `
 `
 
 if (STEALTH_ENABLED) {
+  installPseudoFullscreen()
   try {
     // webFrame.executeJavaScript runs the code string in the frame's MAIN world
     // (world 0), even if the preload itself is in an isolated world. This is

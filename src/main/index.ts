@@ -2803,6 +2803,12 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     ...(useSavedPosition ? { x: savedBounds!.x, y: savedBounds!.y } : {}),
     minWidth: 800,
     title: `${workspaceName} — ${APP_NAME}`,
+    // Without this the window base paints white, which shows through as a
+    // jarring frame around a fullscreen video (the tab WebContentsView is
+    // transparent and may not cover the rect to the pixel). A dark base —
+    // matching the title-bar overlay — blends with the video's letterbox
+    // and the cinema-mode chrome instead.
+    backgroundColor: '#161616',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac
       ? { trafficLightPosition: { x: 14, y: 14 } }
@@ -3027,6 +3033,18 @@ function sendShortcutToWindow(win: Electron.BaseWindow | undefined, action: stri
   if (wc && !wc.isDestroyed()) wc.send('shortcut', action)
 }
 
+function toggleUiDevTools(win: Electron.BaseWindow | undefined): void {
+  const target = (win as Electron.BrowserWindow | undefined) ?? BrowserWindow.getFocusedWindow()
+  const wc = target?.webContents
+  if (!wc || wc.isDestroyed()) return
+  try {
+    if (wc.isDevToolsOpened()) wc.closeDevTools()
+    else wc.openDevTools({ mode: 'detach' })
+  } catch (err) {
+    log.warn('toggle UI DevTools failed', { err: String(err) })
+  }
+}
+
 function buildMenu(): void {
   const settings = loadSettings()
   const merged = { ...DEFAULT_KEYBINDINGS, ...settings.keybindings }
@@ -3110,9 +3128,10 @@ function buildMenu(): void {
       submenu: [
         { role: 'reload' },
         { role: 'forceReload' },
-        // toggleDevTools targets the focused webContents — in practice that
-        // is the workspace's chrome renderer. Keep it for debugging the UI.
-        { label: 'Toggle UI Developer Tools', role: 'toggleDevTools' },
+        // Always target the workspace chrome renderer. Electron's role-based
+        // toggle follows the focused WebContents, which is often the active
+        // page's WebContentsView.
+        { label: 'Toggle UI Developer Tools', click: (_item, win) => toggleUiDevTools(win) },
         // The active tab is rendered by a sibling WebContentsView, which
         // toggleDevTools never reaches. Route through the renderer's
         // shortcut handler so the active-tab id is resolved on its side.

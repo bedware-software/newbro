@@ -379,6 +379,33 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('window:toggle-ui-devtools', (_e) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    const wc = win?.webContents
+    if (!wc || wc.isDestroyed()) return
+    try {
+      if (wc.isDevToolsOpened()) wc.closeDevTools()
+      else wc.openDevTools({ mode: 'detach' })
+    } catch (err) {
+      log.warn('window:toggle-ui-devtools failed', { err: String(err) })
+    }
+  })
+
+  // DevTools for the focused window. Detached popups (Command Palette, dialogs)
+  // are their own BrowserWindow, so the sender-based handler above would target
+  // the main window instead. Pressing F12 in the popup focuses it, so
+  // getFocusedWindow resolves to the popup and inspects exactly what's on top.
+  ipcMain.handle('window:toggle-focused-devtools', (_e) => {
+    const wc = BrowserWindow.getFocusedWindow()?.webContents
+    if (!wc || wc.isDestroyed()) return
+    try {
+      if (wc.isDevToolsOpened()) wc.closeDevTools()
+      else wc.openDevTools({ mode: 'detach' })
+    } catch (err) {
+      log.warn('window:toggle-focused-devtools failed', { err: String(err) })
+    }
+  })
+
   // Move OS-level keyboard focus from any active WebContentsView (a tab page)
   // back to the parent window's main webContents (the renderer). DOM .focus()
   // on a renderer-side input only sets DOM focus within its own webContents

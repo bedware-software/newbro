@@ -57,6 +57,8 @@ declare global {
       getLastUsedWorkspace: (profileId: string) => Promise<string | null>
       setWindowTitle: (title: string) => Promise<void>
       setTitleBarOverlay: (options: { color: string; symbolColor: string; height: number }) => Promise<void>
+      toggleUiDevTools?: () => Promise<void>
+      toggleFocusedDevTools?: () => Promise<void>
       closeWindow: () => Promise<void>
       focusWindowRenderer: () => void
       minimizeWindow: () => Promise<void>
@@ -404,6 +406,30 @@ export default function App() {
     }
   }, [])
 
+  // Page fullscreen is hosted as cinema mode under the toolbar. Keep the UI
+  // renderer's document black too, so any native fallback/backdrop exposed
+  // around a video never flashes the themed app background.
+  useEffect(() => {
+    const root = document.documentElement
+    if (pageFullscreen) {
+      root.setAttribute('data-page-fullscreen', '')
+      // The Windows caption buttons (titleBarOverlay) are OS-drawn, so CSS
+      // can't reach them — during cinema they kept their light theme color and
+      // showed as a strip over the video. Repaint them black to blend into the
+      // cinema toolbar. If Windows briefly keeps titlebar controls visible
+      // during the transition, black symbols keep them from flashing white.
+      window.electronAPI.setTitleBarOverlay({ color: '#000000', symbolColor: '#000000', height: 47 })
+    } else {
+      root.removeAttribute('data-page-fullscreen')
+      // Restore the theme's caption-button colors.
+      if (settings) window.electronAPI.setTitleBarOverlay(getOverlayColors(settings.theme))
+    }
+    return () => {
+      root.removeAttribute('data-page-fullscreen')
+      if (settings) window.electronAPI.setTitleBarOverlay(getOverlayColors(settings.theme))
+    }
+  }, [pageFullscreen, settings])
+
   const loadAndApplySettings = useCallback(async () => {
     try {
       const s = await window.electronAPI.loadSettings()
@@ -658,6 +684,9 @@ export default function App() {
         }
         case 'page-devtools':
           if (s.activeTabId) window.electronAPI.tabToggleDevTools?.(s.activeTabId)
+          break
+        case 'ui-devtools':
+          window.electronAPI.toggleUiDevTools?.()
           break
         case 'save-page':
           // Main owns the dialog + Chromium save call; fire-and-forget here.
@@ -1030,11 +1059,17 @@ export default function App() {
             onClose={() => setFindBarOpen(false)}
           />
           <WebviewPanel />
+          {/* Docked in the webview column's flow (not fixed): its presence
+              shrinks the tab WebContentsView so the banner is never covered
+              or clipped by the native view or the bookshelf. */}
+          {!pageFullscreen && <UpdateBanner />}
         </div>
-        <Bookshelf open={bookshelfOpen} profileId={windowProfileId ?? activeProfileId} onClose={() => setBookshelfOpen(false)} />
+        {/* Hide the bookshelf while a page is in fullscreen (cinema mode) so
+            the tab view can fill the full width — it reappears with its prior
+            open state when fullscreen exits. */}
+        <Bookshelf open={bookshelfOpen && !pageFullscreen} profileId={windowProfileId ?? activeProfileId} onClose={() => setBookshelfOpen(false)} />
       </div>
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} windowWorkspaceId={windowWorkspaceId} />
-      <UpdateBanner />
       <SettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}

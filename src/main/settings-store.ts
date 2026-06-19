@@ -108,6 +108,9 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   // tab's WebContents (the View menu's other DevTools item targets the
   // chrome renderer instead).
   'page-devtools': ['CmdOrCtrl+Shift+I'],
+  // UI DevTools target the workspace chrome renderer. They ship unbound so
+  // the standard Chromium page-inspector shortcut remains reserved for sites.
+  'ui-devtools': [],
   'find-in-page': ['CmdOrCtrl+F'],
   // Chromium-standard Save Page As. Saving is the only way to get a
   // viewed text/plain file (example.txt) onto the local FS.
@@ -135,9 +138,11 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'copy-tab': [],
   'move-group': [],
   'copy-group': [],
-  // Bookshelf actions ship unbound — driven through the command palette.
+  // Add-to-bookshelf ships unbound (driven through the command palette);
+  // toggle-bookshelf gets a default so the reading queue has a one-key show/
+  // hide. Existing installs are seeded with it once — see migrateNewKeybindingDefaults.
   'add-to-bookshelf': [],
-  'toggle-bookshelf': [],
+  'toggle-bookshelf': ['CmdOrCtrl+Shift+B'],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -255,6 +260,43 @@ const store = new Store<{ settings: Settings }>({
     settings: { ...DEFAULT_SETTINGS },
   },
 })
+
+/**
+ * Seed accelerators for actions that shipped unbound and have since gained a
+ * default. Existing installs persist an empty array for such an action, which
+ * masks the new default forever (the empty array wins the cloneDefaultKeybindings
+ * merge in loadSettings). Seed each one exactly once — tracked by a per-action
+ * marker — and never touch a binding the user has already customised. Runs at
+ * module load so the persisted value is in place before the first loadSettings.
+ */
+function migrateNewKeybindingDefaults(): void {
+  // electron-store accepts arbitrary top-level keys at runtime; the typed
+  // generic only knows about `settings`, so reach the marker through a cast.
+  const raw = store as unknown as { get(key: string): unknown; set(key: string, value: unknown): void }
+  const NEWLY_DEFAULTED = ['toggle-bookshelf']
+  const seededList = raw.get('seededKeybindingDefaults')
+  const seeded = new Set(Array.isArray(seededList) ? (seededList as string[]) : [])
+
+  const pending = NEWLY_DEFAULTED.filter((action) => !seeded.has(action))
+  if (pending.length === 0) return
+
+  const saved = store.get('settings')
+  const keybindings = { ...(saved?.keybindings ?? {}) }
+  let changedSettings = false
+  for (const action of pending) {
+    const def = DEFAULT_KEYBINDINGS[action] || []
+    const current = keybindings[action]
+    if (def.length > 0 && (!Array.isArray(current) || current.length === 0)) {
+      keybindings[action] = [...def]
+      changedSettings = true
+    }
+    seeded.add(action)
+  }
+  if (changedSettings) store.set('settings', { ...(saved ?? DEFAULT_SETTINGS), keybindings })
+  raw.set('seededKeybindingDefaults', [...seeded])
+}
+
+migrateNewKeybindingDefaults()
 
 export function loadSettings(): Settings {
   const saved = store.get('settings')

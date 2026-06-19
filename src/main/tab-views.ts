@@ -18,7 +18,7 @@
 // channel. The renderer's electronAPI.onTabEvent listener turns those
 // back into store updates and error-banner state.
 
-import { BrowserWindow, Menu, WebContentsView, clipboard, dialog, ipcMain, session, app } from 'electron'
+import { BrowserWindow, Menu, WebContentsView, clipboard, dialog, ipcMain, screen, session, app } from 'electron'
 import type { Session, WebContents } from 'electron'
 import { join } from 'path'
 import { log } from './log'
@@ -85,15 +85,20 @@ interface TabRecord {
   /** The last bounds assigned by the renderer. Cached so we can
    *  restore them when re-activating after hide (width=0 trick). */
   lastBounds: TabBounds
-  /** Mirrors webPreferences.focusOnNavigation. False for "focus URL on
-   *  new tab" tabs, whose page must not auto-grab the keyboard on load —
-   *  tabNavigate re-focuses the page for those on a real user navigation. */
-  autoFocusOnNav: boolean
 }
 
 const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
 
 const HIDDEN_BOUNDS: TabBounds = { x: 0, y: 0, width: 0, height: 0 }
+
+// Tab views are normally transparent so the renderer shows through during
+// load. While a page is in HTML fullscreen we paint the view black as a
+// belt-and-suspenders backdrop behind the edge-to-edge video.
+const TAB_BG_TRANSPARENT = '#00000000'
+const TAB_BG_FULLSCREEN = '#000000'
+const DEFAULT_WINDOW_BG = '#161616'
+const PAGE_FULLSCREEN_TOOLBAR_HEIGHT = 48
+const PAGE_FULLSCREEN_WINDOWS_OVERSCAN = 8
 
 /** Parse the comma-separated `features` string from window.open into the
  *  numeric subset BrowserWindow understands. Anything unrecognized is
@@ -137,6 +142,27 @@ const tabs = new Map<string, TabRecord>()
 const windowBounds = new Map<number, TabBounds>()
 /** windowId -> active tabId. Inactive tabs get HIDDEN_BOUNDS. */
 const activeTabByWindow = new Map<number, string>()
+/** windowId -> tabId whose page is currently in HTML fullscreen (video
+ *  playback / "cinema mode"). Tracked so the window/view base colour is
+ *  painted black for the duration and so the view can be forced to fill the
+ *  whole window under the toolbar. */
+const htmlFullscreenByWindow = new Map<number, string>()
+interface PageFullscreenWindowState {
+  bounds: Electron.Rectangle
+  maximized: boolean
+  fullscreen: boolean
+  kiosk: boolean
+  resizable: boolean
+  alwaysOnTop: boolean
+  hasShadow: boolean
+}
+
+/** windowId -> window state before page cinema mode. Windows uses kiosk mode
+ *  to hide taskbar/caption affordances without showing a stretched decorated
+ *  window; macOS uses native fullscreen for Dock/menu bar/Spaces behavior. */
+const windowStateBeforePage = new Map<number, PageFullscreenWindowState>()
+const normalWindowStateByWindow = new Map<number, PageFullscreenWindowState>()
+const fullscreenWindowTimers = new Map<number, ReturnType<typeof setTimeout>[]>()
 /** webContents.id -> tabId. Used by the global ipcMain.on handlers to
  *  route preload-sent events (newbro-nav / newbro-open-in-new-tab /
  *  newbro-context-menu) back to the correct tab without leaking per-tab
@@ -153,6 +179,313 @@ function sendToWindowRenderer(windowId: number, channel: string, payload: unknow
   const win = BrowserWindow.fromId(windowId)
   if (!win || win.isDestroyed()) return
   win.webContents.send(channel, payload)
+}
+
+function getFullscreenTabBounds(windowId: number): TabBounds | null {
+  const win = BrowserWindow.fromId(windowId)
+  if (!win || win.isDestroyed()) return null
+  // Keep the app toolbar visible and give the page the rest of the display.
+  // The BrowserWindow itself may overscan right/bottom on Windows to cover
+  // native white edges, but the WebContentsView must stay at the VISIBLE
+  // display size. Otherwise the page gets a viewport larger than the screen
+  // and sites lay controls/content into pixels the user cannot see.
+  const [contentWidth, contentHeight] = win.getContentSize()
+  const disp = screen.getDisplayMatching(win.getBounds())
+  const width = process.platform === 'win32'
+    ? disp.bounds.width
+    : contentWidth
+  const height = process.platform === 'win32'
+    ? disp.bounds.height - PAGE_FULLSCREEN_TOOLBAR_HEIGHT
+    : contentHeight - PAGE_FULLSCREEN_TOOLBAR_HEIGHT
+  return {
+    x: 0,
+    y: PAGE_FULLSCREEN_TOOLBAR_HEIGHT,
+    width: Math.max(0, width),
+    height: Math.max(0, height),
+  }
+}
+
+function applyCurrentBounds(rec: TabRecord): void {
+  const fullscreenTabId = htmlFullscreenByWindow.get(rec.windowId)
+  const bounds = fullscreenTabId === rec.tabId
+    ? getFullscreenTabBounds(rec.windowId) ?? rec.lastBounds
+    : rec.lastBounds
+  rec.view.setBounds(bounds)
+}
+
+function syncFullscreenBounds(windowId: number): void {
+  const tabId = htmlFullscreenByWindow.get(windowId)
+  if (!tabId) return
+  const rec = tabs.get(tabId)
+  if (!rec) return
+  applyCurrentBounds(rec)
+}
+
+function getRestorableWindowBounds(win: BrowserWindow): Electron.Rectangle {
+  try {
+    if (win.isMaximized()) return win.getNormalBounds()
+  } catch { /* ignore */ }
+  return win.getBounds()
+}
+
+function readPageFullscreenWindowState(win: BrowserWindow): PageFullscreenWindowState {
+  return {
+    bounds: getRestorableWindowBounds(win),
+    maximized: win.isMaximized(),
+    fullscreen: win.isFullScreen(),
+    kiosk: win.isKiosk(),
+    resizable: win.isResizable(),
+    alwaysOnTop: win.isAlwaysOnTop(),
+    hasShadow: win.hasShadow(),
+  }
+}
+
+function isOverscannedWindowState(state: PageFullscreenWindowState): boolean {
+  const display = screen.getDisplayMatching(state.bounds)
+  const slop = 2
+  const right = state.bounds.x + state.bounds.width
+  const bottom = state.bounds.y + state.bounds.height
+  const displayRight = display.bounds.x + display.bounds.width
+  const displayBottom = display.bounds.y + display.bounds.height
+  return (
+    state.bounds.x < display.bounds.x - slop ||
+    state.bounds.y < display.bounds.y - slop ||
+    right > displayRight + slop ||
+    bottom > displayBottom + slop ||
+    state.bounds.width > display.bounds.width + slop ||
+    state.bounds.height > display.bounds.height + slop ||
+    (!state.fullscreen && !state.kiosk && state.bounds.height > display.workArea.height + PAGE_FULLSCREEN_WINDOWS_OVERSCAN + slop)
+  )
+}
+
+function isNormalWindowState(state: PageFullscreenWindowState): boolean {
+  return !state.fullscreen && !state.kiosk && !isOverscannedWindowState(state)
+}
+
+function rememberNormalWindowState(win: BrowserWindow): void {
+  if (win.isDestroyed()) return
+  const state = readPageFullscreenWindowState(win)
+  if (isNormalWindowState(state)) normalWindowStateByWindow.set(win.id, state)
+}
+
+function getPageFullscreenEntryState(win: BrowserWindow): PageFullscreenWindowState {
+  const state = readPageFullscreenWindowState(win)
+  if (isNormalWindowState(state)) {
+    normalWindowStateByWindow.set(win.id, state)
+    return state
+  }
+  return normalWindowStateByWindow.get(win.id) ?? state
+}
+
+function clearFullscreenWindowTimers(windowId: number): void {
+  const timers = fullscreenWindowTimers.get(windowId)
+  if (!timers) return
+  for (const timer of timers) clearTimeout(timer)
+  fullscreenWindowTimers.delete(windowId)
+}
+
+function scheduleFullscreenWindowTimer(windowId: number, fn: () => void, ms: number): void {
+  const timer = setTimeout(() => {
+    const timers = fullscreenWindowTimers.get(windowId)
+    if (timers) fullscreenWindowTimers.set(windowId, timers.filter((entry) => entry !== timer))
+    fn()
+  }, ms)
+  fullscreenWindowTimers.set(windowId, [...(fullscreenWindowTimers.get(windowId) ?? []), timer])
+}
+
+function getTabViewBounds(rec: TabRecord): TabBounds | null {
+  try {
+    const view = rec.view as unknown as { getBounds?: () => TabBounds }
+    return view.getBounds?.() ?? null
+  } catch {
+    return null
+  }
+}
+
+function getFullscreenGeometry(win: BrowserWindow | null, rec: TabRecord): Record<string, unknown> {
+  if (!win || win.isDestroyed()) return { tabBounds: getTabViewBounds(rec) }
+  const display = screen.getDisplayMatching(win.getBounds())
+  const [contentWidth, contentHeight] = win.getContentSize()
+  return {
+    windowBounds: win.getBounds(),
+    contentSize: { width: contentWidth, height: contentHeight },
+    displayBounds: display.bounds,
+    workArea: display.workArea,
+    isFullScreen: win.isFullScreen(),
+    isKiosk: win.isKiosk(),
+    isAlwaysOnTop: win.isAlwaysOnTop(),
+    tabBounds: getTabViewBounds(rec),
+  }
+}
+
+function enterPageFullscreenWindow(win: BrowserWindow): void {
+  if (win.isDestroyed() || windowStateBeforePage.has(win.id)) return
+  clearFullscreenWindowTimers(win.id)
+  const state = getPageFullscreenEntryState(win)
+  windowStateBeforePage.set(win.id, state)
+
+  if (process.platform === 'darwin') {
+    try { win.setFullScreen(true) } catch { /* ignore */ }
+    return
+  }
+
+  if (process.platform === 'win32') {
+    const displayBounds = screen.getDisplayMatching(getRestorableWindowBounds(win)).bounds
+    const coverDisplay = (): void => {
+      if (win.isDestroyed()) return
+      const bounds = {
+        x: displayBounds.x,
+        y: displayBounds.y,
+        width: displayBounds.width + PAGE_FULLSCREEN_WINDOWS_OVERSCAN,
+        height: displayBounds.height + PAGE_FULLSCREEN_WINDOWS_OVERSCAN,
+      }
+      try { win.setBackgroundColor(TAB_BG_FULLSCREEN) } catch { /* ignore */ }
+      try { win.setHasShadow(false) } catch { /* ignore */ }
+      try { win.setResizable(false) } catch { /* ignore */ }
+      try { if (!win.isKiosk()) win.setKiosk(true) } catch { /* ignore */ }
+      try { if (!win.isFullScreen()) win.setFullScreen(true) } catch { /* ignore */ }
+      try { win.setBounds(bounds, false) } catch { /* ignore */ }
+      try { win.setAlwaysOnTop(true, 'screen-saver') } catch { /* ignore */ }
+      try { win.moveTop() } catch { /* ignore */ }
+      syncFullscreenBounds(win.id)
+    }
+    coverDisplay()
+    // Re-assert while Windows finishes the fullscreen/kiosk transition; this
+    // catches the taskbar and the 1-8px compositor edge at fractional scale.
+    scheduleFullscreenWindowTimer(win.id, coverDisplay, 40)
+    scheduleFullscreenWindowTimer(win.id, coverDisplay, 120)
+    scheduleFullscreenWindowTimer(win.id, coverDisplay, 320)
+    scheduleFullscreenWindowTimer(win.id, coverDisplay, 900)
+  } else {
+    try { win.setResizable(false) } catch { /* ignore */ }
+    try { win.setFullScreen(true) } catch { /* ignore */ }
+  }
+}
+
+function leavePageFullscreenWindow(windowId: number): void {
+  clearFullscreenWindowTimers(windowId)
+  const state = windowStateBeforePage.get(windowId)
+  windowStateBeforePage.delete(windowId)
+  if (!state) return
+
+  const win = BrowserWindow.fromId(windowId)
+  if (!win || win.isDestroyed()) return
+
+  if (process.platform === 'darwin') {
+    if (!state.fullscreen && win.isFullScreen()) {
+      try { win.setFullScreen(false) } catch { /* ignore */ }
+    }
+    return
+  }
+
+  const restoreNormalWindow = (): void => {
+    if (win.isDestroyed()) return
+    try { win.setAlwaysOnTop(state.alwaysOnTop) } catch { /* ignore */ }
+    try { win.setHasShadow(state.hasShadow) } catch { /* ignore */ }
+    try { win.setResizable(state.resizable) } catch { /* ignore */ }
+    if (!state.fullscreen && !state.kiosk) {
+      try { win.setBounds(state.bounds, false) } catch { /* ignore */ }
+      if (state.maximized) {
+        try { win.maximize() } catch { /* ignore */ }
+      }
+      rememberNormalWindowState(win)
+    }
+    try { win.setBackgroundColor(DEFAULT_WINDOW_BG) } catch { /* ignore */ }
+  }
+
+  const logRestoredWindowGeometry = (): void => {
+    if (win.isDestroyed()) return
+    const display = screen.getDisplayMatching(win.getBounds())
+    const [contentWidth, contentHeight] = win.getContentSize()
+    log.info('tab fullscreen restore geometry', {
+      windowId,
+      saved: {
+        bounds: state.bounds,
+        maximized: state.maximized,
+        fullscreen: state.fullscreen,
+        kiosk: state.kiosk,
+      },
+      current: {
+        bounds: win.getBounds(),
+        contentSize: { width: contentWidth, height: contentHeight },
+        maximized: win.isMaximized(),
+        fullscreen: win.isFullScreen(),
+        kiosk: win.isKiosk(),
+        alwaysOnTop: win.isAlwaysOnTop(),
+      },
+      displayBounds: display.bounds,
+      workArea: display.workArea,
+    })
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      if (win.isKiosk() !== state.kiosk) win.setKiosk(state.kiosk)
+    } catch { /* ignore */ }
+  }
+  try {
+    if (state.fullscreen) {
+      if (!win.isFullScreen()) win.setFullScreen(true)
+    } else if (win.isFullScreen()) {
+      win.setFullScreen(false)
+    }
+  } catch { /* ignore */ }
+
+  if (process.platform === 'win32') {
+    restoreNormalWindow()
+    // Kiosk/fullscreen transitions on Windows are asynchronous. Re-apply the
+    // saved normal geometry after the shell has released the window; otherwise
+    // Electron may keep the overscanned fullscreen bounds as the restored size.
+    scheduleFullscreenWindowTimer(windowId, restoreNormalWindow, 80)
+    scheduleFullscreenWindowTimer(windowId, restoreNormalWindow, 220)
+    scheduleFullscreenWindowTimer(windowId, restoreNormalWindow, 520)
+    scheduleFullscreenWindowTimer(windowId, logRestoredWindowGeometry, 620)
+  } else {
+    restoreNormalWindow()
+  }
+}
+
+function enterPageFullscreen(rec: TabRecord, source: string, pageMetrics?: unknown): void {
+  if (activeTabByWindow.get(rec.windowId) !== rec.tabId) return
+  const existing = htmlFullscreenByWindow.get(rec.windowId)
+  if (existing === rec.tabId) {
+    applyCurrentBounds(rec)
+    return
+  }
+  if (existing) {
+    const prev = tabs.get(existing)
+    if (prev) leavePageFullscreen(prev, `${source}-replace`)
+    else htmlFullscreenByWindow.delete(rec.windowId)
+  }
+  log.info('tab enter-html-full-screen', { tabId: rec.tabId, source })
+  htmlFullscreenByWindow.set(rec.windowId, rec.tabId)
+  const win = BrowserWindow.fromId(rec.windowId)
+  if (win && !win.isDestroyed()) enterPageFullscreenWindow(win)
+  applyCurrentBounds(rec)
+  try { rec.view.setBackgroundColor(TAB_BG_FULLSCREEN) } catch { /* ignore */ }
+  try { win?.setBackgroundColor(TAB_BG_FULLSCREEN) } catch { /* ignore */ }
+  log.info('tab fullscreen geometry', {
+    tabId: rec.tabId,
+    source,
+    host: (() => { try { return new URL(rec.view.webContents.getURL()).host } catch { return '' } })(),
+    native: getFullscreenGeometry(win ?? null, rec),
+    page: pageMetrics ?? null,
+  })
+  const evt: TabEvent = { type: 'enter-html-full-screen', tabId: rec.tabId }
+  sendToWindowRenderer(rec.windowId, 'tab-event', evt)
+}
+
+function leavePageFullscreen(rec: TabRecord, source: string): void {
+  if (htmlFullscreenByWindow.get(rec.windowId) !== rec.tabId) return
+  log.info('tab leave-html-full-screen', { tabId: rec.tabId, source })
+  htmlFullscreenByWindow.delete(rec.windowId)
+  const win = BrowserWindow.fromId(rec.windowId)
+  try { rec.view.setBackgroundColor(TAB_BG_TRANSPARENT) } catch { /* ignore */ }
+  applyCurrentBounds(rec)
+  try { win?.setBackgroundColor(DEFAULT_WINDOW_BG) } catch { /* ignore */ }
+  leavePageFullscreenWindow(rec.windowId)
+  const evt: TabEvent = { type: 'leave-html-full-screen', tabId: rec.tabId }
+  sendToWindowRenderer(rec.windowId, 'tab-event', evt)
 }
 
 function wireEvents(rec: TabRecord): void {
@@ -294,12 +627,10 @@ function wireEvents(rec: TabRecord): void {
     emitNavState()
   })
   wc.on('enter-html-full-screen', () => {
-    log.info('tab enter-html-full-screen', { tabId: rec.tabId })
-    emit({ type: 'enter-html-full-screen', tabId: rec.tabId })
+    enterPageFullscreen(rec, 'native')
   })
   wc.on('leave-html-full-screen', () => {
-    log.info('tab leave-html-full-screen', { tabId: rec.tabId })
-    emit({ type: 'leave-html-full-screen', tabId: rec.tabId })
+    leavePageFullscreen(rec, 'native')
   })
   wc.on('page-title-updated', (_e, title) => {
     emit({ type: 'page-title-updated', tabId: rec.tabId, title })
@@ -481,7 +812,7 @@ export function setWindowBounds(windowId: number, bounds: TabBounds): void {
   const rec = tabs.get(activeTabId)
   if (!rec) return
   rec.lastBounds = bounds
-  rec.view.setBounds(bounds)
+  applyCurrentBounds(rec)
 }
 
 export function createTab(opts: {
@@ -523,14 +854,25 @@ export function createTab(opts: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      // "Focus URL on new tab": Electron focuses a WebContents whenever it
-      // navigates (default true). For these tabs that load-time focus is
-      // exactly what steals OS keyboard focus away from the toolbar URL
-      // bar as the page settles. Disable it so the page never grabs the
-      // keyboard on load; the renderer keeps focus on the URL bar. User
-      // navigations (Enter in the URL bar) re-focus the page explicitly in
-      // tabNavigate, so this only suppresses the unwanted auto-focus.
-      focusOnNavigation: !opts.focusUrlBar,
+      // Never let Electron auto-focus the page on navigation. It defaults
+      // to true (focus the WebContents whenever it navigates), which causes
+      // two distinct focus-steal bugs:
+      //   * "Focus URL on new tab": the load-time focus yanks OS keyboard
+      //     focus away from the toolbar URL bar as the page settles.
+      //   * Background error pages: when a tab's load fails (e.g. a DNS
+      //     error during workspace restore), Chromium commits its internal
+      //     error page — a navigation. With focusOnNavigation:true that
+      //     commit calls webContents.focus(), and on Windows focusing a
+      //     child WebContentsView activates its top-level window, pulling
+      //     the whole window to the foreground across virtual desktops —
+      //     long after the user switched to another app. The DNS lookup
+      //     resolves slowly enough that this lands while they're elsewhere.
+      // We hand focus to the page ourselves on every real user action that
+      // should grab the keyboard (tab open/activate, URL-bar Enter,
+      // back/forward/reload, Escape-into-page), all of which run while the
+      // window is already focused — so disabling auto-focus loses nothing
+      // and the page never grabs focus behind the user's back.
+      focusOnNavigation: false,
     },
   })
 
@@ -549,7 +891,6 @@ export function createTab(opts: {
     view,
     activated: false,
     lastBounds: HIDDEN_BOUNDS,
-    autoFocusOnNav: !opts.focusUrlBar,
   }
   tabs.set(opts.tabId, rec)
   wcIdToTabId.set(view.webContents.id, opts.tabId)
@@ -708,6 +1049,15 @@ export function activateTab(windowId: number, tabId: string, url: string): void 
 export function focusTab(tabId: string): void {
   const rec = tabs.get(tabId)
   if (!rec) return
+  focusTabPage(rec)
+}
+
+/** Hand OS keyboard focus to a tab's page. Centralised so every "focus the
+ *  site now" caller (activate, user navigation, back/forward/reload, Escape)
+ *  goes through one guarded call — tabs are created with
+ *  focusOnNavigation:false, so this is the only thing that moves focus into
+ *  the page, and it must only ever fire from window-focused user actions. */
+function focusTabPage(rec: TabRecord): void {
   try {
     rec.view.webContents.focus()
   } catch {
@@ -718,11 +1068,28 @@ export function focusTab(tabId: string): void {
 function setActiveTab(windowId: number, tabId: string): void {
   const prev = activeTabByWindow.get(windowId)
   if (prev === tabId) return // already active — no need to re-bound or notify
+  // Switching tabs drops out of the previous tab's HTML fullscreen (the
+  // leave event isn't always emitted on a tab switch), so the new active tab
+  // must not inherit cinema-mode bounds, and the window base must come
+  // back from black.
+  const fsTab = htmlFullscreenByWindow.get(windowId)
+  if (fsTab && fsTab !== tabId) {
+    const fsRec = tabs.get(fsTab)
+    if (fsRec) leavePageFullscreen(fsRec, 'tab-switch')
+    else {
+      htmlFullscreenByWindow.delete(windowId)
+      const fsWin = BrowserWindow.fromId(windowId)
+      try { fsWin?.setBackgroundColor(DEFAULT_WINDOW_BG) } catch { /* ignore */ }
+    }
+  }
   if (prev && prev !== tabId) {
     const prevRec = tabs.get(prev)
     if (prevRec) {
       prevRec.lastBounds = HIDDEN_BOUNDS
       prevRec.view.setBounds(HIDDEN_BOUNDS)
+      // Drop any fullscreen black base — leave-html-full-screen isn't always
+      // emitted when a fullscreen tab is switched away from.
+      try { prevRec.view.setBackgroundColor(TAB_BG_TRANSPARENT) } catch { /* ignore */ }
     }
   }
   activeTabByWindow.set(windowId, tabId)
@@ -731,7 +1098,7 @@ function setActiveTab(windowId: number, tabId: string): void {
   const wb = windowBounds.get(windowId)
   if (wb) {
     rec.lastBounds = wb
-    rec.view.setBounds(wb)
+    applyCurrentBounds(rec)
   }
   // Tell electron-chrome-extensions which tab is now active so
   // chrome.tabs.query({active:true}) and chrome.tabs.onActivated fire
@@ -787,6 +1154,11 @@ export function destroyTab(tabId: string): void {
   if (activeTabByWindow.get(rec.windowId) === tabId) {
     activeTabByWindow.delete(rec.windowId)
   }
+  if (htmlFullscreenByWindow.get(rec.windowId) === tabId) {
+    // Closing a tab mid-fullscreen won't emit leave, so undo the black base
+    // and tell the renderer to restore normal layout.
+    leavePageFullscreen(rec, 'destroy')
+  }
 }
 
 export function destroyAllTabsForWindow(windowId: number): void {
@@ -795,6 +1167,10 @@ export function destroyAllTabsForWindow(windowId: number): void {
   }
   windowBounds.delete(windowId)
   activeTabByWindow.delete(windowId)
+  htmlFullscreenByWindow.delete(windowId)
+  windowStateBeforePage.delete(windowId)
+  normalWindowStateByWindow.delete(windowId)
+  clearFullscreenWindowTimers(windowId)
 }
 
 export function tabNavigate(tabId: string, url: string): void {
@@ -802,18 +1178,13 @@ export function tabNavigate(tabId: string, url: string): void {
   if (!rec) return
   rec.activated = true
   void startTabNavigation(rec, url)
-  // "Focus URL on new tab" tabs are created with focusOnNavigation:false so
-  // the initial page load can't steal keyboard focus from the URL bar. But a
-  // navigation triggered here is a real user action (Enter in the URL bar,
-  // error-page retry, cert continue) after which focus SHOULD move to the
-  // page — so re-focus it explicitly, since the disabled auto-focus won't.
-  if (!rec.autoFocusOnNav) {
-    try {
-      rec.view.webContents.focus()
-    } catch {
-      /* ignore */
-    }
-  }
+  // A navigation through this path is always a real user action (Enter in the
+  // URL bar, error-page retry, cert continue). Tabs no longer auto-focus on
+  // navigation (focusOnNavigation:false — see createTab), so hand keyboard
+  // focus to the page explicitly here. Safe to do unconditionally: every
+  // caller runs while the window is already focused, so this can't pull the
+  // window forward behind the user's back the way a background load could.
+  focusTabPage(rec)
 }
 
 export function tabGoBack(tabId: string): void {
@@ -821,6 +1192,11 @@ export function tabGoBack(tabId: string): void {
   if (!rec) return
   const nav = rec.view.webContents.navigationHistory
   if (nav.canGoBack()) nav.goBack()
+  // Back/forward/reload used to rely on focusOnNavigation to move keyboard
+  // focus to the page once the navigation committed. With that disabled we
+  // focus explicitly — these are user actions (toolbar button, shortcut,
+  // swipe gesture) that always run while the window is focused.
+  focusTabPage(rec)
 }
 
 export function tabGoForward(tabId: string): void {
@@ -828,6 +1204,7 @@ export function tabGoForward(tabId: string): void {
   if (!rec) return
   const nav = rec.view.webContents.navigationHistory
   if (nav.canGoForward()) nav.goForward()
+  focusTabPage(rec)
 }
 
 /** Cmd+S / palette "Save Page As…". Suggests a filename from the URL's
@@ -885,6 +1262,9 @@ export function tabReload(tabId: string, ignoreCache: boolean): void {
   if (!rec) return
   if (ignoreCache) rec.view.webContents.reloadIgnoringCache()
   else rec.view.webContents.reload()
+  // Match the pre-focusOnNavigation:false behaviour: a user-triggered reload
+  // moves keyboard focus back into the page. Always a window-focused action.
+  focusTabPage(rec)
 }
 
 export function tabStop(tabId: string): void {
@@ -1778,6 +2158,27 @@ export function registerWorkspaceWindowForTabs(
   installShortcuts: ShortcutInstaller,
 ): void {
   shortcutInstallers.set(win.id, installShortcuts)
+  rememberNormalWindowState(win)
+  const sync = (): void => {
+    syncFullscreenBounds(win.id)
+    if (!htmlFullscreenByWindow.has(win.id) && !windowStateBeforePage.has(win.id)) {
+      rememberNormalWindowState(win)
+    }
+  }
+  win.on('move', sync)
+  win.on('resize', sync)
+  win.on('maximize', sync)
+  win.on('unmaximize', sync)
+  win.on('enter-full-screen', sync)
+  win.on('leave-full-screen', sync)
+  win.once('closed', () => {
+    win.removeListener('move', sync)
+    win.removeListener('resize', sync)
+    win.removeListener('maximize', sync)
+    win.removeListener('unmaximize', sync)
+    win.removeListener('enter-full-screen', sync)
+    win.removeListener('leave-full-screen', sync)
+  })
   attachWindowLifecycle(win)
 }
 
@@ -1797,6 +2198,19 @@ export function installTabPreloadListeners(): void {
     if (!tabId) return
     if (direction === 'back') tabGoBack(tabId)
     else if (direction === 'forward') tabGoForward(tabId)
+  })
+
+  ipcMain.on('newbro-pseudo-fullscreen', (event, active: unknown) => {
+    const tabId = wcIdToTabId.get(event.sender.id)
+    if (!tabId) return
+    const rec = tabs.get(tabId)
+    if (!rec) return
+    const payload = typeof active === 'object' && active !== null
+      ? active as { active?: unknown; phase?: unknown; metrics?: unknown }
+      : null
+    const next = payload ? payload.active : active
+    if (next === true) enterPageFullscreen(rec, 'pseudo', payload?.metrics)
+    else if (next === false) leavePageFullscreen(rec, 'pseudo')
   })
 
   // chrome.tabs.create / chrome.windows.create / chrome.runtime.openOptionsPage

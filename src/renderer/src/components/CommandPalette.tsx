@@ -48,6 +48,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'forward', label: 'Navigate Forward', category: 'Navigation' },
   { id: 'reload', label: 'Reload Page', category: 'Navigation' },
   { id: 'page-devtools', label: 'Toggle Page Developer Tools', category: 'Navigation' },
+  { id: 'ui-devtools', label: 'Toggle UI Developer Tools', category: 'View' },
   { id: 'find-in-page', label: 'Find in Page...', category: 'Navigation' },
   { id: 'save-page', label: 'Save Page As…', category: 'Navigation' },
   { id: 'search', label: 'Search Everything', category: 'General' },
@@ -324,6 +325,7 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   'settings': 'CmdOrCtrl+,',
   'page-devtools': 'CmdOrCtrl+Shift+I',
   'save-page': 'CmdOrCtrl+S',
+  'toggle-bookshelf': 'CmdOrCtrl+Shift+B',
 }
 
 function getDefaultBinding(id: string): string | undefined {

@@ -534,10 +534,9 @@ export function WebviewPanel() {
 
       {showError && activeError && errorInfo && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">
-          <div className="w-full max-w-[440px] px-8">
-            <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-secondary text-muted-foreground">
-              <errorInfo.Icon size={26} strokeWidth={1.75} />
-            </div>
+          {/* Nudged above dead-centre so the block sits a touch higher than
+              the middle of the panel — reads better than perfect centring. */}
+          <div className="w-full max-w-[440px] -translate-y-[8vh] px-8">
             <h2 className="mb-2 text-2xl font-semibold tracking-tight">{errorInfo.title}</h2>
             <p className="mb-6 text-sm leading-relaxed text-muted-foreground">{errorInfo.message}</p>
             <p className="mb-2 text-xs font-medium text-foreground">Try:</p>

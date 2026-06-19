@@ -13,6 +13,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setWindowTitle: (title: string): Promise<void> => ipcRenderer.invoke('window:set-title', title),
   setTitleBarOverlay: (options: { color: string; symbolColor: string; height: number }): Promise<void> =>
     ipcRenderer.invoke('window:set-titlebar-overlay', options),
+  toggleUiDevTools: (): Promise<void> => ipcRenderer.invoke('window:toggle-ui-devtools'),
+  // Toggle DevTools for whichever window is focused — used by detached popups
+  // (Command Palette, dialogs) so F12 inside them inspects that popup rather
+  // than the main window.
+  toggleFocusedDevTools: (): Promise<void> => ipcRenderer.invoke('window:toggle-focused-devtools'),
   closeWindow: (): Promise<void> => ipcRenderer.invoke('window:close'),
   // Pull OS-level keyboard focus back to the renderer (away from any
   // currently-focused WebContentsView tab). Call before .focus()-ing a

@@ -168,17 +168,27 @@ export function UpdateBanner(): JSX.Element | null {
   )
 }
 
+/**
+ * The banner docks at the bottom of the webview column in normal flow rather
+ * than floating `position: fixed`. Tabs render as native WebContentsViews that
+ * composite ABOVE the renderer DOM, so a fixed overlay over the page area gets
+ * hidden (and, with the bookshelf open, visibly clipped at its edge). Sitting
+ * in flow shrinks the tab view's measured rect instead, keeping the card fully
+ * visible — the same trick the permission infobar and find bar use.
+ */
 function Shell({ children, onClose }: { children: React.ReactNode; onClose: () => void }): JSX.Element {
   return (
-    <div className="fixed bottom-3 right-3 z-50 w-80 max-w-[calc(100vw-1.5rem)] bg-popover border border-border rounded-lg shadow-lg p-3 flex items-start gap-2">
-      {children}
-      <button
-        onClick={onClose}
-        aria-label="Dismiss"
-        className="h-5 w-5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground shrink-0"
-      >
-        <X size={12} />
-      </button>
+    <div className="shrink-0 w-full flex justify-end bg-background px-3 pb-3 pt-1">
+      <div className="w-80 max-w-full bg-popover border border-border rounded-lg shadow-lg p-3 flex items-start gap-2">
+        {children}
+        <button
+          onClick={onClose}
+          aria-label="Dismiss"
+          className="h-5 w-5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground shrink-0"
+        >
+          <X size={12} />
+        </button>
+      </div>
     </div>
   )
 }
