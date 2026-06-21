@@ -43,7 +43,16 @@ interface Props {
   onClose: () => void
 }
 
-const WIDTH = 300
+const MIN_WIDTH = 180
+const DEFAULT_WIDTH = 300
+const BOOKSHELF_WIDTH_KEY = 'newbro-bookshelf-width'
+
+function loadWidth(): number {
+  const v = localStorage.getItem(BOOKSHELF_WIDTH_KEY)
+  if (!v) return DEFAULT_WIDTH
+  const parsed = parseInt(v, 10)
+  return Number.isFinite(parsed) ? Math.max(MIN_WIDTH, parsed) : DEFAULT_WIDTH
+}
 
 export function Bookshelf({ open, profileId, onClose }: Props) {
   const [readings, setReadings] = useState<Reading[]>([])
@@ -54,6 +63,53 @@ export function Bookshelf({ open, profileId, onClose }: Props) {
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null)
   const [groupEditValue, setGroupEditValue] = useState('')
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set())
+
+  // ── Resize ──
+  const [width, setWidth] = useState(loadWidth)
+  const resizing = useRef(false)
+  const resizeStartX = useRef(0)
+  const resizeStartW = useRef(0)
+  const currentW = useRef(loadWidth())
+
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    resizing.current = true
+    resizeStartX.current = e.clientX
+    resizeStartW.current = currentW.current
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+  }, [])
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizing.current) return
+      const maxW = Math.floor(window.innerWidth / 2)
+      const newW = Math.min(maxW, Math.max(MIN_WIDTH, resizeStartW.current - (e.clientX - resizeStartX.current)))
+      currentW.current = newW
+      setWidth(newW)
+    }
+    const onUp = () => {
+      if (!resizing.current) return
+      resizing.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      localStorage.setItem(BOOKSHELF_WIDTH_KEY, String(currentW.current))
+      window.dispatchEvent(new CustomEvent('newbro-tab-show'))
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      if (resizing.current) {
+        resizing.current = false
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+        window.dispatchEvent(new CustomEvent('newbro-tab-show'))
+      }
+    }
+  }, [])
 
   // ── multi-select (Ctrl/Cmd = toggle, Shift = range) for group creation ──
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -495,8 +551,8 @@ export function Bookshelf({ open, profileId, onClose }: Props) {
 
   return (
     <div
-      style={{ width: WIDTH }}
-      className="bg-toolbar border-l border-border flex flex-col shrink-0 overflow-hidden select-none"
+      style={{ width }}
+      className="bg-toolbar border-l border-border flex flex-col shrink-0 overflow-hidden select-none relative"
     >
       <div className="flex items-center gap-1 px-3 h-10 border-b border-border shrink-0">
         <BookOpen size={15} className="text-muted-foreground" />
@@ -563,6 +619,11 @@ export function Bookshelf({ open, profileId, onClose }: Props) {
           </div>
         )}
       </div>
+
+      <div
+        className="absolute top-0 left-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
+        onMouseDown={onResizeStart}
+      />
     </div>
   )
 }
