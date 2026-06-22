@@ -35,13 +35,28 @@ interface ToastRecord {
   parent: BrowserWindow
   parentWebContentsId: number
   loaded: boolean
-  pendingOpen: (() => void) | null
+  /** Whether this window's renderer currently wants its toast shown. The
+   *  toast is only actually painted when this window is also the owner
+   *  (see reconcileVisibility) — so multiple open workspaces never stack
+   *  duplicate toasts. */
+  wantShown: boolean
+  /** The spec last pushed to the popup, by reference. Lets reconcile skip
+   *  redundant resends (which would restart the measure loop) while still
+   *  repositioning / re-showing. */
+  shownSpec: UpdateToastSpec | null
   lastSpec: UpdateToastSpec | null
   lastSize: { width: number; height: number } | null
   lastStatusKey: string | null
 }
 
 const toasts = new Map<number, ToastRecord>()
+
+// The update notification is a single, app-wide affordance — it must never
+// appear on more than one workspace window at a time. We track the most
+// recently focused workspace window and only show the toast there; as focus
+// moves between windows, the toast follows. `null` until the first focus is
+// observed, in which case reconcile falls back to any window that wants it.
+let lastFocusedParentId: number | null = null
 
 const INITIAL_WIDTH = 360
 const INITIAL_HEIGHT = 140
@@ -115,7 +130,8 @@ function getOrCreateToast(parent: BrowserWindow): ToastRecord {
     parent,
     parentWebContentsId,
     loaded: false,
-    pendingOpen: null,
+    wantShown: false,
+    shownSpec: null,
     lastSpec: null,
     lastSize: null,
     lastStatusKey: null,
@@ -124,24 +140,82 @@ function getOrCreateToast(parent: BrowserWindow): ToastRecord {
 
   win.webContents.once('did-finish-load', () => {
     record.loaded = true
-    const pending = record.pendingOpen
-    record.pendingOpen = null
-    if (pending) pending()
+    // The renderer may have asked to show before the popup finished loading;
+    // reconcile now that we can actually paint it.
+    reconcileVisibility()
   })
 
   const reposition = (): void => {
     if (!win.isDestroyed() && win.isVisible()) positionToast(record)
   }
+  const onFocus = (): void => {
+    lastFocusedParentId = parentWebContentsId
+    // Focus moved to this window — it becomes the toast owner, so move the
+    // notification here and hide it everywhere else.
+    reconcileVisibility()
+  }
   parent.on('move', reposition)
   parent.on('resize', reposition)
+  parent.on('focus', onFocus)
   parent.once('closed', () => {
     parent.removeListener('move', reposition)
     parent.removeListener('resize', reposition)
+    parent.removeListener('focus', onFocus)
+    if (lastFocusedParentId === parentWebContentsId) lastFocusedParentId = null
     if (!win.isDestroyed()) win.destroy()
     toasts.delete(parentWebContentsId)
+    // Ownership may have just vacated — let another window pick the toast up.
+    reconcileVisibility()
   })
 
   return record
+}
+
+/** The single window allowed to display the toast right now: the most
+ *  recently focused workspace window, falling back to any live window that
+ *  wants the toast (then any live window) when no focus has been seen yet. */
+function currentOwnerId(): number | null {
+  if (lastFocusedParentId !== null) {
+    const r = toasts.get(lastFocusedParentId)
+    if (r && !r.win.isDestroyed() && !r.parent.isDestroyed()) return lastFocusedParentId
+  }
+  let firstLive: number | null = null
+  for (const [parentId, r] of toasts) {
+    if (r.win.isDestroyed() || r.parent.isDestroyed()) continue
+    if (firstLive === null) firstLive = parentId
+    if (r.wantShown) return parentId
+  }
+  return firstLive
+}
+
+/** Enforce the "exactly one toast" invariant: the owner shows it (if its
+ *  renderer wants it), every other window hides it. Cheap and idempotent —
+ *  safe to call on any state change (status update, focus move, window
+ *  open/close, resize). */
+function reconcileVisibility(): void {
+  const ownerId = currentOwnerId()
+  for (const [parentId, record] of toasts) {
+    if (record.win.isDestroyed()) continue
+    const shouldShow =
+      parentId === ownerId &&
+      record.wantShown &&
+      record.lastSpec !== null &&
+      !record.parent.isDestroyed()
+
+    if (shouldShow) {
+      // Wait for the popup to load; did-finish-load re-runs reconcile.
+      if (!record.loaded) continue
+      if (record.shownSpec !== record.lastSpec) {
+        record.win.webContents.send('update-toast:popup-spec', record.lastSpec)
+        record.shownSpec = record.lastSpec
+      }
+      positionToast(record)
+      if (!record.win.isVisible()) record.win.showInactive()
+    } else if (record.win.isVisible()) {
+      record.win.hide()
+      record.shownSpec = null
+    }
+  }
 }
 
 function positionToast(record: ToastRecord): void {
@@ -189,22 +263,23 @@ function openToast(parent: BrowserWindow, spec: UpdateToastSpec): void {
     record.lastStatusKey = nextStatusKey
   }
   record.lastSpec = spec
-
-  const send = (): void => {
-    if (record.win.isDestroyed()) return
-    record.win.webContents.send('update-toast:popup-spec', spec)
-    positionToast(record)
-    record.win.showInactive()
+  record.wantShown = true
+  // Claim ownership from the live focus state whenever the requesting window
+  // is the focused one. This both seeds the very first toast after startup and
+  // covers a just-opened window whose OS `focus` event fired before its toast
+  // listener was attached — so the toast always lands on the window the user
+  // is actually looking at, never an arbitrary background one.
+  if (parent.isFocused()) {
+    lastFocusedParentId = parent.webContents.id
   }
-
-  if (record.loaded) send()
-  else record.pendingOpen = send
+  reconcileVisibility()
 }
 
 function hideToast(parent: BrowserWindow): void {
   const record = toasts.get(parent.webContents.id)
-  if (!record || record.win.isDestroyed() || !record.win.isVisible()) return
-  record.win.hide()
+  if (!record) return
+  record.wantShown = false
+  reconcileVisibility()
 }
 
 function hideAllToasts(): void {
@@ -244,11 +319,22 @@ export function registerUpdateToastIpc(): void {
   ipcMain.on('update-toast:popup-event', (event, evt: { type?: string; phase?: string }) => {
     const owner = findOwnerByWebContents(event.sender.id)
     if (!owner) return
+    if (evt?.type === 'dismiss') {
+      // Dismissal must stick across every workspace — otherwise the toast
+      // would simply re-appear the moment focus moves to another window.
+      // Tell all renderers to mark this phase dismissed and clear their
+      // intent so reconcile keeps it hidden everywhere.
+      for (const record of toasts.values()) {
+        record.wantShown = false
+        if (!record.parent.isDestroyed()) {
+          record.parent.webContents.send('update-toast:event', evt)
+        }
+      }
+      reconcileVisibility()
+      return
+    }
     if (!owner.parent.isDestroyed()) {
       owner.parent.webContents.send('update-toast:event', evt)
-    }
-    if (evt?.type === 'dismiss' && !owner.win.isDestroyed()) {
-      owner.win.hide()
     }
   })
 
