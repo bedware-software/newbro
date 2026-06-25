@@ -803,6 +803,24 @@ if (STEALTH_ENABLED) try {
       const dy = e.deltaY
       const adx = Math.abs(dx)
 
+      // Gesture nav is for TRACKPADS only. A mouse scroll wheel — including a
+      // horizontal tilt wheel — must never flip history; the user drives
+      // back/forward with the side buttons and expects the wheel to scroll
+      // and nothing else. On Windows both devices report pixel mode
+      // (deltaMode 0), so the line-mode check above can't tell them apart.
+      // Chromium can: a precision touchpad is pixel-precise and derives the
+      // legacy wheelDeltaX as exactly -deltaX*3, whereas a hardware wheel
+      // notch is quantized to 120-unit ticks (~100px/tick on Windows, ratio
+      // ~1.2 — never 3). If wheelDeltaX is readable and doesn't match the
+      // touchpad's ×3 relationship, it's a wheel: drop it so only fingers
+      // navigate. (max(6, adx) tolerance ignores sub-pixel rounding on the
+      // touchpad while the wheel's mismatch is on the order of |dx|*1.8.)
+      const wdx = (e as WheelEvent & { wheelDeltaX?: number }).wheelDeltaX
+      if (typeof wdx === 'number' && Math.abs(wdx + dx * 3) > Math.max(6, adx)) {
+        if (engaged) { engaged = false; direction = null; position = 0; hideOverlay() }
+        return
+      }
+
       // Already navigated in this swipe — swallow the macOS momentum tail
       // so it can't scroll the page or re-trigger a second navigation. But
       // on in-page navigators (Gmail and other hash/pushState SPAs) the
