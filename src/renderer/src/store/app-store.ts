@@ -421,8 +421,10 @@ export interface AppState {
   /** `activate` (default true) controls whether the new tab becomes the
    *  active tab. Background callers (Cmd+Click, target=_blank, RMB →
    *  Open in New Tab) pass false so the user's current page stays in
-   *  view, matching the default behaviour of other browsers. */
-  addTab: (tabGroupId: string, url?: string, activate?: boolean) => void
+   *  view, matching the default behaviour of other browsers.
+   *  Returns the new tab's id so callers can hand it off (e.g. activating
+   *  it in another workspace window). */
+  addTab: (tabGroupId: string, url?: string, activate?: boolean) => string
   /** Clones the tab (url, title, favicon, comment) right after the original
    *  in its group or ungrouped list, and switches to the copy. */
   duplicateTab: (id: string) => void
@@ -438,8 +440,8 @@ export interface AppState {
   setTabComment: (id: string, comment: string) => void
 
   // Ungrouped tab actions
-  /** Same `activate` semantics as {@link addTab}. */
-  addUngroupedTab: (workspaceId: string, url?: string, activate?: boolean) => void
+  /** Same `activate` semantics and return value as {@link addTab}. */
+  addUngroupedTab: (workspaceId: string, url?: string, activate?: boolean) => string
   ungroupTab: (tabId: string) => void
   ungroupAll: (groupId: string) => void
   closeGroup: (groupId: string) => void
@@ -900,6 +902,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
     }))
+    return tab.id
   },
 
   duplicateTab: (id) => {
@@ -1125,6 +1128,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
     }))
+    return tab.id
   },
 
   ungroupTab: (tabId) => set(produce((s: AppState) => {

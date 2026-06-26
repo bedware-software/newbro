@@ -777,27 +777,49 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
   const [certPopupOpen, setCertPopupOpen] = useState(false)
 
   // Downloads — open state for the panel + a cached active-count so the
-  // toolbar button shows a progress dot while there's a download in flight.
+  // toolbar button shows a progress badge while there's a download in flight.
   // The badge tracks live downloads only (history doesn't count); it stays
   // in sync via the global onDownloadsUpdated broadcast.
   const [downloadsPanelOpen, setDownloadsPanelOpen] = useState(false)
   const [activeDownloads, setActiveDownloads] = useState(0)
+  // True once a download finishes and stays true until the user opens the
+  // panel — drives a green ✓ "done" badge so a completed download is visible
+  // at a glance even when nothing is in flight, the way Chrome/Edge flag
+  // freshly-finished downloads. `downloadsPanelOpen` is read through a ref so
+  // the broadcast handler (registered once) can suppress the badge while the
+  // panel is already showing the result.
+  const [downloadsDone, setDownloadsDone] = useState(false)
+  const downloadsPanelOpenRef = useRef(downloadsPanelOpen)
+  downloadsPanelOpenRef.current = downloadsPanelOpen
   useEffect(() => {
     let alive = true
-    const tally = (list: DownloadEntry[] | undefined): number => {
-      if (!list) return 0
-      let n = 0
-      for (const e of list) {
-        if (e.state === 'progressing' || e.state === 'paused') n++
+    // Remember each download's last-seen state so we can detect the
+    // active → completed transition. Seeded from the first snapshot without
+    // firing the badge, so pre-existing history doesn't light it up on launch.
+    const prevStates = new Map<string, string>()
+    let seeded = false
+    const handle = (list: DownloadEntry[] | undefined): void => {
+      const entries = list || []
+      let active = 0
+      let justCompleted = false
+      for (const e of entries) {
+        if (e.state === 'progressing' || e.state === 'paused') active++
+        if (seeded && e.state === 'completed' && prevStates.get(e.id) !== 'completed') {
+          justCompleted = true
+        }
       }
-      return n
+      prevStates.clear()
+      for (const e of entries) prevStates.set(e.id, e.state)
+      seeded = true
+      setActiveDownloads(active)
+      if (justCompleted && !downloadsPanelOpenRef.current) setDownloadsDone(true)
     }
     void window.electronAPI.downloadsList?.().then((list) => {
       if (!alive) return
-      setActiveDownloads(tally(list as DownloadEntry[] | undefined))
+      handle(list as DownloadEntry[] | undefined)
     })
     const cleanup = window.electronAPI.onDownloadsUpdated?.((list) => {
-      setActiveDownloads(tally(list as DownloadEntry[] | undefined))
+      handle(list as DownloadEntry[] | undefined)
     })
     return () => { alive = false; cleanup?.() }
   }, [])
@@ -1420,23 +1442,35 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
         </button>
 
         {/* Downloads — opens a detached panel with active + recent downloads.
-            A small dot in the corner signals downloads in progress so the user
-            can spot activity even when the panel isn't open. */}
+            A count badge signals downloads in progress; once they finish a
+            green ✓ badge takes over so the user can tell a download completed
+            without opening the panel. Both clear/seed via onDownloadsUpdated. */}
         <button
-          onClick={() => setDownloadsPanelOpen((v) => !v)}
+          onClick={() => { setDownloadsPanelOpen((v) => !v); setDownloadsDone(false) }}
           className="relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          title={activeDownloads > 0 ? `${activeDownloads} active download${activeDownloads === 1 ? '' : 's'}` : 'Downloads'}
+          title={
+            activeDownloads > 0
+              ? `${activeDownloads} active download${activeDownloads === 1 ? '' : 's'}`
+              : downloadsDone ? 'Downloads complete' : 'Downloads'
+          }
         >
           <DownloadIcon size={15} />
-          {activeDownloads > 0 && (
+          {activeDownloads > 0 ? (
             <span
               className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-semibold leading-[14px] text-center pointer-events-none"
               aria-label={`${activeDownloads} active downloads`}
             >
               {activeDownloads > 9 ? '9+' : activeDownloads}
             </span>
-          )}
+          ) : downloadsDone ? (
+            <span
+              className="absolute -top-0.5 -right-0.5 w-[14px] h-[14px] rounded-full bg-green-500 text-white flex items-center justify-center pointer-events-none"
+              aria-label="Downloads complete"
+            >
+              <Check size={9} strokeWidth={3.5} />
+            </span>
+          ) : null}
         </button>
 
         {/* Nav buttons */}

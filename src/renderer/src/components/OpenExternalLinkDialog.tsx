@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react'
-import { useAppStore } from '../store/app-store'
+import { useAppStore, saveStateNow } from '../store/app-store'
 import type { PickerItem } from './PickerDialog'
 import { PickerDialog } from './PickerDialog'
 
@@ -93,11 +93,48 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
     [profiles, scope, currentWorkspaceId],
   )
 
-  const handleConfirm = (itemId: string): void => {
+  const handleConfirm = async (itemId: string): Promise<void> => {
     if (!url) return
     const { workspaceId, groupId } = decodeTarget(itemId)
-    if (groupId) addTab(groupId, url)
-    else addUngroupedTab(workspaceId, url)
+
+    // Resolve the destination workspace's profile + name so we can route
+    // the new tab to its window.
+    let destProfileId: string | null = null
+    let destWorkspaceName = ''
+    for (const p of profiles) {
+      const w = p.workspaces.find((w) => w.id === workspaceId)
+      if (w) { destProfileId = p.id; destWorkspaceName = w.name; break }
+    }
+
+    // A link handed off from another app must ALWAYS land focused — that's
+    // the whole point of routing it here. The destination can be a workspace
+    // other than the one this window is showing, so we mirror SearchDialog's
+    // cross-window handoff: create the tab, then ask the destination
+    // workspace's window to surface + activate it.
+    const sameWindow = workspaceId === currentWorkspaceId
+    // For the current window, activate immediately so there's no flicker.
+    // For another window, add it in the background here (don't disturb this
+    // window's active tab) — the target window does the activating.
+    const newTabId = groupId
+      ? addTab(groupId, url, sameWindow)
+      : addUngroupedTab(workspaceId, url, sameWindow)
+
+    if (destProfileId) {
+      // Persist first so a not-yet-open or background destination window has
+      // the new tab in its state before it's asked to activate it (the save
+      // broadcasts `state:updated` to other windows).
+      if (!sameWindow) await saveStateNow()
+      // For the current window this just re-focuses it (raising it back to
+      // the foreground after the picker popup closes); the tab is already
+      // active. For another workspace it opens/focuses that window and
+      // activates the new tab via its id.
+      void window.electronAPI.openWorkspaceWindow(
+        destProfileId,
+        workspaceId,
+        destWorkspaceName,
+        sameWindow ? undefined : newTabId,
+      )
+    }
     onClose()
   }
 

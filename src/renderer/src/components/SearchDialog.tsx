@@ -75,9 +75,14 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
   const getAllSearchableItems = useAppStore((s) => s.getAllSearchableItems)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
 
-  // The workspace scope only narrows item types that live inside a workspace.
+  // The workspace scope only narrows item types that live inside a workspace,
+  // and only while BROWSING (empty query). The moment the user types something
+  // they're searching — "jump to that thing wherever it is" — so a typed query
+  // always spans every workspace. Without this, typing e.g. "jj" to reach a tab
+  // under the "Jenkins Jobs" workspace finds nothing while you're sitting in a
+  // different workspace, because the matcher never even sees those tabs.
   const scopeApplies = filter === 'tabGroup' || filter === 'tab'
-  const scopedToCurrent = scopeApplies && scope === 'current' && !!windowWorkspaceId
+  const scopedToCurrent = scopeApplies && scope === 'current' && !!windowWorkspaceId && !query.trim()
 
   const items = useMemo(() => {
     const all = getAllSearchableItems()
@@ -100,7 +105,11 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
         { value: item.name, weight: 1 },
         { value: item.comment, weight: 0.9 },
         { value: item.url, weight: 0.5 },
-        { value: item.path, weight: 0.3 },
+        // The path carries the profile > workspace > group context. Weight it
+        // high enough that matching a tab purely by its workspace/group name
+        // (e.g. "jj" → "Jenkins Jobs") surfaces the tab prominently, not buried
+        // beneath weak title coincidences.
+        { value: item.path, weight: 0.7 },
         { value: haystack, weight: 0.5 },
       ]
     })

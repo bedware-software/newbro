@@ -556,6 +556,32 @@ const STEALTH_SCRIPT = `
     }
   } catch (e) { log('window.close override failed', e); }
 
+  // 9. window.focus() — same "neuter for tabs, keep for popups" treatment as
+  //    window.close above. A page calling window.focus() asks the browser to
+  //    raise its top-level window; in this app each workspace is its own
+  //    BrowserWindow, and focusing a background tab's WebContentsView pulls
+  //    that whole window to the foreground on Windows (the same mechanism we
+  //    disable for navigations via focusOnNavigation:false in tab-views.ts).
+  //    So a background workspace whose page re-focuses itself — a Jenkins tab
+  //    whose session expired re-focusing to show a login form is the case
+  //    that prompted this — yanks the user away from whatever they were doing.
+  //    Real browsers ignore programmatic window.focus() from a background tab;
+  //    we do too. Popups (window.opener != null, e.g. OAuth windows) legitimately
+  //    raise themselves, so they keep the native behaviour.
+  try {
+    const isPopup = window.opener != null;
+    if (!isPopup) {
+      const noopFocus = function () {
+        console.log('[newbro-stealth] window.focus intercepted (tab, no opener)');
+      };
+      Object.defineProperty(window, 'focus', {
+        value: noopFocus,
+        writable: false,
+        configurable: false,
+      });
+    }
+  } catch (e) { log('window.focus override failed', e); }
+
   log('main-world injection complete');
 })();
 `
