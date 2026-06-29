@@ -2326,7 +2326,6 @@ export function installTabPreloadListeners(): void {
     const imgUrl = typeof p.imgUrl === 'string' ? p.imgUrl : null
 
     const wc = rec.view.webContents
-    const nav = wc.navigationHistory
     const items: Electron.MenuItemConstructorOptions[] = []
 
     if (linkUrl) {
@@ -2357,15 +2356,19 @@ export function installTabPreloadListeners(): void {
       items.push({ type: 'separator' })
     }
 
+    // Copy is always offered (paired with Paste below), enabled only when
+    // there's selected text to put on the clipboard.
+    items.push({
+      label: 'Copy',
+      enabled: !!selection,
+      click: () => {
+        try { clipboard.writeText(selection) } catch (err) {
+          log.warn('context-menu: clipboard write failed', String(err))
+        }
+      },
+    })
+
     if (selection) {
-      items.push({
-        label: 'Copy',
-        click: () => {
-          try { clipboard.writeText(selection) } catch (err) {
-            log.warn('context-menu: clipboard write failed', String(err))
-          }
-        },
-      })
       items.push({
         label: 'Copy and search',
         click: () => {
@@ -2390,16 +2393,6 @@ export function installTabPreloadListeners(): void {
     })
     items.push({ type: 'separator' })
 
-    items.push({
-      label: 'Back',
-      enabled: nav.canGoBack(),
-      click: () => tabGoBack(tabId),
-    })
-    items.push({
-      label: 'Forward',
-      enabled: nav.canGoForward(),
-      click: () => tabGoForward(tabId),
-    })
     items.push({
       label: 'Reload',
       click: () => tabReload(tabId, /* ignoreCache */ false),

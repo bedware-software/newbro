@@ -129,12 +129,20 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [keybindings, setKeybindings] = useState<Record<string, string[]>>({})
+  const [appVersion, setAppVersion] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const activeTab = useAppStore((s) => s.getActiveTab())
   // Group-scoped commands need a real group to operate on. The active tab
   // group can be null when the user is on an ungrouped (Root) tab.
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
+
+  // Fetch once — the version never changes for the life of the window.
+  useEffect(() => {
+    ;(window as any).electronAPI?.getAppVersion?.().then((v: string) => {
+      if (v) setAppVersion(v)
+    })
+  }, [])
 
   const availableCommands = useMemo(() => {
     return COMMANDS.filter((cmd) => {
@@ -223,8 +231,8 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
     <DetachedWindow
       open={open}
       title="Command Palette - Newbro"
-      width={560}
-      height={480}
+      width={760}
+      height={640}
       closeOnBlur
       onClose={() => onOpenChange(false)}
     >
@@ -300,7 +308,12 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
             <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
             <span className="flex items-center gap-1">Run <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
           </div>
-          <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>
+            {appVersion && (
+              <span className="text-muted-foreground/60 tabular-nums">v{appVersion}</span>
+            )}
+          </div>
         </div>
       </div>
     </DetachedWindow>

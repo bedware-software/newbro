@@ -936,16 +936,22 @@ if (STEALTH_ENABLED) try {
 }
 
 // ── Right-click → host context menu ──────────────────────────────────
-// We always show our own context menu rather than the page's. Click
-// position is captured so main can ask Chromium to inspect the element
-// at that point; selection (if any) drives the Copy / Copy-and-search
-// rows; nearest <a> / <img> ancestor lights up "Open link in new tab" /
-// "Copy image address". The page's own contextmenu handlers (e.g.
-// Figma's custom menu) are suppressed via capture-phase preventDefault.
+// We show our own context menu, but only when the page hasn't claimed the
+// right-click for itself — matching how Chrome/Firefox behave. We listen in
+// the BUBBLE phase (not capture) so every page handler runs first; if any of
+// them called preventDefault to show a custom menu (Google Docs, Figma,
+// some web apps), `e.defaultPrevented` is already true and we bail, letting
+// the site's menu stand. Otherwise we cancel the default (suppressing the
+// native Chromium menu) and raise ours. Click position is captured so main
+// can inspect the element; selection drives the Copy / Copy-and-search rows;
+// nearest <a> / <img> ancestor lights up "Open link in new tab" / "Copy
+// image address".
 if (STEALTH_ENABLED) try {
   window.addEventListener('contextmenu', (e: MouseEvent) => {
+    // The page already handled this right-click with its own menu — defer to
+    // it like a normal browser would.
+    if (e.defaultPrevented) return
     e.preventDefault()
-    e.stopPropagation()
     const selection = (window.getSelection?.()?.toString() ?? '').trim()
     const target = e.target as Element | null
     let linkUrl: string | null = null
@@ -969,7 +975,7 @@ if (STEALTH_ENABLED) try {
       linkUrl,
       imgUrl,
     })
-  }, true)
+  }, false)
 } catch (err) {
   // eslint-disable-next-line no-console
   console.log('[newbro-stealth] context-menu wiring failed:', err)

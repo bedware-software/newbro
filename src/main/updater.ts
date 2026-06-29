@@ -36,6 +36,43 @@ export type UpdateStatus =
 let latestStatus: UpdateStatus = { phase: 'idle' }
 let initialized = false
 
+// Network failures that are artifacts of the machine suspending/resuming
+// rather than real update failures. Waking from hibernate fires the overdue
+// periodic check before Wi-Fi has re-associated, so the request dies with one
+// of these. Surfacing the "Update check failed" toast for them is a false
+// positive — we swallow them and quietly retry once connectivity is back.
+const TRANSIENT_NET_ERROR_CODES = [
+  'ERR_NETWORK_IO_SUSPENDED',
+  'ERR_INTERNET_DISCONNECTED',
+  'ERR_NETWORK_CHANGED',
+]
+
+function isTransientNetworkError(message: string): boolean {
+  return TRANSIENT_NET_ERROR_CODES.some((code) => message.includes(code))
+}
+
+// Backoff retry state for transient (network-not-ready) check failures.
+let transientRetryTimer: ReturnType<typeof setTimeout> | null = null
+let transientRetryAttempts = 0
+const MAX_TRANSIENT_RETRIES = 5
+
+function scheduleTransientRetry(): void {
+  if (transientRetryTimer) return
+  if (transientRetryAttempts >= MAX_TRANSIENT_RETRIES) {
+    transientRetryAttempts = 0
+    return
+  }
+  transientRetryAttempts += 1
+  // 15s, 30s, 60s, 120s, capped at 2min — enough headroom for Wi-Fi to come up.
+  const delay = Math.min(15_000 * 2 ** (transientRetryAttempts - 1), 120_000)
+  transientRetryTimer = setTimeout(() => {
+    transientRetryTimer = null
+    autoUpdater.checkForUpdates().catch((err) => {
+      log.warn('updater: transient retry check failed', err)
+    })
+  }, delay)
+}
+
 function broadcast(status: UpdateStatus): void {
   latestStatus = status
   for (const win of BrowserWindow.getAllWindows()) {
@@ -92,10 +129,12 @@ export function setupAutoUpdater(): void {
   })
 
   autoUpdater.on('update-not-available', (info: UpdateInfo) => {
+    transientRetryAttempts = 0
     broadcast({ phase: 'not-available', version: info.version })
   })
 
   autoUpdater.on('update-available', (info: UpdateInfo) => {
+    transientRetryAttempts = 0
     const notes = typeof info.releaseNotes === 'string' ? info.releaseNotes : null
     broadcast({ phase: 'available', version: info.version, releaseNotes: notes })
   })
@@ -122,7 +161,18 @@ export function setupAutoUpdater(): void {
   })
 
   autoUpdater.on('error', (err: Error) => {
-    broadcast({ phase: 'error', message: err?.message || String(err) })
+    const message = err?.message || String(err)
+    if (isTransientNetworkError(message)) {
+      // False positive (e.g. waking from hibernate before Wi-Fi is up). Don't
+      // show the sticky "Update check failed" toast — clear any in-flight
+      // "checking" toast and retry once the network has likely settled. A
+      // previously meaningful state (downloaded/available) is left untouched.
+      log.info('updater: transient network error ignored, will retry:', message)
+      if (latestStatus.phase === 'checking') broadcast({ phase: 'idle' })
+      scheduleTransientRetry()
+      return
+    }
+    broadcast({ phase: 'error', message })
   })
 
   // Initial check shortly after startup — give the main window time to
