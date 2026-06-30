@@ -1,7 +1,16 @@
 // Floating update notification popup. The tab content is hosted in native
-// WebContentsViews, which draw above the main React renderer. A separate
-// transparent child BrowserWindow keeps the notification visible without
-// shrinking or otherwise changing the page viewport.
+// WebContentsViews, which draw above the main React renderer, so the toast is a
+// separate transparent BrowserWindow rather than a DOM element (a DOM toast
+// would be hidden behind the tab view).
+//
+// It is deliberately NOT an OS child (`parent`) of the workspace window: an
+// owned window, when shown or repositioned, gets raised together with its
+// owner — which on Windows pulls the workspace window above a sibling popup
+// (e.g. Settings) and steals focus. Instead it's a top-level, non-focusable,
+// always-on-top window whose position we anchor to the workspace window's
+// content bounds ourselves, and whose visibility we tie to the workspace
+// window's move/minimize/restore. That keeps it pinned over the page without
+// ever touching focus.
 
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
@@ -96,7 +105,9 @@ function getOrCreateToast(parent: BrowserWindow): ToastRecord {
   if (existing && !existing.win.isDestroyed()) return existing
 
   const win = new BrowserWindow({
-    parent,
+    // Intentionally NOT `parent: parent` — see the file header. Owning the toast
+    // to the workspace window made showing it raise the workspace window over
+    // the Settings popup and steal focus. As a top-level window it can't.
     show: false,
     frame: false,
     transparent: true,
@@ -108,14 +119,10 @@ function getOrCreateToast(parent: BrowserWindow): ToastRecord {
     maximizable: false,
     fullscreenable: false,
     skipTaskbar: true,
-    // Never take focus. A focusable, always-on-top child window can grab
-    // activation the moment it first paints (Windows raises it to the
-    // foreground even when shown via showInactive), stealing focus from
-    // whatever the user just opened — e.g. the Settings popup right after
-    // launch. focusable:false (WS_EX_NOACTIVATE / non-activating panel) means
-    // the toast can never be activated, so it never pulls focus from the
-    // active window or raises its owner over a sibling popup. Mouse clicks on
-    // the dismiss / install buttons still register on a non-activating window.
+    // Never take focus. focusable:false (WS_EX_NOACTIVATE / non-activating
+    // panel) means the toast can't be activated, so it never pulls keyboard
+    // focus. Mouse clicks on the dismiss / install buttons still register on a
+    // non-activating window.
     focusable: false,
     width: INITIAL_WIDTH,
     height: INITIAL_HEIGHT,
@@ -162,13 +169,30 @@ function getOrCreateToast(parent: BrowserWindow): ToastRecord {
     // notification here and hide it everywhere else.
     reconcileVisibility()
   }
+  // Since the toast is no longer an OS child, it won't auto-hide with the
+  // workspace window — track minimize/hide → hide, restore/show → reconcile.
+  const onParentHidden = (): void => { if (!win.isDestroyed() && win.isVisible()) win.hide() }
+  const onParentShown = (): void => reconcileVisibility()
+  // When the workspace window loses focus (to Settings, another window, or
+  // another app) hide the toast; reconcile re-shows it once focus returns.
+  const onBlur = (): void => reconcileVisibility()
   parent.on('move', reposition)
   parent.on('resize', reposition)
   parent.on('focus', onFocus)
+  parent.on('blur', onBlur)
+  parent.on('minimize', onParentHidden)
+  parent.on('hide', onParentHidden)
+  parent.on('restore', onParentShown)
+  parent.on('show', onParentShown)
   parent.once('closed', () => {
     parent.removeListener('move', reposition)
     parent.removeListener('resize', reposition)
     parent.removeListener('focus', onFocus)
+    parent.removeListener('blur', onBlur)
+    parent.removeListener('minimize', onParentHidden)
+    parent.removeListener('hide', onParentHidden)
+    parent.removeListener('restore', onParentShown)
+    parent.removeListener('show', onParentShown)
     if (lastFocusedParentId === parentWebContentsId) lastFocusedParentId = null
     if (!win.isDestroyed()) win.destroy()
     toasts.delete(parentWebContentsId)
@@ -208,7 +232,13 @@ function reconcileVisibility(): void {
       parentId === ownerId &&
       record.wantShown &&
       record.lastSpec !== null &&
-      !record.parent.isDestroyed()
+      !record.parent.isDestroyed() &&
+      // Only float the toast while its workspace window is actually focused.
+      // As a top-level always-on-top window it would otherwise hover over
+      // other apps — and over a sibling popup like Settings. Gating on focus
+      // means it simply doesn't appear while you're in Settings, and never
+      // sits on top of another application.
+      record.parent.isFocused()
 
     if (shouldShow) {
       // Wait for the popup to load; did-finish-load re-runs reconcile.

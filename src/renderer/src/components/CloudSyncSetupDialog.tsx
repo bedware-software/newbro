@@ -90,7 +90,6 @@ export function CloudSyncSetupDialog({ open, prompt, onClose }: Props) {
       height={360}
       resizable={false}
       closeOnEscape
-      alwaysOnTop
       onClose={onClose}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
