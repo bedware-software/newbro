@@ -75,14 +75,16 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
   const getAllSearchableItems = useAppStore((s) => s.getAllSearchableItems)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
 
-  // The workspace scope only narrows item types that live inside a workspace,
-  // and only while BROWSING (empty query). The moment the user types something
-  // they're searching — "jump to that thing wherever it is" — so a typed query
-  // always spans every workspace. Without this, typing e.g. "jj" to reach a tab
-  // under the "Jenkins Jobs" workspace finds nothing while you're sitting in a
-  // different workspace, because the matcher never even sees those tabs.
+  // The workspace scope narrows item types that live inside a workspace
+  // (tabs / tab groups) down to the window's own workspace. It's an explicit,
+  // user-controlled toggle (Tab), so we honour it both while BROWSING (empty
+  // query) and while TYPING a search — "This workspace" must mean this workspace
+  // in both cases, otherwise typing a single character silently throws the
+  // toggle away. To search a tab across every workspace (e.g. "jj" → a tab under
+  // the "Jenkins Jobs" workspace from elsewhere), flip the toggle to
+  // "All workspaces".
   const scopeApplies = filter === 'tabGroup' || filter === 'tab'
-  const scopedToCurrent = scopeApplies && scope === 'current' && !!windowWorkspaceId && !query.trim()
+  const scopedToCurrent = scopeApplies && scope === 'current' && !!windowWorkspaceId
 
   const items = useMemo(() => {
     const all = getAllSearchableItems()
