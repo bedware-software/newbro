@@ -60,6 +60,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cloudSyncSetCategories: (patch: Record<string, boolean>): Promise<unknown> =>
     ipcRenderer.invoke('cloud-sync:set-categories', patch),
   cloudSyncNow: (): Promise<unknown> => ipcRenderer.invoke('cloud-sync:now'),
+  // First-run setup offer. claim returns whether THIS window should show it
+  // (only the first caller per launch gets true); setup-with-folder enables
+  // sync into a given path; dismiss-prompt is "Don't show again".
+  cloudSyncClaimSetupPrompt: (): Promise<unknown> => ipcRenderer.invoke('cloud-sync:claim-setup-prompt'),
+  cloudSyncSetupWithFolder: (folderPath: string): Promise<unknown> =>
+    ipcRenderer.invoke('cloud-sync:setup-with-folder', folderPath),
+  cloudSyncDismissPrompt: (): Promise<unknown> => ipcRenderer.invoke('cloud-sync:dismiss-prompt'),
   onCloudSyncStatus: (callback: (info: unknown) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, info: unknown): void => callback(info)
     ipcRenderer.on('cloud-sync:status', handler)

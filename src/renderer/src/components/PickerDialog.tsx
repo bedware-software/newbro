@@ -3,9 +3,6 @@ import { Search, ArrowUpDown, CornerDownLeft } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { fuzzyFilter } from '../lib/fuzzy'
 
-const isMac = navigator.platform.includes('Mac')
-const META = isMac ? '⌘' : 'Ctrl'
-
 export interface PickerItem {
   id: string
   /** Primary label shown in bold/foreground. */
@@ -145,21 +142,13 @@ export function PickerDialog({
   }, [filtered])
 
   const handleKeyDown = (e: React.KeyboardEvent): void => {
-    // Cmd+1 / Cmd+2 (Ctrl+1 / Ctrl+2 on non-mac) flip the scope. We use
-    // metaKey on macOS and ctrlKey elsewhere to match the platform's
-    // accelerator convention.
-    const isMetaPressed = isMac ? e.metaKey : e.ctrlKey
-    if (isMetaPressed && !e.shiftKey && !e.altKey) {
-      if (e.code === 'Digit1') {
-        e.preventDefault()
-        onScopeChange(scopeChoices[0].value)
-        return
-      }
-      if (e.code === 'Digit2') {
-        e.preventDefault()
-        onScopeChange(scopeChoices[1].value)
-        return
-      }
+    // Tab flips between the two scopes (and Shift+Tab does the same — there
+    // are only two). We trap it so focus stays in the search input rather than
+    // tabbing out to the buttons.
+    if (e.key === 'Tab' && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault()
+      onScopeChange(scope === scopeChoices[0].value ? scopeChoices[1].value : scopeChoices[0].value)
+      return
     }
 
     if (e.key === 'ArrowDown') {
@@ -222,7 +211,7 @@ export function PickerDialog({
             the caller so the items list and the highlighted button stay in
             sync without an extra round-trip. */}
         <div className="flex items-center gap-1 px-3 py-2 border-b border-border shrink-0">
-          {scopeChoices.map((choice, i) => {
+          {scopeChoices.map((choice) => {
             const active = scope === choice.value
             return (
               <button
@@ -236,10 +225,12 @@ export function PickerDialog({
                 }`}
               >
                 {choice.label}
-                <span className="opacity-50 ml-0.5">{META}{i + 1}</span>
               </button>
             )
           })}
+          <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground/70">
+            Toggle <kbd>⇥</kbd>
+          </span>
         </div>
 
         <div ref={listRef} className="flex-1 overflow-y-auto py-1">
@@ -305,7 +296,7 @@ export function PickerDialog({
             {backgroundHint && (
               <span className="flex items-center gap-1">{backgroundHint} <kbd>⇧</kbd><kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
             )}
-            <span className="flex items-center gap-1">Scope <kbd>{META}</kbd><kbd>1/2</kbd></span>
+            <span className="flex items-center gap-1">Scope <kbd>⇥</kbd></span>
           </div>
           <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>
         </div>

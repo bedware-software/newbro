@@ -68,6 +68,11 @@ interface SyncConfig {
    *  restart can do proper last-write-wins instead of blindly adopting the
    *  cloud copy and clobbering offline local edits. */
   lastSeen: Partial<Record<SyncCategory, SeenMark>>
+  /** True once the user has dismissed the first-run "set up sync" offer for
+   *  good ("Don't show again"). Local-only (the sync-config store isn't itself
+   *  synced), so each device makes its own call. The offer also stops showing
+   *  once sync is enabled — see buildSetupPromptInfo. */
+  promptDismissed: boolean
 }
 
 export type SyncState = 'disabled' | 'idle' | 'syncing' | 'error'
@@ -84,6 +89,60 @@ export interface SyncInfo {
 
 const SYNC_SUBDIR = 'newbro-sync'
 
+// The folder we propose by default lives at the iCloud Drive root. The sync
+// engine still nests its envelopes under SYNC_SUBDIR inside it, so the user
+// sees a tidy "Newbro Sync" folder in iCloud.
+const ICLOUD_DEFAULT_FOLDER_NAME = 'Newbro Sync'
+
+/** Best-effort path to the user's iCloud Drive root, or null if not present.
+ *  Windows (iCloud for Windows): %USERPROFILE%\iCloudDrive (or "iCloud Drive").
+ *  macOS: ~/Library/Mobile Documents/com~apple~CloudDocs. */
+export function detectICloudDrive(): string | null {
+  const home = app.getPath('home')
+  const candidates = process.platform === 'darwin'
+    ? [path.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs')]
+    : [path.join(home, 'iCloudDrive'), path.join(home, 'iCloud Drive')]
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c) && fs.statSync(c).isDirectory()) return c
+    } catch { /* unreadable candidate — try the next */ }
+  }
+  return null
+}
+
+/** The default folder we offer to sync into: <iCloud Drive>/Newbro Sync, or
+ *  null when iCloud Drive isn't installed (then the user picks a folder). */
+export function suggestedSyncFolder(): string | null {
+  const icloud = detectICloudDrive()
+  return icloud ? path.join(icloud, ICLOUD_DEFAULT_FOLDER_NAME) : null
+}
+
+export interface SetupPromptInfo {
+  /** Whether the renderer should pop the first-run setup offer. */
+  shouldPrompt: boolean
+  /** iCloud Drive was found — the suggested folder is an iCloud path. */
+  icloudAvailable: boolean
+  /** Pre-filled default folder (<iCloud>/Newbro Sync), or null. */
+  suggestedFolder: string | null
+}
+
+// Only one window should pop the offer per launch. The first window to claim it
+// flips this; later restored windows get shouldPrompt:false. Resets naturally
+// on the next app start (module re-evaluates).
+let setupPromptClaimed = false
+
+function buildSetupPromptInfo(claim: boolean): SetupPromptInfo {
+  const cfg = getConfig()
+  const suggestedFolder = suggestedSyncFolder()
+  // Offer until the user either enables sync or dismisses the offer for good.
+  let shouldPrompt = !cfg.enabled && !cfg.promptDismissed
+  if (claim && shouldPrompt) {
+    if (setupPromptClaimed) shouldPrompt = false
+    else setupPromptClaimed = true
+  }
+  return { shouldPrompt, icloudAvailable: !!suggestedFolder, suggestedFolder }
+}
+
 function defaultCategories(): Record<SyncCategory, boolean> {
   return { state: true, settings: true, bookshelf: true, history: true, permissions: true, extensions: true }
 }
@@ -98,6 +157,7 @@ const store = new Store<{ config: SyncConfig }>({
       categories: defaultCategories(),
       lastSync: 0,
       lastSeen: {},
+      promptDismissed: false,
     },
   },
 })
@@ -128,6 +188,7 @@ function getConfig(): SyncConfig {
     categories: { ...defaultCategories(), ...(cfg.categories || {}) },
     lastSync: cfg.lastSync || 0,
     lastSeen: cfg.lastSeen || {},
+    promptDismissed: !!cfg.promptDismissed,
   }
 }
 
@@ -461,7 +522,8 @@ export function registerCloudSyncIpc(): void {
   ipcMain.handle('cloud-sync:set-enabled', async (_e, enabled: boolean) => {
     if (enabled) {
       if (!getConfig().folderPath) return buildInfo() // can't enable without a folder
-      setConfig({ enabled: true })
+      // Turning sync on resolves the first-run offer for this device.
+      setConfig({ enabled: true, promptDismissed: true })
       await initCloudSync()
     } else {
       setConfig({ enabled: false })
@@ -483,5 +545,32 @@ export function registerCloudSyncIpc(): void {
 
   ipcMain.handle('cloud-sync:now', async () => {
     return syncNow()
+  })
+
+  // ── First-run setup offer ──
+  // Renderer asks (once, on launch) whether to show the offer; the claim makes
+  // sure only the first window across a multi-window restore actually shows it.
+  ipcMain.handle('cloud-sync:claim-setup-prompt', () => buildSetupPromptInfo(true))
+
+  // "Don't show again" — never offer on this device until sync is set up.
+  ipcMain.handle('cloud-sync:dismiss-prompt', () => {
+    setConfig({ promptDismissed: true })
+    return buildInfo()
+  })
+
+  // Enable sync into a specific folder (e.g. the suggested <iCloud>/Newbro Sync)
+  // without the native picker. Creates the folder if it doesn't exist yet.
+  ipcMain.handle('cloud-sync:setup-with-folder', async (_e, folderPath: string) => {
+    if (!folderPath) return buildInfo()
+    try {
+      fs.mkdirSync(folderPath, { recursive: true })
+    } catch (err) {
+      log.warn('cloud-sync: cannot create setup folder', { folderPath, err: String(err) })
+      return buildInfo()
+    }
+    setConfig({ folderPath, enabled: true, promptDismissed: true })
+    await initCloudSync()
+    broadcastStatus()
+    return buildInfo()
   })
 }

@@ -16,6 +16,7 @@ import { InputDialog } from './components/InputDialog'
 import { MoveCopyTabDialog } from './components/MoveCopyTabDialog'
 import { MoveCopyGroupDialog } from './components/MoveCopyGroupDialog'
 import { OpenExternalLinkDialog } from './components/OpenExternalLinkDialog'
+import { CloudSyncSetupDialog } from './components/CloudSyncSetupDialog'
 import { UpdateBanner } from './components/UpdateBanner'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
@@ -60,6 +61,13 @@ export interface CloudSyncInfo {
   error: string | null
 }
 
+/** Result of claiming the first-run cloud-sync setup offer. */
+export interface CloudSyncSetupPrompt {
+  shouldPrompt: boolean
+  icloudAvailable: boolean
+  suggestedFolder: string | null
+}
+
 declare global {
   interface Window {
     electronAPI: {
@@ -94,6 +102,9 @@ declare global {
       cloudSyncSetEnabled: (enabled: boolean) => Promise<CloudSyncInfo>
       cloudSyncSetCategories: (patch: Partial<Record<SyncCategory, boolean>>) => Promise<CloudSyncInfo>
       cloudSyncNow: () => Promise<CloudSyncInfo>
+      cloudSyncClaimSetupPrompt: () => Promise<CloudSyncSetupPrompt>
+      cloudSyncSetupWithFolder: (folderPath: string) => Promise<CloudSyncInfo>
+      cloudSyncDismissPrompt: () => Promise<CloudSyncInfo>
       onCloudSyncStatus: (callback: (info: CloudSyncInfo) => void) => () => void
       wipeAllData: () => Promise<void>
       getDefaultBrowserStatus: () => Promise<DefaultBrowserStatus>
@@ -337,9 +348,26 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTabRequest, setSettingsTabRequest] = useState<SettingsTabRequest | null>(null)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  // First-run Cloud Sync offer. Null until this window claims the prompt (only
+  // the first window across a multi-window restore wins the claim in main).
+  const [syncPrompt, setSyncPrompt] = useState<CloudSyncSetupPrompt | null>(null)
   // Right-hand Bookshelf sidebar visibility, persisted per machine.
   const [bookshelfOpen, setBookshelfOpen] = useState<boolean>(() => localStorage.getItem('newbro-bookshelf-open') === '1')
   useEffect(() => { localStorage.setItem('newbro-bookshelf-open', bookshelfOpen ? '1' : '0') }, [bookshelfOpen])
+
+  // Offer to set up Cloud Sync on launch — and every launch until the user
+  // enables it or picks "Don't show again". main's claim guarantees only one
+  // window shows the offer across a multi-window restore; the short delay lets
+  // the window finish painting first.
+  useEffect(() => {
+    let cancelled = false
+    const t = setTimeout(() => {
+      window.electronAPI.cloudSyncClaimSetupPrompt?.()
+        .then((p) => { if (!cancelled && p?.shouldPrompt) setSyncPrompt(p) })
+        .catch(() => {})
+    }, 1200)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [])
   const [findBarOpen, setFindBarOpen] = useState(false)
   // Counter that ticks on every find-in-page shortcut so a second Cmd+F
   // while the bar is already open re-focuses + selects the input (matches
@@ -1180,6 +1208,13 @@ export default function App() {
           })
         }}
       />
+      {syncPrompt && (
+        <CloudSyncSetupDialog
+          open={syncPrompt.shouldPrompt}
+          prompt={syncPrompt}
+          onClose={() => setSyncPrompt(null)}
+        />
+      )}
     </>
   )
 }
