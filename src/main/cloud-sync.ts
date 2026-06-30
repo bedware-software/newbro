@@ -265,12 +265,43 @@ function selfFile(cat: SyncCategory): string {
   return path.join(syncDir(), `${cat}.${ensureDeviceId()}.json`)
 }
 
-function selfFileExists(cat: SyncCategory): boolean {
-  try { return fs.existsSync(selfFile(cat)) } catch { return false }
+/** Names of every file in the sync dir that belongs to THIS device for `cat`:
+ *  the canonical `<cat>.<deviceId>.json` PLUS any iCloud-on-Windows rename of it
+ *  (`<cat>.<deviceId> 2.json`, ` 3.json`, …). Matched by filename — the deviceId
+ *  is unique, so the `<cat>.<deviceId>` prefix can't collide with another device.
+ *  Sync (readdir) because selfFileExists is on the synchronous push path. */
+function ownFileNames(cat: SyncCategory): string[] {
+  const prefix = `${cat}.${ensureDeviceId()}`
+  let names: string[]
+  try { names = fs.readdirSync(syncDir()) } catch { return [] }
+  return names.filter((n) => {
+    if (!n.endsWith('.json') || n.includes('.tmp-')) return false
+    if (!n.startsWith(prefix)) return false
+    const after = n.charAt(prefix.length)
+    return after === '.' || after === ' ' // canonical (".json") or iCloud fork (" 2.json")
+  })
 }
 
-function legacyFile(cat: SyncCategory): string {
-  return path.join(syncDir(), `${cat}.json`)
+// True if ANY copy of our own file exists — including an iCloud-renamed fork.
+// Critical: if we only checked the exact canonical name, then every time iCloud
+// renames our upload to "<id> 2.json" we'd think our file vanished and rewrite
+// it, which iCloud renames again → an endless stream of fork files.
+function selfFileExists(cat: SyncCategory): boolean {
+  return ownFileNames(cat).length > 0
+}
+
+/** Delete every one of our own files for `cat` except `keepName`. Keeps exactly
+ *  one copy after a write so older copies / iCloud forks don't pile up. */
+function pruneOwnFiles(cat: SyncCategory, keepName: string): void {
+  for (const name of ownFileNames(cat)) {
+    if (name === keepName) continue
+    try {
+      fs.unlinkSync(path.join(syncDir(), name))
+      log.info('cloud-sync: pruned own copy', { cat, name })
+    } catch (err) {
+      log.warn('cloud-sync: prune own copy failed', { name, err: String(err) })
+    }
+  }
 }
 
 /** Matches this category's per-device files: `<cat>.<uuid>.json`. Deliberately
@@ -379,28 +410,53 @@ async function listEnvelopes(cat: SyncCategory): Promise<SyncEnvelope[]> {
 async function cleanupSupersededFiles(cat: SyncCategory, generation = syncGeneration): Promise<void> {
   if (!isRunCurrent(generation) || !isActive(cat)) return
   const newest = lastSeen.get(cat)?.updatedAt ?? 0
-  const selfDeviceId = ensureDeviceId()
-  // Our canonical per-device file is authoritative for our own data; if it
-  // exists, any conflict copy bearing our deviceId is just an iCloud-on-Windows
-  // artifact and is always safe to delete (our latest data is in the canonical).
-  const selfExists = fs.existsSync(selfFile(cat))
   let names: string[]
   try { names = await fs.promises.readdir(syncDir()) } catch { return }
   if (!isRunCurrent(generation) || !isActive(cat)) return
+
+  const ownPrefix = `${cat}.${ensureDeviceId()}`
+  const isOwn = (n: string): boolean => {
+    if (!n.endsWith('.json') || n.includes('.tmp-') || !n.startsWith(ownPrefix)) return false
+    const after = n.charAt(ownPrefix.length)
+    return after === '.' || after === ' '
+  }
+
+  // 1) Collapse OUR own files (canonical + any iCloud forks of it) to a single
+  //    newest copy. This mops up an existing fork pileup independent of whatever
+  //    name iCloud has currently left our file under.
+  const own = names.filter(isOwn)
+  if (own.length > 1) {
+    let best: { name: string; ts: number } | null = null
+    for (const name of own) {
+      const env = await readEnvelopeFromFile(path.join(syncDir(), name), cat)
+      if (!isRunCurrent(generation) || !isActive(cat)) return
+      const ts = env?.updatedAt ?? 0
+      if (!best || ts > best.ts) best = { name, ts }
+    }
+    for (const name of own) {
+      if (best && name === best.name) continue
+      try {
+        await fs.promises.unlink(path.join(syncDir(), name))
+        log.info('cloud-sync: pruned own copy', { cat, name })
+      } catch (err) {
+        log.warn('cloud-sync: cleanup unlink failed', { name, err: String(err) })
+      }
+    }
+  }
+
+  // 2) Drop legacy single-file copies and OTHER devices' conflict copies that
+  //    are provably older than the newest data we already hold.
+  if (!newest) return
   for (const name of names) {
+    if (isOwn(name)) continue
     const kind = classifyCategoryFile(name, cat)
     if (kind !== 'legacy' && kind !== 'conflict') continue
-    const file = path.join(syncDir(), name)
-    const env = await readEnvelopeFromFile(file, cat)
+    const env = await readEnvelopeFromFile(path.join(syncDir(), name), cat)
     if (!isRunCurrent(generation) || !isActive(cat)) return
-    if (!env) continue
-    const ownFork = kind === 'conflict' && env.deviceId === selfDeviceId && selfExists
-    // Delete our own forks unconditionally; for other copies, only when provably
-    // older than the newest data we already hold.
-    if (!ownFork && (!newest || env.updatedAt >= newest)) continue
+    if (!env || env.updatedAt >= newest) continue
     try {
-      await fs.promises.unlink(file)
-      log.info('cloud-sync: removed superseded copy', { cat, name, ownFork })
+      await fs.promises.unlink(path.join(syncDir(), name))
+      log.info('cloud-sync: removed superseded copy', { cat, name })
     } catch (err) {
       log.warn('cloud-sync: cleanup unlink failed', { name, err: String(err) })
     }
@@ -524,6 +580,9 @@ function pushIfChanged(cat: SyncCategory): void {
   if (writeEnvelopeSelf(cat, data, h, updatedAt)) {
     setSeen(cat, h, updatedAt)
     touchLastSync()
+    // Collapse to a single copy: drop older versions and any iCloud fork of a
+    // previous write, keeping just the canonical we just wrote.
+    pruneOwnFiles(cat, path.basename(selfFile(cat)))
     log.info('cloud-sync: pushed', { cat })
   }
 }
