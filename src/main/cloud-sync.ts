@@ -379,7 +379,11 @@ async function listEnvelopes(cat: SyncCategory): Promise<SyncEnvelope[]> {
 async function cleanupSupersededFiles(cat: SyncCategory, generation = syncGeneration): Promise<void> {
   if (!isRunCurrent(generation) || !isActive(cat)) return
   const newest = lastSeen.get(cat)?.updatedAt ?? 0
-  if (!newest) return
+  const selfDeviceId = ensureDeviceId()
+  // Our canonical per-device file is authoritative for our own data; if it
+  // exists, any conflict copy bearing our deviceId is just an iCloud-on-Windows
+  // artifact and is always safe to delete (our latest data is in the canonical).
+  const selfExists = fs.existsSync(selfFile(cat))
   let names: string[]
   try { names = await fs.promises.readdir(syncDir()) } catch { return }
   if (!isRunCurrent(generation) || !isActive(cat)) return
@@ -389,30 +393,42 @@ async function cleanupSupersededFiles(cat: SyncCategory, generation = syncGenera
     const file = path.join(syncDir(), name)
     const env = await readEnvelopeFromFile(file, cat)
     if (!isRunCurrent(generation) || !isActive(cat)) return
-    if (!env || env.updatedAt >= newest) continue // keep anything not provably old
+    if (!env) continue
+    const ownFork = kind === 'conflict' && env.deviceId === selfDeviceId && selfExists
+    // Delete our own forks unconditionally; for other copies, only when provably
+    // older than the newest data we already hold.
+    if (!ownFork && (!newest || env.updatedAt >= newest)) continue
     try {
       await fs.promises.unlink(file)
-      log.info('cloud-sync: removed superseded copy', { cat, name })
+      log.info('cloud-sync: removed superseded copy', { cat, name, ownFork })
     } catch (err) {
       log.warn('cloud-sync: cleanup unlink failed', { name, err: String(err) })
     }
   }
 }
 
-/** Write ONLY this device's own file. Atomic via temp-then-rename so a reader
- *  on another device never sees a half-written file. */
+/** Write ONLY this device's own file, IN PLACE (no temp-then-rename).
+ *
+ *  We used to write a temp file and rename it over the target for atomicity.
+ *  On macOS that's a true APFS rename iCloud treats as an in-place update — so
+ *  the Mac's files stay clean. But iCloud-on-Windows (CloudFilter) sees the
+ *  rename as delete-old + create-new: the file identity changes every write, so
+ *  it forks the version it was mid-uploading into conflict copies
+ *  ("state.<id> 2.json", " 3.json", …) — exactly the spam observed on Windows.
+ *
+ *  Writing in place keeps the same file identity, so every cloud client treats
+ *  it as a content update. Since each file has a single writer (this device) and
+ *  readers tolerate a half-written file (parse fails → skipped, retried on the
+ *  next watch/sync), we don't need rename atomicity here. */
 function writeEnvelopeSelf(cat: SyncCategory, data: unknown, hash: string, updatedAt: number): boolean {
   if (!ensureSyncDir()) return false
   const env: SyncEnvelope = { schema: 1, category: cat, updatedAt, deviceId: ensureDeviceId(), hash, data }
   const file = selfFile(cat)
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
   try {
-    fs.writeFileSync(tmp, JSON.stringify(env), 'utf-8')
-    fs.renameSync(tmp, file) // atomic on the same volume
+    fs.writeFileSync(file, JSON.stringify(env), 'utf-8')
     return true
   } catch (err) {
     log.warn('cloud-sync: write envelope failed', { cat, err: String(err) })
-    try { fs.rmSync(tmp, { force: true }) } catch { /* ignore */ }
     return false
   }
 }
