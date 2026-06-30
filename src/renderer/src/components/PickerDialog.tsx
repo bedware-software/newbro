@@ -44,13 +44,19 @@ interface Props {
   emptyMessage?: string
   /** Verb to put on the confirm action in the footer (e.g. "Move", "Copy"). */
   confirmVerb?: string
+  /** When set, holding Shift while confirming (Enter or click) is surfaced to
+   *  `onConfirm` via `opts.background`, and this label is shown next to a
+   *  ⇧↵ hint in the footer (e.g. "Stay here"). Omit for dialogs with no
+   *  background variant. */
+  backgroundHint?: string
   /** Item id to pre-select when the dialog opens. Falls back to the first
    *  row if the id isn't present in the (filtered) list. */
   initialItemId?: string
   scope: 'current' | 'all'
   onScopeChange: (scope: 'current' | 'all') => void
   scopeChoices: [ScopeChoice, ScopeChoice]
-  onConfirm: (itemId: string) => void
+  /** `opts.background` is true when the user held Shift while confirming. */
+  onConfirm: (itemId: string, opts: { background: boolean }) => void
   onCancel: () => void
 }
 
@@ -65,6 +71,7 @@ export function PickerDialog({
   items,
   emptyMessage = 'Nothing to show.',
   confirmVerb = 'Select',
+  backgroundHint,
   initialItemId,
   scope,
   onScopeChange,
@@ -164,7 +171,7 @@ export function PickerDialog({
     } else if (e.key === 'Enter') {
       e.preventDefault()
       const picked = filtered[selectedIndex]
-      if (picked) onConfirm(picked.id)
+      if (picked) onConfirm(picked.id, { background: e.shiftKey })
     } else if (e.key === 'Escape') {
       e.preventDefault()
       onCancel()
@@ -258,7 +265,7 @@ export function PickerDialog({
                       className={`flex items-center gap-2 px-4 py-1.5 cursor-pointer text-sm ${
                         isSelected ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-accent/50'
                       }`}
-                      onClick={() => onConfirm(item.id)}
+                      onClick={(e) => onConfirm(item.id, { background: e.shiftKey })}
                       onMouseEnter={() => setSelectedIndex(idx)}
                     >
                       {item.color !== undefined && (
@@ -295,6 +302,9 @@ export function PickerDialog({
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
             <span className="flex items-center gap-1">{confirmVerb} <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
+            {backgroundHint && (
+              <span className="flex items-center gap-1">{backgroundHint} <kbd>⇧</kbd><kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
+            )}
             <span className="flex items-center gap-1">Scope <kbd>{META}</kbd><kbd>1/2</kbd></span>
           </div>
           <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>

@@ -464,9 +464,13 @@ export interface AppState {
   // Copy variants always assign fresh ids so the source and destination
   // tabs/groups are independent — including their WebContentsViews.
   moveTabAcross: (tabId: string, targetWorkspaceId: string, targetGroupId: string | null) => void
-  copyTabAcross: (tabId: string, targetWorkspaceId: string, targetGroupId: string | null) => void
+  /** Returns the new tab's id (so callers can follow/activate the copy), or
+   *  null if the source tab or destination workspace was gone. */
+  copyTabAcross: (tabId: string, targetWorkspaceId: string, targetGroupId: string | null) => string | null
   moveGroupAcross: (groupId: string, targetWorkspaceId: string) => void
-  copyGroupAcross: (groupId: string, targetWorkspaceId: string) => void
+  /** Returns the first tab id of the new group (so callers can follow/activate
+   *  the copy), or null if the source group or destination workspace was gone. */
+  copyGroupAcross: (groupId: string, targetWorkspaceId: string) => string | null
 
   // Navigate to a specific item
   navigateTo: (profileId: string, workspaceId?: string, tabGroupId?: string, tabId?: string) => void
@@ -1521,13 +1525,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   })),
 
-  copyTabAcross: (tabId, targetWorkspaceId, targetGroupId) => set(produce((s: AppState) => {
-    const original = findTabById(s, tabId)
-    if (!original) return
-    const dst = findWorkspaceById(s, targetWorkspaceId)
-    if (!dst) return
-    insertTabIntoTarget(dst, cloneTab(original), targetGroupId)
-  })),
+  copyTabAcross: (tabId, targetWorkspaceId, targetGroupId) => {
+    const original = findTabById(get(), tabId)
+    if (!original) return null
+    // Clone outside produce so the new id is available to return — callers
+    // open the destination window and activate this copy.
+    const clone = cloneTab(original)
+    let inserted = false
+    set(produce((s: AppState) => {
+      const dst = findWorkspaceById(s, targetWorkspaceId)
+      if (!dst) return
+      insertTabIntoTarget(dst, clone, targetGroupId)
+      inserted = true
+    }))
+    return inserted ? clone.id : null
+  },
 
   moveGroupAcross: (groupId, targetWorkspaceId) => set(produce((s: AppState) => {
     const located = locateAndExtractGroup(s, groupId)
@@ -1556,11 +1568,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   })),
 
-  copyGroupAcross: (groupId, targetWorkspaceId) => set(produce((s: AppState) => {
-    const original = findGroupById(s, groupId)
-    if (!original) return
-    const dst = findWorkspaceById(s, targetWorkspaceId)
-    if (!dst) return
+  copyGroupAcross: (groupId, targetWorkspaceId) => {
+    const original = findGroupById(get(), groupId)
+    if (!original) return null
+    // Build the clone outside produce so the first tab's id is available to
+    // return — callers open the destination window and activate that tab.
     const clone: TabGroup = {
       id: uuid(),
       name: original.name,
@@ -1574,9 +1586,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...(t.comment ? { comment: t.comment } : {}),
       })),
     }
-    dst.tabGroups.push(clone)
-    ensureSidebarOrder(dst).push(clone.id)
-  })),
+    let inserted = false
+    set(produce((s: AppState) => {
+      const dst = findWorkspaceById(s, targetWorkspaceId)
+      if (!dst) return
+      dst.tabGroups.push(clone)
+      ensureSidebarOrder(dst).push(clone.id)
+      inserted = true
+    }))
+    return inserted ? (clone.tabs[0]?.id ?? null) : null
+  },
 
   importSelectedWorkspaces: (profileId, candidates) => {
     const created: Workspace[] = candidates.map((c) => ({

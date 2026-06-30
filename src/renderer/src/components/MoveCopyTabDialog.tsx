@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react'
-import { useAppStore } from '../store/app-store'
+import { useAppStore, saveStateNow } from '../store/app-store'
 import type { PickerItem } from './PickerDialog'
 import { PickerDialog } from './PickerDialog'
 
@@ -131,12 +131,46 @@ export function MoveCopyTabDialog({ open, mode, tabIds, currentWorkspaceId, onCl
   const verb = mode === 'move' ? 'Move' : 'Copy'
   const verbing = mode === 'move' ? 'Moving' : 'Copying'
 
-  const handleConfirm = (itemId: string): void => {
+  // Default confirm opens (and focuses) the destination workspace window and
+  // activates the moved/copied tab, so the user follows it to its new home.
+  // Holding Shift (`background`) skips that — the tab is relocated silently and
+  // the current window keeps focus.
+  const handleConfirm = async (itemId: string, { background }: { background: boolean }): Promise<void> => {
     if (tabIds.length === 0) return
     const { workspaceId, groupId } = decodeTarget(itemId)
+
+    // Relocate every tab; remember the first resulting tab id to activate in
+    // the destination. Move preserves ids, copy mints new ones.
+    let targetTabId: string | null = null
     for (const id of tabIds) {
-      if (mode === 'move') moveTabAcross(id, workspaceId, groupId)
-      else copyTabAcross(id, workspaceId, groupId)
+      if (mode === 'move') {
+        moveTabAcross(id, workspaceId, groupId)
+        if (targetTabId === null) targetTabId = id
+      } else {
+        const newId = copyTabAcross(id, workspaceId, groupId)
+        if (targetTabId === null) targetTabId = newId
+      }
+    }
+
+    if (!background) {
+      // Resolve the destination's profile + name to open its window.
+      let destProfileId: string | null = null
+      let destWorkspaceName = ''
+      for (const p of profiles) {
+        const w = p.workspaces.find((w) => w.id === workspaceId)
+        if (w) { destProfileId = p.id; destWorkspaceName = w.name; break }
+      }
+      if (destProfileId) {
+        // Persist first so a not-yet-open / background destination window has
+        // the relocated tab in its state before it's asked to activate it.
+        await saveStateNow()
+        void window.electronAPI.openWorkspaceWindow(
+          destProfileId,
+          workspaceId,
+          destWorkspaceName,
+          targetTabId ?? undefined,
+        )
+      }
     }
     onClose()
   }
@@ -164,6 +198,7 @@ export function MoveCopyTabDialog({ open, mode, tabIds, currentWorkspaceId, onCl
       items={items}
       emptyMessage="No destinations available"
       confirmVerb={verb}
+      backgroundHint="In background"
       scope={scope}
       onScopeChange={setScope}
       scopeChoices={[

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useAppStore } from '../store/app-store'
+import { useAppStore, saveStateNow } from '../store/app-store'
 import type { PickerItem } from './PickerDialog'
 import { PickerDialog } from './PickerDialog'
 
@@ -77,10 +77,41 @@ export function MoveCopyGroupDialog({ open, mode, groupId, currentProfileId, onC
   const verb = mode === 'move' ? 'Move' : 'Copy'
   const verbing = mode === 'move' ? 'Moving' : 'Copying'
 
-  const handleConfirm = (workspaceId: string): void => {
+  // Default confirm opens (and focuses) the destination workspace window and
+  // activates the group's first tab, so the user follows the group to its new
+  // home. Holding Shift (`background`) relocates it silently and keeps focus
+  // on the current window.
+  const handleConfirm = async (workspaceId: string, { background }: { background: boolean }): Promise<void> => {
     if (!groupId) return
-    if (mode === 'move') moveGroupAcross(groupId, workspaceId)
-    else copyGroupAcross(groupId, workspaceId)
+
+    let targetTabId: string | null = null
+    if (mode === 'move') {
+      moveGroupAcross(groupId, workspaceId)
+      // Move preserves tab ids, so the snapshot's first tab is the one to focus.
+      targetTabId = sourceInfo?.group.tabs[0]?.id ?? null
+    } else {
+      targetTabId = copyGroupAcross(groupId, workspaceId)
+    }
+
+    if (!background) {
+      let destProfileId: string | null = null
+      let destWorkspaceName = ''
+      for (const p of profiles) {
+        const w = p.workspaces.find((w) => w.id === workspaceId)
+        if (w) { destProfileId = p.id; destWorkspaceName = w.name; break }
+      }
+      if (destProfileId) {
+        // Persist first so a not-yet-open destination window has the relocated
+        // group in its state before it's asked to activate the tab.
+        await saveStateNow()
+        void window.electronAPI.openWorkspaceWindow(
+          destProfileId,
+          workspaceId,
+          destWorkspaceName,
+          targetTabId ?? undefined,
+        )
+      }
+    }
     onClose()
   }
 
@@ -100,6 +131,7 @@ export function MoveCopyGroupDialog({ open, mode, groupId, currentProfileId, onC
       items={items}
       emptyMessage="No other workspaces available"
       confirmVerb={verb}
+      backgroundHint="In background"
       scope={scope}
       onScopeChange={setScope}
       scopeChoices={[
