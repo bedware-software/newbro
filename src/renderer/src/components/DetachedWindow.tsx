@@ -17,6 +17,9 @@ interface Props {
   // parent window or another app). Armed only after the popup first gains
   // focus, so the show-sequence's transient blurs don't dismiss it.
   closeOnBlur?: boolean
+  // Keep the popup floating above the app's windows (a modal-ish offer that
+  // shouldn't get buried). Applied at reveal time.
+  alwaysOnTop?: boolean
   /** When set, remember the popup's size + position across opens, keyed by
    *  this string. Saved to localStorage on resize, drag-end, and unmount.
    *  Saved bounds override the `width` / `height` props on subsequent
@@ -91,6 +94,7 @@ export function DetachedWindow({
   resizable = true,
   closeOnEscape = true,
   closeOnBlur = false,
+  alwaysOnTop = false,
   persistKey,
   onClose,
   onWindowChange,
@@ -321,11 +325,11 @@ export function DetachedWindow({
     if (!popup || popup.closed) return
     const id = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        ;(window as any).electronAPI?.detachedWindowShow()
+        ;(window as any).electronAPI?.detachedWindowShow(alwaysOnTop)
       })
     })
     return () => cancelAnimationFrame(id)
-  }, [containerEl])
+  }, [containerEl, alwaysOnTop])
 
   useEffect(() => {
     const popup = popupRef.current

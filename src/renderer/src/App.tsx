@@ -59,6 +59,8 @@ export interface CloudSyncInfo {
   state: 'disabled' | 'idle' | 'syncing' | 'error'
   lastSync: number
   error: string | null
+  /** Non-null only while a sync run is in flight (first-load progress bar). */
+  progress: { done: number; total: number } | null
 }
 
 /** Result of claiming the first-run cloud-sync setup offer. */
@@ -111,7 +113,7 @@ declare global {
       setAsDefaultBrowser: () => Promise<SetAsDefaultBrowserResult>
       openBookmarkFile: () => Promise<string | null>
       saveBookmarkFile: (html: string, suggestedName: string) => Promise<boolean>
-      detachedWindowShow: () => void
+      detachedWindowShow: (alwaysOnTop?: boolean) => void
       onShortcut: (callback: (action: string) => void) => () => void
       onStateUpdated: (callback: (state: unknown) => void) => () => void
       onOpenUrlAsTab: (callback: (url: string) => void) => () => void

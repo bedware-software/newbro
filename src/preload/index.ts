@@ -33,7 +33,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   detachedWindowDragStart: (): Promise<boolean> => ipcRenderer.invoke('detached-window:drag-start'),
   detachedWindowDragUpdate: (): void => { ipcRenderer.send('detached-window:drag-update') },
   detachedWindowDragEnd: (): void => { ipcRenderer.send('detached-window:drag-end') },
-  detachedWindowShow: (): void => { ipcRenderer.send('detached-window:show') },
+  detachedWindowShow: (alwaysOnTop?: boolean): void => { ipcRenderer.send('detached-window:show', { alwaysOnTop: !!alwaysOnTop }) },
   closeWorkspaceWindows: (workspaceIds: string[]): Promise<void> => ipcRenderer.invoke('workspace:close-windows', workspaceIds),
 
   // Logging — fire-and-forget (no await needed)

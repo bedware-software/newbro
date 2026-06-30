@@ -77,6 +77,13 @@ interface SyncConfig {
 
 export type SyncState = 'disabled' | 'idle' | 'syncing' | 'error'
 
+export interface SyncProgress {
+  /** Categories reconciled so far this run. */
+  done: number
+  /** Total categories being reconciled this run. */
+  total: number
+}
+
 export interface SyncInfo {
   enabled: boolean
   folderPath: string
@@ -85,6 +92,9 @@ export interface SyncInfo {
   state: SyncState
   lastSync: number
   error: string | null
+  /** Non-null only while a sync run is in flight — drives the setup dialog's
+   *  first-load progress bar. */
+  progress: SyncProgress | null
 }
 
 const SYNC_SUBDIR = 'newbro-sync'
@@ -176,6 +186,10 @@ let applying = false
 
 const PUSH_DEBOUNCE_MS = 500
 const WATCH_DEBOUNCE_MS = 400
+// Cap on how long we wait for a single envelope to read. Generous enough for a
+// real cloud download to complete, short enough that a wedged sync client
+// doesn't leave the user staring at a frozen "Setting up…" forever.
+const READ_TIMEOUT_MS = 20000
 
 function getConfig(): SyncConfig {
   const cfg = store.get('config')
@@ -237,8 +251,25 @@ function syncDir(): string {
   return path.join(getConfig().folderPath, SYNC_SUBDIR)
 }
 
-function fileFor(cat: SyncCategory): string {
+// Per-device file naming. The whole point: every device writes ONLY its own
+// `<cat>.<deviceId>.json` and reads everyone's, so two devices never write the
+// same file. iCloud / OneDrive create "state 2.json" style conflict copies when
+// two machines write one shared file around the same time — per-device files
+// remove that race entirely. We still read the legacy `<cat>.json` (written by
+// the old single-file scheme) so existing data migrates forward on first run.
+function selfFile(cat: SyncCategory): string {
+  return path.join(syncDir(), `${cat}.${ensureDeviceId()}.json`)
+}
+
+function legacyFile(cat: SyncCategory): string {
   return path.join(syncDir(), `${cat}.json`)
+}
+
+/** Matches this category's per-device files: `<cat>.<uuid>.json`. Deliberately
+ *  strict so cloud conflict copies ("state 2.json", "state(1).json") are
+ *  ignored rather than parsed as real device files. */
+function deviceFileRegex(cat: SyncCategory): RegExp {
+  return new RegExp(`^${cat}\\.[0-9a-fA-F-]{36}\\.json$`)
 }
 
 function ensureSyncDir(): boolean {
@@ -252,32 +283,121 @@ function ensureSyncDir(): boolean {
   }
 }
 
-function readEnvelope(cat: SyncCategory): SyncEnvelope | null {
-  const file = fileFor(cat)
+/** Read a file, but give up after `ms`. Reading an iCloud / OneDrive file that
+ *  the OS hasn't materialized yet (a "dataless" placeholder) blocks until the
+ *  cloud client downloads it — which can be a long time, or forever if the
+ *  client is wedged. We read ASYNCHRONOUSLY (off the main thread) AND cap how
+ *  long we'll wait, so a stuck file can never freeze the whole app. The reject
+ *  doesn't cancel the underlying read; it just lets us move on and let the
+ *  watcher retry once the file finishes downloading. */
+async function readFileWithTimeout(file: string, ms: number): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`read timed out after ${ms}ms (file not yet downloaded?)`)), ms)
+  })
   try {
-    if (!fs.existsSync(file)) return null
-    const raw = fs.readFileSync(file, 'utf-8')
+    return await Promise.race([fs.promises.readFile(file, 'utf-8'), timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+async function readEnvelopeFromFile(file: string, cat: SyncCategory): Promise<SyncEnvelope | null> {
+  try {
+    const raw = await readFileWithTimeout(file, READ_TIMEOUT_MS)
     const env = JSON.parse(raw) as SyncEnvelope
     if (!env || env.category !== cat || typeof env.updatedAt !== 'number' || typeof env.hash !== 'string') {
       return null
     }
     return env
   } catch (err) {
-    // A half-written file (sync client mid-flight) or malformed JSON — skip it
-    // this round; the watcher fires again once the write settles.
-    log.warn('cloud-sync: read envelope failed', { cat, err: String(err) })
+    // Missing file is normal. A timeout, half-written file (sync client
+    // mid-flight), or malformed JSON — skip it this round; the watcher fires
+    // again once the write/download settles.
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+    log.warn('cloud-sync: read envelope failed', { cat, file, err: String(err) })
     return null
   }
 }
 
-function writeEnvelope(cat: SyncCategory, data: unknown, hash: string, updatedAt: number): boolean {
+/** Classify a sync-folder filename for a category:
+ *   - 'device'   → our per-device format `<cat>.<uuid>.json` (the only files we
+ *                  write going forward).
+ *   - 'legacy'   → the old single-file `<cat>.json`.
+ *   - 'conflict' → a cloud conflict copy ("state 2.json", "state(1).json",
+ *                  "state-DESKTOP-x.json", …) created when two devices wrote the
+ *                  same file. We read these so stranded data still merges, and
+ *                  clean them up once superseded.
+ *   - null       → not this category (or a temp file). */
+function classifyCategoryFile(name: string, cat: SyncCategory): 'device' | 'legacy' | 'conflict' | null {
+  if (!name.endsWith('.json') || name.includes('.tmp-')) return null
+  if (deviceFileRegex(cat).test(name)) return 'device'
+  const rest = name.slice(0, -'.json'.length)
+  if (rest === cat) return 'legacy'
+  // Require a non-identifier boundary after the category name so "state" never
+  // matches "settings" / "statexyz". Cloud clients use space, "(", or "-".
+  if (rest.startsWith(cat) && [' ', '(', '-', '.'].includes(rest.charAt(cat.length))) return 'conflict'
+  return null
+}
+
+/** All envelopes for a category across every device file, the legacy single
+ *  file, and any cloud conflict copies — each validated by its envelope's own
+ *  `category` field, so a loose name match can't smuggle in the wrong data. */
+async function listEnvelopes(cat: SyncCategory): Promise<SyncEnvelope[]> {
+  let names: string[]
+  try {
+    names = await fs.promises.readdir(syncDir())
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      log.warn('cloud-sync: readdir failed', { dir: syncDir(), err: String(err) })
+    }
+    return []
+  }
+  const files = names
+    .filter((n) => classifyCategoryFile(n, cat) !== null)
+    .map((n) => path.join(syncDir(), n))
+  const envs: SyncEnvelope[] = []
+  for (const file of files) {
+    const env = await readEnvelopeFromFile(file, cat)
+    if (env) envs.push(env)
+  }
+  return envs
+}
+
+/** Delete legacy / conflict-copy files for a category that are strictly older
+ *  than the newest data we already hold (lastSeen). Per-device files are never
+ *  touched. Safe because we only remove copies whose content is provably
+ *  superseded — their data lives on in a newer file. */
+async function cleanupSupersededFiles(cat: SyncCategory): Promise<void> {
+  const newest = lastSeen.get(cat)?.updatedAt ?? 0
+  if (!newest) return
+  let names: string[]
+  try { names = await fs.promises.readdir(syncDir()) } catch { return }
+  for (const name of names) {
+    const kind = classifyCategoryFile(name, cat)
+    if (kind !== 'legacy' && kind !== 'conflict') continue
+    const file = path.join(syncDir(), name)
+    const env = await readEnvelopeFromFile(file, cat)
+    if (!env || env.updatedAt >= newest) continue // keep anything not provably old
+    try {
+      await fs.promises.unlink(file)
+      log.info('cloud-sync: removed superseded copy', { cat, name })
+    } catch (err) {
+      log.warn('cloud-sync: cleanup unlink failed', { name, err: String(err) })
+    }
+  }
+}
+
+/** Write ONLY this device's own file. Atomic via temp-then-rename so a reader
+ *  on another device never sees a half-written file. */
+function writeEnvelopeSelf(cat: SyncCategory, data: unknown, hash: string, updatedAt: number): boolean {
   if (!ensureSyncDir()) return false
   const env: SyncEnvelope = { schema: 1, category: cat, updatedAt, deviceId: ensureDeviceId(), hash, data }
-  const file = fileFor(cat)
+  const file = selfFile(cat)
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
   try {
     fs.writeFileSync(tmp, JSON.stringify(env), 'utf-8')
-    fs.renameSync(tmp, file) // atomic on the same volume — watcher never sees a partial file
+    fs.renameSync(tmp, file) // atomic on the same volume
     return true
   } catch (err) {
     log.warn('cloud-sync: write envelope failed', { cat, err: String(err) })
@@ -287,6 +407,15 @@ function writeEnvelope(cat: SyncCategory, data: unknown, hash: string, updatedAt
 }
 
 // ── Status broadcast ──
+// Progress of the in-flight reconcile (null when idle). Broadcast so the
+// first-run setup dialog can show a real progress bar.
+let syncProgress: SyncProgress | null = null
+
+function setProgress(progress: SyncProgress | null): void {
+  syncProgress = progress
+  broadcastStatus()
+}
+
 function buildInfo(): SyncInfo {
   const cfg = getConfig()
   return {
@@ -297,6 +426,7 @@ function buildInfo(): SyncInfo {
     state: cfg.enabled ? runtimeState : 'disabled',
     lastSync: cfg.lastSync,
     error: runtimeError,
+    progress: syncProgress,
   }
 }
 
@@ -350,7 +480,7 @@ function pushIfChanged(cat: SyncCategory): void {
   const seen = lastSeen.get(cat)
   if (seen && seen.hash === h) return // nothing new (or echo of an applied payload)
   const updatedAt = Date.now()
-  if (writeEnvelope(cat, data, h, updatedAt)) {
+  if (writeEnvelopeSelf(cat, data, h, updatedAt)) {
     setSeen(cat, h, updatedAt)
     touchLastSync()
     log.info('cloud-sync: pushed', { cat })
@@ -361,39 +491,43 @@ function pushIfChanged(cat: SyncCategory): void {
 async function pullCategory(cat: SyncCategory): Promise<void> {
   if (!isActive(cat)) return
   const adapter = adapters.get(cat)!
-  const env = readEnvelope(cat)
-  if (!env) return
+  log.info('cloud-sync: pulling', { cat })
   const deviceId = ensureDeviceId()
+
+  // Newest-wins across every OTHER device's file (and the legacy single file).
+  // Our own file is authoritative for us, so it never overwrites local state.
+  const envs = await listEnvelopes(cat)
+  let winner: SyncEnvelope | null = null
+  for (const env of envs) {
+    if (env.deviceId === deviceId) continue
+    if (!winner || env.updatedAt > winner.updatedAt) winner = env
+  }
+  if (!winner) return
 
   let localData: unknown
   try { localData = adapter.read() } catch (err) { log.warn('cloud-sync: read failed', { cat, err: String(err) }); return }
   const localHash = hashOf(localData)
 
-  // Our own write coming back through the watcher — just record the mark.
-  if (env.deviceId === deviceId) {
-    setSeen(cat, env.hash, env.updatedAt)
-    return
-  }
-  // Already identical to what we have locally.
-  if (env.hash === localHash) {
-    setSeen(cat, env.hash, env.updatedAt)
+  // Already identical to what we have locally — just record the mark.
+  if (winner.hash === localHash) {
+    setSeen(cat, winner.hash, winner.updatedAt)
     return
   }
   // Content differs: last-write-wins by updatedAt. Don't clobber a local edit
   // that's newer than the remote copy (it'll get pushed instead).
   const localUpdatedAt = lastSeen.get(cat)?.updatedAt ?? 0
-  if (env.updatedAt <= localUpdatedAt) return
+  if (winner.updatedAt <= localUpdatedAt) return
 
   applying = true
   try {
-    await adapter.write(env.data)
-    // Claim we're at the remote's state. For pass-through categories the next
+    await adapter.write(winner.data)
+    // Claim we're at the winner's state. For pass-through categories the next
     // local read hashes identically so no echo push fires; settings normalize
     // on save, which converges in at most one extra round (normalization is
     // idempotent).
-    setSeen(cat, env.hash, env.updatedAt)
+    setSeen(cat, winner.hash, winner.updatedAt)
     touchLastSync()
-    log.info('cloud-sync: adopted', { cat })
+    log.info('cloud-sync: adopted', { cat, from: winner.deviceId })
   } catch (err) {
     log.warn('cloud-sync: apply failed', { cat, err: String(err) })
   } finally {
@@ -443,17 +577,27 @@ async function pullAll(): Promise<void> {
 export async function syncNow(): Promise<SyncInfo> {
   const cfg = getConfig()
   if (!cfg.enabled || !cfg.folderPath) return buildInfo()
+  const active = SYNC_CATEGORIES.filter((cat) => cfg.categories[cat])
   setRuntimeState('syncing')
+  setProgress({ done: 0, total: active.length })
+  log.info('cloud-sync: sync starting', { total: active.length, folder: cfg.folderPath })
   try {
-    for (const cat of SYNC_CATEGORIES) {
-      if (!cfg.categories[cat]) continue
+    let done = 0
+    for (const cat of active) {
       await pullCategory(cat)
       pushIfChanged(cat)
+      await cleanupSupersededFiles(cat)
+      done += 1
+      setProgress({ done, total: active.length })
     }
     setConfig({ lastSync: Date.now() })
     setRuntimeState('idle')
+    log.info('cloud-sync: sync complete', { total: active.length })
   } catch (err) {
     setRuntimeState('error', String(err))
+    log.warn('cloud-sync: sync failed', { err: String(err) })
+  } finally {
+    setProgress(null)
   }
   return buildInfo()
 }
@@ -562,8 +706,9 @@ export function registerCloudSyncIpc(): void {
   // without the native picker. Creates the folder if it doesn't exist yet.
   ipcMain.handle('cloud-sync:setup-with-folder', async (_e, folderPath: string) => {
     if (!folderPath) return buildInfo()
+    log.info('cloud-sync: setup-with-folder', { folderPath })
     try {
-      fs.mkdirSync(folderPath, { recursive: true })
+      await fs.promises.mkdir(folderPath, { recursive: true })
     } catch (err) {
       log.warn('cloud-sync: cannot create setup folder', { folderPath, err: String(err) })
       return buildInfo()

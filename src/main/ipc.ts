@@ -522,9 +522,12 @@ export function registerIpcHandlers(): void {
   // invisible at the OS compositor level while React paints.  Setting opacity
   // back to 1 makes the fully-rendered window appear in a single
   // compositor frame — no white flash.
-  ipcMain.on('detached-window:show', (_e) => {
+  ipcMain.on('detached-window:show', (_e, opts?: { alwaysOnTop?: boolean }) => {
     for (const popup of detachedPopups) {
       if (!popup.isDestroyed() && popup.getOpacity() < 1) {
+        // Only popups still at opacity 0 are being revealed now, so options
+        // passed by the just-rendered DetachedWindow land on the right popup.
+        if (opts?.alwaysOnTop) popup.setAlwaysOnTop(true, 'pop-up-menu')
         popup.setOpacity(1)
         popup.focus()
       }
