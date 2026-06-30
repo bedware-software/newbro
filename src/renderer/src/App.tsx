@@ -17,7 +17,6 @@ import { MoveCopyTabDialog } from './components/MoveCopyTabDialog'
 import { MoveCopyGroupDialog } from './components/MoveCopyGroupDialog'
 import { OpenExternalLinkDialog } from './components/OpenExternalLinkDialog'
 import { CloudSyncSetupDialog } from './components/CloudSyncSetupDialog'
-import { UpdateBanner } from './components/UpdateBanner'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
 
@@ -1119,7 +1118,6 @@ export default function App() {
             onClose={() => setFindBarOpen(false)}
           />
           <WebviewPanel />
-          <UpdateBanner targetRef={webviewColumnRef} disabled={pageFullscreen} />
         </div>
         {/* Hide the bookshelf while a page is in fullscreen (cinema mode) so
             the tab view can fill the full width — it reappears with its prior

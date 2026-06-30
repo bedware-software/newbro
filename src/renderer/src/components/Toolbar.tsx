@@ -16,6 +16,7 @@ import {
   ChevronLeft, ChevronRight, RotateCw, X, ChevronDown,
   User, Layout, Lock, Unlock, ShieldAlert,
   Menu, Globe, Copy, Check, Puzzle, Search, Download as DownloadIcon,
+  RefreshCw, ArrowDown,
 } from 'lucide-react'
 import type { DownloadEntry } from '../App'
 
@@ -539,27 +540,36 @@ function ExtensionActions({
 function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch }: { sidebarVisible: boolean; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void }) {
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
-  const [updatesUnsupported, setUpdatesUnsupported] = useState(false)
+  // Live updater phase, surfaced as a small badge on the Menu button (replacing
+  // the old floating toast): 'checking' → spinner, an update in flight
+  // ('available' / 'downloading' / 'downloaded') → down-arrow, else nothing.
+  const [updatePhase, setUpdatePhase] = useState<string>('idle')
   const triggerRef = useRef<HTMLDivElement>(null)
   // See Dropdown's pressedOpenRef: captures the open-state on mousedown so the
   // toggle isn't fooled by the blur-driven 'cancel' that races the click.
   const pressedOpenRef = useRef(false)
 
-  // Track whether the running build supports auto-updates. The main process
-  // marks unpacked / dev builds with phase: 'unsupported'; we read it once
-  // at mount and stay subscribed for any later flip (won't happen in
-  // practice, but keeps the UI consistent if it ever does).
+  // Subscribe to updater status. The main process marks unpacked / dev builds
+  // with phase 'unsupported'; otherwise phases flow checking → available →
+  // downloading → downloaded (or not-available / error).
   useEffect(() => {
     const api = (window as any).electronAPI
     if (!api) return
     api.getUpdaterStatus?.().then((s: { phase?: string } | null) => {
-      if (s?.phase === 'unsupported') setUpdatesUnsupported(true)
+      if (s?.phase) setUpdatePhase(s.phase)
     })
     const cleanup = api.onUpdaterStatus?.((s: { phase?: string }) => {
-      setUpdatesUnsupported(s?.phase === 'unsupported')
+      setUpdatePhase(s?.phase ?? 'idle')
     })
     return cleanup
   }, [])
+
+  const updatesUnsupported = updatePhase === 'unsupported'
+  const updateChecking = updatePhase === 'checking'
+  const updateReady = updatePhase === 'downloaded'
+  // "A new version is available" — being fetched or already fetched.
+  const updateAvailable =
+    updatePhase === 'available' || updatePhase === 'downloading' || updatePhase === 'downloaded'
 
   // Action handlers keyed by id — same dispatch table the popup will route
   // through via the 'action' event.
@@ -569,6 +579,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
     'settings': onOpenSettings,
     'ui-devtools': () => { window.electronAPI.toggleUiDevTools?.() },
     'check-updates': () => { (window as any).electronAPI.checkForUpdates?.() },
+    'install-update': () => { (window as any).electronAPI.installUpdate?.() },
     'about': onOpenAbout,
     'exit': () => window.electronAPI.quit(),
   }
@@ -592,13 +603,27 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
       { id: 'search', label: 'Search Everything', iconName: 'Search', shortcut: [modKey, 'O'] },
       { id: 'settings', label: 'Settings', iconName: 'Settings', shortcut: [modKey, ','] },
       { id: 'ui-devtools', label: 'UI Developer Tools', iconName: 'Settings', divider: 'before' },
-      {
-        id: 'check-updates',
-        label: updatesUnsupported ? 'Updates Unavailable (Dev Build)' : 'Check for Updates…',
-        iconName: 'Download',
-        disabled: updatesUnsupported,
-        disabledTitle: 'Updates are only available in installed builds.',
-      },
+      updateReady
+        ? {
+            id: 'install-update',
+            label: 'Restart to Install Update',
+            iconName: 'Download',
+          }
+        : {
+            id: 'check-updates',
+            label: updatesUnsupported
+              ? 'Updates Unavailable (Dev Build)'
+              : updateChecking
+                ? 'Checking for Updates…'
+                : updateAvailable
+                  ? 'Downloading Update…'
+                  : 'Check for Updates…',
+            iconName: 'Download',
+            disabled: updatesUnsupported || updateChecking || updateAvailable,
+            disabledTitle: updatesUnsupported
+              ? 'Updates are only available in installed builds.'
+              : undefined,
+          },
       { id: 'about', label: 'About', iconName: 'Info' },
       { id: 'exit', label: 'Exit', iconName: 'LogOut', divider: 'before', destructive: true },
     ]
@@ -635,10 +660,36 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
         onMouseDown={() => { pressedOpenRef.current = open }}
         onClick={handleToggle}
         className="h-8 px-2 shrink-0 flex items-center gap-1 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium"
+        title={
+          updateChecking ? 'Checking for updates…'
+            : updateReady ? 'Update ready — open menu to restart & install'
+            : updateAvailable ? 'New version available'
+            : 'Menu'
+        }
       >
         <Menu size={15} />
         <span>Menu</span>
       </button>
+      {/* Update status badge — mirrors the downloads button. Spinner while
+          checking, a down-arrow when a new version is available (green once
+          downloaded and ready to install). Nothing in the default/idle case. */}
+      {updateChecking ? (
+        <span
+          className="absolute -top-0.5 -right-0.5 w-[14px] h-[14px] rounded-full bg-primary text-primary-foreground flex items-center justify-center pointer-events-none"
+          aria-label="Checking for updates"
+        >
+          <RefreshCw size={9} strokeWidth={3} className="animate-spin" />
+        </span>
+      ) : updateAvailable ? (
+        <span
+          className={`absolute -top-0.5 -right-0.5 w-[14px] h-[14px] rounded-full flex items-center justify-center pointer-events-none ${
+            updateReady ? 'bg-green-500 text-white' : 'bg-primary text-primary-foreground'
+          }`}
+          aria-label={updateReady ? 'Update ready to install' : 'New version available'}
+        >
+          <ArrowDown size={9} strokeWidth={3.5} />
+        </span>
+      ) : null}
     </div>
   )
 }
