@@ -183,6 +183,10 @@ let runtimeError: string | null = null
 // True while we apply an incoming payload, so the resulting local-change
 // notification doesn't immediately bounce back as a push.
 let applying = false
+// Incremented whenever setup/config changes invalidate an in-flight sync run.
+// Async folder reads can outlive a settings click; this keeps stale runs from
+// applying data or touching files after the user has disabled/restarted setup.
+let syncGeneration = 0
 
 const PUSH_DEBOUNCE_MS = 500
 const WATCH_DEBOUNCE_MS = 400
@@ -259,6 +263,10 @@ function syncDir(): string {
 // the old single-file scheme) so existing data migrates forward on first run.
 function selfFile(cat: SyncCategory): string {
   return path.join(syncDir(), `${cat}.${ensureDeviceId()}.json`)
+}
+
+function selfFileExists(cat: SyncCategory): boolean {
+  try { return fs.existsSync(selfFile(cat)) } catch { return false }
 }
 
 function legacyFile(cat: SyncCategory): string {
@@ -368,16 +376,19 @@ async function listEnvelopes(cat: SyncCategory): Promise<SyncEnvelope[]> {
  *  than the newest data we already hold (lastSeen). Per-device files are never
  *  touched. Safe because we only remove copies whose content is provably
  *  superseded — their data lives on in a newer file. */
-async function cleanupSupersededFiles(cat: SyncCategory): Promise<void> {
+async function cleanupSupersededFiles(cat: SyncCategory, generation = syncGeneration): Promise<void> {
+  if (!isRunCurrent(generation) || !isActive(cat)) return
   const newest = lastSeen.get(cat)?.updatedAt ?? 0
   if (!newest) return
   let names: string[]
   try { names = await fs.promises.readdir(syncDir()) } catch { return }
+  if (!isRunCurrent(generation) || !isActive(cat)) return
   for (const name of names) {
     const kind = classifyCategoryFile(name, cat)
     if (kind !== 'legacy' && kind !== 'conflict') continue
     const file = path.join(syncDir(), name)
     const env = await readEnvelopeFromFile(file, cat)
+    if (!isRunCurrent(generation) || !isActive(cat)) return
     if (!env || env.updatedAt >= newest) continue // keep anything not provably old
     try {
       await fs.promises.unlink(file)
@@ -448,6 +459,15 @@ function setRuntimeState(state: SyncState, error: string | null = null): void {
   broadcastStatus()
 }
 
+function advanceSyncGeneration(): number {
+  syncGeneration += 1
+  return syncGeneration
+}
+
+function isRunCurrent(generation: number): boolean {
+  return generation === syncGeneration
+}
+
 // ── Category registration (wired from ipc.ts) ──
 export function registerSyncCategory(cat: SyncCategory, adapter: SyncAdapter): void {
   adapters.set(cat, adapter)
@@ -456,6 +476,11 @@ export function registerSyncCategory(cat: SyncCategory, adapter: SyncAdapter): v
 function isActive(cat: SyncCategory): boolean {
   const cfg = getConfig()
   return cfg.enabled && !!cfg.categories[cat] && adapters.has(cat) && !!cfg.folderPath
+}
+
+function clearPushTimers(): void {
+  for (const timer of pushTimers.values()) clearTimeout(timer)
+  pushTimers.clear()
 }
 
 // ── Push (local → folder) ──
@@ -478,7 +503,7 @@ function pushIfChanged(cat: SyncCategory): void {
   try { data = adapter.read() } catch (err) { log.warn('cloud-sync: read failed', { cat, err: String(err) }); return }
   const h = hashOf(data)
   const seen = lastSeen.get(cat)
-  if (seen && seen.hash === h) return // nothing new (or echo of an applied payload)
+  if (seen && seen.hash === h && selfFileExists(cat)) return // nothing new (or echo of an applied payload)
   const updatedAt = Date.now()
   if (writeEnvelopeSelf(cat, data, h, updatedAt)) {
     setSeen(cat, h, updatedAt)
@@ -488,8 +513,8 @@ function pushIfChanged(cat: SyncCategory): void {
 }
 
 // ── Pull (folder → local) ──
-async function pullCategory(cat: SyncCategory): Promise<void> {
-  if (!isActive(cat)) return
+async function pullCategory(cat: SyncCategory, generation = syncGeneration): Promise<void> {
+  if (!isRunCurrent(generation) || !isActive(cat)) return
   const adapter = adapters.get(cat)!
   log.info('cloud-sync: pulling', { cat })
   const deviceId = ensureDeviceId()
@@ -497,6 +522,7 @@ async function pullCategory(cat: SyncCategory): Promise<void> {
   // Newest-wins across every OTHER device's file (and the legacy single file).
   // Our own file is authoritative for us, so it never overwrites local state.
   const envs = await listEnvelopes(cat)
+  if (!isRunCurrent(generation) || !isActive(cat)) return
   let winner: SyncEnvelope | null = null
   for (const env of envs) {
     if (env.deviceId === deviceId) continue
@@ -506,6 +532,7 @@ async function pullCategory(cat: SyncCategory): Promise<void> {
 
   let localData: unknown
   try { localData = adapter.read() } catch (err) { log.warn('cloud-sync: read failed', { cat, err: String(err) }); return }
+  if (!isRunCurrent(generation) || !isActive(cat)) return
   const localHash = hashOf(localData)
 
   // Already identical to what we have locally — just record the mark.
@@ -520,7 +547,9 @@ async function pullCategory(cat: SyncCategory): Promise<void> {
 
   applying = true
   try {
+    if (!isRunCurrent(generation) || !isActive(cat)) return
     await adapter.write(winner.data)
+    if (!isRunCurrent(generation) || !isActive(cat)) return
     // Claim we're at the winner's state. For pass-through categories the next
     // local read hashes identically so no echo push fires; settings normalize
     // on save, which converges in at most one extra round (normalization is
@@ -565,10 +594,12 @@ function stopWatcher(): void {
 async function pullAll(): Promise<void> {
   const cfg = getConfig()
   if (!cfg.enabled) return
+  const generation = syncGeneration
   for (const cat of SYNC_CATEGORIES) {
-    if (cfg.categories[cat]) await pullCategory(cat)
+    if (!isRunCurrent(generation)) return
+    if (cfg.categories[cat]) await pullCategory(cat, generation)
   }
-  broadcastStatus()
+  if (isRunCurrent(generation)) broadcastStatus()
 }
 
 // ── Public sync operations ──
@@ -577,6 +608,7 @@ async function pullAll(): Promise<void> {
 export async function syncNow(): Promise<SyncInfo> {
   const cfg = getConfig()
   if (!cfg.enabled || !cfg.folderPath) return buildInfo()
+  const generation = syncGeneration
   const active = SYNC_CATEGORIES.filter((cat) => cfg.categories[cat])
   setRuntimeState('syncing')
   setProgress({ done: 0, total: active.length })
@@ -584,20 +616,31 @@ export async function syncNow(): Promise<SyncInfo> {
   try {
     let done = 0
     for (const cat of active) {
-      await pullCategory(cat)
+      if (!isRunCurrent(generation)) break
+      await pullCategory(cat, generation)
+      if (!isRunCurrent(generation)) break
       pushIfChanged(cat)
-      await cleanupSupersededFiles(cat)
+      await cleanupSupersededFiles(cat, generation)
+      if (!isRunCurrent(generation)) break
       done += 1
       setProgress({ done, total: active.length })
     }
-    setConfig({ lastSync: Date.now() })
-    setRuntimeState('idle')
-    log.info('cloud-sync: sync complete', { total: active.length })
+    if (isRunCurrent(generation) && getConfig().enabled && getConfig().folderPath) {
+      setConfig({ lastSync: Date.now() })
+      setRuntimeState('idle')
+      log.info('cloud-sync: sync complete', { total: active.length })
+    } else {
+      log.info('cloud-sync: sync abandoned after setup changed')
+    }
   } catch (err) {
-    setRuntimeState('error', String(err))
-    log.warn('cloud-sync: sync failed', { err: String(err) })
+    if (isRunCurrent(generation)) {
+      setRuntimeState('error', String(err))
+      log.warn('cloud-sync: sync failed', { err: String(err) })
+    } else {
+      log.info('cloud-sync: ignored stale sync failure', { err: String(err) })
+    }
   } finally {
-    setProgress(null)
+    if (isRunCurrent(generation)) setProgress(null)
   }
   return buildInfo()
 }
@@ -616,11 +659,33 @@ export function flushPushSync(): void {
   }
 }
 
+/** Restart setup on this device without deleting local browser data or the
+ *  chosen cloud folder. We deliberately keep deviceId stable so this install's
+ *  old per-device files remain "ours", and preserve lastSeen so an older cloud
+ *  copy cannot clobber newer local data when setup starts again. */
+export function restartCloudSyncSetup(): SyncInfo {
+  advanceSyncGeneration()
+  clearPushTimers()
+  stopWatcher()
+  syncProgress = null
+  setupPromptClaimed = false
+  setConfig({
+    enabled: false,
+    folderPath: '',
+    lastSync: 0,
+    promptDismissed: false,
+  })
+  setRuntimeState('disabled')
+  log.info('cloud-sync: setup restarted')
+  return buildInfo()
+}
+
 /** Load persisted lastSeen marks, run an initial reconcile, and start watching.
  *  Must run after all categories are registered and before the first windows
  *  open (so restored windows reflect synced state). */
 export async function initCloudSync(): Promise<void> {
   ensureDeviceId()
+  const generation = syncGeneration
   const cfg = getConfig()
   // Restore persisted marks for proper last-write-wins across restarts.
   lastSeen.clear()
@@ -635,10 +700,11 @@ export async function initCloudSync(): Promise<void> {
   setRuntimeState('syncing')
   try {
     await syncNow()
+    if (!isRunCurrent(generation) || !getConfig().enabled || !getConfig().folderPath) return
     startWatcher()
     setRuntimeState('idle')
   } catch (err) {
-    setRuntimeState('error', String(err))
+    if (isRunCurrent(generation)) setRuntimeState('error', String(err))
   }
 }
 
@@ -654,16 +720,19 @@ export function registerCloudSyncIpc(): void {
       properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return buildInfo()
+    advanceSyncGeneration()
+    clearPushTimers()
     setConfig({ folderPath: result.filePaths[0] })
     if (getConfig().enabled) {
       await syncNow()
-      startWatcher()
+      if (getConfig().enabled && getConfig().folderPath) startWatcher()
     }
     broadcastStatus()
     return buildInfo()
   })
 
   ipcMain.handle('cloud-sync:set-enabled', async (_e, enabled: boolean) => {
+    advanceSyncGeneration()
     if (enabled) {
       if (!getConfig().folderPath) return buildInfo() // can't enable without a folder
       // Turning sync on resolves the first-run offer for this device.
@@ -671,7 +740,9 @@ export function registerCloudSyncIpc(): void {
       await initCloudSync()
     } else {
       setConfig({ enabled: false })
+      clearPushTimers()
       stopWatcher()
+      syncProgress = null
       setRuntimeState('disabled')
     }
     return buildInfo()
@@ -680,6 +751,7 @@ export function registerCloudSyncIpc(): void {
   ipcMain.handle('cloud-sync:set-categories', async (_e, patch: Partial<Record<SyncCategory, boolean>>) => {
     const cfg = getConfig()
     const categories = { ...cfg.categories, ...patch }
+    if (cfg.enabled && cfg.folderPath) advanceSyncGeneration()
     setConfig({ categories })
     // Newly-enabled categories should reconcile right away.
     if (cfg.enabled && cfg.folderPath) await syncNow()
@@ -689,6 +761,10 @@ export function registerCloudSyncIpc(): void {
 
   ipcMain.handle('cloud-sync:now', async () => {
     return syncNow()
+  })
+
+  ipcMain.handle('cloud-sync:restart-setup', () => {
+    return restartCloudSyncSetup()
   })
 
   // ── First-run setup offer ──
@@ -713,6 +789,8 @@ export function registerCloudSyncIpc(): void {
       log.warn('cloud-sync: cannot create setup folder', { folderPath, err: String(err) })
       return buildInfo()
     }
+    advanceSyncGeneration()
+    clearPushTimers()
     setConfig({ folderPath, enabled: true, promptDismissed: true })
     await initCloudSync()
     broadcastStatus()

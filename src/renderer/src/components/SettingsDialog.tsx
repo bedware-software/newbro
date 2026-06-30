@@ -452,6 +452,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [recordingTarget, setRecordingTarget] = useState<{ action: string; slot: number } | null>(null)
   const [conflictError, setConflictError] = useState<string | null>(null)
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
+  const [syncRestartConfirmOpen, setSyncRestartConfirmOpen] = useState(false)
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false)
   const [appVersion, setAppVersion] = useState<string>('')
   const [appPaths, setAppPaths] = useState<{ userData: string; cache: string; logs: string; appName: string } | null>(null)
@@ -686,6 +687,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const runSyncNow = useCallback(() => {
     window.electronAPI.cloudSyncNow?.().then(setSyncInfo).catch(() => {})
   }, [])
+  const restartSyncSetup = useCallback(() => {
+    setSyncRestartConfirmOpen(false)
+    window.electronAPI.cloudSyncRestartSetup?.().then(setSyncInfo).catch(() => {})
+  }, [])
 
   const clearPermissionGrant = useCallback((grant: PermissionGrant) => {
     window.electronAPI
@@ -860,6 +865,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     // Fire-and-forget — the main process will relaunch the app immediately.
     window.electronAPI.wipeAllData()
   }
+
+  const canRestartSyncSetup = !!syncInfo
+    && syncInfo.state !== 'syncing'
+    && (syncInfo.enabled || !!syncInfo.folderPath || !!syncInfo.lastSync)
 
   if (!open) return null
 
@@ -1129,6 +1138,23 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   </button>
                   <span className="text-[11px] text-muted-foreground">{syncStatusLabel(syncInfo)}</span>
                 </div>
+              </div>
+
+              {/* Restart setup */}
+              <div className="pt-4 border-t border-border">
+                <h3 className="text-sm font-semibold text-foreground mb-1">Setup</h3>
+                <p className="text-[11px] text-muted-foreground mb-3">
+                  Restart setup to choose a fresh sync folder. Local data and files already in the
+                  sync folder are left untouched.
+                </p>
+                <button
+                  onClick={() => setSyncRestartConfirmOpen(true)}
+                  disabled={!canRestartSyncSetup}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <RotateCcw size={14} />
+                  Restart setup
+                </button>
               </div>
 
               <p className="text-[11px] text-muted-foreground">
@@ -2045,6 +2071,15 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
           </button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={syncRestartConfirmOpen}
+        title="Restart Cloud Sync setup?"
+        message="This turns off Cloud Sync on this device and forgets the selected sync folder. Your local data and files already in the sync folder are left untouched."
+        confirmLabel="Restart setup"
+        onConfirm={restartSyncSetup}
+        onCancel={() => setSyncRestartConfirmOpen(false)}
+      />
 
       <ConfirmDialog
         open={wipeConfirmOpen}

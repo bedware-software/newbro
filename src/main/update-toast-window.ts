@@ -108,7 +108,15 @@ function getOrCreateToast(parent: BrowserWindow): ToastRecord {
     maximizable: false,
     fullscreenable: false,
     skipTaskbar: true,
-    focusable: true,
+    // Never take focus. A focusable, always-on-top child window can grab
+    // activation the moment it first paints (Windows raises it to the
+    // foreground even when shown via showInactive), stealing focus from
+    // whatever the user just opened — e.g. the Settings popup right after
+    // launch. focusable:false (WS_EX_NOACTIVATE / non-activating panel) means
+    // the toast can never be activated, so it never pulls focus from the
+    // active window or raises its owner over a sibling popup. Mouse clicks on
+    // the dismiss / install buttons still register on a non-activating window.
+    focusable: false,
     width: INITIAL_WIDTH,
     height: INITIAL_HEIGHT,
     backgroundColor: '#00000000',

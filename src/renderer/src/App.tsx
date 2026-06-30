@@ -104,6 +104,7 @@ declare global {
       cloudSyncSetEnabled: (enabled: boolean) => Promise<CloudSyncInfo>
       cloudSyncSetCategories: (patch: Partial<Record<SyncCategory, boolean>>) => Promise<CloudSyncInfo>
       cloudSyncNow: () => Promise<CloudSyncInfo>
+      cloudSyncRestartSetup: () => Promise<CloudSyncInfo>
       cloudSyncClaimSetupPrompt: () => Promise<CloudSyncSetupPrompt>
       cloudSyncSetupWithFolder: (folderPath: string) => Promise<CloudSyncInfo>
       cloudSyncDismissPrompt: () => Promise<CloudSyncInfo>
