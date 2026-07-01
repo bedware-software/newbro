@@ -17,6 +17,7 @@ import { MoveCopyTabDialog } from './components/MoveCopyTabDialog'
 import { MoveCopyGroupDialog } from './components/MoveCopyGroupDialog'
 import { OpenExternalLinkDialog } from './components/OpenExternalLinkDialog'
 import { CloudSyncSetupDialog } from './components/CloudSyncSetupDialog'
+import { HttpAuthDialog } from './components/HttpAuthDialog'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
 
@@ -69,6 +70,17 @@ export interface CloudSyncSetupPrompt {
   suggestedFolder: string | null
 }
 
+/** An HTTP auth challenge (Basic/Digest/NTLM/Negotiate) awaiting credentials. */
+export interface HttpAuthRequest {
+  id: string
+  url: string
+  host: string
+  port: number
+  realm: string
+  scheme: string
+  isProxy: boolean
+}
+
 declare global {
   interface Window {
     electronAPI: {
@@ -119,6 +131,8 @@ declare global {
       onOpenUrlAsTab: (callback: (url: string) => void) => () => void
       onOpenUrlAsTabBackground: (callback: (url: string) => void) => () => void
       onOpenExternalUrl: (callback: (url: string) => void) => () => void
+      onHttpAuthRequest: (callback: (req: HttpAuthRequest) => void) => () => void
+      httpAuthRespond: (resp: { id: string; username?: string; password?: string; cancel?: boolean }) => Promise<void>
       onSettingsUpdated: (callback: (settings: unknown) => void) => () => void
       onActivateTab: (callback: (tabId: string) => void) => () => void
       checkForUpdates: () => Promise<UpdateStatus>
@@ -353,6 +367,9 @@ export default function App() {
   // First-run Cloud Sync offer. Null until this window claims the prompt (only
   // the first window across a multi-window restore wins the claim in main).
   const [syncPrompt, setSyncPrompt] = useState<CloudSyncSetupPrompt | null>(null)
+  // Pending HTTP auth challenges (Basic/Digest/NTLM/Negotiate) for this window's
+  // tabs. Shown one at a time; each is answered or cancelled back to main.
+  const [httpAuthQueue, setHttpAuthQueue] = useState<HttpAuthRequest[]>([])
   // Right-hand Bookshelf sidebar visibility, persisted per machine.
   const [bookshelfOpen, setBookshelfOpen] = useState<boolean>(() => localStorage.getItem('newbro-bookshelf-open') === '1')
   useEffect(() => { localStorage.setItem('newbro-bookshelf-open', bookshelfOpen ? '1' : '0') }, [bookshelfOpen])
@@ -369,6 +386,17 @@ export default function App() {
         .catch(() => {})
     }, 1200)
     return () => { cancelled = true; clearTimeout(t) }
+  }, [])
+
+  // HTTP auth prompts (Basic/Digest/NTLM/Negotiate) pushed from main when a
+  // tab in this window hits a 401/407 challenge. Queue them; the dialog shows
+  // one at a time.
+  useEffect(() => {
+    const cleanup = window.electronAPI.onHttpAuthRequest?.((req) => {
+      log.event('http-auth:request', { host: req.host, scheme: req.scheme })
+      setHttpAuthQueue((q) => [...q, req])
+    })
+    return cleanup
   }, [])
   const [findBarOpen, setFindBarOpen] = useState(false)
   // Counter that ticks on every find-in-page shortcut so a second Cmd+F
@@ -1214,6 +1242,13 @@ export default function App() {
           open={syncPrompt.shouldPrompt}
           prompt={syncPrompt}
           onClose={() => setSyncPrompt(null)}
+        />
+      )}
+      {httpAuthQueue[0] && (
+        <HttpAuthDialog
+          key={httpAuthQueue[0].id}
+          request={httpAuthQueue[0]}
+          onDone={() => setHttpAuthQueue((q) => q.slice(1))}
         />
       )}
     </>

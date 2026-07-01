@@ -175,6 +175,19 @@ const wcIdToTabId = new Map<number, string>()
 type ShortcutInstaller = (wc: WebContents, targetWindow: BrowserWindow) => void
 const shortcutInstallers = new Map<number, ShortcutInstaller>()
 
+/** Resolve the workspace BrowserWindow that hosts the given tab WebContents,
+ *  or null if it isn't one of our tabs (e.g. a detached popup or the main
+ *  renderer). Used by the HTTP-auth prompt to show the login dialog on the
+ *  window whose tab triggered the challenge. */
+export function getWindowForTabWebContents(wc: WebContents): BrowserWindow | null {
+  const tabId = wcIdToTabId.get(wc.id)
+  if (!tabId) return null
+  const rec = tabs.get(tabId)
+  if (!rec) return null
+  const win = BrowserWindow.fromId(rec.windowId)
+  return win && !win.isDestroyed() ? win : null
+}
+
 function sendToWindowRenderer(windowId: number, channel: string, payload: unknown): void {
   const win = BrowserWindow.fromId(windowId)
   if (!win || win.isDestroyed()) return

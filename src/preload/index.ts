@@ -361,6 +361,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('settings:updated', handler)
     return () => { ipcRenderer.removeListener('settings:updated', handler) }
   },
+  // HTTP auth (Basic/Digest/NTLM/Negotiate). Main sends a request when a site
+  // challenges; the renderer prompts and replies with credentials or a cancel.
+  onHttpAuthRequest: (callback: (req: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, req: unknown) => callback(req)
+    ipcRenderer.on('http-auth:request', handler)
+    return () => { ipcRenderer.removeListener('http-auth:request', handler) }
+  },
+  httpAuthRespond: (resp: { id: string; username?: string; password?: string; cancel?: boolean }): Promise<void> =>
+    ipcRenderer.invoke('http-auth:respond', resp),
   onActivateTab: (callback: (tabId: string) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, tabId: string) => callback(tabId)
     ipcRenderer.on('activate-tab', handler)

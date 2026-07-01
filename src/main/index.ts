@@ -19,6 +19,7 @@ import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers, registerDetachedPopup } from './ipc'
 import { setupAutoUpdater } from './updater'
 import { initCloudSync, flushPushSync } from './cloud-sync'
+import { promptServerAuth, registerHttpAuthIpc } from './http-auth'
 import {
   loadState,
   loadOpenWindows,
@@ -42,6 +43,7 @@ import {
   destroyTabByWebContents,
   getWebContentsByChromeTabId,
   findTabByWebContents,
+  getWindowForTabWebContents,
 } from './tab-views'
 import { getGrant, setGrant, type PermissionKind } from './permissions-store'
 import {
@@ -693,6 +695,29 @@ function installLoginHandlerOnce(): void {
       wcType: webContents ? (webContents as { getType?: () => string }).getType?.() : null,
       wcId: webContents ? webContents.id : null,
     })
+    // Server auth (not a proxy) for a real tab → prompt the user for
+    // credentials, like a normal browser (Basic / Digest / NTLM / Negotiate).
+    // The extension/SW routing below is only for proxy challenges (e.g.
+    // Browsec) and service-worker fetches, which a corporate site's 401 is not.
+    if (!authInfo.isProxy && webContents) {
+      const authWin = getWindowForTabWebContents(webContents)
+      if (authWin) {
+        event.preventDefault()
+        promptServerAuth(
+          authWin,
+          requestDetails.url,
+          {
+            isProxy: authInfo.isProxy,
+            scheme: authInfo.scheme,
+            host: authInfo.host,
+            port: authInfo.port,
+            realm: authInfo.realm,
+          },
+          callback,
+        )
+        return
+      }
+    }
     // Try to resolve the partition from webContents.session. If
     // webContents is missing, fall back to "the only configured
     // partition" — this is a single-profile-active heuristic that
@@ -3603,6 +3628,7 @@ app.whenReady().then(async () => {
 
   buildMenu()
   registerIpcHandlers()
+  registerHttpAuthIpc()
   installTabPreloadListeners()
   setupAutoUpdater()
   // Pull synced data (tabs/workspaces, settings, …) before the first windows
