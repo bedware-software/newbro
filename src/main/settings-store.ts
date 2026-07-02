@@ -32,6 +32,14 @@ export interface Settings {
    *  must run after app.ready and stays for the app's lifetime). Changes
    *  here require restart to apply. */
   dohMode: 'off' | 'automatic' | 'secure'
+  /** Comma/space/newline-separated host patterns that may use Integrated
+   *  Windows Authentication (NTLM/Negotiate SSO). For these hosts Chromium
+   *  sends the logged-in Windows user's credentials automatically — no prompt.
+   *  Maps to the `--auth-server-allowlist` switch, read once at startup, so
+   *  changes require a restart. Empty = SSO disabled (every challenge prompts,
+   *  unless a saved credential answers it). Wildcards allowed, e.g.
+   *  `*.corp.example.com`. */
+  authServerAllowlist: string
   /** Each action accepts up to {@link MAX_BINDINGS_PER_ACTION} accelerators.
    *  An empty array means the action has no keyboard binding. The shape is
    *  always an array — pre-dual-binding saves (single string per action)
@@ -168,6 +176,7 @@ export const DEFAULT_SETTINGS: Settings = {
     proxyBypassRules: '<-loopback>',
   },
   dohMode: 'automatic',
+  authServerAllowlist: '',
   keybindings: cloneDefaultKeybindings(),
   permissionDefaults: buildDefaultPermissionDefaults(),
 }
@@ -331,6 +340,9 @@ export function loadSettings(): Settings {
     dohMode: KNOWN_DOH_MODES.has(saved?.dohMode as string)
       ? (saved!.dohMode as 'off' | 'automatic' | 'secure')
       : DEFAULT_SETTINGS.dohMode,
+    authServerAllowlist: typeof saved?.authServerAllowlist === 'string'
+      ? saved.authServerAllowlist
+      : DEFAULT_SETTINGS.authServerAllowlist,
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...savedProxy,
@@ -362,6 +374,9 @@ export function saveSettings(settings: Settings): void {
     dohMode: KNOWN_DOH_MODES.has(settings.dohMode as string)
       ? settings.dohMode
       : DEFAULT_SETTINGS.dohMode,
+    authServerAllowlist: typeof settings.authServerAllowlist === 'string'
+      ? settings.authServerAllowlist.trim()
+      : DEFAULT_SETTINGS.authServerAllowlist,
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...settings.proxy,

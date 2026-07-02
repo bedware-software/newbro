@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { CloudSyncInfo, SyncCategory } from '../App'
+import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo } from '../App'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
@@ -31,6 +31,7 @@ interface Settings {
   searchEngine: string
   proxy: ProxySettings
   dohMode: 'off' | 'automatic' | 'secure'
+  authServerAllowlist: string
   /** Each action accepts up to {@link MAX_BINDINGS_PER_ACTION} accelerators. */
   keybindings: Record<string, string[]>
   permissionDefaults: Record<PermissionKind, PermissionPolicy>
@@ -435,6 +436,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
   const [proxy, setProxy] = useState<ProxySettings>({ ...DEFAULT_PROXY_SETTINGS })
   const [dohMode, setDohMode] = useState<'off' | 'automatic' | 'secure'>('automatic')
+  const [authServerAllowlist, setAuthServerAllowlist] = useState('')
   const [keybindings, setKeybindings] = useState<Record<string, string[]>>(() => cloneDefaultKeybindings())
   const [permissionDefaults, setPermissionDefaults] = useState<Record<PermissionKind, PermissionPolicy>>(
     () => buildDefaultPermissionDefaults(),
@@ -442,6 +444,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // Per-site exceptions live in their own main-process store (not in Settings),
   // so they load/clear independently of the Save button.
   const [permissionGrants, setPermissionGrants] = useState<PermissionGrant[]>([])
+  // Saved HTTP-auth sign-ins also live in their own main-process store (never
+  // synced), so they load/remove independently of the Save button.
+  const [savedCredentials, setSavedCredentials] = useState<SavedCredentialInfo[]>([])
   const profiles = useAppStore((s) => s.profiles)
   // Manual "add a site" form (for when a site never triggers an auto-prompt).
   const [addSiteOrigin, setAddSiteOrigin] = useState('')
@@ -649,6 +654,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setDohMode(
         settings.dohMode === 'off' || settings.dohMode === 'secure' ? settings.dohMode : 'automatic'
       )
+      setAuthServerAllowlist(typeof settings.authServerAllowlist === 'string' ? settings.authServerAllowlist : '')
       setKeybindings(normalizeKnownKeybindings(settings.keybindings))
       setPermissionDefaults({
         ...buildDefaultPermissionDefaults(),
@@ -662,6 +668,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   useEffect(() => {
     if (!open || activeTab !== 'permissions') return
     window.electronAPI.permissionsList?.().then(setPermissionGrants).catch(() => {})
+  }, [open, activeTab])
+
+  // Load saved HTTP-auth sign-ins when the General tab is shown (they live in
+  // their own store and never sync). Passwords are never returned — metadata only.
+  useEffect(() => {
+    if (!open || activeTab !== 'general') return
+    window.electronAPI.savedCredentialsList?.().then(setSavedCredentials).catch(() => {})
   }, [open, activeTab])
 
   // ── Cloud sync (synced-folder) ──
@@ -701,6 +714,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
   const clearAllPermissionGrants = useCallback(() => {
     window.electronAPI.permissionsClearAll?.().then(setPermissionGrants).catch(() => {})
+  }, [])
+
+  const removeSavedCredential = useCallback((host: string) => {
+    window.electronAPI.savedCredentialDelete?.(host).then(setSavedCredentials).catch(() => {})
+  }, [])
+
+  const clearAllSavedCredentials = useCallback(() => {
+    window.electronAPI.savedCredentialsClearAll?.().then(setSavedCredentials).catch(() => {})
   }, [])
 
   const handleAddSite = useCallback(() => {
@@ -840,6 +861,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       searchEngine,
       proxy: normalizedProxy,
       dohMode,
+      authServerAllowlist: authServerAllowlist.trim(),
       keybindings: normalizeKnownKeybindings(keybindings),
       permissionDefaults,
     })
@@ -1447,6 +1469,76 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   )}
                   {' '}Restart Newbro after changing this — Chromium applies DNS configuration at startup.
                 </p>
+              </div>
+
+              {/* Integrated Windows Authentication (SSO) */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">Integrated Windows Authentication (SSO)</label>
+                <textarea
+                  value={authServerAllowlist}
+                  onChange={(e) => setAuthServerAllowlist(e.target.value)}
+                  rows={2}
+                  spellCheck={false}
+                  placeholder="owa.example.com, *.corp.example.com"
+                  className="w-full px-3 py-2 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                />
+                <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                  Hosts listed here sign in automatically with your <span className="text-foreground">Windows account</span> (NTLM / Kerberos),
+                  with no password prompt — like Edge in the Local Intranet zone. Separate entries with
+                  commas, spaces, or new lines; wildcards like <span className="font-mono">*.corp.example.com</span> are allowed.
+                  {' '}
+                  <span className="text-amber-500">
+                    Only add hosts you trust — your Windows credentials are sent to them automatically.
+                  </span>
+                  {' '}This uses the account this PC is logged in as. If that isn&apos;t your corporate account, leave
+                  this empty and use a <span className="text-foreground">saved sign-in</span> below instead. Restart Newbro after
+                  changing this — it applies at startup.
+                </p>
+              </div>
+
+              {/* Saved sign-ins (remembered HTTP-auth credentials) */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">Saved sign-ins</label>
+                <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
+                  Corporate credentials you asked Newbro to remember from the sign-in prompt. Newbro answers
+                  that site&apos;s password challenge automatically so you don&apos;t retype it on every launch. Passwords
+                  are encrypted on this device and never leave it — they are not cloud-synced.
+                </p>
+                {savedCredentials.length === 0 ? (
+                  <p className="text-[11px] text-muted-foreground italic">
+                    No saved sign-ins yet. When a site prompts you to sign in, tick “Remember on this device”.
+                  </p>
+                ) : (
+                  <div className="rounded-lg border border-input divide-y divide-border overflow-hidden">
+                    {savedCredentials.map((c) => (
+                      <div key={c.host} className="flex items-center gap-3 px-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm text-foreground truncate" title={c.host}>{c.host}</p>
+                          <p className="text-[11px] text-muted-foreground truncate">
+                            {c.username}{c.scheme ? ` · ${c.scheme.toUpperCase()}` : ''}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeSavedCredential(c.host)}
+                          className="shrink-0 flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                        >
+                          <Trash2 size={12} />
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                    <div className="flex justify-end px-3 py-2 bg-toolbar">
+                      <button
+                        type="button"
+                        onClick={clearAllSavedCredentials}
+                        className="text-[11px] font-medium text-destructive hover:underline"
+                      >
+                        Remove all
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Danger Zone */}

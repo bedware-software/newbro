@@ -19,7 +19,7 @@ import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers, registerDetachedPopup } from './ipc'
 import { setupAutoUpdater } from './updater'
 import { initCloudSync, flushPushSync } from './cloud-sync'
-import { promptServerAuth, registerHttpAuthIpc } from './http-auth'
+import { handleServerAuth, registerHttpAuthIpc } from './http-auth'
 import {
   loadState,
   loadOpenWindows,
@@ -124,6 +124,31 @@ app.commandLine.appendSwitch(
 //   SWs and pages show up under "Remote Target".
 app.commandLine.appendSwitch('remote-debugging-port', '9229')
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
+
+// ── Integrated Windows Authentication (SSO) ──
+// For hosts on this allowlist, Chromium answers NTLM/Negotiate challenges
+// automatically with the logged-in Windows user's credentials — no prompt (the
+// corp intranet / OWA "just works" like Edge in the Local Intranet zone).
+// NOTE: this uses the *ambient* PC account. When that account isn't the corp
+// identity the server expects, use the saved-credential path instead (a
+// credential entered in the sign-in dialog with "remember" ticked) — those
+// answer app.on('login') with explicit corp credentials. Everything not on this
+// list falls back to the credentials dialog. The switch is consumed before the
+// network service starts, so this must run before app-ready and a change
+// requires a restart. Empty = SSO off. Read defensively — a settings read
+// failure must never block startup.
+try {
+  const raw = loadSettings().authServerAllowlist
+  const allowlist = typeof raw === 'string'
+    ? raw.split(/[\s,]+/).filter(Boolean).join(',')
+    : ''
+  if (allowlist) {
+    app.commandLine.appendSwitch('auth-server-allowlist', allowlist)
+    log.info('auth: integrated SSO allowlist enabled', { allowlist })
+  }
+} catch (err) {
+  log.warn('auth: failed to apply auth-server-allowlist', String(err))
+}
 
 // ── Certificate error bypass ──
 // Origins the user has explicitly chosen to bypass for this session.
@@ -695,15 +720,16 @@ function installLoginHandlerOnce(): void {
       wcType: webContents ? (webContents as { getType?: () => string }).getType?.() : null,
       wcId: webContents ? webContents.id : null,
     })
-    // Server auth (not a proxy) for a real tab → prompt the user for
-    // credentials, like a normal browser (Basic / Digest / NTLM / Negotiate).
-    // The extension/SW routing below is only for proxy challenges (e.g.
-    // Browsec) and service-worker fetches, which a corporate site's 401 is not.
+    // Server auth (not a proxy) for a real tab → answer with a saved corp
+    // credential if we have one, else prompt the user, like a normal browser
+    // (Basic / Digest / NTLM / Negotiate). The extension/SW routing below is
+    // only for proxy challenges (e.g. Browsec) and service-worker fetches,
+    // which a corporate site's 401 is not.
     if (!authInfo.isProxy && webContents) {
       const authWin = getWindowForTabWebContents(webContents)
       if (authWin) {
         event.preventDefault()
-        promptServerAuth(
+        handleServerAuth(
           authWin,
           requestDetails.url,
           {

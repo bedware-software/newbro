@@ -7,6 +7,7 @@ import { loadState, saveState, loadLastUsedWorkspace } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
 import { setupPartitionSession, createWorkspaceWindow, getOpenWorkspaceWindows, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest } from './index'
 import { listGrants, setGrant, clearGrant, clearAllGrants, exportGrants, replaceGrants, type PermissionKind, type PermissionDecision } from './permissions-store'
+import { listCredentials, deleteCredential, clearAllCredentials } from './credentials-store'
 import {
   registerSyncCategory,
   registerCloudSyncIpc,
@@ -603,6 +604,18 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('permissions:clear-all', () => {
     clearAllGrants()
     return listGrants()
+  })
+  // Settings → Saved sign-ins: list / remove saved HTTP-auth credentials.
+  // Passwords never cross this boundary — listCredentials returns host/username
+  // metadata only.
+  ipcMain.handle('credentials:list', () => listCredentials())
+  ipcMain.handle('credentials:delete', (_e, host: string) => {
+    deleteCredential(host)
+    return listCredentials()
+  })
+  ipcMain.handle('credentials:clear-all', () => {
+    clearAllCredentials()
+    return listCredentials()
   })
   // Open the OS privacy pane for mic/camera so the user can lift a system-level
   // (TCC on macOS) block the app can't grant itself.

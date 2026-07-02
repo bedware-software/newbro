@@ -368,8 +368,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('http-auth:request', handler)
     return () => { ipcRenderer.removeListener('http-auth:request', handler) }
   },
-  httpAuthRespond: (resp: { id: string; username?: string; password?: string; cancel?: boolean }): Promise<void> =>
+  httpAuthRespond: (resp: { id: string; username?: string; password?: string; remember?: boolean; cancel?: boolean }): Promise<void> =>
     ipcRenderer.invoke('http-auth:respond', resp),
+  // Settings → Saved sign-ins. Passwords never come back over this bridge —
+  // only host/username metadata for display.
+  savedCredentialsList: (): Promise<unknown[]> => ipcRenderer.invoke('credentials:list'),
+  savedCredentialDelete: (host: string): Promise<unknown[]> => ipcRenderer.invoke('credentials:delete', host),
+  savedCredentialsClearAll: (): Promise<unknown[]> => ipcRenderer.invoke('credentials:clear-all'),
   onActivateTab: (callback: (tabId: string) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, tabId: string) => callback(tabId)
     ipcRenderer.on('activate-tab', handler)

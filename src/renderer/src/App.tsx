@@ -36,6 +36,7 @@ interface Settings {
   defaultPageUrl: string
   searchEngine: string
   dohMode: 'off' | 'automatic' | 'secure'
+  authServerAllowlist: string
   /** Each action accepts up to two accelerator strings. Pre-dual-binding
    *  saves are migrated to one-element arrays in the main process. */
   keybindings: Record<string, string[]>
@@ -79,6 +80,22 @@ export interface HttpAuthRequest {
   realm: string
   scheme: string
   isProxy: boolean
+  /** Username to pre-fill — set when a saved credential was just rejected. */
+  savedUsername?: string
+  /** True when a saved credential exists for this host but didn't work, so the
+   *  dialog can say "saved sign-in didn't work, update it". */
+  hadSavedCredential?: boolean
+  /** Whether to offer the "Remember on this device" checkbox (server auth only). */
+  canSave?: boolean
+}
+
+/** Password-free view of a saved HTTP-auth sign-in, for the settings list. */
+export interface SavedCredentialInfo {
+  host: string
+  username: string
+  scheme: string
+  realm: string
+  updatedAt: number
 }
 
 declare global {
@@ -132,7 +149,10 @@ declare global {
       onOpenUrlAsTabBackground: (callback: (url: string) => void) => () => void
       onOpenExternalUrl: (callback: (url: string) => void) => () => void
       onHttpAuthRequest: (callback: (req: HttpAuthRequest) => void) => () => void
-      httpAuthRespond: (resp: { id: string; username?: string; password?: string; cancel?: boolean }) => Promise<void>
+      httpAuthRespond: (resp: { id: string; username?: string; password?: string; remember?: boolean; cancel?: boolean }) => Promise<void>
+      savedCredentialsList: () => Promise<SavedCredentialInfo[]>
+      savedCredentialDelete: (host: string) => Promise<SavedCredentialInfo[]>
+      savedCredentialsClearAll: () => Promise<SavedCredentialInfo[]>
       onSettingsUpdated: (callback: (settings: unknown) => void) => () => void
       onActivateTab: (callback: (tabId: string) => void) => () => void
       checkForUpdates: () => Promise<UpdateStatus>
