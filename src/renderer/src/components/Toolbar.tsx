@@ -32,6 +32,19 @@ function resolveTriggerIcon(name: IconName): typeof User {
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
+/** Convert an Electron accelerator (e.g. "CmdOrCtrl+O") into display segments
+ *  for a dropdown row's shortcut chips (e.g. ['Ctrl', 'O'] or ['⌘', 'O']).
+ *  Mirrors the <kbd> formatting used in Settings so the menu's shortcut hints
+ *  reflect the keybindings the user actually has bound. */
+function acceleratorToSegments(accel: string): string[] {
+  return accel
+    .replace(/CmdOrCtrl/g, isMacOS ? '⌘' : 'Ctrl')
+    .replace(/Shift/g, isMacOS ? '⇧' : 'Shift')
+    .replace(/Alt/g, isMacOS ? '⌥' : 'Alt')
+    .split('+')
+    .filter(Boolean)
+}
+
 interface Props {
   windowWorkspaceId: string | null
   sidebarVisible: boolean
@@ -544,6 +557,10 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   // the old floating toast): 'checking' → spinner, an update in flight
   // ('available' / 'downloading' / 'downloaded') → down-arrow, else nothing.
   const [updatePhase, setUpdatePhase] = useState<string>('idle')
+  // Live keybindings so the menu's shortcut hints reflect the user's actual
+  // bindings rather than hardcoded defaults. Loaded on mount and refreshed
+  // whenever settings are saved from anywhere.
+  const [keybindings, setKeybindings] = useState<Record<string, string[]>>({})
   const triggerRef = useRef<HTMLDivElement>(null)
   // See Dropdown's pressedOpenRef: captures the open-state on mousedown so the
   // toggle isn't fooled by the blur-driven 'cancel' that races the click.
@@ -564,6 +581,18 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
     return cleanup
   }, [])
 
+  useEffect(() => {
+    const api = (window as any).electronAPI
+    if (!api?.loadSettings) return
+    api.loadSettings().then((s: { keybindings?: Record<string, string[]> } | null) => {
+      if (s?.keybindings) setKeybindings(s.keybindings)
+    })
+    const cleanup = api.onSettingsUpdated?.((s: { keybindings?: Record<string, string[]> }) => {
+      if (s?.keybindings) setKeybindings(s.keybindings)
+    })
+    return cleanup
+  }, [])
+
   const updatesUnsupported = updatePhase === 'unsupported'
   const updateChecking = updatePhase === 'checking'
   const updateReady = updatePhase === 'downloaded'
@@ -577,7 +606,6 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
     'toggle-sidebar': onToggleSidebar,
     'search': onOpenSearch,
     'settings': onOpenSettings,
-    'ui-devtools': () => { window.electronAPI.toggleUiDevTools?.() },
     'check-updates': () => { (window as any).electronAPI.checkForUpdates?.() },
     'install-update': () => { (window as any).electronAPI.installUpdate?.() },
     'about': onOpenAbout,
@@ -592,22 +620,27 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   })
 
   const buildActions = (): DropdownAction[] => {
-    const modKey = isMacOS ? '⌘' : 'Ctrl'
+    // Hint the user's actual first binding for each action; omit the chip
+    // entirely if they've cleared it, so we never advertise a dead shortcut.
+    const shortcutFor = (action: string): string[] | undefined => {
+      const accel = keybindings[action]?.[0]
+      return accel ? acceleratorToSegments(accel) : undefined
+    }
     return [
       {
         id: 'toggle-sidebar',
         label: sidebarVisible ? 'Hide Sidebar' : 'Show Sidebar',
         iconName: sidebarVisible ? 'PanelLeftClose' : 'PanelLeft',
-        shortcut: [modKey, '\\'],
+        shortcut: shortcutFor('toggle-sidebar'),
       },
-      { id: 'search', label: 'Search Everything', iconName: 'Search', shortcut: [modKey, 'O'] },
-      { id: 'settings', label: 'Settings', iconName: 'Settings', shortcut: [modKey, ','] },
-      { id: 'ui-devtools', label: 'UI Developer Tools', iconName: 'Settings', divider: 'before' },
+      { id: 'search', label: 'Search Everything', iconName: 'Search', shortcut: shortcutFor('search') },
+      { id: 'settings', label: 'Settings', iconName: 'Settings', shortcut: shortcutFor('settings') },
       updateReady
         ? {
             id: 'install-update',
             label: 'Restart to Install Update',
             iconName: 'Download',
+            divider: 'before',
           }
         : {
             id: 'check-updates',
@@ -619,6 +652,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
                   ? 'Downloading Update…'
                   : 'Check for Updates…',
             iconName: 'Download',
+            divider: 'before',
             disabled: updatesUnsupported || updateChecking || updateAvailable,
             disabledTitle: updatesUnsupported
               ? 'Updates are only available in installed builds.'

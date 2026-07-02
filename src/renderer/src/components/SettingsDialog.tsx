@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo } from '../App'
 import { DetachedWindow } from './DetachedWindow'
@@ -287,7 +287,7 @@ function formatAccelerator(accel: string): React.ReactNode {
   )
 }
 
-export type SettingsTab = 'general' | 'appearance' | 'shortcuts' | 'extensions' | 'permissions' | 'sync' | 'about'
+export type SettingsTab = 'general' | 'appearance' | 'network' | 'enterprise' | 'shortcuts' | 'extensions' | 'permissions' | 'sync' | 'about'
 type Tab = SettingsTab
 
 /** Order + labels for the Cloud Sync category checkboxes. */
@@ -670,10 +670,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     window.electronAPI.permissionsList?.().then(setPermissionGrants).catch(() => {})
   }, [open, activeTab])
 
-  // Load saved HTTP-auth sign-ins when the General tab is shown (they live in
+  // Load saved HTTP-auth sign-ins when the Enterprise tab is shown (they live in
   // their own store and never sync). Passwords are never returned — metadata only.
   useEffect(() => {
-    if (!open || activeTab !== 'general') return
+    if (!open || activeTab !== 'enterprise') return
     window.electronAPI.savedCredentialsList?.().then(setSavedCredentials).catch(() => {})
   }, [open, activeTab])
 
@@ -929,6 +929,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 [
                   { id: 'general', label: 'General', icon: SlidersHorizontal },
                   { id: 'appearance', label: 'Appearance', icon: Palette },
+                  { id: 'network', label: 'Network', icon: Wifi },
+                  { id: 'enterprise', label: 'Enterprise', icon: Building2 },
                   { id: 'shortcuts', label: 'Keyboard Shortcuts', icon: Keyboard },
                   { id: 'extensions', label: 'Extensions', icon: Puzzle },
                   { id: 'permissions', label: 'Site permissions', icon: ShieldCheck },
@@ -1204,57 +1206,60 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </p>
               </div>
 
-              {/* New-tab focus target */}
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">Focus on New Tab</label>
-                <div className="flex gap-2">
-                  {([
-                    { value: 'site' as const, label: 'Site', hint: 'Keystrokes go straight to the loaded page.' },
-                    { value: 'url' as const, label: 'URL bar', hint: 'Type a URL right away, like a fresh Chrome tab.' },
-                  ]).map(({ value, label, hint }) => (
-                    <button
-                      key={value}
-                      onClick={() => setNewTabFocus(value)}
-                      title={hint}
-                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                        newTabFocus === value
-                          ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
+              {/* New-tab focus + tab-number badges, side by side (2-column row) */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* New-tab focus target */}
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-2">Focus on New Tab</label>
+                  <div className="flex gap-2">
+                    {([
+                      { value: 'site' as const, label: 'Site', hint: 'Keystrokes go straight to the loaded page.' },
+                      { value: 'url' as const, label: 'URL bar', hint: 'Type a URL right away, like a fresh Chrome tab.' },
+                    ]).map(({ value, label, hint }) => (
+                      <button
+                        key={value}
+                        onClick={() => setNewTabFocus(value)}
+                        title={hint}
+                        className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                          newTabFocus === value
+                            ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                            : 'bg-secondary text-secondary-foreground hover:bg-muted'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    Where keyboard focus lands when a new tab is opened.
+                  </p>
                 </div>
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  Where keyboard focus lands when a new tab is opened.
-                </p>
-              </div>
 
-              {/* Sidebar tab-number badges */}
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">Tab Number Badges</label>
-                <div className="flex gap-2">
-                  {([
-                    { value: true, label: 'Show' },
-                    { value: false, label: 'Hide' },
-                  ] as const).map(({ value, label }) => (
-                    <button
-                      key={String(value)}
-                      onClick={() => setShowTabNumbers(value)}
-                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                        showTabNumbers === value
-                          ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
+                {/* Sidebar tab-number badges */}
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-2">Tab Number Badges</label>
+                  <div className="flex gap-2">
+                    {([
+                      { value: true, label: 'Show' },
+                      { value: false, label: 'Hide' },
+                    ] as const).map(({ value, label }) => (
+                      <button
+                        key={String(value)}
+                        onClick={() => setShowTabNumbers(value)}
+                        className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                          showTabNumbers === value
+                            ? 'bg-primary text-primary-foreground hover:bg-primary/80'
+                            : 'bg-secondary text-secondary-foreground hover:bg-muted'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    Show a small "1"…"9" badge on the first nine visible sidebar tabs, advertising the CmdOrCtrl+N quick-jump shortcut.
+                  </p>
                 </div>
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  Show a small "1"…"9" badge on the first nine visible sidebar tabs, advertising the CmdOrCtrl+N quick-jump shortcut.
-                </p>
               </div>
 
               {/* Search engine */}
@@ -1377,6 +1382,36 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </div>
               </div>
 
+              {/* Danger Zone */}
+              <div className="pt-4 mt-2 border-t border-destructive/30">
+                <div className="flex items-center gap-2 mb-3">
+                  <AlertTriangle size={14} className="text-destructive" />
+                  <h3 className="text-sm font-semibold text-destructive">Danger Zone</h3>
+                </div>
+                <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 flex items-start gap-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-foreground">Wipe all data</p>
+                    <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                      Permanently deletes the entire Newbro application directory, including every
+                      workspace, tab, bookmark, cookie, login session, cache, history, setting, and
+                      keybinding. The app will relaunch as if freshly installed. This action cannot
+                      be undone.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setWipeConfirmOpen(true)}
+                    className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-destructive text-destructive-foreground hover:opacity-90"
+                  >
+                    <Trash2 size={12} />
+                    Wipe all data
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'network' && (
+            <div className="space-y-6">
               {/* Proxy */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Proxy</label>
@@ -1470,7 +1505,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   {' '}Restart Newbro after changing this — Chromium applies DNS configuration at startup.
                 </p>
               </div>
+            </div>
+          )}
 
+          {activeTab === 'enterprise' && (
+            <div className="space-y-6">
               {/* Integrated Windows Authentication (SSO) */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Integrated Windows Authentication (SSO)</label>
@@ -1539,32 +1578,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     </div>
                   </div>
                 )}
-              </div>
-
-              {/* Danger Zone */}
-              <div className="pt-4 mt-2 border-t border-destructive/30">
-                <div className="flex items-center gap-2 mb-3">
-                  <AlertTriangle size={14} className="text-destructive" />
-                  <h3 className="text-sm font-semibold text-destructive">Danger Zone</h3>
-                </div>
-                <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 flex items-start gap-4">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground">Wipe all data</p>
-                    <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
-                      Permanently deletes the entire Newbro application directory, including every
-                      workspace, tab, bookmark, cookie, login session, cache, history, setting, and
-                      keybinding. The app will relaunch as if freshly installed. This action cannot
-                      be undone.
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setWipeConfirmOpen(true)}
-                    className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-destructive text-destructive-foreground hover:opacity-90"
-                  >
-                    <Trash2 size={12} />
-                    Wipe all data
-                  </button>
-                </div>
               </div>
             </div>
           )}
