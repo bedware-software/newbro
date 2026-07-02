@@ -850,8 +850,15 @@ export function getBrowserActionStateForWindow(
   return { partition, state: getBrowserActionStateForSession(session.fromPartition(partition)) }
 }
 
-// Resolve icon paths once
+// Resolve icon paths once. On Windows use the multi-size .ico: windows with a
+// native frame (DevTools, OAuth popups, any standard-frame child) render a tiny
+// 16x16 title-bar icon, and a single-size 256 source makes Windows crop it (you
+// see only the top of the logo) instead of downscaling. The .ico carries
+// 16/24/32/48/64/128/256 so every slot gets a real sub-size. macOS/Linux keep
+// the PNG (dock/icns pipeline).
 const iconPng = join(__dirname, '../../resources/icon.png')
+const iconIco = join(__dirname, '../../resources/icon.ico')
+const windowIcon = process.platform === 'win32' ? iconIco : iconPng
 
 /** Pull the first URL-shaped argv entry. The OS appends the URL after our
  *  binary path on Windows / Linux when handing off http(s) clicks. */
@@ -2839,7 +2846,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     ...(isMac
       ? { trafficLightPosition: { x: 14, y: 14 } }
       : { autoHideMenuBar: true, titleBarOverlay: { color: '#161616', symbolColor: '#d7d7d7', height: 47 } }),
-    icon: iconPng,
+    icon: windowIcon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

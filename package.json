@@ -1,6 +1,6 @@
 {
   "name": "Newbro",
-  "version": "1.1.148",
+  "version": "1.1.149",
   "author": "Dmitry Surin <dmitry.surin@gmail.com>",
   "description": "Workspace-based browser with profiles and tab groups",
   "repository": {
@@ -52,7 +52,7 @@
       "target": [
         "nsis"
       ],
-      "icon": "resources/icon.png"
+      "icon": "resources/icon.ico"
     },
     "mac": {
       "target": [
