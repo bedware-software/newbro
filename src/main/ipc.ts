@@ -18,7 +18,7 @@ import {
   normalizePasswordOrigin,
   upsertPassword,
 } from './password-store'
-import { detectEdgePasswords, importEdgePasswords } from './edge-password-import'
+import { detectEdgePasswords, importEdgePasswords, openEdgePasswordExport } from './edge-password-import'
 import {
   registerSyncCategory,
   registerCloudSyncIpc,
@@ -164,6 +164,34 @@ const detachedPopups = new Set<BrowserWindow>()
 export function registerDetachedPopup(popup: BrowserWindow): void {
   detachedPopups.add(popup)
   popup.once('closed', () => detachedPopups.delete(popup))
+}
+
+/**
+ * React portals rendered into a detached popup still execute in the opener's
+ * renderer, so IPC sent from Settings identifies the workspace window as its
+ * sender. Prefer the focused, registered popup when choosing a native dialog
+ * owner; otherwise Windows raises the workspace after the dialog closes.
+ */
+function nativeDialogOwner(event: Electron.IpcMainInvokeEvent): BrowserWindow | undefined {
+  const focused = BrowserWindow.getFocusedWindow()
+  if (focused && !focused.isDestroyed() && detachedPopups.has(focused)) return focused
+  const senderWindow = BrowserWindow.fromWebContents(event.sender)
+  return senderWindow && !senderWindow.isDestroyed() ? senderWindow : undefined
+}
+
+function restoreNativeDialogOwner(owner: BrowserWindow | undefined): void {
+  if (!owner || owner.isDestroyed()) return
+  owner.show()
+  owner.moveTop()
+  owner.focus()
+  // Let the native file dialog finish its Windows activation teardown, then
+  // assert the same owner once more. This is transient focus restoration, not
+  // permanent always-on-top behavior.
+  setTimeout(() => {
+    if (owner.isDestroyed()) return
+    owner.moveTop()
+    owner.focus()
+  }, 0)
 }
 
 // Drag session state for detached popup dragging.
@@ -734,15 +762,20 @@ export function registerIpcHandlers(): void {
     return listPasswordEntries(partition)
   })
   ipcMain.handle('passwords:import-csv', async (event, partition: string) => {
-    const owner = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const owner = nativeDialogOwner(event)
     const options: Electron.OpenDialogOptions = {
       title: 'Import passwords from Edge or Chrome',
       properties: ['openFile'],
       filters: [{ name: 'Password CSV', extensions: ['csv'] }],
     }
-    const picked = owner
-      ? await dialog.showOpenDialog(owner, options)
-      : await dialog.showOpenDialog(options)
+    let picked: Electron.OpenDialogReturnValue
+    try {
+      picked = owner
+        ? await dialog.showOpenDialog(owner, options)
+        : await dialog.showOpenDialog(options)
+    } finally {
+      restoreNativeDialogOwner(owner)
+    }
     if (picked.canceled || !picked.filePaths[0]) return null
     const file = picked.filePaths[0]
     const stat = await fs.promises.stat(file)
@@ -752,6 +785,7 @@ export function registerIpcHandlers(): void {
     return { result, entries: listPasswordEntries(partition) }
   })
   ipcMain.handle('passwords:edge-detect', () => detectEdgePasswords())
+  ipcMain.handle('passwords:edge-open-export', (_event, profileId: string) => openEdgePasswordExport(profileId))
   ipcMain.handle('passwords:import-edge', async (_event, partition: string) => {
     const result = await importEdgePasswords(partition)
     return { result, entries: listPasswordEntries(partition) }

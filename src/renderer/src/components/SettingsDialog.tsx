@@ -465,6 +465,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [edgeDetecting, setEdgeDetecting] = useState(false)
   const [edgeImporting, setEdgeImporting] = useState(false)
   const [edgeImportConfirmOpen, setEdgeImportConfirmOpen] = useState(false)
+  const [edgeExportHelpOpen, setEdgeExportHelpOpen] = useState(false)
+  const [edgeExportOpeningProfile, setEdgeExportOpeningProfile] = useState<string | null>(null)
   const [passwordNotice, setPasswordNotice] = useState<string | null>(null)
   const [passwordError, setPasswordError] = useState<string | null>(null)
   const [passwordClearConfirmOpen, setPasswordClearConfirmOpen] = useState(false)
@@ -493,6 +495,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [extInstalling, setExtInstalling] = useState(false)
   const [extError, setExtError] = useState<string | null>(null)
   const [defaultBrowserStatus, setDefaultBrowserStatus] = useState<DefaultBrowserStatus | null>(null)
+  const edgeAppBoundPasswordCount = edgeSource?.appBoundPasswordCount || 0
+  const edgeDirectPasswordCount = Math.max(0, (edgeSource?.passwordCount || 0) - edgeAppBoundPasswordCount)
   const [defaultBrowserBusy, setDefaultBrowserBusy] = useState(false)
   // Set after the user clicks "Make default" on Windows — the OS pane has
   // been opened and we want to remind them to actually pick Newbro there
@@ -826,14 +830,30 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       const parts = [`${r.imported} imported`, `${r.updated} updated`]
       if (r.skipped) parts.push(`${r.skipped} skipped`)
       if (r.invalid) parts.push(`${r.invalid} invalid`)
-      if (r.unsupported) parts.push(`${r.unsupported} protected by Edge`)
-      setPasswordNotice(`${parts.join(' · ')}. Microsoft Edge was left unchanged.`)
+      if (r.appBound) parts.push(`${r.appBound} require Edge export`)
+      if (r.unsupported) parts.push(`${r.unsupported} unsupported`)
+      setPasswordNotice(
+        `${parts.join(' · ')}. Microsoft Edge was left unchanged.${r.appBound ? ' Use Import from Edge for the protected passwords.' : ''}`,
+      )
     } catch (err) {
       setPasswordError(err instanceof Error ? err.message : String(err))
     } finally {
       setEdgeImporting(false)
     }
   }, [passwordPartition])
+
+  const handleOpenEdgePasswordExport = useCallback(async (profileId: string) => {
+    setEdgeExportOpeningProfile(profileId)
+    setPasswordNotice(null)
+    setPasswordError(null)
+    try {
+      await window.electronAPI.edgePasswordsOpenExport(profileId)
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setEdgeExportOpeningProfile(null)
+    }
+  }, [])
 
   const handleSavePasswordEntry = useCallback(async () => {
     if (!passwordPartition || !passwordEditor) return
@@ -1325,19 +1345,101 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     ) : (
                       <p className="text-[11px] text-muted-foreground mt-0.5">Microsoft Edge password data was not found on this computer.</p>
                     )}
+                    {!edgeDetecting && edgeAppBoundPasswordCount > 0 && (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        {edgeAppBoundPasswordCount === edgeSource?.passwordCount ? 'All' : edgeAppBoundPasswordCount} protected by Edge; Using temporary CSV-file is required.
+                      </p>
+                    )}
                   </div>
                   {edgeSource?.supported && edgeSource.passwordCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setEdgeImportConfirmOpen(true)}
-                      disabled={!passwordPartition || edgeImporting}
-                      className="flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 shrink-0"
-                    >
-                      {edgeImporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-                      {edgeImporting ? 'Importing…' : 'Import from Edge'}
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {edgeDirectPasswordCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setEdgeImportConfirmOpen(true)}
+                          disabled={!passwordPartition || edgeImporting}
+                          className="flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                        >
+                          {edgeImporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                          {edgeImporting ? 'Importing…' : 'Import from Edge'}
+                        </button>
+                      )}
+                      {edgeAppBoundPasswordCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setEdgeExportHelpOpen((current) => !current)}
+                          disabled={!passwordPartition}
+                          className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 ${
+                            edgeDirectPasswordCount > 0
+                              ? 'bg-secondary text-secondary-foreground'
+                              : 'bg-primary text-primary-foreground'
+                          }`}
+                        >
+                          <ExternalLink size={13} />
+                          Import from Edge…
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
+
+                {edgeExportHelpOpen && edgeAppBoundPasswordCount > 0 && edgeSource && (
+                  <div className="mb-3 rounded-md border border-input bg-secondary/40 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-semibold text-foreground">Move Edge-protected passwords</p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                          Edge's app-bound encryption only lets Edge unlock these passwords. Export each profile below, then import each CSV into {profileNameForPartition(passwordPartition)}. Exported CSV files contain plaintext passwords.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setEdgeExportHelpOpen(false)}
+                        className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                        aria-label="Close Edge export help"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {edgeSource.profiles.filter((profile) => profile.appBoundPasswordCount > 0).map((profile) => (
+                        <div key={profile.id} className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs text-foreground">{profile.name}</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              {profile.appBoundPasswordCount} protected {profile.appBoundPasswordCount === 1 ? 'password' : 'passwords'}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEdgePasswordExport(profile.id)}
+                            disabled={edgeExportOpeningProfile !== null}
+                            className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-secondary px-3 text-xs font-medium text-secondary-foreground hover:bg-muted disabled:opacity-50"
+                          >
+                            {edgeExportOpeningProfile === profile.id
+                              ? <Loader2 size={12} className="animate-spin" />
+                              : <ExternalLink size={12} />}
+                            Open in Edge
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex items-center justify-between gap-3 border-t border-border pt-3">
+                      <p className="text-[10px] leading-relaxed text-muted-foreground">
+                        In Edge choose More → Export passwords, approve Windows authentication, and save the CSV. Delete it after import.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleImportPasswords}
+                        disabled={!passwordPartition || passwordImporting}
+                        className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                      >
+                        {passwordImporting ? <Loader2 size={12} className="animate-spin" /> : <FileUp size={12} />}
+                        Choose CSV to import
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex flex-wrap items-center gap-2 mb-3">
                   <button
@@ -2622,7 +2724,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       <ConfirmDialog
         open={edgeImportConfirmOpen}
         title="Import passwords from Microsoft Edge?"
-        message={`Newbro will use the operating system to unlock Edge's local password data, then copy ${edgeSource?.passwordCount || 'the detected'} passwords into ${profileNameForPartition(passwordPartition)}. Microsoft Edge will not be changed.`}
+        message={`Newbro will use the operating system to unlock ${edgeDirectPasswordCount || 'the detected'} compatible Edge passwords and copy them into ${profileNameForPartition(passwordPartition)}. Microsoft Edge will not be changed.${edgeAppBoundPasswordCount ? ` The remaining ${edgeAppBoundPasswordCount} must be exported by Edge.` : ''}`}
         confirmLabel="Import passwords"
         tone="primary"
         onConfirm={handleImportEdgePasswords}

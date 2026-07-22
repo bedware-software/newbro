@@ -23,6 +23,7 @@ export interface EdgeProfileInfo {
   id: string
   name: string
   passwordCount: number
+  appBoundPasswordCount: number
 }
 
 export interface EdgePasswordSourceInfo {
@@ -30,6 +31,7 @@ export interface EdgePasswordSourceInfo {
   supported: boolean
   profiles: EdgeProfileInfo[]
   passwordCount: number
+  appBoundPasswordCount: number
   reason?: string
 }
 
@@ -38,6 +40,7 @@ export interface EdgePasswordImportResult {
   updated: number
   skipped: number
   invalid: number
+  appBound: number
   unsupported: number
   profiles: number
 }
@@ -115,15 +118,26 @@ function loginTableColumns(db: DatabaseSync): Set<string> {
   return new Set(rows.map((row) => String(row.name || '')))
 }
 
-function countLogins(db: DatabaseSync): number {
+function inspectLogins(db: DatabaseSync): { passwordCount: number; appBoundPasswordCount: number } {
   const columns = loginTableColumns(db)
-  if (!columns.has('origin_url') || !columns.has('username_value') || !columns.has('password_value')) return 0
+  if (!columns.has('origin_url') || !columns.has('username_value') || !columns.has('password_value')) {
+    return { passwordCount: 0, appBoundPasswordCount: 0 }
+  }
   const filters = ["length(origin_url) > 0", "length(username_value) > 0", "length(password_value) > 0"]
   if (columns.has('blacklisted_by_user')) filters.push('blacklisted_by_user = 0')
   if (columns.has('blocked_by_user')) filters.push('blocked_by_user = 0')
-  const row = db.prepare(`SELECT count(*) AS total FROM logins WHERE ${filters.join(' AND ')}`).get() as { total?: unknown }
+  const row = db.prepare(
+    `SELECT count(*) AS total,
+      sum(CASE WHEN hex(substr(password_value, 1, 3)) = '763230' THEN 1 ELSE 0 END) AS app_bound
+    FROM logins WHERE ${filters.join(' AND ')}`,
+  ).get() as { total?: unknown; app_bound?: unknown }
   const total = Number(row?.total || 0)
-  return Number.isSafeInteger(total) && total > 0 ? total : 0
+  const passwordCount = Number.isSafeInteger(total) && total > 0 ? total : 0
+  const appBound = Number(row?.app_bound || 0)
+  const appBoundPasswordCount = Number.isSafeInteger(appBound) && appBound > 0
+    ? Math.min(appBound, passwordCount)
+    : 0
+  return { passwordCount, appBoundPasswordCount }
 }
 
 async function findEdgeProfiles(): Promise<{ root: string | null; profiles: EdgeProfileSource[] }> {
@@ -148,8 +162,11 @@ async function findEdgeProfiles(): Promise<{ root: string | null; profiles: Edge
     const loginDataPath = path.join(root, id, 'Login Data')
     if (!(await pathExists(loginDataPath))) continue
     let passwordCount = 0
+    let appBoundPasswordCount = 0
     try {
-      passwordCount = await withLoginDatabase(loginDataPath, countLogins)
+      const inspected = await withLoginDatabase(loginDataPath, inspectLogins)
+      passwordCount = inspected.passwordCount
+      appBoundPasswordCount = inspected.appBoundPasswordCount
     } catch (err) {
       log.warn('passwords: could not inspect Edge profile metadata', { profile: id, err: String(err) })
     }
@@ -157,6 +174,7 @@ async function findEdgeProfiles(): Promise<{ root: string | null; profiles: Edge
       id,
       name: String(infoCache[id]?.name || (id === 'Default' ? 'Default profile' : id)).slice(0, 200),
       passwordCount,
+      appBoundPasswordCount,
       loginDataPath,
     })
   }
@@ -170,17 +188,66 @@ export async function detectEdgePasswords(): Promise<EdgePasswordSourceInfo> {
       supported: false,
       profiles: [],
       passwordCount: 0,
+      appBoundPasswordCount: 0,
       reason: 'Direct Microsoft Edge import is available on Windows and macOS.',
     }
   }
   const { root, profiles } = await findEdgeProfiles()
-  const publicProfiles = profiles.map(({ id, name, passwordCount }) => ({ id, name, passwordCount }))
+  const publicProfiles = profiles.map(({ id, name, passwordCount, appBoundPasswordCount }) => ({
+    id,
+    name,
+    passwordCount,
+    appBoundPasswordCount,
+  }))
   return {
     installed: !!root && await pathExists(root),
     supported: true,
     profiles: publicProfiles,
     passwordCount: publicProfiles.reduce((total, profile) => total + profile.passwordCount, 0),
+    appBoundPasswordCount: publicProfiles.reduce((total, profile) => total + profile.appBoundPasswordCount, 0),
   }
+}
+
+async function edgeExecutablePath(): Promise<string | null> {
+  const roots = [
+    process.env['ProgramFiles(x86)'],
+    process.env.ProgramFiles,
+    process.env.LOCALAPPDATA,
+  ].filter((value): value is string => !!value)
+  for (const root of roots) {
+    const executable = path.join(root, 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+    if (await pathExists(executable)) return executable
+  }
+  return null
+}
+
+function launchEdgePasswordManager(executable: string, profileId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, [`--profile-directory=${profileId}`, 'edge://wallet/passwords'], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    child.once('error', reject)
+    child.once('spawn', () => {
+      child.unref()
+      resolve()
+    })
+  })
+}
+
+/** Open Edge's own authenticated export UI for one detected profile. */
+export async function openEdgePasswordExport(profileId: string): Promise<void> {
+  if (process.platform !== 'win32') {
+    throw new Error('The assisted Edge export flow is only needed on Windows.')
+  }
+  const { profiles } = await findEdgeProfiles()
+  const profile = profiles.find((candidate) =>
+    candidate.id === profileId && candidate.appBoundPasswordCount > 0,
+  )
+  if (!profile) throw new Error('That Microsoft Edge password profile was not found.')
+  const executable = await edgeExecutablePath()
+  if (!executable) throw new Error('Microsoft Edge could not be opened. Open Edge Passwords manually and export a CSV.')
+  await launchEdgePasswordManager(executable, profile.id)
 }
 
 function runProcess(command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
@@ -258,6 +325,20 @@ export async function importEdgePasswords(partition: string): Promise<EdgePasswo
   const { root, profiles } = await findEdgeProfiles()
   if (!root || profiles.length === 0) throw new Error('No Microsoft Edge password profiles were found.')
 
+  const passwordCount = profiles.reduce((total, profile) => total + profile.passwordCount, 0)
+  const appBoundPasswordCount = profiles.reduce((total, profile) => total + profile.appBoundPasswordCount, 0)
+  if (process.platform === 'win32' && passwordCount > 0 && appBoundPasswordCount === passwordCount) {
+    return {
+      imported: 0,
+      updated: 0,
+      skipped: 0,
+      invalid: 0,
+      appBound: Math.min(appBoundPasswordCount, MAX_EDGE_PASSWORDS),
+      unsupported: 0,
+      profiles: profiles.filter((profile) => profile.appBoundPasswordCount > 0).length,
+    }
+  }
+
   let key: Buffer
   try {
     key = process.platform === 'darwin' ? await macEdgeKey() : await windowsEdgeKey(root)
@@ -276,6 +357,7 @@ export async function importEdgePasswords(partition: string): Promise<EdgePasswo
       updated: 0,
       skipped: 0,
       invalid: 0,
+      appBound: 0,
       unsupported: 0,
       profiles: 0,
     }
@@ -284,7 +366,7 @@ export async function importEdgePasswords(partition: string): Promise<EdgePasswo
     )
 
     for (const profile of profiles) {
-      const processed = result.imported + result.updated + result.skipped + result.invalid + result.unsupported
+      const processed = result.imported + result.updated + result.skipped + result.invalid + result.appBound + result.unsupported
       if (processed >= MAX_EDGE_PASSWORDS) break
       let rows: EdgeLoginRow[]
       try {
@@ -302,7 +384,7 @@ export async function importEdgePasswords(partition: string): Promise<EdgePasswo
         if (process.platform === 'win32' && prefix === 'v20') {
           // Current Edge app-bound encryption is intentionally tied to Edge and
           // cannot be safely unwrapped by another desktop app.
-          result.unsupported += 1
+          result.appBound += 1
           continue
         }
         const password = process.platform === 'darwin'

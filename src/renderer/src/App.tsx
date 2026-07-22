@@ -125,12 +125,14 @@ export interface PasswordImportResult {
 export interface EdgePasswordSourceInfo {
   installed: boolean
   supported: boolean
-  profiles: Array<{ id: string; name: string; passwordCount: number }>
+  profiles: Array<{ id: string; name: string; passwordCount: number; appBoundPasswordCount: number }>
   passwordCount: number
+  appBoundPasswordCount: number
   reason?: string
 }
 
 export interface EdgePasswordImportResult extends PasswordImportResult {
+  appBound: number
   unsupported: number
   profiles: number
 }
@@ -206,6 +208,7 @@ declare global {
         entries: PasswordEntryInfo[]
       } | null>
       edgePasswordsDetect: () => Promise<EdgePasswordSourceInfo>
+      edgePasswordsOpenExport: (profileId: string) => Promise<void>
       passwordsImportEdge: (partition: string) => Promise<{
         result: EdgePasswordImportResult
         entries: PasswordEntryInfo[]

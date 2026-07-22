@@ -62,6 +62,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   passwordsClear: (partition: string): Promise<unknown[]> => ipcRenderer.invoke('passwords:clear', partition),
   passwordsImportCsv: (partition: string): Promise<unknown> => ipcRenderer.invoke('passwords:import-csv', partition),
   edgePasswordsDetect: (): Promise<unknown> => ipcRenderer.invoke('passwords:edge-detect'),
+  edgePasswordsOpenExport: (profileId: string): Promise<void> => ipcRenderer.invoke('passwords:edge-open-export', profileId),
   passwordsImportEdge: (partition: string): Promise<unknown> => ipcRenderer.invoke('passwords:import-edge', partition),
 
   // Cloud sync (synced-folder). Config + status come back as one info object;
