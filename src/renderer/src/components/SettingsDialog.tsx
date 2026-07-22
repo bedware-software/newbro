@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2 } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo } from '../App'
+import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo, PasswordEntryInfo, PasswordImportResult, EdgePasswordSourceInfo, EdgePasswordImportResult } from '../App'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
@@ -32,6 +32,11 @@ interface Settings {
   proxy: ProxySettings
   dohMode: 'off' | 'automatic' | 'secure'
   authServerAllowlist: string
+  passwordManager: {
+    enabled: boolean
+    offerToSave: boolean
+    autofill: 'automatic' | 'on-focus' | 'off'
+  }
   /** Each action accepts up to {@link MAX_BINDINGS_PER_ACTION} accelerators. */
   keybindings: Record<string, string[]>
   permissionDefaults: Record<PermissionKind, PermissionPolicy>
@@ -287,7 +292,7 @@ function formatAccelerator(accel: string): React.ReactNode {
   )
 }
 
-export type SettingsTab = 'general' | 'appearance' | 'network' | 'enterprise' | 'shortcuts' | 'extensions' | 'permissions' | 'sync' | 'about'
+export type SettingsTab = 'general' | 'appearance' | 'passwords' | 'network' | 'enterprise' | 'shortcuts' | 'extensions' | 'permissions' | 'sync' | 'about'
 type Tab = SettingsTab
 
 /** Order + labels for the Cloud Sync category checkboxes. */
@@ -437,6 +442,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [proxy, setProxy] = useState<ProxySettings>({ ...DEFAULT_PROXY_SETTINGS })
   const [dohMode, setDohMode] = useState<'off' | 'automatic' | 'secure'>('automatic')
   const [authServerAllowlist, setAuthServerAllowlist] = useState('')
+  const [passwordManagerEnabled, setPasswordManagerEnabled] = useState(true)
+  const [passwordOfferToSave, setPasswordOfferToSave] = useState(true)
+  const [passwordAutofill, setPasswordAutofill] = useState<'automatic' | 'on-focus' | 'off'>('automatic')
   const [keybindings, setKeybindings] = useState<Record<string, string[]>>(() => cloneDefaultKeybindings())
   const [permissionDefaults, setPermissionDefaults] = useState<Record<PermissionKind, PermissionPolicy>>(
     () => buildDefaultPermissionDefaults(),
@@ -448,6 +456,24 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // synced), so they load/remove independently of the Save button.
   const [savedCredentials, setSavedCredentials] = useState<SavedCredentialInfo[]>([])
   const profiles = useAppStore((s) => s.profiles)
+  const activeProfileId = useAppStore((s) => s.activeProfileId)
+  const [passwordEntries, setPasswordEntries] = useState<PasswordEntryInfo[]>([])
+  const [passwordPartition, setPasswordPartition] = useState('')
+  const [passwordSearch, setPasswordSearch] = useState('')
+  const [passwordImporting, setPasswordImporting] = useState(false)
+  const [edgeSource, setEdgeSource] = useState<EdgePasswordSourceInfo | null>(null)
+  const [edgeDetecting, setEdgeDetecting] = useState(false)
+  const [edgeImporting, setEdgeImporting] = useState(false)
+  const [edgeImportConfirmOpen, setEdgeImportConfirmOpen] = useState(false)
+  const [passwordNotice, setPasswordNotice] = useState<string | null>(null)
+  const [passwordError, setPasswordError] = useState<string | null>(null)
+  const [passwordClearConfirmOpen, setPasswordClearConfirmOpen] = useState(false)
+  const [passwordEditor, setPasswordEditor] = useState<{
+    id?: string
+    origin: string
+    username: string
+    password: string
+  } | null>(null)
   // Manual "add a site" form (for when a site never triggers an auto-prompt).
   const [addSiteOrigin, setAddSiteOrigin] = useState('')
   const [addSiteKind, setAddSiteKind] = useState<PermissionKind>('microphone')
@@ -655,6 +681,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
         settings.dohMode === 'off' || settings.dohMode === 'secure' ? settings.dohMode : 'automatic'
       )
       setAuthServerAllowlist(typeof settings.authServerAllowlist === 'string' ? settings.authServerAllowlist : '')
+      setPasswordManagerEnabled(settings.passwordManager?.enabled !== false)
+      setPasswordOfferToSave(settings.passwordManager?.offerToSave !== false)
+      setPasswordAutofill(
+        settings.passwordManager?.autofill === 'on-focus' || settings.passwordManager?.autofill === 'off'
+          ? settings.passwordManager.autofill
+          : 'automatic',
+      )
       setKeybindings(normalizeKnownKeybindings(settings.keybindings))
       setPermissionDefaults({
         ...buildDefaultPermissionDefaults(),
@@ -668,6 +701,33 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   useEffect(() => {
     if (!open || activeTab !== 'permissions') return
     window.electronAPI.permissionsList?.().then(setPermissionGrants).catch(() => {})
+  }, [open, activeTab])
+
+  // Passwords are scoped to a browser profile, just like cookies and login
+  // sessions. Select the active profile on first open, then keep the list in
+  // sync with the profile picker in this pane.
+  useEffect(() => {
+    if (!open || activeTab !== 'passwords') return
+    const active = profiles.find((profile) => profile.id === activeProfileId)?.partition
+    const partition = passwordPartition || active || profiles[0]?.partition || ''
+    if (!partition) return
+    if (partition !== passwordPartition) setPasswordPartition(partition)
+    window.electronAPI.passwordsList(partition).then(setPasswordEntries).catch((err) => {
+      setPasswordError(err instanceof Error ? err.message : String(err))
+    })
+  }, [open, activeTab, profiles, activeProfileId, passwordPartition])
+
+  // Edge detection reads profile names and password counts only. The actual
+  // password database is not decrypted until the user confirms an import.
+  useEffect(() => {
+    if (!open || activeTab !== 'passwords' || !window.electronAPI.edgePasswordsDetect) return
+    let cancelled = false
+    setEdgeDetecting(true)
+    window.electronAPI.edgePasswordsDetect()
+      .then((source) => { if (!cancelled) setEdgeSource(source) })
+      .catch(() => { if (!cancelled) setEdgeSource(null) })
+      .finally(() => { if (!cancelled) setEdgeDetecting(false) })
+    return () => { cancelled = true }
   }, [open, activeTab])
 
   // Load saved HTTP-auth sign-ins when the Enterprise tab is shown (they live in
@@ -723,6 +783,100 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const clearAllSavedCredentials = useCallback(() => {
     window.electronAPI.savedCredentialsClearAll?.().then(setSavedCredentials).catch(() => {})
   }, [])
+
+  const handlePasswordProfileChange = useCallback((partition: string) => {
+    setPasswordPartition(partition)
+    setPasswordSearch('')
+    setPasswordNotice(null)
+    setPasswordError(null)
+    setPasswordEditor(null)
+  }, [])
+
+  const handleImportPasswords = useCallback(async () => {
+    if (!passwordPartition) return
+    setPasswordImporting(true)
+    setPasswordNotice(null)
+    setPasswordError(null)
+    try {
+      const imported = await window.electronAPI.passwordsImportCsv(passwordPartition)
+      if (!imported) return
+      setPasswordEntries(imported.entries)
+      const r: PasswordImportResult = imported.result
+      const parts = [`${r.imported} imported`, `${r.updated} updated`]
+      if (r.skipped) parts.push(`${r.skipped} skipped`)
+      if (r.invalid) parts.push(`${r.invalid} invalid`)
+      setPasswordNotice(`${parts.join(' · ')}. Delete the plaintext CSV when you no longer need it.`)
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPasswordImporting(false)
+    }
+  }, [passwordPartition])
+
+  const handleImportEdgePasswords = useCallback(async () => {
+    setEdgeImportConfirmOpen(false)
+    if (!passwordPartition) return
+    setEdgeImporting(true)
+    setPasswordNotice(null)
+    setPasswordError(null)
+    try {
+      const imported = await window.electronAPI.passwordsImportEdge(passwordPartition)
+      setPasswordEntries(imported.entries)
+      const r: EdgePasswordImportResult = imported.result
+      const parts = [`${r.imported} imported`, `${r.updated} updated`]
+      if (r.skipped) parts.push(`${r.skipped} skipped`)
+      if (r.invalid) parts.push(`${r.invalid} invalid`)
+      if (r.unsupported) parts.push(`${r.unsupported} protected by Edge`)
+      setPasswordNotice(`${parts.join(' · ')}. Microsoft Edge was left unchanged.`)
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setEdgeImporting(false)
+    }
+  }, [passwordPartition])
+
+  const handleSavePasswordEntry = useCallback(async () => {
+    if (!passwordPartition || !passwordEditor) return
+    setPasswordNotice(null)
+    setPasswordError(null)
+    try {
+      const entries = await window.electronAPI.passwordUpsert({
+        id: passwordEditor.id,
+        partition: passwordPartition,
+        origin: passwordEditor.origin,
+        username: passwordEditor.username,
+        // A blank password while editing means "keep the encrypted value".
+        password: passwordEditor.id && !passwordEditor.password ? undefined : passwordEditor.password,
+      })
+      setPasswordEntries(entries)
+      setPasswordEditor(null)
+      setPasswordNotice(passwordEditor.id ? 'Password entry updated.' : 'Password entry added.')
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : String(err))
+    }
+  }, [passwordPartition, passwordEditor])
+
+  const handleDeletePassword = useCallback(async (id: string) => {
+    if (!passwordPartition) return
+    setPasswordEntries(await window.electronAPI.passwordDelete(passwordPartition, id))
+    setPasswordEditor((editor) => editor?.id === id ? null : editor)
+  }, [passwordPartition])
+
+  const handleClearPasswords = useCallback(async () => {
+    setPasswordClearConfirmOpen(false)
+    if (!passwordPartition) return
+    setPasswordEntries(await window.electronAPI.passwordsClear(passwordPartition))
+    setPasswordEditor(null)
+    setPasswordNotice('All saved passwords were removed from this profile.')
+  }, [passwordPartition])
+
+  const filteredPasswordEntries = passwordEntries.filter((entry) => {
+    const query = passwordSearch.trim().toLowerCase()
+    if (!query) return true
+    return entry.origin.toLowerCase().includes(query)
+      || entry.username.toLowerCase().includes(query)
+      || entry.name.toLowerCase().includes(query)
+  })
 
   const handleAddSite = useCallback(() => {
     const partition = addSitePartition || profiles[0]?.partition
@@ -862,6 +1016,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       proxy: normalizedProxy,
       dohMode,
       authServerAllowlist: authServerAllowlist.trim(),
+      passwordManager: {
+        enabled: passwordManagerEnabled,
+        offerToSave: passwordOfferToSave,
+        autofill: passwordAutofill,
+      },
       keybindings: normalizeKnownKeybindings(keybindings),
       permissionDefaults,
     })
@@ -929,6 +1088,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 [
                   { id: 'general', label: 'General', icon: SlidersHorizontal },
                   { id: 'appearance', label: 'Appearance', icon: Palette },
+                  { id: 'passwords', label: 'Passwords', icon: KeyRound },
                   { id: 'network', label: 'Network', icon: Wifi },
                   { id: 'enterprise', label: 'Enterprise', icon: Building2 },
                   { id: 'shortcuts', label: 'Keyboard Shortcuts', icon: Keyboard },
@@ -1073,6 +1233,278 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     </button>
                   ))}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'passwords' && (
+            <div className="space-y-7">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground mb-1">Password manager</h3>
+                <p className="text-[11px] text-muted-foreground mb-4 leading-relaxed">
+                  Fill website sign-ins and offer to save changes. Passwords are encrypted with
+                  Windows DPAPI or macOS Keychain and stay on this device.
+                </p>
+
+                <div className="divide-y divide-border border-y border-border">
+                  <label className="flex items-center justify-between gap-4 py-3 cursor-pointer">
+                    <span>
+                      <span className="block text-sm text-foreground">Use Newbro password manager</span>
+                      <span className="block text-[11px] text-muted-foreground mt-0.5">Enable filling and save prompts in website forms.</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={passwordManagerEnabled}
+                      onChange={(event) => setPasswordManagerEnabled(event.target.checked)}
+                      className="h-4 w-4 accent-primary shrink-0"
+                    />
+                  </label>
+                  <label className={`flex items-center justify-between gap-4 py-3 ${passwordManagerEnabled ? 'cursor-pointer' : 'opacity-50'}`}>
+                    <span>
+                      <span className="block text-sm text-foreground">Offer to save passwords</span>
+                      <span className="block text-[11px] text-muted-foreground mt-0.5">Ask after a website sign-in or password change.</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={passwordOfferToSave}
+                      disabled={!passwordManagerEnabled}
+                      onChange={(event) => setPasswordOfferToSave(event.target.checked)}
+                      className="h-4 w-4 accent-primary shrink-0"
+                    />
+                  </label>
+                  <label className={`flex items-center justify-between gap-4 py-3 ${passwordManagerEnabled ? '' : 'opacity-50'}`}>
+                    <span>
+                      <span className="block text-sm text-foreground">Autofill behavior</span>
+                      <span className="block text-[11px] text-muted-foreground mt-0.5">Exact website matches only.</span>
+                    </span>
+                    <select
+                      value={passwordAutofill}
+                      disabled={!passwordManagerEnabled}
+                      onChange={(event) => setPasswordAutofill(event.target.value as 'automatic' | 'on-focus' | 'off')}
+                      className="h-8 px-2.5 text-xs bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring shrink-0"
+                    >
+                      <option value="automatic">Fill automatically</option>
+                      <option value="on-focus">Choose on field focus</option>
+                      <option value="off">Never fill</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-end justify-between gap-4 mb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground mb-1">Saved passwords</h3>
+                    <p className="text-[11px] text-muted-foreground">Each browser profile has its own password vault.</p>
+                  </div>
+                  <select
+                    value={passwordPartition}
+                    onChange={(event) => handlePasswordProfileChange(event.target.value)}
+                    className="h-8 max-w-52 px-2.5 text-xs bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {profiles.map((profile) => (
+                      <option key={profile.id} value={profile.partition}>{profile.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-3 border-y border-border py-3 mb-3">
+                  <div className="h-9 w-9 rounded-md bg-secondary flex items-center justify-center text-muted-foreground shrink-0">
+                    {edgeDetecting ? <Loader2 size={15} className="animate-spin" /> : <Compass size={15} />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-foreground">Microsoft Edge</p>
+                    {edgeDetecting ? (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">Looking for saved passwords…</p>
+                    ) : edgeSource?.installed && edgeSource.passwordCount > 0 ? (
+                      <p className="text-[11px] text-muted-foreground mt-0.5 truncate" title={edgeSource.profiles.filter((profile) => profile.passwordCount > 0).map((profile) => profile.name).join(', ')}>
+                        {edgeSource.passwordCount} saved {edgeSource.passwordCount === 1 ? 'password' : 'passwords'} in {edgeSource.profiles.filter((profile) => profile.passwordCount > 0).length} {edgeSource.profiles.filter((profile) => profile.passwordCount > 0).length === 1 ? 'profile' : 'profiles'}
+                      </p>
+                    ) : edgeSource?.installed ? (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">Edge was found, but it has no saved passwords to import.</p>
+                    ) : (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">Microsoft Edge password data was not found on this computer.</p>
+                    )}
+                  </div>
+                  {edgeSource?.supported && edgeSource.passwordCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setEdgeImportConfirmOpen(true)}
+                      disabled={!passwordPartition || edgeImporting}
+                      className="flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 shrink-0"
+                    >
+                      {edgeImporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                      {edgeImporting ? 'Importing…' : 'Import from Edge'}
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => { setPasswordEditor({ origin: '', username: '', password: '' }); setPasswordError(null); setPasswordNotice(null) }}
+                    disabled={!passwordPartition}
+                    className="flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  >
+                    <Plus size={13} />
+                    Add password
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleImportPasswords}
+                    disabled={!passwordPartition || passwordImporting}
+                    className="flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted disabled:opacity-50"
+                  >
+                    {passwordImporting ? <Loader2 size={13} className="animate-spin" /> : <FileUp size={13} />}
+                    Import CSV…
+                  </button>
+                  {passwordEntries.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setPasswordClearConfirmOpen(true)}
+                      className="ml-auto h-8 px-2 text-[11px] font-medium text-destructive hover:underline"
+                    >
+                      Remove all
+                    </button>
+                  )}
+                </div>
+
+                {passwordNotice && (
+                  <p className="mb-3 text-[11px] leading-relaxed text-foreground/80">{passwordNotice}</p>
+                )}
+                {passwordError && (
+                  <p className="mb-3 text-[11px] leading-relaxed text-destructive">{passwordError}</p>
+                )}
+
+                {passwordEditor && (
+                  <div className="mb-4 border-y border-border py-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs font-semibold text-foreground">
+                        {passwordEditor.id ? 'Edit password entry' : 'Add password entry'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setPasswordEditor(null)}
+                        className="h-6 w-6 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
+                        aria-label="Close password editor"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="col-span-2">
+                        <span className="block text-[11px] font-medium text-muted-foreground mb-1">Website</span>
+                        <input
+                          type="text"
+                          value={passwordEditor.origin}
+                          onChange={(event) => setPasswordEditor((current) => current ? { ...current, origin: event.target.value } : current)}
+                          placeholder="https://example.com"
+                          spellCheck={false}
+                          className="w-full h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                        />
+                      </label>
+                      <label>
+                        <span className="block text-[11px] font-medium text-muted-foreground mb-1">Username or email</span>
+                        <input
+                          type="text"
+                          value={passwordEditor.username}
+                          onChange={(event) => setPasswordEditor((current) => current ? { ...current, username: event.target.value } : current)}
+                          autoComplete="off"
+                          className="w-full h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                        />
+                      </label>
+                      <label>
+                        <span className="block text-[11px] font-medium text-muted-foreground mb-1">
+                          Password {passwordEditor.id && <span className="font-normal">(blank keeps current)</span>}
+                        </span>
+                        <input
+                          type="password"
+                          value={passwordEditor.password}
+                          onChange={(event) => setPasswordEditor((current) => current ? { ...current, password: event.target.value } : current)}
+                          autoComplete="new-password"
+                          className="w-full h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                        />
+                      </label>
+                    </div>
+                    <div className="flex justify-end gap-2 mt-3">
+                      <button
+                        type="button"
+                        onClick={() => setPasswordEditor(null)}
+                        className="h-8 px-3 rounded-md text-xs font-medium text-muted-foreground hover:bg-muted"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSavePasswordEntry}
+                        className="h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90"
+                      >
+                        {passwordEditor.id ? 'Save changes' : 'Add password'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {passwordEntries.length > 0 && (
+                  <div className="relative mb-2">
+                    <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                    <input
+                      type="search"
+                      value={passwordSearch}
+                      onChange={(event) => setPasswordSearch(event.target.value)}
+                      placeholder="Search websites and usernames"
+                      className="w-full h-9 pl-9 pr-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                    />
+                  </div>
+                )}
+
+                {passwordEntries.length === 0 ? (
+                  <div className="py-10 text-center border-y border-border">
+                    <KeyRound size={21} className="mx-auto mb-2 text-muted-foreground" />
+                    <p className="text-sm text-foreground">No saved passwords in this profile</p>
+                    <p className="text-[11px] text-muted-foreground mt-1">Import from Edge or save one the next time you sign in.</p>
+                  </div>
+                ) : filteredPasswordEntries.length === 0 ? (
+                  <p className="py-8 text-center text-xs text-muted-foreground border-y border-border">No passwords match your search.</p>
+                ) : (
+                  <div className="border-y border-border divide-y divide-border">
+                    {filteredPasswordEntries.map((entry) => (
+                      <div key={entry.id} className="flex items-center gap-3 py-3">
+                        <div className="h-8 w-8 rounded-md bg-secondary flex items-center justify-center text-muted-foreground shrink-0">
+                          <Globe size={14} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm text-foreground truncate" title={entry.origin}>
+                            {entry.name || new URL(entry.origin).host}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground truncate">
+                            {entry.username} · {new URL(entry.origin).host}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setPasswordEditor({ id: entry.id, origin: entry.origin, username: entry.username, password: '' }); setPasswordError(null); setPasswordNotice(null) }}
+                          className="h-7 w-7 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                          aria-label={`Edit ${entry.username}`}
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePassword(entry.id)}
+                          className="h-7 w-7 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-destructive"
+                          aria-label={`Remove ${entry.username}`}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
+                  Direct Edge import asks the operating system to unlock the local Edge vault and leaves Edge unchanged.
+                  CSV files contain readable passwords, so delete them when you no longer need them. Passwords are not included in Cloud Sync.
+                </p>
               </div>
             </div>
           )}
@@ -2185,6 +2617,25 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
         confirmLabel="Restart setup"
         onConfirm={restartSyncSetup}
         onCancel={() => setSyncRestartConfirmOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={edgeImportConfirmOpen}
+        title="Import passwords from Microsoft Edge?"
+        message={`Newbro will ask the operating system to unlock Edge's local password data, then copy ${edgeSource?.passwordCount || 'the detected'} passwords into ${profileNameForPartition(passwordPartition)}. Microsoft Edge will not be changed.`}
+        confirmLabel="Import passwords"
+        tone="primary"
+        onConfirm={handleImportEdgePasswords}
+        onCancel={() => setEdgeImportConfirmOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={passwordClearConfirmOpen}
+        title="Remove all saved passwords?"
+        message={`This permanently removes every saved website password from ${profileNameForPartition(passwordPartition)}. Other browser profiles are not affected.`}
+        confirmLabel="Remove all passwords"
+        onConfirm={handleClearPasswords}
+        onCancel={() => setPasswordClearConfirmOpen(false)}
       />
 
       <ConfirmDialog

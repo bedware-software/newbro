@@ -6,11 +6,12 @@ interface Props {
   title: string
   message: string
   confirmLabel?: string
+  tone?: 'destructive' | 'primary'
   onConfirm: () => void
   onCancel: () => void
 }
 
-export function ConfirmDialog({ open, title, message, confirmLabel = "Yes, I'm sure", onConfirm, onCancel }: Props) {
+export function ConfirmDialog({ open, title, message, confirmLabel = "Yes, I'm sure", tone = 'destructive', onConfirm, onCancel }: Props) {
   const confirmRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -35,7 +36,11 @@ export function ConfirmDialog({ open, title, message, confirmLabel = "Yes, I'm s
             ref={confirmRef}
             onClick={onConfirm}
             onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
-            className="h-8 px-3 rounded-md text-xs font-medium bg-destructive text-destructive-foreground hover:opacity-90"
+            className={`h-8 px-3 rounded-md text-xs font-medium hover:opacity-90 ${
+              tone === 'primary'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-destructive text-destructive-foreground'
+            }`}
           >
             {confirmLabel}
           </button>

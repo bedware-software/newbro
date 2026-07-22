@@ -52,6 +52,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadSettings: (): Promise<unknown> => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings: unknown): Promise<void> => ipcRenderer.invoke('settings:save', settings),
 
+  // Browser-form password manager. List calls return metadata only; saved
+  // passwords are decrypted exclusively for the isolated preload of a page
+  // whose origin matches the credential.
+  passwordsList: (partition: string): Promise<unknown[]> => ipcRenderer.invoke('passwords:list', partition),
+  passwordUpsert: (input: unknown): Promise<unknown[]> => ipcRenderer.invoke('passwords:upsert', input),
+  passwordDelete: (partition: string, id: string): Promise<unknown[]> =>
+    ipcRenderer.invoke('passwords:delete', partition, id),
+  passwordsClear: (partition: string): Promise<unknown[]> => ipcRenderer.invoke('passwords:clear', partition),
+  passwordsImportCsv: (partition: string): Promise<unknown> => ipcRenderer.invoke('passwords:import-csv', partition),
+  edgePasswordsDetect: (): Promise<unknown> => ipcRenderer.invoke('passwords:edge-detect'),
+  passwordsImportEdge: (partition: string): Promise<unknown> => ipcRenderer.invoke('passwords:import-edge', partition),
+
   // Cloud sync (synced-folder). Config + status come back as one info object;
   // onCloudSyncStatus pushes the same shape whenever it changes.
   cloudSyncGetInfo: (): Promise<unknown> => ipcRenderer.invoke('cloud-sync:get-info'),

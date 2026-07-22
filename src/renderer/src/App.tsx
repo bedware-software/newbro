@@ -37,6 +37,11 @@ interface Settings {
   searchEngine: string
   dohMode: 'off' | 'automatic' | 'secure'
   authServerAllowlist: string
+  passwordManager: {
+    enabled: boolean
+    offerToSave: boolean
+    autofill: 'automatic' | 'on-focus' | 'off'
+  }
   /** Each action accepts up to two accelerator strings. Pre-dual-binding
    *  saves are migrated to one-element arrays in the main process. */
   keybindings: Record<string, string[]>
@@ -98,6 +103,38 @@ export interface SavedCredentialInfo {
   updatedAt: number
 }
 
+/** Password-free metadata shown by Settings → Passwords. */
+export interface PasswordEntryInfo {
+  id: string
+  partition: string
+  origin: string
+  name: string
+  username: string
+  createdAt: number
+  updatedAt: number
+  lastUsedAt: number
+}
+
+export interface PasswordImportResult {
+  imported: number
+  updated: number
+  skipped: number
+  invalid: number
+}
+
+export interface EdgePasswordSourceInfo {
+  installed: boolean
+  supported: boolean
+  profiles: Array<{ id: string; name: string; passwordCount: number }>
+  passwordCount: number
+  reason?: string
+}
+
+export interface EdgePasswordImportResult extends PasswordImportResult {
+  unsupported: number
+  profiles: number
+}
+
 declare global {
   interface Window {
     electronAPI: {
@@ -153,6 +190,26 @@ declare global {
       savedCredentialsList: () => Promise<SavedCredentialInfo[]>
       savedCredentialDelete: (host: string) => Promise<SavedCredentialInfo[]>
       savedCredentialsClearAll: () => Promise<SavedCredentialInfo[]>
+      passwordsList: (partition: string) => Promise<PasswordEntryInfo[]>
+      passwordUpsert: (input: {
+        id?: string
+        partition: string
+        origin: string
+        name?: string
+        username: string
+        password?: string
+      }) => Promise<PasswordEntryInfo[]>
+      passwordDelete: (partition: string, id: string) => Promise<PasswordEntryInfo[]>
+      passwordsClear: (partition: string) => Promise<PasswordEntryInfo[]>
+      passwordsImportCsv: (partition: string) => Promise<{
+        result: PasswordImportResult
+        entries: PasswordEntryInfo[]
+      } | null>
+      edgePasswordsDetect: () => Promise<EdgePasswordSourceInfo>
+      passwordsImportEdge: (partition: string) => Promise<{
+        result: EdgePasswordImportResult
+        entries: PasswordEntryInfo[]
+      }>
       onSettingsUpdated: (callback: (settings: unknown) => void) => () => void
       onActivateTab: (callback: (tabId: string) => void) => () => void
       checkForUpdates: () => Promise<UpdateStatus>

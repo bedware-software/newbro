@@ -2182,7 +2182,7 @@ function safeJsonParse(s: string): unknown {
   try { return JSON.parse(s) } catch { return null }
 }
 
-function getPartitionForSession(ses: Electron.Session): string {
+export function getPartitionForSession(ses: Electron.Session): string {
   for (const partition of configuredPartitions) {
     if (session.fromPartition(partition) === ses) return partition
   }

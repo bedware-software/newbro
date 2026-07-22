@@ -40,6 +40,9 @@ export interface Settings {
    *  unless a saved credential answers it). Wildcards allowed, e.g.
    *  `*.corp.example.com`. */
   authServerAllowlist: string
+  /** Browser-form password manager. Secrets live in password-store and are
+   *  never part of this settings object or Cloud Sync. */
+  passwordManager: PasswordManagerSettings
   /** Each action accepts up to {@link MAX_BINDINGS_PER_ACTION} accelerators.
    *  An empty array means the action has no keyboard binding. The shape is
    *  always an array — pre-dual-binding saves (single string per action)
@@ -51,6 +54,12 @@ export interface Settings {
   permissionDefaults: Record<PermissionKind, PermissionPolicy>
 }
 
+export interface PasswordManagerSettings {
+  enabled: boolean
+  offerToSave: boolean
+  autofill: 'automatic' | 'on-focus' | 'off'
+}
+
 export const MAX_BINDINGS_PER_ACTION = 2
 
 const KNOWN_LIGHT_VARIANTS = new Set(['light-default', 'light-bright', 'light-soft'])
@@ -58,6 +67,7 @@ const KNOWN_DARK_VARIANTS = new Set(['dark-default', 'dark-deep', 'dark-soft'])
 const KNOWN_DENSITIES = new Set(['compact', 'normal'])
 const KNOWN_NEW_TAB_FOCUS = new Set(['site', 'url'])
 const KNOWN_DOH_MODES = new Set(['off', 'automatic', 'secure'])
+const KNOWN_PASSWORD_AUTOFILL = new Set(['automatic', 'on-focus', 'off'])
 const KNOWN_PERMISSION_POLICIES = new Set<PermissionPolicy>(['ask', 'allow', 'block'])
 
 function buildDefaultPermissionDefaults(): Record<PermissionKind, PermissionPolicy> {
@@ -177,6 +187,11 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   dohMode: 'automatic',
   authServerAllowlist: '',
+  passwordManager: {
+    enabled: true,
+    offerToSave: true,
+    autofill: 'automatic',
+  },
   keybindings: cloneDefaultKeybindings(),
   permissionDefaults: buildDefaultPermissionDefaults(),
 }
@@ -343,6 +358,13 @@ export function loadSettings(): Settings {
     authServerAllowlist: typeof saved?.authServerAllowlist === 'string'
       ? saved.authServerAllowlist
       : DEFAULT_SETTINGS.authServerAllowlist,
+    passwordManager: {
+      enabled: saved?.passwordManager?.enabled !== false,
+      offerToSave: saved?.passwordManager?.offerToSave !== false,
+      autofill: KNOWN_PASSWORD_AUTOFILL.has(saved?.passwordManager?.autofill as string)
+        ? saved!.passwordManager.autofill
+        : DEFAULT_SETTINGS.passwordManager.autofill,
+    },
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...savedProxy,
@@ -377,6 +399,13 @@ export function saveSettings(settings: Settings): void {
     authServerAllowlist: typeof settings.authServerAllowlist === 'string'
       ? settings.authServerAllowlist.trim()
       : DEFAULT_SETTINGS.authServerAllowlist,
+    passwordManager: {
+      enabled: settings.passwordManager?.enabled !== false,
+      offerToSave: settings.passwordManager?.offerToSave !== false,
+      autofill: KNOWN_PASSWORD_AUTOFILL.has(settings.passwordManager?.autofill as string)
+        ? settings.passwordManager.autofill
+        : DEFAULT_SETTINGS.passwordManager.autofill,
+    },
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...settings.proxy,

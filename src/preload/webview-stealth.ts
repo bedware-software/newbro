@@ -980,3 +980,331 @@ if (STEALTH_ENABLED) try {
   // eslint-disable-next-line no-console
   console.log('[newbro-stealth] context-menu wiring failed:', err)
 }
+
+// ── Password manager ─────────────────────────────────────────────────
+// Runs in Electron's isolated preload world: it can inspect/fill the DOM, but
+// the page's JavaScript cannot access the credential objects or ipcRenderer.
+// Main independently derives this frame's origin + profile partition before it
+// returns any secret, so a compromised page cannot ask for another site's data.
+// Some Electron versions can run the same preload once from webPreferences and
+// once from the session registration; keep this feature idempotent per frame.
+const passwordManagerGlobal = globalThis as typeof globalThis & { __newbroPasswordManagerInstalled?: boolean }
+const PASSWORD_MANAGER_ENABLED = STEALTH_ENABLED
+  && (location.protocol === 'https:' || location.protocol === 'http:')
+  && !passwordManagerGlobal.__newbroPasswordManagerInstalled
+if (PASSWORD_MANAGER_ENABLED) passwordManagerGlobal.__newbroPasswordManagerInstalled = true
+if (PASSWORD_MANAGER_ENABLED) try {
+  interface PagePasswordEntry {
+    id: string
+    username: string
+    password: string
+  }
+  interface PagePasswordLookup {
+    enabled: boolean
+    autofill: 'automatic' | 'on-focus' | 'off'
+    entries: PagePasswordEntry[]
+  }
+  interface PendingPasswordOffer {
+    origin: string
+    username: string
+    kind: 'save' | 'update'
+  }
+
+  let lookupPromise: Promise<PagePasswordLookup> | null = null
+  let chooserHost: HTMLElement | null = null
+  let savePromptHost: HTMLElement | null = null
+  let lastCandidateSignature = ''
+  let lastCandidateAt = 0
+  let automaticScanScheduled = false
+  let automaticRetryTimers: Array<ReturnType<typeof setTimeout>> = []
+  const autoFilled = new WeakSet<HTMLInputElement>()
+
+  const lookup = (): Promise<PagePasswordLookup> => {
+    if (!lookupPromise) {
+      lookupPromise = ipcRenderer.invoke('passwords:lookup-for-page') as Promise<PagePasswordLookup>
+    }
+    return lookupPromise
+  }
+
+  const isVisible = (input: HTMLInputElement): boolean => {
+    const rect = input.getBoundingClientRect()
+    const style = getComputedStyle(input)
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none'
+  }
+
+  const usernameInputFor = (passwordInput: HTMLInputElement): HTMLInputElement | null => {
+    const root: ParentNode = passwordInput.form ?? document
+    const inputs = Array.from(root.querySelectorAll<HTMLInputElement>('input'))
+    const candidates = inputs.filter((input) => {
+      if (input === passwordInput || input.disabled || input.readOnly || !isVisible(input)) return false
+      const type = (input.type || 'text').toLowerCase()
+      return ['text', 'email', 'tel', ''].includes(type)
+    })
+    return candidates.find((input) => input.autocomplete.toLowerCase() === 'username')
+      ?? candidates.filter((input) => input.compareDocumentPosition(passwordInput) & Node.DOCUMENT_POSITION_FOLLOWING).pop()
+      ?? candidates[candidates.length - 1]
+      ?? null
+  }
+
+  const setInputValue = (input: HTMLInputElement, value: string): void => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    if (setter) setter.call(input, value)
+    else input.value = value
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+
+  const fillEntry = (passwordInput: HTMLInputElement, entry: PagePasswordEntry): void => {
+    const usernameInput = usernameInputFor(passwordInput)
+    if (usernameInput && (!usernameInput.value || usernameInput.value === entry.username)) {
+      setInputValue(usernameInput, entry.username)
+    }
+    setInputValue(passwordInput, entry.password)
+    passwordInput.setAttribute('data-newbro-password-filled', 'true')
+    autoFilled.add(passwordInput)
+    chooserHost?.remove()
+    chooserHost = null
+    void ipcRenderer.invoke('passwords:mark-used', entry.id)
+  }
+
+  const closeChooser = (): void => {
+    chooserHost?.remove()
+    chooserHost = null
+  }
+
+  const showChooser = (passwordInput: HTMLInputElement, entries: PagePasswordEntry[]): void => {
+    closeChooser()
+    if (entries.length === 0 || !passwordInput.isConnected) return
+    const rect = passwordInput.getBoundingClientRect()
+    const host = document.createElement('div')
+    host.setAttribute('data-newbro-password-ui', 'chooser')
+    host.style.cssText = `position:fixed;left:${Math.max(8, Math.min(rect.left, window.innerWidth - 328))}px;top:${Math.min(window.innerHeight - 80, rect.bottom + 6)}px;width:320px;z-index:2147483647;`
+    const shadow = host.attachShadow({ mode: 'closed' })
+    const style = document.createElement('style')
+    style.textContent = `
+      :host{all:initial;color-scheme:light dark}
+      .box{overflow:hidden;border:1px solid rgba(127,127,127,.34);border-radius:10px;background:Canvas;color:CanvasText;box-shadow:0 12px 34px rgba(0,0,0,.24);font:13px/1.35 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+      .head{padding:9px 12px 7px;color:GrayText;font-size:11px;font-weight:650;letter-spacing:.02em}
+      button{all:unset;box-sizing:border-box;display:flex;width:100%;align-items:center;gap:10px;padding:9px 12px;cursor:pointer}
+      button:hover,button:focus{background:color-mix(in srgb, Highlight 13%, Canvas)}
+      .key{display:grid;width:27px;height:27px;place-items:center;border-radius:7px;background:color-mix(in srgb, Highlight 16%, Canvas);font-size:13px}
+      .user{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+      .dots{color:GrayText;letter-spacing:2px}
+    `
+    const box = document.createElement('div')
+    box.className = 'box'
+    const head = document.createElement('div')
+    head.className = 'head'
+    head.textContent = entries.length === 1 ? 'Saved password' : 'Choose an account'
+    box.appendChild(head)
+    for (const entry of entries) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.innerHTML = '<span class="key">&#128273;</span><span class="user"></span><span class="dots">••••••</span>'
+      const user = button.querySelector<HTMLElement>('.user')
+      if (user) user.textContent = entry.username
+      button.addEventListener('pointerdown', (event) => event.preventDefault())
+      button.addEventListener('click', () => fillEntry(passwordInput, entry))
+      box.appendChild(button)
+    }
+    shadow.append(style, box)
+    document.documentElement.appendChild(host)
+    chooserHost = host
+  }
+
+  const handlePasswordInput = async (passwordInput: HTMLInputElement, allowAutomatic: boolean): Promise<void> => {
+    if (
+      passwordInput.disabled
+      || passwordInput.readOnly
+      || passwordInput.autocomplete.toLowerCase() === 'new-password'
+      || !isVisible(passwordInput)
+    ) return
+    const result = await lookup()
+    if (!result.enabled || result.entries.length === 0 || !passwordInput.isConnected) return
+    if (allowAutomatic && result.autofill === 'automatic' && !passwordInput.value) {
+      const username = usernameInputFor(passwordInput)?.value.trim()
+      const matches = username
+        ? result.entries.filter((entry) => entry.username === username)
+        : result.entries
+      if (matches.length === 1) {
+        fillEntry(passwordInput, matches[0])
+        return
+      }
+    }
+    if (result.autofill !== 'off') showChooser(passwordInput, result.entries)
+  }
+
+  const showSavePrompt = (offer: PendingPasswordOffer): void => {
+    savePromptHost?.remove()
+    const host = document.createElement('div')
+    host.setAttribute('data-newbro-password-ui', 'save-prompt')
+    host.style.cssText = 'position:fixed;right:16px;top:16px;width:330px;z-index:2147483647;'
+    const shadow = host.attachShadow({ mode: 'closed' })
+    const style = document.createElement('style')
+    style.textContent = `
+      :host{all:initial;color-scheme:light dark}
+      .box{border:1px solid rgba(127,127,127,.34);border-radius:12px;background:Canvas;color:CanvasText;box-shadow:0 14px 38px rgba(0,0,0,.26);padding:14px;font:13px/1.4 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+      .title{font-size:14px;font-weight:700;margin-bottom:3px}.copy{color:GrayText;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .actions{display:flex;justify-content:flex-end;gap:7px;margin-top:13px}button{all:unset;border-radius:7px;padding:7px 11px;cursor:pointer;font-weight:650}
+      .quiet:hover{background:color-mix(in srgb, CanvasText 8%, Canvas)}.primary{background:Highlight;color:HighlightText}.primary:hover{filter:brightness(.94)}
+    `
+    const box = document.createElement('div')
+    box.className = 'box'
+    const title = document.createElement('div')
+    title.className = 'title'
+    title.textContent = offer.kind === 'update' ? 'Update saved password?' : 'Save password?'
+    const copy = document.createElement('div')
+    copy.className = 'copy'
+    copy.textContent = `${offer.username} · ${new URL(offer.origin).host}`
+    const actions = document.createElement('div')
+    actions.className = 'actions'
+    const dismiss = document.createElement('button')
+    dismiss.className = 'quiet'
+    dismiss.textContent = 'Not now'
+    const save = document.createElement('button')
+    save.className = 'primary'
+    save.textContent = offer.kind === 'update' ? 'Update' : 'Save'
+    dismiss.addEventListener('click', () => {
+      void ipcRenderer.invoke('passwords:dismiss-pending')
+      host.remove()
+      if (savePromptHost === host) savePromptHost = null
+    })
+    save.addEventListener('click', async () => {
+      save.disabled = true
+      save.textContent = offer.kind === 'update' ? 'Updating…' : 'Saving…'
+      try {
+        await ipcRenderer.invoke('passwords:commit-pending')
+        lookupPromise = null
+        host.remove()
+        if (savePromptHost === host) savePromptHost = null
+      } catch {
+        save.disabled = false
+        save.textContent = 'Try again'
+      }
+    })
+    actions.append(dismiss, save)
+    box.append(title, copy, actions)
+    shadow.append(style, box)
+    document.documentElement.appendChild(host)
+    savePromptHost = host
+  }
+
+  const candidateFrom = (scope: ParentNode): { username: string; password: string } | null => {
+    const passwords = Array.from(scope.querySelectorAll<HTMLInputElement>('input[type="password"]'))
+      .filter((input) => !input.disabled && !input.readOnly && !!input.value)
+    if (passwords.length === 0) return null
+    const current = passwords.find((input) => input.autocomplete.toLowerCase() === 'current-password')
+    const matchingNew = passwords.find((input, index) =>
+      input.autocomplete.toLowerCase() === 'new-password'
+      && passwords.some((other, otherIndex) => otherIndex !== index && other.value === input.value),
+    )
+    // Password-change forms usually contain current + repeated new-password
+    // fields. Save the confirmed new value, not the old current password.
+    const passwordInput = matchingNew ?? current ?? passwords[0]
+    const usernameInput = usernameInputFor(passwordInput)
+    const username = usernameInput?.value?.trim() ?? ''
+    if (!username || !passwordInput.value) return null
+    return { username, password: passwordInput.value }
+  }
+
+  const offerCandidate = async (scope: ParentNode): Promise<void> => {
+    const candidate = candidateFrom(scope)
+    if (!candidate) return
+    const signature = `${candidate.username}\u0000${candidate.password}`
+    const now = Date.now()
+    if (signature === lastCandidateSignature && now - lastCandidateAt < 1500) return
+    lastCandidateSignature = signature
+    lastCandidateAt = now
+    const saved = await lookup()
+    if (saved.entries.some((entry) => entry.username === candidate.username && entry.password === candidate.password)) return
+    const offer = await ipcRenderer.invoke('passwords:offer-save', candidate) as PendingPasswordOffer | null
+    if (offer) setTimeout(() => showSavePrompt(offer), 450)
+  }
+
+  window.addEventListener('focusin', (event) => {
+    const input = event.target
+    if (input instanceof HTMLInputElement && input.type.toLowerCase() === 'password') {
+      void handlePasswordInput(input, false)
+    } else {
+      closeChooser()
+    }
+  }, true)
+  window.addEventListener('pointerdown', (event) => {
+    if (chooserHost && event.target !== chooserHost) closeChooser()
+  }, true)
+  window.addEventListener('submit', (event) => {
+    const form = event.target
+    if (form instanceof HTMLFormElement) void offerCandidate(form)
+  }, true)
+  window.addEventListener('click', (event) => {
+    const target = event.target as Element | null
+    const submit = target?.closest?.('button[type="submit"],input[type="submit"]')
+    if (submit) {
+      const form = (submit as HTMLButtonElement | HTMLInputElement).form
+      if (form) void offerCandidate(form)
+    }
+  }, true)
+
+  const scanForAutomaticFill = (): void => {
+    const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="password"]'))
+    if (inputs.length === 0) return
+    void lookup().then((result) => {
+      // Never silently fill a subframe. Cross-origin sign-in frames still get
+      // the chooser after an explicit focus, but automatic filling is limited
+      // to the top document to reduce invisible-iframe credential exposure.
+      if (window.top !== window || !result.enabled || result.autofill !== 'automatic' || result.entries.length === 0) return
+      for (const input of inputs) {
+        if (autoFilled.has(input) || input.value) continue
+        void handlePasswordInput(input, true)
+      }
+    })
+  }
+
+  const scheduleAutomaticFill = (withRetries = false): void => {
+    if (!automaticScanScheduled) {
+      automaticScanScheduled = true
+      requestAnimationFrame(() => {
+        automaticScanScheduled = false
+        scanForAutomaticFill()
+      })
+    }
+    // Dynamic login panels often insert hidden inputs and reveal them one or
+    // two layout frames later. The mutation fires too early for isVisible(),
+    // so retry after CSS transitions/layout have settled instead of waiting
+    // for the user to focus the password field.
+    if (withRetries) {
+      for (const timer of automaticRetryTimers) clearTimeout(timer)
+      automaticRetryTimers = []
+      for (const delay of [80, 240, 600]) {
+        automaticRetryTimers.push(setTimeout(() => scheduleAutomaticFill(false), delay))
+      }
+    }
+  }
+
+  const startPasswordManager = (): void => {
+    scheduleAutomaticFill(true)
+    const observer = new MutationObserver(() => scheduleAutomaticFill(true))
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'type'],
+    })
+    // Covers panels revealed by event handlers whose DOM/style mutations land
+    // before the browser has assigned non-zero bounds to their inputs.
+    window.addEventListener('click', () => scheduleAutomaticFill(true), true)
+    if (window.top === window) {
+      void ipcRenderer.invoke('passwords:get-pending').then((offer: PendingPasswordOffer | null) => {
+        if (offer) showSavePrompt(offer)
+      })
+    }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startPasswordManager, { once: true })
+  } else {
+    startPasswordManager()
+  }
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.log('[newbro-passwords] preload wiring failed:', err)
+}

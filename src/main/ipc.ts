@@ -5,9 +5,20 @@ import * as path from 'path'
 import { spawn } from 'child_process'
 import { loadState, saveState, loadLastUsedWorkspace } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
-import { setupPartitionSession, createWorkspaceWindow, getOpenWorkspaceWindows, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest } from './index'
+import { setupPartitionSession, createWorkspaceWindow, getOpenWorkspaceWindows, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest, getPartitionForSession } from './index'
 import { listGrants, setGrant, clearGrant, clearAllGrants, exportGrants, replaceGrants, type PermissionKind, type PermissionDecision } from './permissions-store'
 import { listCredentials, deleteCredential, clearAllCredentials } from './credentials-store'
+import {
+  clearPasswordEntries,
+  deletePasswordEntry,
+  importPasswordsCsv,
+  listPasswordEntries,
+  lookupPasswords,
+  markPasswordUsed,
+  normalizePasswordOrigin,
+  upsertPassword,
+} from './password-store'
+import { detectEdgePasswords, importEdgePasswords } from './edge-password-import'
 import {
   registerSyncCategory,
   registerCloudSyncIpc,
@@ -68,6 +79,47 @@ interface CertInfo {
   protocol?: string
   cipher?: string
   bits?: number
+}
+
+interface PendingPasswordCandidate {
+  webContentsId: number
+  partition: string
+  origin: string
+  username: string
+  password: string
+  createdAt: number
+  kind: 'save' | 'update'
+}
+
+const pendingPasswordCandidates = new Map<number, PendingPasswordCandidate>()
+const PASSWORD_CANDIDATE_TTL_MS = 2 * 60 * 1000
+
+function pagePasswordContext(event: Electron.IpcMainInvokeEvent): {
+  webContentsId: number
+  partition: string
+  origin: string
+} | null {
+  try {
+    const frameUrl = event.senderFrame?.url || event.sender.getURL()
+    const origin = normalizePasswordOrigin(frameUrl)
+    const partition = getPartitionForSession(event.sender.session)
+    if (!partition.startsWith('persist:profile-')) return null
+    return { webContentsId: event.sender.id, partition, origin }
+  } catch {
+    return null
+  }
+}
+
+function currentPendingPassword(event: Electron.IpcMainInvokeEvent): PendingPasswordCandidate | null {
+  const context = pagePasswordContext(event)
+  if (!context) return null
+  const pending = pendingPasswordCandidates.get(context.webContentsId)
+  if (!pending) return null
+  if (Date.now() - pending.createdAt > PASSWORD_CANDIDATE_TTL_MS) {
+    pendingPasswordCandidates.delete(context.webContentsId)
+    return null
+  }
+  return pending
 }
 
 function getCertificate(hostname: string, port = 443): Promise<CertInfo | null> {
@@ -581,6 +633,128 @@ export function registerIpcHandlers(): void {
     log.ipc('settings:save')
     applyIncomingSettings(settings as Settings)
     notifyCloudChange('settings')
+  })
+
+  // ── Browser-form passwords ──
+  // Page-facing handlers derive the origin and profile partition from the
+  // invoking frame. The page never gets to name a different site/profile and
+  // the main-world page cannot reach ipcRenderer through context isolation.
+  ipcMain.handle('passwords:lookup-for-page', async (event) => {
+    const context = pagePasswordContext(event)
+    const prefs = loadSettings().passwordManager
+    if (!context || !prefs.enabled || prefs.autofill === 'off') {
+      return { enabled: false, autofill: 'off', entries: [] }
+    }
+    return {
+      enabled: true,
+      autofill: prefs.autofill,
+      entries: await lookupPasswords(context.partition, context.origin),
+    }
+  })
+
+  ipcMain.handle(
+    'passwords:offer-save',
+    async (event, input: { username?: string; password?: string }) => {
+      const context = pagePasswordContext(event)
+      const prefs = loadSettings().passwordManager
+      if (!context || !prefs.enabled || !prefs.offerToSave) return null
+      const username = String(input?.username || '').trim().slice(0, 16_384)
+      const password = String(input?.password || '').slice(0, 16_384)
+      if (!username || !password) return null
+      const existing = listPasswordEntries(context.partition).find(
+        (entry) => entry.origin === context.origin && entry.username === username,
+      )
+      const pending: PendingPasswordCandidate = {
+        webContentsId: context.webContentsId,
+        partition: context.partition,
+        origin: context.origin,
+        username,
+        password,
+        createdAt: Date.now(),
+        kind: existing ? 'update' : 'save',
+      }
+      pendingPasswordCandidates.set(context.webContentsId, pending)
+      const expiry = setTimeout(() => {
+        const current = pendingPasswordCandidates.get(context.webContentsId)
+        if (current?.createdAt === pending.createdAt) {
+          pendingPasswordCandidates.delete(context.webContentsId)
+        }
+      }, PASSWORD_CANDIDATE_TTL_MS)
+      expiry.unref?.()
+      return { origin: pending.origin, username: pending.username, kind: pending.kind }
+    },
+  )
+
+  ipcMain.handle('passwords:get-pending', (event) => {
+    const pending = currentPendingPassword(event)
+    return pending
+      ? { origin: pending.origin, username: pending.username, kind: pending.kind }
+      : null
+  })
+
+  ipcMain.handle('passwords:commit-pending', async (event) => {
+    const pending = currentPendingPassword(event)
+    if (!pending) return null
+    pendingPasswordCandidates.delete(pending.webContentsId)
+    const result = await upsertPassword({
+      partition: pending.partition,
+      origin: pending.origin,
+      username: pending.username,
+      password: pending.password,
+    })
+    return { saved: true, created: result.created }
+  })
+
+  ipcMain.handle('passwords:dismiss-pending', (event) => {
+    const pending = currentPendingPassword(event)
+    if (pending) pendingPasswordCandidates.delete(pending.webContentsId)
+  })
+
+  ipcMain.handle('passwords:mark-used', (event, id: string) => {
+    const context = pagePasswordContext(event)
+    if (context && typeof id === 'string') markPasswordUsed(context.partition, id)
+  })
+
+  // Settings-facing management API. These calls never return decrypted
+  // passwords; editing an entry can replace a password but cannot reveal it.
+  ipcMain.handle('passwords:list', (_event, partition: string) => listPasswordEntries(partition))
+  ipcMain.handle(
+    'passwords:upsert',
+    async (_event, input: { id?: string; partition: string; origin: string; name?: string; username: string; password?: string }) => {
+      await upsertPassword(input)
+      return listPasswordEntries(input.partition)
+    },
+  )
+  ipcMain.handle('passwords:delete', (_event, partition: string, id: string) => {
+    deletePasswordEntry(partition, id)
+    return listPasswordEntries(partition)
+  })
+  ipcMain.handle('passwords:clear', (_event, partition: string) => {
+    clearPasswordEntries(partition)
+    return listPasswordEntries(partition)
+  })
+  ipcMain.handle('passwords:import-csv', async (event, partition: string) => {
+    const owner = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const options: Electron.OpenDialogOptions = {
+      title: 'Import passwords from Edge or Chrome',
+      properties: ['openFile'],
+      filters: [{ name: 'Password CSV', extensions: ['csv'] }],
+    }
+    const picked = owner
+      ? await dialog.showOpenDialog(owner, options)
+      : await dialog.showOpenDialog(options)
+    if (picked.canceled || !picked.filePaths[0]) return null
+    const file = picked.filePaths[0]
+    const stat = await fs.promises.stat(file)
+    if (stat.size > 25 * 1024 * 1024) throw new Error('The password CSV is larger than 25 MB.')
+    const text = await fs.promises.readFile(file, 'utf8')
+    const result = await importPasswordsCsv(partition, text)
+    return { result, entries: listPasswordEntries(partition) }
+  })
+  ipcMain.handle('passwords:edge-detect', () => detectEdgePasswords())
+  ipcMain.handle('passwords:import-edge', async (_event, partition: string) => {
+    const result = await importEdgePasswords(partition)
+    return { result, entries: listPasswordEntries(partition) }
   })
 
   // ── Site permissions ──
