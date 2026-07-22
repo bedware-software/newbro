@@ -469,32 +469,13 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
   //    handlers in main.
   if (patchExtensionCsp(manifest)) modified = true
 
-  // ── Patch 6: convert chrome.userScripts-driven bootstraps to declared
-  //    content_scripts.
-  //
-  //    Tampermonkey-style extensions ship a content.js / page.js pair
-  //    that they register dynamically at SW init via
-  //    chrome.userScripts.register. In Electron 41 we don't have a
-  //    privileged-context injection path for chrome.userScripts — the
-  //    closest we can do is webContents.executeJavaScriptInIsolatedWorld,
-  //    which lands the code in a fresh isolated world with NO chrome.*
-  //    binding. The bootstrap then hangs trying to talk to its SW
-  //    (chrome.runtime.connect handshake), and on macOS where webContents
-  //    in a BrowserWindow share a renderer process this freezes the
-  //    whole window.
-  //
-  //    Real chrome.* binding only happens for manifest-declared
-  //    content_scripts (run in isolated world with full extension
-  //    context). So we DECLARE the bootstraps here, statically — Electron
-  //    handles injection itself, the bootstrap gets a working
-  //    chrome.runtime.sendMessage, and user scripts execute the way the
-  //    extension expects.
-  //
-  //    Hardcoded per extension because each manager picks its own
-  //    bootstrap file names; for now we cover Tampermonkey
-  //    (dhdgff…fdo). Adding Violentmonkey / Greasemonkey is a one-line
-  //    addition once we verify their bootstrap shapes match.
-  if (patchContentScriptsForUserScriptManager(manifest, extDir)) modified = true
+  // NOTE: userscript-manager bootstraps (Tampermonkey's content.js/page.js
+  // etc.) are NOT declared here anymore. They're captured generically at
+  // runtime from the manager's chrome.userScripts.register calls and
+  // declared as content_scripts by declareBootstrapContentScripts — see
+  // src/main/extensions/userscripts.ts. This replaced the hardcoded
+  // per-extension file map with data-driven detection that works for any
+  // manager.
 
   if (modified) {
     try {
@@ -519,113 +500,163 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
  *  patched leaves the manifest untouched.
  *
  *  Returns true if the manifest was actually modified. */
-/** Lookup of known userscript-manager extensions and the file pair we
- *  want to register as content_scripts (so they run with real chrome.*
- *  binding instead of via our half-broken dynamic injection path).
- *
- *  Each entry maps the extension's manifest `key` derivation id (the
- *  one that surfaces in chrome-extension://<id>/) to a list of scripts
- *  with their target world. `world: 'MAIN'` is MV3 syntax for "run in
- *  the page's main JS world" (the file gets access to page globals);
- *  the default is the extension's isolated world (full chrome.* but
- *  isolated from the page).
- *
- *  Adding a new manager: install it, look at the SW's first
- *  chrome.userScripts.register call in our log, copy the js[].file
- *  names into a new entry here. */
-const USERSCRIPT_MANAGER_BOOTSTRAPS: Record<
-  string,
-  Array<{ js: string[]; world?: 'MAIN' | 'ISOLATED'; runAt: 'document_start' | 'document_end' | 'document_idle' }>
-> = {
-  // Tampermonkey. Single content_scripts entry with both files —
-  // page.js FIRST so it sets `window.pagejs` on the isolated world's
-  // window before content.js (line 84) reads it. Two separate entries
-  // make injection order undefined and TM throws "pagejs missing"
-  // when content.js wins the race. ISOLATED world (the default for
-  // content_scripts): both files share a window so the handshake
-  // works. world:'MAIN' would split them and break the same way.
-  dhdgffkkebhmkfjojejmpbldmpobfkfo: [
-    { js: ['page.js', 'content.js'], runAt: 'document_start' },
-  ],
+/** A userscript-manager bootstrap captured from a file-based
+ *  chrome.userScripts.register / chrome.scripting.registerContentScripts
+ *  call — the manager's own framework files that must run with a native
+ *  chrome.runtime binding. Declared as content_scripts on disk. */
+export interface BootstrapContentScript {
+  js: string[]
+  matches: string[]
+  runAt: 'document_start' | 'document_end' | 'document_idle' | string
+  allFrames: boolean
 }
 
-/** Derive the extension id from manifest.key (base64 of the SPKI public
- *  key). Mirrors Chromium's compute-extension-id logic: SHA256 the DER
- *  bytes, take the first 16 bytes, encode as a-p instead of 0-f. Used
- *  here because patchManifest doesn't have the id parameter handy. */
-function deriveExtensionIdFromManifestKey(manifest: Record<string, unknown>): string | null {
-  const k = typeof manifest.key === 'string' ? (manifest.key as string) : null
-  if (!k) return null
+/** Marker so we can tell OUR injected content_scripts entries apart from
+ *  ones the extension shipped in its own manifest, and rewrite ours
+ *  idempotently without ever touching the extension's originals. */
+const NEWBRO_BOOTSTRAP_MARKER = '__newbro_bootstrap__'
+
+/** Accumulated file-based bootstraps per extension. A manager registers
+ *  each bootstrap file in a SEPARATE chrome.userScripts.register call
+ *  (Tampermonkey: one for content.js, one for page.js), so we must union
+ *  across calls — declaring only the latest call's entry would drop the
+ *  others. Keyed by extensionId → (entry signature → entry). */
+const capturedBootstraps = new Map<string, Map<string, BootstrapContentScript>>()
+
+function bootstrapSignature(b: BootstrapContentScript): string {
+  return JSON.stringify([b.js, b.matches, b.runAt, b.allFrames])
+}
+
+/** Declare a userscript manager's file-based bootstraps as native
+ *  content_scripts so they run with a real chrome.runtime (the only
+ *  CSP-immune way — page-isolated-world injection would route the
+ *  bootstrap's SW handshake through a page-context fetch that strict
+ *  CSP blocks, hanging the manager and freezing the renderer). This is
+ *  the generic replacement for the old hardcoded Tampermonkey ID map:
+ *  driven by what the manager actually registers, so any manager works.
+ *
+ *  Idempotent: if the manifest already declares these exact bootstraps,
+ *  does nothing. On first capture it rewrites the manifest and reloads
+ *  the extension once so the new content_scripts take effect this
+ *  session; subsequent app launches load the already-patched manifest
+ *  directly. */
+export async function declareBootstrapContentScripts(
+  extensionId: string,
+  bootstraps: BootstrapContentScript[],
+): Promise<void> {
+  const entry = store.get('extensions')[extensionId]
+  if (!entry || !entry.path) return
+
+  // Accumulate this call's bootstraps into the per-extension union.
+  // Keep only files that exist on disk (a manager may register a
+  // framework file absent from this packaged build; declaring a missing
+  // file makes Chromium reject the whole entry).
+  let union = capturedBootstraps.get(extensionId)
+  if (!union) {
+    union = new Map()
+    capturedBootstraps.set(extensionId, union)
+  }
+  for (const b of bootstraps) {
+    const files = b.js
+      .map((f) => f.replace(/^\/+/, ''))
+      .filter((rel) => !rel.includes('..') && existsSync(join(entry.path, rel)))
+    if (files.length === 0) continue
+    const norm: BootstrapContentScript = {
+      js: files,
+      matches: b.matches,
+      runAt: b.runAt,
+      allFrames: b.allFrames,
+    }
+    union.set(bootstrapSignature(norm), norm)
+  }
+  if (union.size === 0) return
+
+  const manifestPath = join(entry.path, 'manifest.json')
+  let manifest: Record<string, unknown>
   try {
-    const buf = Buffer.from(k, 'base64')
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const crypto = require('node:crypto') as typeof import('node:crypto')
-    const hash = crypto.createHash('sha256').update(buf).digest()
-    let out = ''
-    for (let i = 0; i < 16; i++) {
-      const byte = hash[i]
-      out += String.fromCharCode(97 + (byte >> 4))
-      out += String.fromCharCode(97 + (byte & 0xf))
-    }
-    return out
+    manifest = parseRelaxedJson(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
   } catch (err) {
-    log.warn('extensions: deriveExtensionIdFromManifestKey threw', { err: String(err) })
-    return null
+    log.warn('extensions: bootstrap declare — manifest read/parse failed', { extensionId, err: String(err) })
+    return
   }
-}
+  if (manifest.manifest_version !== 3) return
 
-function patchContentScriptsForUserScriptManager(
-  manifest: Record<string, unknown>,
-  extDir: string,
-): boolean {
-  if (manifest.manifest_version !== 3) return false
-  const id = deriveExtensionIdFromManifestKey(manifest)
-  if (!id) return false
-  const bootstraps = USERSCRIPT_MANAGER_BOOTSTRAPS[id]
-  if (!bootstraps) return false
-  // Every js file must exist on disk — skip silently otherwise (the
-  // extension may have been repackaged or the file name changed across
-  // versions; rather than partially injecting a missing file we leave
-  // the entry off and surface it via the log).
-  const missing: string[] = []
-  for (const entry of bootstraps) {
-    for (const j of entry.js) {
-      if (!existsSync(join(extDir, j))) missing.push(j)
-    }
-  }
-  if (missing.length > 0) {
-    log.warn('extensions: userscript-manager bootstrap files missing on disk', { id, missing })
-    return false
-  }
+  // Desired = the full accumulated union, each as a marked
+  // content_scripts entry in the ISOLATED world (the content_scripts
+  // default): a manager's page.js + content.js share one window to hand
+  // off state; MAIN or split worlds break that handshake.
+  const nextOurs: Array<Record<string, unknown>> = Array.from(union.values()).map((b) => ({
+    matches: b.matches,
+    js: b.js,
+    run_at: b.runAt,
+    all_frames: b.allFrames,
+    [NEWBRO_BOOTSTRAP_MARKER]: true,
+  }))
+
   const existing = Array.isArray(manifest.content_scripts)
     ? (manifest.content_scripts as Array<Record<string, unknown>>)
     : []
-  const desired: Array<Record<string, unknown>> = bootstraps.map((b) => ({
-    matches: ['<all_urls>'],
-    js: b.js.slice(),
-    run_at: b.runAt,
-    ...(b.world ? { world: b.world } : {}),
-    all_frames: true,
-  }))
-  // Drop any existing entries that mention ANY of the desired files.
-  // A previous patch revision may have split them across two entries
-  // or used a different world — either way, removing-by-file-overlap
-  // and re-appending the freshly-shaped combined entry yields the
-  // intended shape regardless of the prior layout.
-  const allDesiredFiles = new Set(desired.flatMap((d) => d.js as string[]))
-  const filteredExisting = existing.filter((e) => {
-    if (!Array.isArray(e.js)) return true
-    return !(e.js as string[]).some((j) => allDesiredFiles.has(j))
-  })
-  // Idempotent across runs: serialize before/after, compare. Skip the
-  // write if nothing actually changed.
-  const next = [...filteredExisting, ...desired]
-  if (JSON.stringify(existing) === JSON.stringify(next)) return false
+  // Theirs = entries the extension shipped in its own manifest — never
+  // touch those. Replace all of our previously-injected marked entries
+  // with the current union.
+  const theirs = existing.filter((e) => !e[NEWBRO_BOOTSTRAP_MARKER])
+  const next = [...theirs, ...nextOurs]
+  const prevOurs = existing.filter((e) => e[NEWBRO_BOOTSTRAP_MARKER])
+  if (JSON.stringify(prevOurs) === JSON.stringify(nextOurs)) return // idempotent — no change
+
   manifest.content_scripts = next
-  log.info('extensions: declared userscript-manager bootstraps as content_scripts', {
-    id, added: desired.length, droppedExisting: existing.length - filteredExisting.length,
+  try {
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+  } catch (err) {
+    log.warn('extensions: bootstrap declare — manifest write failed', { extensionId, err: String(err) })
+    return
+  }
+  log.info('extensions: declared bootstrap content_scripts', {
+    extensionId,
+    entries: nextOurs.length,
+    files: nextOurs.flatMap((e) => e.js as string[]),
   })
-  return true
+  // Reload so Chromium picks up the new content_scripts. Debounced: a
+  // manager registers each bootstrap file in a separate call (~ms
+  // apart), and each rewrites the manifest — coalesce into one reload so
+  // we don't tear the SW down twice in a row.
+  scheduleBootstrapReload(extensionId)
+}
+
+const bootstrapReloadTimers = new Map<string, NodeJS.Timeout>()
+function scheduleBootstrapReload(extensionId: string): void {
+  const existing = bootstrapReloadTimers.get(extensionId)
+  if (existing) clearTimeout(existing)
+  bootstrapReloadTimers.set(
+    extensionId,
+    setTimeout(() => {
+      bootstrapReloadTimers.delete(extensionId)
+      // The reload restarts the MV3 SW, which re-runs our shim and
+      // re-fires the same registrations — idempotent by now (union +
+      // manifest already match), so no reload loop.
+      void reloadExtensionEverywhere(extensionId).catch((err) => {
+        log.warn('extensions: bootstrap reload failed', { extensionId, err: String(err) })
+      })
+    }, 400),
+  )
+}
+
+/** Remove + re-add an extension in every session so a rewritten
+ *  manifest (new content_scripts) takes effect without an app restart. */
+async function reloadExtensionEverywhere(extensionId: string): Promise<void> {
+  const entry = store.get('extensions')[extensionId]
+  if (!entry || !entry.path) return
+  for (const ses of getAllSessions()) {
+    try {
+      sessionRemoveExtension(ses, extensionId)
+      await sessionLoadExtension(ses, entry.path, { allowFileAccess: false })
+    } catch (err) {
+      log.warn('extensions: reloadExtensionEverywhere failed for a session', {
+        extensionId,
+        err: String(err),
+      })
+    }
+  }
 }
 
 const NEWBRO_CSP_CONNECT_SOURCES = ['newbro-ipc:', 'https://newbro-ext-ipc.test']

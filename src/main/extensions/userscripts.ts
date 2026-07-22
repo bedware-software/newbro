@@ -26,7 +26,7 @@ import type { WebContents } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { log } from '../log'
-import { getExtensionEntry } from './manager'
+import { getExtensionEntry, declareBootstrapContentScripts, type BootstrapContentScript } from './manager'
 import { getSwRpcServerInfo } from './sw-rpc-server'
 
 interface UserScriptJsSource {
@@ -130,6 +130,48 @@ export function registerUserScripts(
     count: scripts.length,
     total: map.size,
   })
+
+  // Generic userscript-manager bootstrap handling (replaces the old
+  // hardcoded Tampermonkey ID→files map). A manager registers its
+  // framework/bootstrap as FILE-based user scripts (js:[{file:...}],
+  // referring to files shipped inside the extension) — Tampermonkey
+  // registers page.js + content.js this way, Violentmonkey similarly.
+  // Those must run with a real chrome.runtime binding, which only
+  // native content_scripts get; injecting them into a page isolated
+  // world instead makes the bootstrap's SW handshake go through a
+  // page-context fetch that strict-CSP sites block, hanging the manager
+  // and freezing the shared renderer. So we declare the file-based
+  // registrations as content_scripts on disk (see
+  // manager.declareBootstrapContentScripts). Inline-`code` scripts (the
+  // actual user scripts) are NOT bootstraps — the manager runs those
+  // itself via chrome.userScripts.execute (embedder-level, CSP-immune),
+  // so we leave them to the registry above.
+  const bootstraps: BootstrapContentScript[] = []
+  for (const s of scripts) {
+    if (!s || !Array.isArray(s.js)) continue
+    const files = s.js
+      .map((j) => (typeof j.file === 'string' ? j.file : null))
+      .filter((f): f is string => !!f)
+    const hasInlineCode = s.js.some((j) => typeof j.code === 'string' && j.code.length > 0)
+    if (files.length === 0 || hasInlineCode) continue
+    bootstraps.push({
+      js: files,
+      matches: Array.isArray(s.matches) && s.matches.length > 0 ? s.matches.slice() : ['<all_urls>'],
+      runAt: s.runAt ?? 'document_start',
+      allFrames: s.allFrames !== false,
+    })
+  }
+  if (bootstraps.length > 0) {
+    // Fire-and-forget: rewrites the manifest + reloads the extension
+    // once if these files aren't already declared. Idempotent, so the
+    // repeated registrations a manager fires on every SW start are cheap.
+    void declareBootstrapContentScripts(extensionId, bootstraps).catch((err) => {
+      log.warn('userscripts: declareBootstrapContentScripts failed', {
+        extensionId,
+        err: String(err),
+      })
+    })
+  }
 }
 
 export function unregisterUserScripts(

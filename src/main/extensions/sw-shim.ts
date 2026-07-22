@@ -95,7 +95,7 @@
 //         listeners. Wraps chrome.storage so onChanged is OUR event
 //         while local/sync/session pass through to the real storage.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V39__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V42__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -1777,6 +1777,29 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       return Promise.resolve(out);
     };
     scripting.registerContentScripts = function (scripts, cb) {
+      // Route file-based content-script registrations through the same
+      // userscripts-register channel used by chrome.userScripts.register
+      // — main declares file-based bootstraps as native content_scripts.
+      // chrome.scripting uses js as string[] (file paths) while
+      // chrome.userScripts uses js as [{file}|{code}]; normalize to the
+      // latter so main's capture sees one shape.
+      try {
+        var arr = Array.isArray(scripts) ? scripts : [];
+        var norm = arr.map(function (s) {
+          var js = Array.isArray(s && s.js)
+            ? s.js.map(function (j) { return (typeof j === 'string') ? { file: j } : j; })
+            : [];
+          return {
+            id: s && s.id,
+            js: js,
+            matches: (s && s.matches) || ['<all_urls>'],
+            runAt: (s && s.runAt) || 'document_start',
+            world: (s && s.world) || 'USER_SCRIPT',
+            allFrames: !(s && s.allFrames === false),
+          };
+        });
+        if (norm.length > 0) sendPost('userscripts-register', { extId: extId, scripts: norm });
+      } catch (e) { swLog('scripting.registerContentScripts/forward', e); }
       if (typeof cb === 'function') Promise.resolve().then(function () { cb(); });
       return Promise.resolve();
     };
