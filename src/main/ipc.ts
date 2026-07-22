@@ -296,7 +296,14 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('extensions:install', async (_e, idOrUrl: string) => {
     const id = extractExtensionIdFromUrl(idOrUrl)
     if (!id) throw new Error('Could not parse extension ID from input')
-    return await installExtensionById(id)
+    try {
+      return await installExtensionById(id)
+    } catch (err) {
+      // Surface the real cause — the renderer only sees a generic
+      // "install failed", so without this the failure is invisible.
+      log.error('extensions: install failed', { id, err: String(err), stack: (err as Error)?.stack })
+      throw err
+    }
   })
 
   ipcMain.handle('extensions:uninstall', async (_e, extensionId: string) => {

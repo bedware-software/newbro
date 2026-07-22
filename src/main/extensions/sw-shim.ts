@@ -95,7 +95,7 @@
 //         listeners. Wraps chrome.storage so onChanged is OUR event
 //         while local/sync/session pass through to the real storage.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V42__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V46__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -1517,6 +1517,47 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     } else {
       sendPost('storage-onChanged-missing', { extId: extId, hasStorage: typeof realStorage });
     }
+
+    // ── Content-script chrome.storage proxy (SW side) ──────────────
+    // Content scripts can't touch native chrome.storage in Electron
+    // ("Access to storage is not allowed from this context"), which
+    // breaks Vimium (self-disables) and YouTube→NotebookLM (crashes on
+    // undefined storage). Their prepended polyfill (newbro-cs-storage.js)
+    // opens a dedicated '__newbro_cs_storage' port to the SW and routes
+    // each op through it; service them with the SW's own working storage
+    // so the backend stays consistent with what the extension reads/
+    // writes everywhere else. A named port (not runtime.sendMessage)
+    // avoids the extension's own onMessage listeners answering first.
+    // sync/managed map to local, matching the library's own aliasing.
+    try {
+      if (c.runtime && c.runtime.onConnect && typeof c.runtime.onConnect.addListener === 'function') {
+        c.runtime.onConnect.addListener(function (port) {
+          if (!port || port.name !== '__newbro_cs_storage') return;
+          port.onMessage.addListener(function (req) {
+            if (!req || typeof req.id === 'undefined') return;
+            var area = (req.area === 'sync' || req.area === 'managed') ? 'local' : (req.area || 'local');
+            var method = req.method;
+            var args = Array.isArray(req.args) ? req.args : [];
+            function send(result, error) {
+              if (error) swLog('cs-storage/' + area + '.' + method, error);
+              try { port.postMessage({ id: req.id, result: result }); } catch (e) { swLog('cs-storage/port-post', e); }
+            }
+            var store = c.storage;
+            var ns = store && store[area];
+            if (!ns || typeof ns[method] !== 'function') { send(undefined, 'no area/method'); return; }
+            try {
+              var maybe = ns[method].apply(ns, args);
+              if (maybe && typeof maybe.then === 'function') {
+                maybe.then(function (result) { send(result); }, function (err) { send(undefined, String(err)); });
+              } else {
+                ns[method].apply(ns, args.concat([function (result) { send(result); }]));
+              }
+            } catch (e) { send(undefined, String(e)); }
+          });
+        });
+        sendPost('cs-storage-proxy-installed', { extId: extId });
+      }
+    } catch (e) { swLog('cs-storage-proxy/install', e); }
 
     // ── chrome.proxy.settings — REAL implementation ────────────────
     // VPN extensions (Browsec, Hola, etc.) call

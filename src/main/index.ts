@@ -1972,6 +1972,7 @@ function dispatchSwShimAction(
           action === 'sw-shim-ran' ||
           action === 'post-patch-state' ||
           action === 'userscripts-shim-state' ||
+          action === 'cs-storage-proxy-installed' ||
           action === 'webRequest-onAuthRequired-add' ||
           action === 'patch-step' ||
           action === 'chrome-access' ||
@@ -2572,19 +2573,30 @@ function patchLibraryPreloadForMV3SetIcon(): void {
     log.warn('extensions: cannot read preload for MV3-setIcon patch', { path: preloadPath, err: String(err) })
     return
   }
-  if (source.startsWith('// __NEWBRO_PRELOAD_PATCH_V2__')) {
-    log.info('extensions: setIcon-patch already applied, skip')
+  if (source.startsWith('// __NEWBRO_PRELOAD_PATCH_V5__')) {
+    log.info('extensions: preload-patch already applied (V3), skip')
     return
   }
-  // Strip a stale V1 marker if a previous launch laid one down.
-  source = source.replace(/^\/\/ __NEWBRO_PRELOAD_PATCH_V1__\n/, '')
+  // Strip stale markers from earlier revisions so we can re-mark V3. A
+  // file marked V1/V2 already has the setIcon patches applied on disk;
+  // the idempotent applyPatch below detects that and only adds the new
+  // content-script storage patch.
+  source = source.replace(/^\/\/ __NEWBRO_PRELOAD_PATCH_V[1234]__\n/, '')
 
-  // Patches 1-3 below. Each replaceOnce returns a result + matched flag,
-  // and the whole patch only commits when all three matched.
-  const replaceOnce = (input: string, find: string, replace: string): { out: string; ok: boolean } => {
+  // Each patch is idempotent: if the find-string is present, replace it;
+  // if it's gone but the replacement's `sentinel` is already present
+  // (patch applied by an earlier version's write), treat it as done.
+  // Only fail if neither is present (library source drifted).
+  const applyPatch = (
+    input: string,
+    find: string,
+    replace: string,
+    sentinel: string,
+  ): { out: string; ok: boolean } => {
     const idx = input.indexOf(find)
-    if (idx < 0) return { out: input, ok: false }
-    return { out: input.slice(0, idx) + replace + input.slice(idx + find.length), ok: true }
+    if (idx >= 0) return { out: input.slice(0, idx) + replace + input.slice(idx + find.length), ok: true }
+    if (input.includes(sentinel)) return { out: input, ok: true }
+    return { out: input, ok: false }
   }
 
   // 1) Replace imageData2base64 with a SW-aware async version. OffscreenCanvas
@@ -2684,12 +2696,20 @@ function patchLibraryPreloadForMV3SetIcon(): void {
         args = await Promise.resolve(options.serialize(...args));
       }`
 
-  const r1 = replaceOnce(source, oldHelper, newHelper)
-  const r2 = replaceOnce(r1.out, oldSetIcon, newSetIcon)
-  const r3 = replaceOnce(r2.out, oldInvoke, newInvoke)
+  // NOTE: content-script chrome.storage is NOT fixed here. The library's
+  // preload doesn't inject into content-script isolated worlds (verified
+  // empirically — no isolated-world injection logs there), so a storage
+  // patch in this file can't reach content scripts. That fix lives in the
+  // per-extension polyfill prepended to content_scripts (manager.ts
+  // CS_STORAGE_POLYFILL_SOURCE) plus the SW-side port handler in
+  // sw-shim.ts; chrome-extension:// frames are handled in extension-shim.ts.
+
+  const r1 = applyPatch(source, oldHelper, newHelper, 'OffscreenCanvas')
+  const r2 = applyPatch(r1.out, oldSetIcon, newSetIcon, 'const entries = Object.entries(details.imageData)')
+  const r3 = applyPatch(r2.out, oldInvoke, newInvoke, 'await Promise.resolve(options.serialize')
 
   if (!r1.ok || !r2.ok || !r3.ok) {
-    log.warn('extensions: MV3-setIcon patch did not match — library version drifted', {
+    log.warn('extensions: preload patch did not match — library version drifted', {
       path: preloadPath,
       helperMatched: r1.ok,
       setIconMatched: r2.ok,
@@ -2698,10 +2718,10 @@ function patchLibraryPreloadForMV3SetIcon(): void {
     return
   }
 
-  const patched = '// __NEWBRO_PRELOAD_PATCH_V2__\n' + r3.out
+  const patched = '// __NEWBRO_PRELOAD_PATCH_V5__\n' + r3.out
   try {
     writeFileSync(preloadPath, patched)
-    log.info('extensions: patched library preload for MV3 setIcon imageData')
+    log.info('extensions: patched library preload (MV3 setIcon imageData)')
   } catch (err) {
     log.warn('extensions: cannot write patched preload', { path: preloadPath, err: String(err) })
   }

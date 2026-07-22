@@ -374,6 +374,55 @@ function applyPatches(chrome: Record<string, unknown>): void {
   // .addListener and install when it appears. Cheap (~200ms total),
   // bounded, idempotent.
   installStorageBridge(chrome)
+  mapStorageSyncToLocal(chrome)
+}
+
+// chrome.storage.sync → local, for chrome-extension:// FRAME contexts
+// (popups, options, and extension iframes injected into pages — e.g.
+// Vimium's HUD at pages/hud.html). Electron has no storage.sync, and
+// the library's sync→local aliasing doesn't take because native
+// chrome.storage is non-configurable, so accessing chrome.storage.sync
+// throws "sync is not available". Unlike content scripts, native
+// chrome.storage.local DOES work in these frames, so we just alias sync
+// (and managed) to it — poll briefly because the library may install
+// chrome.storage a tick after we run.
+function mapStorageSyncToLocal(chrome: Record<string, unknown>): void {
+  let tries = 0
+  const tick = (): void => {
+    tries++
+    let done = false
+    try {
+      const storage = chrome.storage as
+        | { local?: unknown; sync?: unknown; managed?: unknown }
+        | undefined
+      if (storage && storage.local) {
+        // Is sync already usable (not the throwing native getter)?
+        let syncOk = false
+        try { syncOk = !!storage.sync && storage.sync !== undefined } catch { syncOk = false }
+        if (!syncOk) {
+          try {
+            Object.defineProperty(storage, 'sync', { value: storage.local, configurable: true, writable: true, enumerable: true })
+          } catch (err) {
+            try { (storage as Record<string, unknown>).sync = storage.local } catch { /* non-writable */ }
+          }
+        }
+        try {
+          const m = storage as Record<string, unknown>
+          let managedOk = false
+          try { managedOk = !!m.managed } catch { managedOk = false }
+          if (!managedOk) {
+            try { Object.defineProperty(storage, 'managed', { value: storage.local, configurable: true, writable: true, enumerable: true }) }
+            catch { try { m.managed = storage.local } catch { /* ignore */ } }
+          }
+        } catch { /* ignore managed */ }
+        done = true
+      }
+    } catch (err) {
+      try { console.error('[newbro-ext-shim] mapStorageSyncToLocal probe threw:', err) } catch { /* console gone */ }
+    }
+    if (!done && tries < 60) setTimeout(tick, 50)
+  }
+  tick()
 }
 
 interface StorageBridgeGuard {

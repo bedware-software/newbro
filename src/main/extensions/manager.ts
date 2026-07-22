@@ -477,6 +477,10 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
   // per-extension file map with data-driven detection that works for any
   // manager.
 
+  // Patch 6: prepend the content-script chrome.storage polyfill to the
+  // extension's own declared content_scripts (Vimium, NotebookLM, etc.).
+  if (prependCsStoragePolyfill(manifest, extDir)) modified = true
+
   if (modified) {
     try {
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
@@ -585,9 +589,20 @@ export async function declareBootstrapContentScripts(
   // content_scripts entry in the ISOLATED world (the content_scripts
   // default): a manager's page.js + content.js share one window to hand
   // off state; MAIN or split worlds break that handshake.
+  // Ensure the cs-storage polyfill file exists so we can list it first in
+  // each bootstrap's js array (a userscript manager's content.js may use
+  // chrome.storage too).
+  try {
+    const polyfillPath = join(entry.path, CS_STORAGE_POLYFILL_FILENAME)
+    let existing: string | null = null
+    try { existing = readFileSync(polyfillPath, 'utf8') } catch { /* not present */ }
+    if (existing !== CS_STORAGE_POLYFILL_SOURCE) writeFileSync(polyfillPath, CS_STORAGE_POLYFILL_SOURCE)
+  } catch (err) {
+    log.warn('extensions: cs-storage polyfill write (bootstrap) failed', { extensionId, err: String(err) })
+  }
   const nextOurs: Array<Record<string, unknown>> = Array.from(union.values()).map((b) => ({
     matches: b.matches,
-    js: b.js,
+    js: [CS_STORAGE_POLYFILL_FILENAME, ...b.js.filter((f) => f !== CS_STORAGE_POLYFILL_FILENAME)],
     run_at: b.runAt,
     all_frames: b.allFrames,
     [NEWBRO_BOOTSTRAP_MARKER]: true,
@@ -657,6 +672,163 @@ async function reloadExtensionEverywhere(extensionId: string): Promise<void> {
       })
     }
   }
+}
+
+// ── Content-script chrome.storage polyfill ──────────────────────────
+// Content scripts get Chromium's native chrome.* binding (the library's
+// preload doesn't inject into content-script isolated worlds), and in
+// Electron that native chrome.storage denies access from content-script
+// contexts ("Access to storage is not allowed from this context") and
+// has no sync ("sync is not available"). That breaks Vimium (self-
+// disables) and YouTube→NotebookLM (crashes on undefined storage).
+//
+// Fix: ship a tiny polyfill FILE inside each extension and prepend it to
+// every content_scripts[].js so it runs first, in the same isolated
+// world, and overrides chrome.storage to route each op through the
+// extension's own service worker (chrome.runtime.sendMessage →
+// __newbroCsStorage, serviced in sw-shim.ts with the SW's working
+// storage). sync/managed alias to local, matching Electron/library.
+const CS_STORAGE_POLYFILL_FILENAME = 'newbro-cs-storage.js'
+const CS_STORAGE_POLYFILL_MARKER = '// __NEWBRO_CS_STORAGE_V5__'
+const CS_STORAGE_POLYFILL_SOURCE = `${CS_STORAGE_POLYFILL_MARKER}
+(function () {
+  try {
+    var rt = (typeof chrome !== "undefined") && chrome.runtime;
+    if (!rt || typeof rt.connect !== "function") return;
+    // Use a dedicated Port instead of runtime.sendMessage: sendMessage
+    // delivers the FIRST responder's reply, and some extensions'
+    // (NotebookLM) own onMessage listeners respond to our request first
+    // with the wrong object. A named port is point-to-point, so only the
+    // SW's __newbro_cs_storage handler answers.
+    var port = null, nextId = 1, pending = {};
+    function ensurePort() {
+      if (port) return port;
+      try {
+        port = rt.connect({ name: "__newbro_cs_storage" });
+        port.onMessage.addListener(function (msg) {
+          if (!msg || typeof msg.id === "undefined") return;
+          var cb = pending[msg.id];
+          if (cb) { delete pending[msg.id]; cb(msg.result); }
+        });
+        port.onDisconnect.addListener(function () {
+          void (chrome.runtime && chrome.runtime.lastError);
+          port = null;
+          var keys = Object.keys(pending);
+          pending = {};
+          for (var i = 0; i < keys.length; i++) { try { /* resolve stale as undefined */ } catch (e) {} }
+        });
+      } catch (e) { port = null; }
+      return port;
+    }
+    function csCall(area, method, args) {
+      return new Promise(function (resolve) {
+        var p = ensurePort();
+        if (!p) { resolve(void 0); return; }
+        var id = nextId++;
+        pending[id] = resolve;
+        try { p.postMessage({ id: id, area: area, method: method, args: args }); }
+        catch (e) { delete pending[id]; resolve(void 0); }
+      });
+    }
+    function makeArea(area) {
+      var listeners = [];
+      function op(method) {
+        return function () {
+          var a = Array.prototype.slice.call(arguments);
+          var cb = (typeof a[a.length - 1] === "function") ? a.pop() : void 0;
+          var p = csCall(area, method, a);
+          if (cb) p.then(function (r) { try { cb(r); } catch (e) {} });
+          return p;
+        };
+      }
+      return {
+        get: op("get"), set: op("set"), remove: op("remove"), clear: op("clear"),
+        getKeys: op("getKeys"), getBytesInUse: op("getBytesInUse"),
+        setAccessLevel: function () { return Promise.resolve(); },
+        onChanged: {
+          addListener: function (cb) { if (typeof cb === "function") listeners.push(cb); },
+          removeListener: function (cb) { var i = listeners.indexOf(cb); if (i !== -1) listeners.splice(i, 1); },
+          hasListener: function (cb) { return listeners.indexOf(cb) !== -1; },
+          hasListeners: function () { return listeners.length > 0; }
+        },
+        QUOTA_BYTES: 10485760
+      };
+    }
+    var local = makeArea("local");
+    // Route every area through the SW (session included — content scripts
+    // can't touch native chrome.storage.session in Electron either, which
+    // is what Vimium's find_mode_history.js hit). sync/managed alias to
+    // local in the SW handler; session maps to the library's own
+    // SessionStorageArea, so it stays consistent across contexts.
+    var polyfill = {
+      local: local, sync: makeArea("sync"), managed: local, session: makeArea("session"),
+      onChanged: {
+        addListener: function () {}, removeListener: function () {},
+        hasListener: function () { return false; }, hasListeners: function () { return false; }
+      }
+    };
+
+    // chrome.extension shim — Electron doesn't expose chrome.extension to
+    // content scripts, but Vimium (find_mode_history.js) reads
+    // chrome.extension.inIncognitoContext at init and crashes on the
+    // undefined namespace. Provide the couple of members content scripts
+    // actually touch; getURL aliases runtime.getURL.
+    try {
+      var ext = chrome.extension || {};
+      if (typeof ext.inIncognitoContext === "undefined") ext.inIncognitoContext = false;
+      if (typeof ext.getURL !== "function" && rt && typeof rt.getURL === "function") ext.getURL = function (p) { return rt.getURL(p); };
+      try { Object.defineProperty(chrome, "extension", { value: ext, configurable: true, writable: true, enumerable: true }); }
+      catch (e) { try { chrome.extension = ext; } catch (e2) {} }
+    } catch (e) {}
+
+    var ok = false;
+    // Replace chrome.storage wholesale first.
+    try {
+      Object.defineProperty(chrome, "storage", { value: polyfill, configurable: true, writable: true, enumerable: true });
+      ok = (chrome.storage === polyfill);
+    } catch (e) {}
+    if (!ok) { try { chrome.storage = polyfill; ok = (chrome.storage === polyfill); } catch (e) {} }
+    // If the object itself can't be swapped, mutate its areas in place.
+    if (!ok) {
+      try {
+        Object.defineProperty(chrome.storage, "local", { value: local, configurable: true, writable: true, enumerable: true });
+        Object.defineProperty(chrome.storage, "sync", { value: polyfill.sync, configurable: true, writable: true, enumerable: true });
+        Object.defineProperty(chrome.storage, "managed", { value: local, configurable: true, writable: true, enumerable: true });
+        ok = true;
+      } catch (e) {}
+    }
+  } catch (e) {}
+})();
+`
+
+/** Write the content-script storage polyfill into the extension dir (if
+ *  missing/stale) and prepend it to every content_scripts[].js so it
+ *  runs first in each content-script world. Mutates the given manifest
+ *  object; returns true if the manifest's content_scripts changed. */
+function prependCsStoragePolyfill(manifest: Record<string, unknown>, extDir: string): boolean {
+  const entries = manifest.content_scripts
+  if (!Array.isArray(entries) || entries.length === 0) return false
+  // Write the polyfill file (idempotent — only rewrite if content drifts).
+  const polyfillPath = join(extDir, CS_STORAGE_POLYFILL_FILENAME)
+  try {
+    let existing: string | null = null
+    try { existing = readFileSync(polyfillPath, 'utf8') } catch { /* not present */ }
+    if (existing !== CS_STORAGE_POLYFILL_SOURCE) writeFileSync(polyfillPath, CS_STORAGE_POLYFILL_SOURCE)
+  } catch (err) {
+    log.warn('extensions: cs-storage polyfill write failed', { extDir, err: String(err) })
+    return false
+  }
+  let changed = false
+  for (const raw of entries as Array<Record<string, unknown>>) {
+    if (!raw || !Array.isArray(raw.js)) continue
+    const js = raw.js as string[]
+    if (js[0] === CS_STORAGE_POLYFILL_FILENAME) continue // already first
+    // Drop any stray earlier copy, then prepend.
+    const withoutPoly = js.filter((f) => f !== CS_STORAGE_POLYFILL_FILENAME)
+    raw.js = [CS_STORAGE_POLYFILL_FILENAME, ...withoutPoly]
+    changed = true
+  }
+  return changed
 }
 
 const NEWBRO_CSP_CONNECT_SOURCES = ['newbro-ipc:', 'https://newbro-ext-ipc.test']
