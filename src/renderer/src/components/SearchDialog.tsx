@@ -6,6 +6,7 @@ import { Search, User, Layout, Layers, Globe, ArrowUpDown, CornerDownLeft, Aster
 import type { SearchableItem } from '../store/types'
 import { DetachedWindow } from './DetachedWindow'
 import { TabFavicon } from './TabFavicon'
+import { CommentChip } from './CommentChip'
 
 interface Props {
   open: boolean
@@ -462,8 +463,11 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
                           )}
                         </span>
                         <div className="flex-1 min-w-0">
-                          <div className="text-sm truncate">
-                            {item.comment ? `${item.comment} — ${item.name}` : item.name}
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            {item.comment && <CommentChip comment={item.comment} />}
+                            <span className="min-w-0 flex-1 truncate text-sm" title={item.name}>
+                              {item.name}
+                            </span>
                           </div>
                           <SearchBreadcrumb item={item} />
                         </div>

@@ -3,9 +3,8 @@ import { useAppStore, getSidebarOrder } from '../store/app-store'
 import { log } from '../lib/log'
 import { InputDialog } from './InputDialog'
 import { TabFavicon } from './TabFavicon'
-import {
-  ChevronRight, ChevronDown, Plus, X, MessageSquareText,
-} from 'lucide-react'
+import { CommentChip } from './CommentChip'
+import { ChevronRight, ChevronDown, Plus, X } from 'lucide-react'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
@@ -715,8 +714,8 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
         <TabFavicon favicon={tab.favicon} />
-        {tab.comment && <MessageSquareText size={16} className="shrink-0 text-primary/60" />}
-        <span className="flex-1 text-xs truncate">{tab.comment ? `${tab.comment} — ${tab.title}` : tab.title}</span>
+        {tab.comment && <CommentChip comment={tab.comment} />}
+        <span className="min-w-0 flex-1 truncate text-xs" title={tab.title}>{tab.title}</span>
         {/* Right-edge slot: the always-visible Cmd+N badge (when this tab
             is among the first 9 visible) and the hover-only close X share
             a single 24×24 cell. The Cmd+N badge is sized to match the
