@@ -12,7 +12,7 @@ import { APP_NAME } from './branding'
 // missed by one process-life: the lib was already in Node's require cache
 // by the time the ready handler fired.
 import './extensions/patch-lib-deps'
-import { app, BrowserWindow, session, Menu, nativeImage, screen, protocol, systemPreferences } from 'electron'
+import { app, BrowserWindow, ipcMain, session, Menu, nativeImage, screen, protocol, systemPreferences } from 'electron'
 import { dirname, join } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
@@ -54,9 +54,15 @@ import {
   type BrowserActionState,
 } from './chrome-extensions-bridge'
 import { ElectronChromeExtensions } from 'electron-chrome-extensions'
-import { loadEnabledExtensionsInto, readBgSourceWindow, rehydrateExtensionsOnStartup, getExtensionEntry } from './extensions/manager'
+import { loadEnabledExtensionsInto, readBgSourceWindow, rehydrateExtensionsOnStartup, getExtensionEntry, onExtensionDeactivated } from './extensions/manager'
 import { startSwCdpInspector, setSwCdpAuthHandler, type SwCdpAuthResponse } from './extensions/sw-cdp-inspector'
-import { startSwRpcServer, getSwRpcServerInfo } from './extensions/sw-rpc-server'
+import { startSwRpcServer, getSwRpcServerInfo, type SwRpcRoutes } from './extensions/sw-rpc-server'
+import {
+  wireServiceWorkerBridge,
+  registerSwInvokeHandler,
+  registerSwNotifyHandler,
+  sendToExtensionWorkers,
+} from './extensions/sw-bridge'
 import {
   registerUserScripts,
   unregisterUserScripts,
@@ -320,6 +326,12 @@ function enqueueStorageChange(
   areaName: string,
   changes: Record<string, unknown>,
 ): void {
+  // IPC-first: deliver straight to the extension's push-ready SW over
+  // the bridge (payload shape matches what /storage-poll returns).
+  // Fall back to the poll-drained queue when no worker is ready yet.
+  if (sendToExtensionWorkers(null, extId, 'storage-changed', { change: { areaName, changes } }, 'first') > 0) {
+    return
+  }
   const arr = queuedStorageChanges.get(extId) ?? []
   arr.push({ areaName, changes })
   queuedStorageChanges.set(extId, arr)
@@ -358,6 +370,12 @@ const waitingRuntimeMsgPolls = new Map<string, Array<(payload: unknown) => void>
 
 function enqueueRuntimeMessage(extId: string, payload: unknown): string {
   const msgId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  // IPC-first: push to the SW over the bridge (payload shape matches
+  // what /runtime-msg-poll returns). Queue only when no worker is
+  // push-ready.
+  if (sendToExtensionWorkers(null, extId, 'runtime-msg', { message: { msgId, extId, payload } }, 'first') > 0) {
+    return msgId
+  }
   const arr = queuedRuntimeMessages.get(extId) ?? []
   arr.push({ msgId, extId, payload })
   queuedRuntimeMessages.set(extId, arr)
@@ -451,6 +469,9 @@ const portSwWaiters = new Map<string, Array<(payload: unknown) => void>>()
 const pendingSwPortEvents = new Map<string, PortBridgeState['toSw']>()
 
 function pushSwEvent(extId: string, event: PortBridgeState['toSw'][number]): void {
+  // IPC-first: same payload shape the /runtime-port-sw-poll route
+  // returns; queue fallback below covers not-yet-ready workers.
+  if (sendToExtensionWorkers(null, extId, 'port-event', { event }, 'first') > 0) return
   const wakes = portSwWaiters.get(extId)
   if (wakes && wakes.length > 0) {
     const wake = wakes.shift()!
@@ -597,9 +618,54 @@ const waitingAuthPolls = new Map<string, Array<(payload: unknown) => void>>()
 /** Push a new challenge into the queue and fan it out to every extension
  *  currently long-polling /auth-poll for this partition. Each waiter
  *  receives a copy; first responder wins. */
+/** Extensions whose SW subscribed to IPC-pushed auth challenges (via
+ *  the bridge's 'auth-subscribe'). Survives SW restarts — a restarted
+ *  SW re-subscribes, and pushes to a stopped worker just reach 0. */
+const swAuthIpcSubscribers = new Set<string>()
+
 function enqueueAuthChallenge(challenge: QueuedChallenge): void {
   queuedChallenges.set(challenge.id, challenge)
+  // IPC-first fan-out to subscribed SWs; deliveredTo keeps the HTTP
+  // poll path from double-delivering to the same extension.
+  let deliveredToAny = false
+  for (const extId of swAuthIpcSubscribers) {
+    if (challenge.deliveredTo.has(extId)) continue
+    if (sendToExtensionWorkers(null, extId, 'auth-challenge', { id: challenge.id, details: challenge.details }, 'all') > 0) {
+      challenge.deliveredTo.add(extId)
+      deliveredToAny = true
+    }
+  }
   fanOutChallenge(challenge)
+  // Blackhole guard: a proxy is set but the extension that owns it has
+  // no live SW to answer the 407 (MV3 idle-stopped it). Without waking
+  // it, the challenge times out and the request fails — the classic
+  // "VPN on but nothing loads". Force-start the owner's SW; it re-runs
+  // the shim, re-subscribes to auth over IPC, and the still-queued
+  // challenge gets delivered on the retry. Only for proxy challenges
+  // (isProxy) with a known owner and no delivery yet.
+  const details = challenge.details as { isProxy?: unknown }
+  if (details?.isProxy === true && proxyOwnerExtId && !deliveredToAny) {
+    wakeExtensionWorker(challenge.partition, proxyOwnerExtId)
+  }
+}
+
+/** Force-start an extension's MV3 service worker so it can handle an
+ *  event (proxy auth) that arrived while it was idle-stopped. Best
+ *  effort — logs and moves on if the API or scope isn't available. */
+function wakeExtensionWorker(partition: string, extId: string): void {
+  try {
+    const ses = session.fromPartition(partition)
+    const sw = (ses as unknown as {
+      serviceWorkers?: { startWorkerForScope?: (scope: string) => Promise<unknown> }
+    }).serviceWorkers
+    if (!sw?.startWorkerForScope) return
+    const scope = `chrome-extension://${extId}/`
+    sw.startWorkerForScope(scope)
+      .then(() => log.info('extensions: woke SW for pending auth', { partition, extId }))
+      .catch((err) => log.warn('extensions: wakeExtensionWorker failed', { partition, extId, err: String(err) }))
+  } catch (err) {
+    log.warn('extensions: wakeExtensionWorker threw', { partition, extId, err: String(err) })
+  }
 }
 
 function fanOutChallenge(challenge: QueuedChallenge): void {
@@ -1799,16 +1865,34 @@ function configureSession(ses: Electron.Session, partition: string): void {
       try {
         const u = new URL(details.url)
         const action = u.pathname.replace(/^\/+/, '')
+        const rawBody = readUploadBody(details)
+        dispatchSwShimAction(ses, action, (key) => u.searchParams.get(key), rawBody ? safeJsonParse(rawBody) : null)
+      } catch (err) {
+        log.warn('extensions: SW shim ipc parse failed', { url: details.url, err: String(err) })
+      }
+      callback({ cancel: true })
+    },
+  )
+}
 
-        // Round-trip actions (auth-poll, auth-respond, active-tab-info)
-        // moved off this channel — they go to the loopback HTTP server
-        // started in app.whenReady (sw-rpc-server.ts). webRequest's
-        // cancel-bound transport can't deliver a response body, and
-        // the data:-URL-redirect alternative was rejected with
-        // ERR_UNSAFE_REDIRECT by Chromium's net stack.
-
+/** Dispatch one SW-shim action. Shared by the legacy sentinel-host
+ *  webRequest transport (fire-and-forget fetches cancelled by
+ *  onBeforeRequest) and the sw-bridge 'shim' notify channel — the IPC
+ *  path that replaces it.
+ *
+ *  Round-trip actions (auth-poll, auth-respond, active-tab-info,
+ *  userscripts-execute) are NOT here — they live on the sw-rpc-server
+ *  routes / sw-bridge invoke channels, because this dispatcher has no
+ *  response path. */
+function dispatchSwShimAction(
+  ses: Electron.Session,
+  action: string,
+  getParam: (key: string) => string | null,
+  parsed: unknown,
+): void {
+  try {
         if (action === 'open-tab') {
-          const url = u.searchParams.get('url')
+          const url = getParam('url')
           if (typeof url === 'string' && url.length > 0) {
             const focused = BrowserWindow.getFocusedWindow()
             const target =
@@ -1823,8 +1907,6 @@ function configureSession(ses: Electron.Session, partition: string): void {
             }
           }
         } else if (action === 'userscripts-register' || action === 'userscripts-update') {
-          const body = readUploadBody(details)
-          const parsed = body ? safeJsonParse(body) : null
           if (parsed && typeof parsed === 'object') {
             const p = parsed as { extId?: unknown; scripts?: unknown }
             const extId = typeof p.extId === 'string' ? p.extId : ''
@@ -1834,8 +1916,6 @@ function configureSession(ses: Electron.Session, partition: string): void {
             }
           }
         } else if (action === 'userscripts-unregister') {
-          const body = readUploadBody(details)
-          const parsed = body ? safeJsonParse(body) : null
           if (parsed && typeof parsed === 'object') {
             const p = parsed as { extId?: unknown; ids?: unknown }
             const extId = typeof p.extId === 'string' ? p.extId : ''
@@ -1848,8 +1928,6 @@ function configureSession(ses: Electron.Session, partition: string): void {
           // Convert to Electron's session.setProxy() shape and apply
           // to every partitioned session in this profile so all tabs
           // route through the new proxy.
-          const body = readUploadBody(details)
-          const parsed = body ? safeJsonParse(body) : null
           if (parsed && typeof parsed === 'object') {
             const p = parsed as { value?: unknown; extId?: unknown }
             const cfg = chromeProxyToElectron(p.value)
@@ -1858,7 +1936,7 @@ function configureSession(ses: Electron.Session, partition: string): void {
                 extId: p.extId,
                 cfg,
               })
-              applyProxyConfigToAllSessions(cfg)
+              applyProxyConfigToAllSessions(cfg, typeof p.extId === 'string' ? p.extId : undefined)
             } else {
               log.warn('extensions: chrome.proxy.settings.set — could not parse value', {
                 extId: p.extId, value: p.value,
@@ -1874,8 +1952,6 @@ function configureSession(ses: Electron.Session, partition: string): void {
           // the SW never sees the change. The frame-side preload posts
           // each onChanged payload here; we queue per extId and the SW
           // shim drains via /storage-poll. See SwRpcRoutes.storagePoll.
-          const body = readUploadBody(details)
-          const parsed = body ? safeJsonParse(body) : null
           if (parsed && typeof parsed === 'object') {
             const p = parsed as { extId?: unknown; areaName?: unknown; changes?: unknown }
             const extId = typeof p.extId === 'string' ? p.extId : ''
@@ -1918,8 +1994,6 @@ function configureSession(ses: Electron.Session, partition: string): void {
           action === 'userscript-setup-installed' ||
           action === 'userscript-setup-entry'
         ) {
-          const body = readUploadBody(details)
-          const parsed = body ? safeJsonParse(body) : null
           log.info('extensions: ' + action, {
             partition: getPartitionForSession(ses),
             info: parsed,
@@ -1941,8 +2015,6 @@ function configureSession(ses: Electron.Session, partition: string): void {
           action === 'userscripts-getScripts' ||
           action === 'userscripts-configureWorld'
         ) {
-          const body = readUploadBody(details)
-          const parsed = body ? safeJsonParse(body) : null
           log.info('extensions: ' + action, {
             partition: getPartitionForSession(ses),
             info: parsed,
@@ -1951,12 +2023,10 @@ function configureSession(ses: Electron.Session, partition: string): void {
           // Diagnostic from the SW shim's chrome.permissions.contains.
           // Surfaces what URL/permissions Tampermonkey is gating on.
           log.info('extensions: permission-check (SW)', {
-            origins: u.searchParams.get('origins') ?? '',
-            permissions: u.searchParams.get('permissions') ?? '',
+            origins: getParam('origins') ?? '',
+            permissions: getParam('permissions') ?? '',
           })
         } else if (action === 'scripting-execute') {
-          const body = readUploadBody(details)
-          const parsed = body ? safeJsonParse(body) : null
           if (parsed && typeof parsed === 'object') {
             const p = parsed as { extId?: unknown; tabIds?: unknown; body?: unknown; world?: unknown }
             const extId = typeof p.extId === 'string' ? p.extId : ''
@@ -1975,21 +2045,125 @@ function configureSession(ses: Electron.Session, partition: string): void {
           // Forward to every workspace renderer so it can update its
           // toolbar icon overlay. Renderer-side rendering ships in a
           // follow-up commit; for now we just log + broadcast.
-          const extId = u.searchParams.get('extId') ?? ''
-          const text = u.searchParams.get('text') ?? ''
-          const color = u.searchParams.get('color') ?? ''
+          const extId = getParam('extId') ?? ''
+          const text = getParam('text') ?? ''
+          const color = getParam('color') ?? ''
           for (const w of BrowserWindow.getAllWindows()) {
             if (!w.isDestroyed()) {
               w.webContents.send('extensions:badge', { extId, text, color, action })
             }
           }
         }
-      } catch (err) {
-        log.warn('extensions: SW shim ipc parse failed', { url: details.url, err: String(err) })
-      }
-      callback({ cancel: true })
-    },
+  } catch (err) {
+    log.warn('extensions: SW shim action failed', { action, err: String(err) })
+  }
+}
+
+/** Register the IPC-transport routes on the SW bridge. Mirrors the
+ *  sw-rpc-server routes 1:1 so the SW shim can migrate call site by
+ *  call site off loopback HTTP. The long-poll routes (auth-poll,
+ *  storage-poll, runtime-msg-poll, port polls) are intentionally
+ *  absent: on IPC they invert into main→SW pushes over the bridge's
+ *  'newbro-sw-event' channel instead of polls. */
+function installSwBridgeRoutes(routes: SwRpcRoutes): void {
+  registerSwNotifyHandler('shim', (ctx, payload) => {
+    const p = (payload ?? {}) as { action?: unknown; body?: unknown; params?: unknown }
+    const action = typeof p.action === 'string' ? p.action : ''
+    if (!action) {
+      log.warn('sw-bridge: shim notify without action', { extensionId: ctx.extensionId })
+      return
+    }
+    const params = p.params && typeof p.params === 'object' ? (p.params as Record<string, unknown>) : {}
+    dispatchSwShimAction(
+      session.fromPartition(ctx.partition),
+      action,
+      (key) => (typeof params[key] === 'string' ? (params[key] as string) : null),
+      p.body ?? null,
+    )
+  })
+
+  const asObj = (v: unknown): Record<string, unknown> =>
+    v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
+  const asStr = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback)
+
+  registerSwInvokeHandler('active-tab-info', (ctx) => routes.activeTabInfo(ctx.partition))
+  registerSwInvokeHandler('cold-start-check', (ctx, payload) =>
+    routes.coldStartCheck(asStr(asObj(payload).extId, ctx.extensionId)),
   )
+  registerSwInvokeHandler('userscripts-execute', async (ctx, payload) => {
+    const p = asObj(payload)
+    const results = await routes.userScriptsExecute(
+      asStr(p.extId, ctx.extensionId),
+      asObj(p.injection),
+    )
+    return { results }
+  })
+  registerSwInvokeHandler('auth-respond', (_ctx, payload) => {
+    const p = asObj(payload)
+    routes.authRespond(asStr(p.challengeId), p.response)
+  })
+  registerSwInvokeHandler('auth-subscribe', (ctx) => {
+    swAuthIpcSubscribers.add(ctx.extensionId)
+    log.info('sw-bridge: auth subscriber', {
+      partition: ctx.partition,
+      extensionId: ctx.extensionId,
+    })
+    return true
+  })
+
+  // Frame-context (popup/options) messages from extension-shim.ts.
+  // Replaces the frames' sentinel-host fetches — a frame's ipcRenderer
+  // reaches the global ipcMain directly.
+  ipcMain.on('newbro-ext-frame', (_event, payload: unknown) => {
+    const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    if (p.kind === 'storage-bridge') {
+      const extId = typeof p.extId === 'string' ? p.extId : ''
+      const areaName = typeof p.areaName === 'string' ? p.areaName : 'local'
+      const changes = p.changes && typeof p.changes === 'object' ? (p.changes as Record<string, unknown>) : {}
+      if (extId && Object.keys(changes).length > 0) {
+        log.info('extensions: storage-bridge fwd (frame ipc)', { extId, areaName, keys: Object.keys(changes) })
+        enqueueStorageChange(extId, areaName, changes)
+      }
+      return
+    }
+    log.warn('extensions: unknown newbro-ext-frame kind', { kind: String(p.kind) })
+  })
+  registerSwInvokeHandler('cookies-get', (ctx, payload) =>
+    routes.cookiesGet(ctx.partition, asObj(payload)),
+  )
+  registerSwInvokeHandler('cookies-get-all', (ctx, payload) =>
+    routes.cookiesGetAll(ctx.partition, asObj(payload)),
+  )
+  registerSwInvokeHandler('cookies-set', (ctx, payload) =>
+    routes.cookiesSet(ctx.partition, asObj(payload)),
+  )
+  registerSwInvokeHandler('cookies-remove', (ctx, payload) =>
+    routes.cookiesRemove(ctx.partition, asObj(payload)),
+  )
+  registerSwInvokeHandler('runtime-msg-send', (ctx, payload) => {
+    const p = asObj(payload)
+    return routes.runtimeMsgSend(asStr(p.extId, ctx.extensionId), p.payload)
+  })
+  registerSwInvokeHandler('runtime-msg-respond', (_ctx, payload) => {
+    const p = asObj(payload)
+    routes.runtimeMsgRespond(asStr(p.msgId), p.response)
+  })
+  registerSwInvokeHandler('port-open', (ctx, payload) => {
+    const p = asObj(payload)
+    return routes.portOpen(asStr(p.extId, ctx.extensionId), asStr(p.name))
+  })
+  registerSwInvokeHandler('port-content-send', (_ctx, payload) => {
+    const p = asObj(payload)
+    routes.portContentSend(asStr(p.portId), p.message)
+  })
+  registerSwInvokeHandler('port-sw-send', (_ctx, payload) => {
+    const p = asObj(payload)
+    routes.portSwSend(asStr(p.portId), p.message)
+  })
+  registerSwInvokeHandler('port-disconnect', (_ctx, payload) => {
+    const p = asObj(payload)
+    routes.portDisconnect(asStr(p.portId), asStr(p.side) === 'sw' ? 'sw' : 'content')
+  })
 }
 
 function readUploadBody(details: Electron.OnBeforeRequestListenerDetails): string | null {
@@ -2148,30 +2322,52 @@ function withNewbroBypass(extensionBypass: string | undefined): string {
  *      hasn't booted yet when the workspace's tabs start loading, and
  *      they race against Browsec's first setActualPac. */
 const lastExtensionProxyByPartition = new Map<string, Electron.ProxyConfig>()
+/** Which extension currently owns the applied proxy. When that extension
+ *  is disabled/uninstalled we revert to system so traffic doesn't keep
+ *  routing through a VPN whose SW is gone. null = user/default proxy,
+ *  not owned by an extension. */
+let proxyOwnerExtId: string | null = null
 const EXTENSION_PROXY_STORE_PATH = (): string =>
   join(app.getPath('userData'), 'newbro-extension-proxy.json')
 
+interface PersistedProxyFile {
+  owner: string | null
+  byPartition: Record<string, Electron.ProxyConfig>
+}
+
 function persistExtensionProxy(): void {
   try {
-    const obj: Record<string, Electron.ProxyConfig> = {}
-    for (const [k, v] of lastExtensionProxyByPartition) obj[k] = v
-    require('fs').writeFileSync(EXTENSION_PROXY_STORE_PATH(), JSON.stringify(obj, null, 2))
+    const byPartition: Record<string, Electron.ProxyConfig> = {}
+    for (const [k, v] of lastExtensionProxyByPartition) byPartition[k] = v
+    const payload: PersistedProxyFile = { owner: proxyOwnerExtId, byPartition }
+    require('fs').writeFileSync(EXTENSION_PROXY_STORE_PATH(), JSON.stringify(payload, null, 2))
   } catch (err) {
     log.warn('extensions: persistExtensionProxy failed', { err: String(err) })
   }
 }
 
-function loadPersistedExtensionProxy(): Record<string, Electron.ProxyConfig> {
+function loadPersistedExtensionProxy(): PersistedProxyFile {
+  const empty: PersistedProxyFile = { owner: null, byPartition: {} }
   try {
     const fs = require('fs') as typeof import('fs')
     const path = EXTENSION_PROXY_STORE_PATH()
-    if (!fs.existsSync(path)) return {}
+    if (!fs.existsSync(path)) return empty
     const raw = fs.readFileSync(path, 'utf8')
-    const parsed = JSON.parse(raw) as Record<string, Electron.ProxyConfig>
-    return parsed && typeof parsed === 'object' ? parsed : {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') return empty
+    // New shape: { owner, byPartition }. Old shape: a flat
+    // partition→cfg map written before proxy ownership was tracked.
+    if ('byPartition' in (parsed as Record<string, unknown>)) {
+      const p = parsed as PersistedProxyFile
+      return {
+        owner: typeof p.owner === 'string' ? p.owner : null,
+        byPartition: p.byPartition && typeof p.byPartition === 'object' ? p.byPartition : {},
+      }
+    }
+    return { owner: null, byPartition: parsed as Record<string, Electron.ProxyConfig> }
   } catch (err) {
     log.warn('extensions: loadPersistedExtensionProxy failed', { err: String(err) })
-    return {}
+    return empty
   }
 }
 
@@ -2182,8 +2378,12 @@ function loadPersistedExtensionProxy(): Record<string, Electron.ProxyConfig> {
  *  get default-system behavior; returning Browsec users get their VPN
  *  active from the very first paint. */
 function applyPersistedExtensionProxyToSession(partition: string, ses: Electron.Session): void {
-  const persisted = loadPersistedExtensionProxy()[partition]
+  const file = loadPersistedExtensionProxy()
+  const persisted = file.byPartition[partition]
   if (!persisted) return
+  // Restore ownership so a later disable/uninstall of the VPN extension
+  // reverts the proxy even across an app restart.
+  if (file.owner && persisted.mode !== 'system') proxyOwnerExtId = file.owner
   const merged: Electron.ProxyConfig = {
     ...persisted,
     proxyBypassRules: withNewbroBypass(persisted.proxyBypassRules),
@@ -2200,7 +2400,11 @@ function applyPersistedExtensionProxyToSession(partition: string, ses: Electron.
     .catch((err) => log.warn('extensions: persisted proxy restore failed', { partition, err: String(err) }))
 }
 
-function applyProxyConfigToAllSessions(cfg: Electron.ProxyConfig): void {
+function applyProxyConfigToAllSessions(cfg: Electron.ProxyConfig, ownerExtId?: string): void {
+  // Track the owning extension so we can revert if it's later disabled
+  // or uninstalled. A revert-to-system call passes no owner and clears
+  // ownership.
+  proxyOwnerExtId = cfg.mode === 'system' ? null : (ownerExtId ?? proxyOwnerExtId)
   const merged: Electron.ProxyConfig = {
     ...cfg,
     proxyBypassRules: withNewbroBypass(cfg.proxyBypassRules),
@@ -2626,6 +2830,10 @@ export function setupPartitionSession(partition: string): void {
   installLoginHandlerOnce()
   const ses = session.fromPartition(partition)
   configureSession(ses, partition)
+  // IPC transport to extension service workers (preload realm). Must be
+  // wired before extensions load into this session so the bridge sees
+  // every worker's 'starting' status.
+  wireServiceWorkerBridge(ses, partition)
   // Only partitioned tab sessions get the stealth preload — the default
   // session belongs to the main renderer which doesn't need (and shouldn't
   // have) page-fingerprint overrides. The extension shim runs alongside
@@ -3391,7 +3599,12 @@ app.whenReady().then(async () => {
   // server's port + secret into the SW shim source on disk; if we
   // injected before the server was up, the patched files would carry
   // a stale port=0 placeholder and every auth-poll would 404.
-  await startSwRpcServer({
+  //
+  // The same routes object also backs the sw-bridge IPC channels (see
+  // installSwBridgeRoutes below) — the IPC transport is taking over
+  // route by route; the HTTP server remains as the legacy fallback
+  // until every SW-shim call site has moved.
+  const swRoutes: SwRpcRoutes = {
     authPoll: async (extId, timeoutMs) => {
       // Per-extension routing: each extId that polls gets the next
       // challenge not yet delivered to it. Challenges are fanned out to
@@ -3583,8 +3796,23 @@ app.whenReady().then(async () => {
         return [{ frameId: 0, documentId: '', error: String(err) }]
       }
     },
-  }).catch((err) => {
+  }
+  await startSwRpcServer(swRoutes).catch((err) => {
     log.error('sw-rpc-server: failed to start', { err: String(err) })
+  })
+  installSwBridgeRoutes(swRoutes)
+
+  // Revert an extension-applied proxy when its owning extension is
+  // disabled or uninstalled. Without this, turning off Browsec leaves
+  // session.setProxy pointing at a dead VPN and every request fails
+  // ("сеть пропадает"). Only reverts when the deactivated extension is
+  // the current proxy owner — disabling an unrelated extension is a
+  // no-op for the proxy.
+  onExtensionDeactivated((extId) => {
+    if (proxyOwnerExtId && extId === proxyOwnerExtId) {
+      log.info('extensions: proxy owner deactivated — reverting to system', { extId })
+      applyProxyConfigToAllSessions({ mode: 'system' })
+    }
   })
 
   // Rehydrate installed extensions before any window opens. Each entry is

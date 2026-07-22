@@ -1,6 +1,6 @@
 {
   "name": "Newbro",
-  "version": "1.1.151",
+  "version": "1.1.152",
   "author": "Dmitry Surin <dmitry.surin@gmail.com>",
   "description": "Workspace-based browser with profiles and tab groups",
   "repository": {
@@ -85,6 +85,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "electron-chrome-extensions": "npm:@iamevan/electron-chrome-extensions@4.9.4",
+    "electron-chrome-web-store": "^0.13.0",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.3.9",
     "immer": "^11.1.4",

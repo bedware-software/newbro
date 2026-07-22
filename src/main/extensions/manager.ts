@@ -31,13 +31,13 @@
 
 import { app, BrowserWindow, session, type Session } from 'electron'
 import Store from 'electron-store'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { log } from '../log'
-import { parseCrx, extractCrxPublicKey, deriveExtensionIdFromPublicKey } from './crx'
-import { fetchCrx, extractExtensionIdFromUrl as _extract, clearCrxFetchSession } from './store'
-import { unzipTo } from './zip'
+import { deriveExtensionIdFromPublicKey } from './crx'
+import { extractExtensionIdFromUrl as _extract } from './store'
+import { downloadExtension } from 'electron-chrome-web-store'
 import { buildSwShimSource, SW_SHIM_MAGIC, SW_SHIM_LEGACY_MAGIC, SW_SHIM_FOOTER } from './sw-shim'
 import { getSwRpcServerInfo } from './sw-rpc-server'
 import { clearUserScriptsForExtension } from './userscripts'
@@ -1095,6 +1095,27 @@ function broadcastExtensionsChanged(): void {
   notifyCloudChange('extensions')
 }
 
+/** Callbacks fired when an extension stops running in every session
+ *  (disabled or uninstalled). Registered by index.ts so it can revert
+ *  side effects the extension's SW owned — most importantly a proxy the
+ *  extension applied via chrome.proxy.settings.set: without this, e.g.
+ *  disabling Browsec leaves session.setProxy pointing at a VPN whose SW
+ *  is gone, and all traffic blackholes ("сеть пропадает"). */
+type ExtensionDeactivatedHook = (extensionId: string) => void
+const extensionDeactivatedHooks: ExtensionDeactivatedHook[] = []
+export function onExtensionDeactivated(hook: ExtensionDeactivatedHook): void {
+  extensionDeactivatedHooks.push(hook)
+}
+function fireExtensionDeactivated(extensionId: string): void {
+  for (const hook of extensionDeactivatedHooks) {
+    try {
+      hook(extensionId)
+    } catch (err) {
+      log.warn('extensions: deactivated hook threw', { extensionId, err: String(err) })
+    }
+  }
+}
+
 // ── Cloud sync adapters ──
 // Extensions sync as a portable manifest — the installed IDs plus their
 // enabled/pinned state — never the unpacked bytes (those are large, version-
@@ -1329,49 +1350,49 @@ export async function setExtensionPinned(extensionId: string, pinned: boolean): 
 
 export async function installExtensionById(extensionId: string): Promise<ExtensionInfo> {
   log.info('extensions: installing', extensionId)
-  // Clean any cookies/cache from the dedicated fetch session before each
-  // install. We saw second-install-after-uninstall fail with net::ERR_FAILED
-  // because the request layer remembered a poisoned response from the prior
-  // attempt; wiping at the start of every install keeps things deterministic.
-  await clearCrxFetchSession()
-  const crxBuf = await fetchCrx(extensionId)
-  const zipBuf = parseCrx(crxBuf)
-  // Extract the CRX's signing public key BEFORE we strip the prefix and
-  // forget about it — it's the only way Electron can reproduce the same
-  // extension id Chrome Web Store assigned, instead of hashing the on-disk
-  // path and inventing a new one.
-  //
-  // Pass the expected id so extractCrxPublicKey can pick the publisher's
-  // proof out of CRX3's repeated sha256_with_rsa[]. Without the id we
-  // returned the first proof, which on a Chrome Web Store CRX is Google's
-  // CWS enrollment key — every extension we installed ended up with the
-  // same Google-derived id and the chrome-extension://<real-id>/popup
-  // load got `ERR_BLOCKED_BY_CLIENT (-20)` because no extension with the
-  // real id was registered.
-  const publicKey = extractCrxPublicKey(crxBuf, extensionId)
-  if (!publicKey) {
-    log.warn('extensions: no public key found in CRX header', { extensionId })
-  }
-
-  // Unpack into a temp dir first, read manifest to discover the version,
-  // then rename into its final resting place. This avoids leaving a
-  // half-extracted directory around if the user's disk fills up.
+  // Download + unpack via electron-chrome-web-store: real CRX3 signature
+  // parsing, verification against the expected id, and it writes
+  // manifest.key itself so the id stays stable. Replaces the hand-rolled
+  // fetchCrx/parseCrx/unzipTo/extractCrxPublicKey pipeline.
   const root = extensionsRoot()
   mkdirSync(root, { recursive: true })
-  const tmpDir = join(root, `${extensionId}.tmp-${Date.now()}`)
-  mkdirSync(tmpDir, { recursive: true })
+  const stagingDir = join(root, `.cws-staging-${Date.now()}`)
+  mkdirSync(stagingDir, { recursive: true })
   try {
-    unzipTo(zipBuf, tmpDir)
-    // Patch BEFORE we read for derivation — the patched manifest is what
-    // ends up at the extension's permanent path, so the entry we persist
-    // (and what loadExtension sees) matches the patched version.
-    patchManifest(tmpDir, publicKey)
+    const unpackedPath = await downloadExtension(extensionId, stagingDir)
+    return await adoptUnpackedExtension(extensionId, unpackedPath)
+  } finally {
+    try {
+      rmSync(stagingDir, { recursive: true, force: true })
+    } catch (err) {
+      log.warn('extensions: staging cleanup failed', { extensionId, err: String(err) })
+    }
+  }
+}
+
+/** Take an unpacked (not yet Newbro-patched) extension directory, apply
+ *  the manifest patches + SW shim, move it into the managed extensions
+ *  root, persist the registry entry, and load it into every session.
+ *  Shared by installExtensionById and the CWS-site install adoption
+ *  hook. The source directory is COPIED — callers own cleanup of their
+ *  staging dirs. */
+export async function adoptUnpackedExtension(
+  extensionId: string,
+  unpackedPath: string,
+): Promise<ExtensionInfo> {
+  const root = extensionsRoot()
+  mkdirSync(root, { recursive: true })
+  // Copy into a temp dir first, patch, read manifest for the version,
+  // then rename into the final resting place — never leaves a
+  // half-processed directory at the final path.
+  const tmpDir = join(root, `${extensionId}.tmp-${Date.now()}`)
+  try {
+    cpSync(unpackedPath, tmpDir, { recursive: true })
+    // publicKey=null: the unpacked manifest already carries `key`
+    // (electron-chrome-web-store writes it during unpack), so patch 1
+    // keeps it as-is.
+    patchManifest(tmpDir, null)
     const manifest = readManifest(tmpDir)
-    // Inject our chrome.tabs.create polyfill into the MV3 service
-    // worker file. Has to happen here — Electron 41's
-    // registerPreloadScript({ type: 'service-worker' }) doesn't actually
-    // fire for chrome-extension service workers, so patching the SW
-    // file on disk is our only reliable injection point.
     injectSwShim(tmpDir, manifest, extensionId)
     const version =
       typeof manifest.version === 'string' ? (manifest.version as string) : 'unknown'
@@ -1381,14 +1402,10 @@ export async function installExtensionById(extensionId: string): Promise<Extensi
     try {
       rmSync(join(root, extensionId), { recursive: true, force: true })
     } catch {
-      /* ignore */
+      /* ignore — first install has nothing to remove */
     }
     mkdirSync(join(root, extensionId), { recursive: true })
-    // Use fs.renameSync via require to avoid pulling node:fs's promises API
-    // into a tight import. rmSync already exists at top.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fs = require('node:fs') as typeof import('node:fs')
-    fs.renameSync(tmpDir, finalDir)
+    renameSync(tmpDir, finalDir)
 
     const entry = derivePersistedEntry(extensionId, finalDir, true, Date.now())
     const all = { ...store.get('extensions') }
@@ -1405,7 +1422,7 @@ export async function installExtensionById(extensionId: string): Promise<Extensi
     try {
       rmSync(tmpDir, { recursive: true, force: true })
     } catch {
-      /* ignore */
+      /* ignore — tmp dir may not exist if cpSync failed */
     }
     throw err
   }
@@ -1420,6 +1437,7 @@ export async function uninstallExtension(extensionId: string): Promise<void> {
   // bundled file and threw MODULE_NOT_FOUND.
   clearUserScriptsForExtension(extensionId)
   removeExtensionFromAllSessions(extensionId)
+  fireExtensionDeactivated(extensionId)
   const all = { ...store.get('extensions') }
   const entry = all[extensionId]
   delete all[extensionId]
@@ -1449,6 +1467,7 @@ export async function setExtensionEnabled(extensionId: string, enabled: boolean)
     }
   } else {
     removeExtensionFromAllSessions(extensionId)
+    fireExtensionDeactivated(extensionId)
   }
   broadcastExtensionsChanged()
 }

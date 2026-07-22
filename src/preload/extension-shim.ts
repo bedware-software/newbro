@@ -14,7 +14,18 @@
 //   need to agree.
 // - A diagnostic ping so we can confirm the preload ran.
 
-import { ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
+
+// True when this preload runs in a service-worker preload realm
+// (Electron 35+). `process.type` is exposed in preload realms; guarded
+// because frame preloads on very old Electron may lack it.
+const IS_SW_REALM = (() => {
+  try {
+    return (process as unknown as { type?: string })?.type === 'service-worker'
+  } catch {
+    return false
+  }
+})()
 
 function reportLoaded(stage: string): void {
   try {
@@ -51,7 +62,14 @@ const proto = (() => {
   return ''
 })()
 
-if (proto === 'chrome-extension:') {
+if (IS_SW_REALM) {
+  // Service-worker preload realm. CRITICAL: `location` is undefined
+  // here, so the frame-style `location.protocol` guard below can never
+  // match — that guard silently disabling this file in SW realms is
+  // exactly what the old "SW preload doesn't fire in Electron 41" bug
+  // actually was. Realm detection must use process.type.
+  initSwRealm()
+} else if (proto === 'chrome-extension:') {
   reportLoaded('preload-start')
   // Wrap install() in try-catch — a thrown error in our shim would
   // bubble up out of the preload and have prevented the page's own
@@ -72,6 +90,130 @@ if (proto === 'chrome-extension:') {
     }
   }
   reportLoaded('preload-end')
+}
+
+// ── Service-worker realm: __newbroIpc transport facade ──
+//
+// Exposes into the SW MAIN world:
+//   __newbroIpc.invoke(channel, payload) → Promise<{ok,data|error}>
+//   __newbroIpc.notify(channel, payload) → void  (fire-and-forget)
+//   __newbroIpc.on(channel, cb)          → void  (main-pushed events)
+// The polyfill shim (sw-shim.ts) prefers this facade over the legacy
+// loopback-HTTP transport when present.
+//
+// Order matters: the event listener + buffers are registered BEFORE
+// 'hello' is invoked, because main flips the worker to push-ready on
+// hello — any push arriving before the shim's __newbroIpc.on()
+// subscription lands in the per-channel buffer and is flushed to the
+// first subscriber.
+function initSwRealm(): void {
+  // Preload-side registry of main-world event callbacks. Callbacks are
+  // contextBridge-proxied functions; calling them crosses back into the
+  // SW main world.
+  const eventListeners = new Map<string, Array<(payload: unknown) => void>>()
+  // Pushes that arrived before the SW shim subscribed. Bounded so a
+  // channel nobody ever subscribes to can't grow without limit.
+  const MAX_BUFFERED = 200
+  const bufferedEvents = new Map<string, unknown[]>()
+
+  ipcRenderer.on('newbro-sw-event', (_event, channel: unknown, payload: unknown) => {
+    const ch = String(channel)
+    const cbs = eventListeners.get(ch)
+    if (!cbs || cbs.length === 0) {
+      const buf = bufferedEvents.get(ch) ?? []
+      if (buf.length >= MAX_BUFFERED) {
+        console.error('[newbro-ext-shim] sw-event buffer overflow, dropping oldest:', ch)
+        buf.shift()
+      }
+      buf.push(payload)
+      bufferedEvents.set(ch, buf)
+      return
+    }
+    for (const cb of cbs) {
+      try {
+        cb(payload)
+      } catch (err) {
+        console.error('[newbro-ext-shim] sw-event listener threw:', ch, err)
+      }
+    }
+  })
+
+  const facade = {
+    invoke: (channel: string, payload: unknown): Promise<unknown> =>
+      ipcRenderer.invoke('newbro-sw', String(channel), payload),
+    notify: (channel: string, payload: unknown): void => {
+      ipcRenderer.send('newbro-sw-notify', String(channel), payload)
+    },
+    on: (channel: string, cb: (payload: unknown) => void): void => {
+      const ch = String(channel)
+      const list = eventListeners.get(ch) ?? []
+      list.push(cb)
+      eventListeners.set(ch, list)
+      const buf = bufferedEvents.get(ch)
+      if (buf && buf.length > 0) {
+        bufferedEvents.delete(ch)
+        for (const payload of buf) {
+          try {
+            cb(payload)
+          } catch (err) {
+            console.error('[newbro-ext-shim] sw-event buffered replay threw:', ch, err)
+          }
+        }
+      }
+    },
+  }
+
+  // ipcRenderer here talks to ServiceWorkerMain.ipc (sw-bridge.ts),
+  // NOT the global ipcMain. The bridge only registers handlers on
+  // chrome-extension:// workers, so a successful 'hello' doubles as
+  // the extension-context check: web-site service workers get a
+  // rejection and we install nothing into them.
+  ipcRenderer
+    .invoke('newbro-sw', 'hello', { realm: 'service-worker' })
+    .then((ack) => {
+      const ok = !!(ack as { ok?: boolean } | undefined)?.ok
+      if (!ok) {
+        // Reached the bridge but got a refusal — log loudly, this is
+        // not an expected state for an extension worker.
+        console.error('[newbro-ext-shim] sw hello refused:', JSON.stringify(ack))
+        return
+      }
+      try {
+        const cb = contextBridge as unknown as {
+          executeInMainWorld?: (spec: { func: (...a: never[]) => void; args?: unknown[] }) => void
+        }
+        if (typeof cb.executeInMainWorld === 'function') {
+          cb.executeInMainWorld({
+            func: ((invoke: unknown, notify: unknown, on: unknown) => {
+              ;(globalThis as Record<string, unknown>).__newbroIpc = Object.freeze({
+                invoke,
+                notify,
+                on,
+              })
+            }) as (...a: never[]) => void,
+            args: [facade.invoke, facade.notify, facade.on],
+          })
+          // Confirm facade installation on the main side (shows up in
+          // the log next to the worker's 'hello').
+          ipcRenderer.send('newbro-sw-notify', 'log', { facade: 'installed' })
+        } else {
+          // Electron without executeInMainWorld can't reach the SW main
+          // world from a preload realm — the legacy HTTP transport stays
+          // in charge. Loud log so this never silently degrades.
+          console.error(
+            '[newbro-ext-shim] contextBridge.executeInMainWorld missing — __newbroIpc not installed',
+          )
+        }
+      } catch (err) {
+        console.error('[newbro-ext-shim] __newbroIpc install failed:', err)
+      }
+    })
+    .catch(() => {
+      // Expected for non-extension (web site) service workers: the
+      // bridge registers no handler there, so the invoke rejects.
+      // Deliberately quiet — this fires for every site SW on the
+      // partition.
+    })
 }
 
 function install(): void {
@@ -297,16 +439,19 @@ function installStorageBridge(chrome: Record<string, unknown>): void {
             })
           } catch { /* ipc gone */ }
           if (!extId || keys.length === 0) return
-          fetch('https://newbro-ext-ipc.test/storage-bridge', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ extId, areaName, changes }),
-          }).catch((err: unknown) => {
-            const msg = err && (err as { message?: string }).message ? String((err as { message?: string }).message) : String(err)
-            if (msg.indexOf('Failed to fetch') !== -1) return
-            try { console.error('[newbro-ext-shim] storage-bridge fetch rejected:', msg) }
+          // Frame contexts reach the global ipcMain directly — no need
+          // for the sentinel-host fetch the SW realm historically used.
+          try {
+            ipcRenderer.send('newbro-ext-frame', {
+              kind: 'storage-bridge',
+              extId,
+              areaName,
+              changes,
+            })
+          } catch (err) {
+            try { console.error('[newbro-ext-shim] storage-bridge ipc.send failed:', err) }
             catch { /* console torn down */ }
-          })
+          }
         } catch (err) {
           try { console.error('[newbro-ext-shim] storage-bridge dispatch threw:', err) }
           catch { /* console torn down */ }

@@ -95,7 +95,7 @@
 //         listeners. Wraps chrome.storage so onChanged is OUR event
 //         while local/sync/session pass through to the real storage.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V37__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V39__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 
@@ -186,7 +186,56 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       swLogPending = false;
     }
   }
+  // ── IPC bridge helpers ────────────────────────────────────────────
+  // The SW preload realm (extension-shim.ts) installs __newbroIpc into
+  // this world shortly after SW start (one hello round-trip). Every
+  // transport decision point re-checks it so the shim upgrades from
+  // loopback HTTP to IPC the moment the facade lands.
+  function getIpc() {
+    try {
+      var ipc = (typeof globalThis !== 'undefined') ? globalThis.__newbroIpc : undefined;
+      if (ipc && typeof ipc.invoke === 'function' && typeof ipc.on === 'function') return ipc;
+      return undefined;
+    } catch (_) { return undefined; }
+  }
+  // Returns null when the facade isn't installed (caller should use the
+  // HTTP fallback), else a Promise of the handler's data (undefined on
+  // handler error, which is logged).
+  function ipcInvoke(channel, payload) {
+    var ipc = getIpc();
+    if (!ipc) return null;
+    try {
+      return ipc.invoke(channel, payload).then(function (r) {
+        if (r && r.ok) return r.data;
+        swLog('ipc/' + channel, (r && r.error) || 'not ok');
+        return undefined;
+      }, function (err) {
+        swLog('ipc/' + channel + '/rejected', err);
+        return undefined;
+      });
+    } catch (e) {
+      swLog('ipc/' + channel + '/threw', e);
+      return null;
+    }
+  }
+
   function sendPost(action, body) {
+    // Prefer the IPC bridge installed by the SW preload realm
+    // (extension-shim.ts → __newbroIpc). It replaces the sentinel-host
+    // fetch: un-interceptable by extension webRequest/DNR rules, no
+    // connection budget, no ERR_NETWORK_CHANGED casualties. The fetch
+    // path below remains as fallback until the preload handshake lands
+    // (first ~ms of SW life) or on Electron without preload realms.
+    try {
+      var ipc = (typeof globalThis !== 'undefined') ? globalThis.__newbroIpc : undefined;
+      if (ipc && typeof ipc.notify === 'function') {
+        ipc.notify('shim', { action: action, body: body });
+        return;
+      }
+    } catch (e) {
+      try { console.error('[newbro-sw-shim] sendPost/__newbroIpc threw: ' + String(e)); }
+      catch (_) { /* console torn down */ }
+    }
     try {
       fetch(IPC_HOST + '/' + action, {
         method: 'POST',
@@ -474,6 +523,15 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     us.execute = function (injection, cb) {
       var p = (function () {
         try {
+          var ipc = (typeof globalThis !== 'undefined') ? globalThis.__newbroIpc : undefined;
+          if (ipc && typeof ipc.invoke === 'function') {
+            return ipc.invoke('userscripts-execute', { extId: extId, injection: injection || {} })
+              .then(function (r) {
+                if (r && r.ok) return (r.data && r.data.results) || [];
+                swLog('userScripts.execute/ipc', (r && r.error) || 'not ok');
+                return [];
+              });
+          }
           return fetch(IPC_RPC + '/userscripts-execute', {
             method: 'POST',
             headers: rpcHeaders({ 'Content-Type': 'application/json' }),
@@ -612,6 +670,8 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       }
     }
     function sendAuthRespond(challengeId, blockingResponse) {
+      var viaIpc = ipcInvoke('auth-respond', { challengeId: challengeId, response: blockingResponse });
+      if (viaIpc) return;
       try {
         fetch(IPC_RPC + '/auth-respond', {
           method: 'POST',
@@ -624,12 +684,41 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         swLog('onAuthRequired/auth-respond-threw', e);
       }
     }
+    var authIpcSubscribed = false;
+    // Pick the delivery path for auth challenges. IPC when the facade is
+    // up (main pushes 'auth-challenge' events to subscribers); HTTP
+    // long-poll otherwise. The poll loop re-checks each iteration and
+    // hands over to IPC as soon as the facade lands.
+    function ensureAuthDelivery() {
+      var ipc = getIpc();
+      if (ipc) {
+        if (authIpcSubscribed) return;
+        authIpcSubscribed = true;
+        try {
+          ipc.on('auth-challenge', function (ch) {
+            try { dispatchAuthChallenge(ch); }
+            catch (e) { swLog('onAuthRequired/ipc-dispatch', e); }
+          });
+        } catch (e) { swLog('onAuthRequired/ipc-on', e); }
+        var sub = ipcInvoke('auth-subscribe', { extId: extId });
+        if (!sub) swLog('onAuthRequired/ipc-subscribe', 'facade vanished mid-subscribe');
+        return;
+      }
+      startAuthPoll();
+    }
     function startAuthPoll() {
       if (authPollActive) return;
       authPollActive = true;
       function loop() {
         if (authListeners.length === 0) {
           authPollActive = false;
+          return;
+        }
+        if (getIpc()) {
+          // Facade landed while we were polling — hand over to IPC
+          // delivery and let this loop die.
+          authPollActive = false;
+          ensureAuthDelivery();
           return;
         }
         // Cache-busting nonce. Without this Chromium can serve a
@@ -666,7 +755,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
           listenerCount: authListeners.length,
           extraInfoSpec: extraInfoSpec || null,
         });
-        startAuthPoll();
+        ensureAuthDelivery();
       },
       removeListener: function (cb) {
         for (var i = authListeners.length - 1; i >= 0; i--) {
@@ -863,14 +952,30 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       },
       hasListeners: function () { return coldStartListeners.length > 0; },
     };
-    // Kick off the cold-start probe. The fetch goes to the loopback
-    // RPC server with our shared secret, same channel as auth-poll.
-    try {
-      fetch(IPC_RPC + '/cold-start-check?extId=' + encodeURIComponent(extId), {
+    // Kick off the cold-start probe. IPC-first: the facade usually
+    // lands within a few ms of SW start, so wait for it briefly (10 ×
+    // 50ms) before falling back to the loopback RPC server. The check
+    // is one-shot per SW start, so a short delay is harmless while an
+    // HTTP dependency here would keep the legacy server load-bearing.
+    function coldStartProbe(attempt) {
+      var viaIpc = ipcInvoke('cold-start-check', { extId: extId });
+      if (viaIpc) {
+        return viaIpc.then(function (data) {
+          return { isCold: !!(data === true || (data && data.isCold)) };
+        });
+      }
+      if (attempt < 10) {
+        return new Promise(function (resolve) {
+          setTimeout(function () { resolve(coldStartProbe(attempt + 1)); }, 50);
+        });
+      }
+      return fetch(IPC_RPC + '/cold-start-check?extId=' + encodeURIComponent(extId), {
         method: 'GET',
         headers: rpcHeaders(),
-      })
-        .then(function (r) { return r.json(); })
+      }).then(function (r) { return r.json(); });
+    }
+    try {
+      coldStartProbe(0)
         .then(function (payload) {
           var isCold = !!(payload && payload.isCold);
           coldStartFired = isCold;
@@ -1001,6 +1106,8 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       function respond(value) {
         if (settled) return;
         settled = true;
+        var viaIpc = ipcInvoke('runtime-msg-respond', { msgId: msgId, response: value });
+        if (viaIpc) return;
         try {
           fetch(IPC_RPC + '/runtime-msg-respond', {
             method: 'POST',
@@ -1031,10 +1138,33 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         }, 5000);
       }
     }
+    var runtimeMsgIpcSubscribed = false;
+    function ensureRuntimeMsgDelivery() {
+      var ipc = getIpc();
+      if (ipc) {
+        if (runtimeMsgIpcSubscribed) return;
+        runtimeMsgIpcSubscribed = true;
+        try {
+          ipc.on('runtime-msg', function (payload) {
+            if (payload && payload.message) {
+              try { dispatchBridgedRuntimeMessage(payload.message); }
+              catch (e) { swLog('runtimeMsg/ipc-dispatch', e); }
+            }
+          });
+        } catch (e) { swLog('runtimeMsg/ipc-on', e); }
+        return;
+      }
+      startRuntimeMsgPoll();
+    }
     function startRuntimeMsgPoll() {
       if (runtimeMsgPollActive) return;
       runtimeMsgPollActive = true;
       function loop() {
+        if (getIpc()) {
+          runtimeMsgPollActive = false;
+          ensureRuntimeMsgDelivery();
+          return;
+        }
         var nonce = Date.now() + '-' + Math.random().toString(36).slice(2);
         fetch(IPC_RPC + '/runtime-msg-poll?extId=' + encodeURIComponent(extId) + '&n=' + nonce, {
           method: 'GET',
@@ -1054,9 +1184,9 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       }
       loop();
     }
-    // Kick off the poll loop right after the wrappers are set up; the
+    // Kick off delivery right after the wrappers are set up; the
     // listener list will fill in as Browsec/TM call onMessage.addListener.
-    try { startRuntimeMsgPoll(); }
+    try { ensureRuntimeMsgDelivery(); }
     catch (e) { swLog('startRuntimeMsgPoll', e); }
 
     // ── chrome.runtime.connect port bridge (SW side) ───────────────
@@ -1075,6 +1205,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         sender: { id: extId, frameId: 0, origin: 'newbro-bridge' },
         postMessage: function (msg) {
           if (portState.disconnected) return;
+          if (ipcInvoke('port-sw-send', { portId: portId, message: msg })) return;
           try {
             fetch(IPC_RPC + '/runtime-port-sw-send', {
               method: 'POST',
@@ -1087,6 +1218,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
           if (portState.disconnected) return;
           portState.disconnected = true;
           delete bridgedPorts[portId];
+          if (ipcInvoke('port-disconnect', { portId: portId, side: 'sw' })) return;
           try {
             fetch(IPC_RPC + '/runtime-port-disconnect', {
               method: 'POST',
@@ -1146,10 +1278,38 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       }
     }
     var portPollActive = false;
+    var portIpcSubscribed = false;
+    function dispatchPortEvent(ev) {
+      if (!ev) return;
+      try {
+        if (ev.type === 'connect') dispatchPortConnect(ev.portId, ev.name);
+        else if (ev.type === 'msg') dispatchPortMessage(ev.portId, ev.message);
+        else if (ev.type === 'disconnect') dispatchPortDisconnect(ev.portId);
+      } catch (e) { swLog('port/dispatch', e); }
+    }
+    function ensurePortDelivery() {
+      var ipc = getIpc();
+      if (ipc) {
+        if (portIpcSubscribed) return;
+        portIpcSubscribed = true;
+        try {
+          ipc.on('port-event', function (payload) {
+            dispatchPortEvent(payload && payload.event);
+          });
+        } catch (e) { swLog('port/ipc-on', e); }
+        return;
+      }
+      startPortSwPoll();
+    }
     function startPortSwPoll() {
       if (portPollActive) return;
       portPollActive = true;
       function loop() {
+        if (getIpc()) {
+          portPollActive = false;
+          ensurePortDelivery();
+          return;
+        }
         var nonce = Date.now() + '-' + Math.random().toString(36).slice(2);
         fetch(IPC_RPC + '/runtime-port-sw-poll?extId=' + encodeURIComponent(extId) + '&n=' + nonce, {
           method: 'GET',
@@ -1173,7 +1333,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       }
       loop();
     }
-    try { startPortSwPoll(); }
+    try { ensurePortDelivery(); }
     catch (e) { swLog('startPortSwPoll', e); }
     var wrappedOnMessage = null;
     var wrappedOnConnect = null;
@@ -1238,12 +1398,41 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         catch (e) { swLog('storage.onChanged/listener:' + i, e); }
       }
     }
+    var storageIpcSubscribed = false;
+    function ensureStorageDelivery() {
+      var ipc = getIpc();
+      if (ipc) {
+        if (storageIpcSubscribed) return;
+        storageIpcSubscribed = true;
+        try {
+          ipc.on('storage-changed', function (payload) {
+            var change = payload && payload.change;
+            if (!change) return;
+            try {
+              sendPost('storage-bridge-recv', {
+                extId: extId,
+                areaName: change.areaName,
+                keys: Object.keys(change.changes || {}),
+              });
+            } catch (e) { swLog('storage.ipc/recv-beacon', e); }
+            fireStorageChange(change.changes, change.areaName);
+          });
+        } catch (e) { swLog('storage.ipc/on', e); }
+        return;
+      }
+      startStoragePoll();
+    }
     function startStoragePoll() {
       if (storagePollActive) return;
       storagePollActive = true;
       function loop() {
         if (storageOnChangedListeners.length === 0) {
           storagePollActive = false;
+          return;
+        }
+        if (getIpc()) {
+          storagePollActive = false;
+          ensureStorageDelivery();
           return;
         }
         var nonce = Date.now() + '-' + Math.random().toString(36).slice(2);
@@ -1288,7 +1477,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
           // a native event in the SW).
           try { origAddOnChanged(cb); }
           catch (e) { swLog('storage.onChanged/native-add', e); }
-          startStoragePoll();
+          ensureStorageDelivery();
         },
         removeListener: function (cb) {
           var i = storageOnChangedListeners.indexOf(cb);
@@ -1459,6 +1648,9 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     // session.cookies on the focused window's partition. Multi-profile
     // routing is approximate — see pickCookiesSession in main.
     function cookiesRpc(op, details) {
+      var channel = 'cookies-' + (op === 'getAll' ? 'get-all' : op);
+      var viaIpc = ipcInvoke(channel, details || {});
+      if (viaIpc) return viaIpc;
       var method = (op === 'get' || op === 'getAll') ? 'GET' : 'POST';
       var url = IPC_RPC + '/cookies/' + op;
       var opts = { method: method, headers: rpcHeaders() };
