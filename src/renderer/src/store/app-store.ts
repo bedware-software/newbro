@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { produce } from 'immer'
 import { v4 as uuid } from 'uuid'
-import type { Profile, Workspace, TabGroup, Tab, SearchableItem, WorkspaceCandidate } from './types'
+import type { Profile, Workspace, TabGroup, Tab, SearchableItem, SearchPathSegment, WorkspaceCandidate } from './types'
 import { log } from '../lib/log'
 
 // Edge-style palette: medium-saturation, medium-light hues spread around the
@@ -684,6 +684,17 @@ export function buildBookmarkHTML(workspaces: Workspace[]): string {
 
   out.push('</DL><p>')
   return out.join('\n') + '\n'
+}
+
+type SearchPathPart = [type: SearchPathSegment['type'], label: string]
+
+/** Keep the searchable path string and its styled breadcrumb segments in sync. */
+function makeSearchPath(...parts: SearchPathPart[]): Pick<SearchableItem, 'path' | 'pathSegments'> {
+  const pathSegments = parts.map(([type, label]) => ({ type, label }))
+  return {
+    path: pathSegments.map((segment) => segment.label).join(' > '),
+    pathSegments,
+  }
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -1629,16 +1640,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { profiles } = get()
     const items: SearchableItem[] = []
     for (const p of profiles) {
-      items.push({ type: 'profile', id: p.id, name: p.name, path: p.name, profileId: p.id })
+      items.push({ type: 'profile', id: p.id, name: p.name, ...makeSearchPath(['profile', p.name]), profileId: p.id })
       for (const w of p.workspaces) {
-        items.push({ type: 'workspace', id: w.id, name: w.name, path: `${p.name} > ${w.name}`, profileId: p.id, workspaceId: w.id })
+        items.push({ type: 'workspace', id: w.id, name: w.name, ...makeSearchPath(['profile', p.name], ['workspace', w.name]), profileId: p.id, workspaceId: w.id })
         for (const t of (w.tabs || [])) {
-          items.push({ type: 'tab', id: t.id, name: t.title, url: t.url, comment: t.comment, path: `${p.name} > ${w.name} > ${t.title}`, profileId: p.id, workspaceId: w.id })
+          items.push({ type: 'tab', id: t.id, name: t.title, url: t.url, favicon: t.favicon, comment: t.comment, ...makeSearchPath(['profile', p.name], ['workspace', w.name], ['tab', t.title]), profileId: p.id, workspaceId: w.id })
         }
         for (const g of w.tabGroups) {
-          items.push({ type: 'tabGroup', id: g.id, name: g.name, path: `${p.name} > ${w.name} > ${g.name}`, profileId: p.id, workspaceId: w.id, tabGroupId: g.id })
+          items.push({ type: 'tabGroup', id: g.id, name: g.name, ...makeSearchPath(['profile', p.name], ['workspace', w.name], ['tabGroup', g.name]), groupColor: g.color, profileId: p.id, workspaceId: w.id, tabGroupId: g.id })
           for (const t of g.tabs) {
-            items.push({ type: 'tab', id: t.id, name: t.title, url: t.url, comment: t.comment, path: `${p.name} > ${w.name} > ${g.name} > ${t.title}`, profileId: p.id, workspaceId: w.id, tabGroupId: g.id })
+            items.push({ type: 'tab', id: t.id, name: t.title, url: t.url, favicon: t.favicon, comment: t.comment, ...makeSearchPath(['profile', p.name], ['workspace', w.name], ['tabGroup', g.name], ['tab', t.title]), groupColor: g.color, profileId: p.id, workspaceId: w.id, tabGroupId: g.id })
           }
         }
       }

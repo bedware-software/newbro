@@ -31,13 +31,22 @@ export interface Profile {
   workspaces: Workspace[]
 }
 
+export interface SearchPathSegment {
+  type: 'profile' | 'workspace' | 'tabGroup' | 'tab'
+  label: string
+}
+
 export interface SearchableItem {
   type: 'profile' | 'workspace' | 'tabGroup' | 'tab'
   id: string
   name: string
   path: string
+  pathSegments: SearchPathSegment[]
   url?: string
+  favicon?: string
   comment?: string
+  /** Sidebar color of this group, or the parent group for a grouped tab. */
+  groupColor?: string
   profileId: string
   workspaceId?: string
   tabGroupId?: string

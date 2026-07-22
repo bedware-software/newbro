@@ -5,6 +5,7 @@ import { fuzzyFilter } from '../lib/fuzzy'
 import { Search, User, Layout, Layers, Globe, ArrowUpDown, CornerDownLeft, Asterisk } from 'lucide-react'
 import type { SearchableItem } from '../store/types'
 import { DetachedWindow } from './DetachedWindow'
+import { TabFavicon } from './TabFavicon'
 
 interface Props {
   open: boolean
@@ -59,6 +60,30 @@ function loadScope(): SearchScope {
 
 function saveScope(scope: SearchScope) {
   localStorage.setItem(SCOPE_STORAGE_KEY, scope)
+}
+
+function SearchBreadcrumb({ item }: { item: SearchableItem }) {
+  const visibleUrl = item.url && item.url !== 'about:blank' ? item.url : undefined
+  const fullLabel = `${item.path}${visibleUrl ? ` · ${visibleUrl}` : ''}`
+
+  return (
+    <div className="text-[10px] text-muted-foreground truncate" title={fullLabel}>
+      {item.pathSegments.map((segment, index) => (
+        <span key={`${segment.type}-${index}`}>
+          {index > 0 && <span aria-hidden="true"> &gt; </span>}
+          {segment.type === 'tabGroup' && item.groupColor ? (
+            <span
+              data-group-pill=""
+              className="inline rounded-sm px-1 font-medium"
+            >
+              {segment.label}
+            </span>
+          ) : segment.label}
+        </span>
+      ))}
+      {visibleUrl && ` · ${visibleUrl}`}
+    </div>
+  )
 }
 
 const isMac = navigator.platform.includes('Mac')
@@ -406,23 +431,41 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
                       <div
                         key={item.id}
                         data-index={idx}
+                        data-group-container={item.groupColor ? '' : undefined}
+                        style={item.groupColor ? { ['--gc' as string]: item.groupColor } : undefined}
                         className={`flex items-center gap-2 px-4 py-2 cursor-pointer ${
                           idx === selectedIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
                         }`}
                         onClick={() => handleSelect(item)}
                         onMouseEnter={() => setSelectedIndex(idx)}
                       >
-                        <span className="w-6 shrink-0 flex items-center">
-                          <TypeIcon size={16} className="text-muted-foreground/60" />
+                        <span className="relative w-6 shrink-0 flex items-center">
+                          {item.type === 'tab' ? (
+                            <>
+                              {item.groupColor && (
+                                <span
+                                  aria-hidden="true"
+                                  className="absolute -left-1 h-4 w-0.5 rounded-full"
+                                  style={{ backgroundColor: 'var(--gc-resolved)' }}
+                                />
+                              )}
+                              <TabFavicon favicon={item.favicon} />
+                            </>
+                          ) : (
+                            <TypeIcon
+                              size={16}
+                              className="text-muted-foreground/60"
+                              style={item.type === 'tabGroup' && item.groupColor
+                                ? { color: 'var(--gc-resolved)' }
+                                : undefined}
+                            />
+                          )}
                         </span>
                         <div className="flex-1 min-w-0">
                           <div className="text-sm truncate">
                             {item.comment ? `${item.comment} — ${item.name}` : item.name}
                           </div>
-                          <div className="text-[10px] text-muted-foreground truncate">
-                            {item.path}
-                            {item.url && item.url !== 'about:blank' && ` · ${item.url}`}
-                          </div>
+                          <SearchBreadcrumb item={item} />
                         </div>
                       </div>
                     )
