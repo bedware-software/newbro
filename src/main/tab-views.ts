@@ -1475,16 +1475,18 @@ async function fitExtensionPopupToContent(windowId: number): Promise<void> {
     // Match the view's background to the popup body so any unfilled gap
     // between body's outer box and the WebContentsView (e.g. body margin
     // on a page that didn't reset it) doesn't render as a transparent
-    // strip showing the page underneath.
-    if (result.bgColor) {
-      try { rec.view.setBackgroundColor(result.bgColor) }
-      catch (err) {
-        log.warn('extension popup: setBackgroundColor threw', {
-          extensionId: rec.extensionId,
-          bgColor: result.bgColor,
-          err: String(err),
-        })
-      }
+    // strip showing the page underneath. When the popup declares NO
+    // background of its own (Vimium's popup, for one), default to white —
+    // that's how Chrome/Edge render extension popups (on a white canvas),
+    // rather than letting the underlying page show through.
+    const popupBg = result.bgColor ?? '#ffffff'
+    try { rec.view.setBackgroundColor(popupBg) }
+    catch (err) {
+      log.warn('extension popup: setBackgroundColor threw', {
+        extensionId: rec.extensionId,
+        bgColor: popupBg,
+        err: String(err),
+      })
     }
     if (w === rec.width && h === rec.height) return
     rec.width = w

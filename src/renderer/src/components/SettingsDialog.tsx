@@ -1736,14 +1736,15 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
           {activeTab === 'shortcuts' && (
             <div>
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between gap-4 mb-4">
                 <p className="text-sm text-muted-foreground">
                   Click on a shortcut to reassign it. Each command supports up
                   to {MAX_BINDINGS_PER_ACTION} bindings. Press Escape to cancel.
                 </p>
                 <button
+                  type="button"
                   onClick={handleResetKeybindings}
-                  className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted"
+                  className="shrink-0 flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                 >
                   <RotateCcw size={12} />
                   Reset to Defaults
