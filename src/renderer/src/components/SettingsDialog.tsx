@@ -2622,7 +2622,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       <ConfirmDialog
         open={edgeImportConfirmOpen}
         title="Import passwords from Microsoft Edge?"
-        message={`Newbro will ask the operating system to unlock Edge's local password data, then copy ${edgeSource?.passwordCount || 'the detected'} passwords into ${profileNameForPartition(passwordPartition)}. Microsoft Edge will not be changed.`}
+        message={`Newbro will use the operating system to unlock Edge's local password data, then copy ${edgeSource?.passwordCount || 'the detected'} passwords into ${profileNameForPartition(passwordPartition)}. Microsoft Edge will not be changed.`}
         confirmLabel="Import passwords"
         tone="primary"
         onConfirm={handleImportEdgePasswords}

@@ -223,8 +223,10 @@ async function windowsEdgeKey(root: string): Promise<Buffer> {
   }
   const encryptedKey = wrapped.subarray(5).toString('base64')
   const script = [
+    "$ErrorActionPreference = 'Stop'",
+    'Add-Type -AssemblyName System.Security',
     '$bytes = [Convert]::FromBase64String($env:NEWBRO_EDGE_WRAPPED_KEY)',
-    '$key = [Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)',
+    '$key = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)',
     '[Convert]::ToBase64String($key)',
   ].join('; ')
   const output = await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
