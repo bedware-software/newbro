@@ -15,7 +15,7 @@ import { openDropdownAsync } from './dropdown-protocol'
 import {
   ChevronLeft, ChevronRight, RotateCw, X, ChevronDown,
   User, Layout, Lock, Unlock, ShieldAlert,
-  Menu, Globe, Copy, Check, Puzzle, Search, Download as DownloadIcon,
+  Menu, Check, Puzzle, Download as DownloadIcon,
   RefreshCw, ArrowDown,
 } from 'lucide-react'
 import type { DownloadEntry } from '../App'
@@ -550,7 +550,7 @@ function ExtensionActions({
   )
 }
 
-function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch }: { sidebarVisible: boolean; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void }) {
+function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onOpenDownloads }: { sidebarVisible: boolean; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void; onOpenDownloads: () => void }) {
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
   const [menuLabel, setMenuLabel] = useState('Menu')
@@ -612,6 +612,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   const ACTIONS: Record<string, () => void> = {
     'toggle-sidebar': onToggleSidebar,
     'search': onOpenSearch,
+    'downloads': onOpenDownloads,
     'settings': onOpenSettings,
     'check-updates': () => { (window as any).electronAPI.checkForUpdates?.() },
     'install-update': () => { (window as any).electronAPI.installUpdate?.() },
@@ -641,6 +642,10 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
         shortcut: shortcutFor('toggle-sidebar'),
       },
       { id: 'search', label: 'Search Everything', iconName: 'Search', shortcut: shortcutFor('search') },
+      // Permanent entry point for the downloads panel: the toolbar button
+      // hides itself once the list is empty, so this row is what guarantees
+      // the panel is always reachable.
+      { id: 'downloads', label: 'Downloads', iconName: 'Download' },
       { id: 'settings', label: 'Settings', iconName: 'Settings', shortcut: shortcutFor('settings') },
       updateReady
         ? {
@@ -735,68 +740,6 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   )
 }
 
-function ActiveTabTitle({ title, favicon, comment }: { title: string; favicon?: string; comment?: string }) {
-  const displayTitle = comment ? `${comment} — ${title}` : title
-  const textRef = useRef<HTMLSpanElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [isOverflowing, setIsOverflowing] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [faviconBroken, setFaviconBroken] = useState(false)
-
-  // Reset broken state when the favicon URL changes.
-  useEffect(() => { setFaviconBroken(false) }, [favicon])
-
-  useEffect(() => {
-    const el = textRef.current
-    const container = containerRef.current
-    if (!el || !container) return
-    setIsOverflowing(el.scrollWidth > container.clientWidth)
-  }, [displayTitle])
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(displayTitle)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-
-  return (
-    <div
-      className="group/tabtitle flex-[3] min-w-0 hidden min-[1200px]:flex items-center gap-2 h-8 rounded-md bg-secondary hover:bg-muted px-2.5"
-      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-      title={displayTitle}
-    >
-      <div className="relative shrink-0 w-4 h-4 flex items-center justify-center">
-        {favicon && !faviconBroken ? (
-          <img
-            key={favicon}
-            src={favicon}
-            className={`w-4 h-4 rounded-sm transition-opacity ${copied ? 'opacity-0' : 'group-hover/tabtitle:opacity-0'}`}
-            alt=""
-            draggable={false}
-            onError={() => setFaviconBroken(true)}
-          />
-        ) : (
-          <Globe size={14} className={`text-muted-foreground transition-opacity ${copied ? 'opacity-0' : 'group-hover/tabtitle:opacity-0'}`} />
-        )}
-        <button
-          onClick={handleCopy}
-          className={`absolute inset-0 flex items-center justify-center text-muted-foreground hover:text-foreground transition-opacity ${copied ? 'opacity-100' : 'opacity-0 group-hover/tabtitle:opacity-100'}`}
-        >
-          {copied ? <Check size={14} /> : <Copy size={14} />}
-        </button>
-      </div>
-      <div ref={containerRef} className="flex-1 overflow-hidden">
-        <span
-          ref={textRef}
-          className={`block truncate text-foreground cursor-default ${isOverflowing ? 'text-xs' : 'text-sm'}`}
-        >
-          {displayTitle}
-        </span>
-      </div>
-    </div>
-  )
-}
-
 export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions }: Props) {
   const isMac = navigator.platform.includes('Mac')
   const profiles = useAppStore((s) => s.profiles)
@@ -868,12 +811,15 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
   const [canGoForward, setCanGoForward] = useState(false)
   const [certPopupOpen, setCertPopupOpen] = useState(false)
 
-  // Downloads — open state for the panel + a cached active-count so the
-  // toolbar button shows a progress badge while there's a download in flight.
-  // The badge tracks live downloads only (history doesn't count); it stays
-  // in sync via the global onDownloadsUpdated broadcast.
+  // Downloads — open state for the panel plus the two counts the toolbar
+  // button's badge is derived from: in-flight downloads (blue progress badge)
+  // and the total number of entries the panel would list (grey resting badge).
+  // The button itself only exists while that total is non-zero — once the user
+  // clears the list the toolbar affordance disappears and Menu → Downloads is
+  // the only way back in. Both counts stay in sync via onDownloadsUpdated.
   const [downloadsPanelOpen, setDownloadsPanelOpen] = useState(false)
   const [activeDownloads, setActiveDownloads] = useState(0)
+  const [totalDownloads, setTotalDownloads] = useState(0)
   // True once a download finishes and stays true until the user opens the
   // panel — drives a green ✓ "done" badge so a completed download is visible
   // at a glance even when nothing is in flight, the way Chrome/Edge flag
@@ -904,7 +850,12 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
       for (const e of entries) prevStates.set(e.id, e.state)
       seeded = true
       setActiveDownloads(active)
-      if (justCompleted && !downloadsPanelOpenRef.current) setDownloadsDone(true)
+      setTotalDownloads(entries.length)
+      // An emptied list (Clear, or every row removed) retires the button, so
+      // drop any pending "done" flag with it — otherwise a later download
+      // would briefly inherit the stale green tick before its own first tick.
+      if (entries.length === 0) setDownloadsDone(false)
+      else if (justCompleted && !downloadsPanelOpenRef.current) setDownloadsDone(true)
     }
     void window.electronAPI.downloadsList?.().then((list) => {
       if (!alive) return
@@ -1486,7 +1437,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
         } as React.CSSProperties}
       >
         {/* App menu */}
-        <AppMenu sidebarVisible={sidebarVisible} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} />
+        <AppMenu sidebarVisible={sidebarVisible} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} onOpenDownloads={() => { setDownloadsPanelOpen(true); setDownloadsDone(false) }} />
 
         {/* Profile selector */}
         <Dropdown
@@ -1523,47 +1474,52 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
 
         <div className="w-px h-5 bg-border shrink-0" />
 
-        {/* Search Everything */}
-        <button
-          onClick={onOpenSearch}
-          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          title={`Search Everything (${isMac ? '⌘' : 'Ctrl'}+P)`}
-        >
-          <Search size={15} />
-        </button>
-
         {/* Downloads — opens a detached panel with active + recent downloads.
-            A count badge signals downloads in progress; once they finish a
-            green ✓ badge takes over so the user can tell a download completed
-            without opening the panel. Both clear/seed via onDownloadsUpdated. */}
-        <button
-          onClick={() => { setDownloadsPanelOpen((v) => !v); setDownloadsDone(false) }}
-          className="relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          title={
-            activeDownloads > 0
-              ? `${activeDownloads} active download${activeDownloads === 1 ? '' : 's'}`
-              : downloadsDone ? 'Downloads complete' : 'Downloads'
-          }
-        >
-          <DownloadIcon size={15} />
-          {activeDownloads > 0 ? (
-            <span
-              className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-semibold leading-[14px] text-center pointer-events-none"
-              aria-label={`${activeDownloads} active downloads`}
-            >
-              {activeDownloads > 9 ? '9+' : activeDownloads}
-            </span>
-          ) : downloadsDone ? (
-            <span
-              className="absolute -top-0.5 -right-0.5 w-[14px] h-[14px] rounded-full bg-green-500 text-white flex items-center justify-center pointer-events-none"
-              aria-label="Downloads complete"
-            >
-              <Check size={9} strokeWidth={3.5} />
-            </span>
-          ) : null}
-        </button>
+            The badge has three resting states: a blue count while downloads
+            are in flight, a green ✓ once they finish (so a completed download
+            is visible without opening the panel), and — after the panel has
+            been seen — a grey count of everything the panel still lists. The
+            button is dropped entirely when that list is empty; Menu →
+            Downloads remains the way in. All of it seeds/clears via
+            onDownloadsUpdated. */}
+        {totalDownloads > 0 && (
+          <button
+            onClick={() => { setDownloadsPanelOpen((v) => !v); setDownloadsDone(false) }}
+            className="relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            title={
+              activeDownloads > 0
+                ? `${activeDownloads} active download${activeDownloads === 1 ? '' : 's'}`
+                : downloadsDone
+                  ? 'Downloads complete'
+                  : `Downloads (${totalDownloads})`
+            }
+          >
+            <DownloadIcon size={15} />
+            {activeDownloads > 0 ? (
+              <span
+                className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-semibold leading-[14px] text-center pointer-events-none"
+                aria-label={`${activeDownloads} active downloads`}
+              >
+                {activeDownloads > 9 ? '9+' : activeDownloads}
+              </span>
+            ) : downloadsDone ? (
+              <span
+                className="absolute -top-0.5 -right-0.5 w-[14px] h-[14px] rounded-full bg-green-500 text-white flex items-center justify-center pointer-events-none"
+                aria-label="Downloads complete"
+              >
+                <Check size={9} strokeWidth={3.5} />
+              </span>
+            ) : (
+              <span
+                className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-muted-foreground text-background text-[9px] font-semibold leading-[14px] text-center pointer-events-none"
+                aria-label={`${totalDownloads} downloads`}
+              >
+                {totalDownloads > 9 ? '9+' : totalDownloads}
+              </span>
+            )}
+          </button>
+        )}
 
         {/* Nav buttons */}
         <button
@@ -1668,17 +1624,11 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
           />
         </div>
 
-        {/* Tab title */}
-        {activeTab?.title && (<>
-          <div className="w-px h-5 bg-border shrink-0 hidden min-[1200px]:block" />
-          <ActiveTabTitle title={activeTab.title} favicon={activeTab.favicon} comment={activeTab.comment} />
-        </>)}
-
-        {/* Extensions cluster sits at the far right of the toolbar (after
-            the tab-title chip) so it doesn't compete with the URL bar for
-            space. A leading "Manage extensions" button opens Settings →
-            Extensions; the pinned extension icons follow it. Click an icon
-            to toggle its popup; right-click for a Chrome-style context menu. */}
+        {/* Extensions cluster sits at the far right of the toolbar so it
+            doesn't compete with the URL bar for space. A leading "Manage
+            extensions" button opens Settings → Extensions; the pinned
+            extension icons follow it. Click an icon to toggle its popup;
+            right-click for a Chrome-style context menu. */}
         <ExtensionActions activeTabId={activeTabId} onManageExtensions={onManageExtensions} />
       </div>
 
