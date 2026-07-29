@@ -553,6 +553,7 @@ function ExtensionActions({
 function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch }: { sidebarVisible: boolean; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void }) {
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
+  const [menuLabel, setMenuLabel] = useState('Menu')
   // Live updater phase, surfaced as a small badge on the Menu button (replacing
   // the old floating toast): 'checking' → spinner, an update in flight
   // ('available' / 'downloading' / 'downloaded') → down-arrow, else nothing.
@@ -591,6 +592,12 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
       if (s?.keybindings) setKeybindings(s.keybindings)
     })
     return cleanup
+  }, [])
+
+  useEffect(() => {
+    window.electronAPI.getAppPaths?.().then((paths) => {
+      if (paths?.appName === 'Newbro Dev') setMenuLabel('Menu Dev')
+    })
   }, [])
 
   const updatesUnsupported = updatePhase === 'unsupported'
@@ -698,11 +705,11 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
           updateChecking ? 'Checking for updates…'
             : updateReady ? 'Update ready — open menu to restart & install'
             : updateAvailable ? 'New version available'
-            : 'Menu'
+            : menuLabel
         }
       >
         <Menu size={15} />
-        <span>Menu</span>
+        <span>{menuLabel}</span>
       </button>
       {/* Update status badge — mirrors the downloads button. Spinner while
           checking, a down-arrow when a new version is available (green once
@@ -1521,7 +1528,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
           onClick={onOpenSearch}
           className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          title={`Search Everything (${isMac ? '⌘' : 'Ctrl'}+O)`}
+          title={`Search Everything (${isMac ? '⌘' : 'Ctrl'}+P)`}
         >
           <Search size={15} />
         </button>

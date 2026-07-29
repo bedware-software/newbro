@@ -438,7 +438,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
                           idx === selectedIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
                         }`}
                         onClick={() => handleSelect(item)}
-                        onMouseEnter={() => setSelectedIndex(idx)}
                       >
                         <span className="relative w-6 shrink-0 flex items-center">
                           {item.type === 'tab' ? (

@@ -116,8 +116,8 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'prev-tab': ['CmdOrCtrl+Shift+Tab'],
   'toggle-sidebar': ['CmdOrCtrl+\\'],
   'focus-url': ['CmdOrCtrl+L'],
-  'search': ['CmdOrCtrl+O'],
-  'command-palette': ['CmdOrCtrl+P'],
+  'search': ['CmdOrCtrl+P'],
+  'command-palette': ['CmdOrCtrl+Shift+P'],
   'back': ['CmdOrCtrl+['],
   'forward': ['CmdOrCtrl+]'],
   'reload': ['CmdOrCtrl+R'],
@@ -286,6 +286,38 @@ const store = new Store<{ settings: Settings }>({
 })
 
 /**
+ * Move users who still have the original Search / Command Palette shortcut
+ * pair to the new defaults. Treat the pair as a unit so any customization to
+ * either action preserves both saved bindings.
+ */
+function migrateChangedKeybindingDefaults(): void {
+  const raw = store as unknown as { get(key: string): unknown; set(key: string, value: unknown): void }
+  const marker = 'search-command-palette-v2'
+  const migratedList = raw.get('migratedKeybindingDefaults')
+  const migrated = new Set(Array.isArray(migratedList) ? (migratedList as string[]) : [])
+  if (migrated.has(marker)) return
+
+  const saved = store.get('settings')
+  const keybindings = { ...(saved?.keybindings ?? {}) }
+  const search = readBindingList(keybindings.search)
+  const palette = readBindingList(keybindings['command-palette'])
+  const stillUsesOldPair =
+    search.length === 1 &&
+    search[0] === 'CmdOrCtrl+O' &&
+    palette.length === 1 &&
+    palette[0] === 'CmdOrCtrl+P'
+
+  if (stillUsesOldPair) {
+    keybindings.search = [...DEFAULT_KEYBINDINGS.search]
+    keybindings['command-palette'] = [...DEFAULT_KEYBINDINGS['command-palette']]
+    store.set('settings', { ...(saved ?? DEFAULT_SETTINGS), keybindings })
+  }
+
+  migrated.add(marker)
+  raw.set('migratedKeybindingDefaults', [...migrated])
+}
+
+/**
  * Seed accelerators for actions that shipped unbound and have since gained a
  * default. Existing installs persist an empty array for such an action, which
  * masks the new default forever (the empty array wins the cloneDefaultKeybindings
@@ -320,6 +352,7 @@ function migrateNewKeybindingDefaults(): void {
   raw.set('seededKeybindingDefaults', [...seeded])
 }
 
+migrateChangedKeybindingDefaults()
 migrateNewKeybindingDefaults()
 
 export function loadSettings(): Settings {

@@ -280,7 +280,6 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
                       isSelected ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-accent/50'
                     }`}
                     onClick={() => handleSelect(cmd)}
-                    onMouseEnter={() => setSelectedIndex(idx)}
                   >
                     <span>{cmd.label}</span>
                     {binding && (
@@ -330,8 +329,8 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   'prev-tab': 'CmdOrCtrl+Shift+Tab',
   'toggle-sidebar': 'CmdOrCtrl+\\',
   'focus-url': 'CmdOrCtrl+L',
-  'search': 'CmdOrCtrl+O',
-  'command-palette': 'CmdOrCtrl+P',
+  'search': 'CmdOrCtrl+P',
+  'command-palette': 'CmdOrCtrl+Shift+P',
   'back': 'CmdOrCtrl+[',
   'forward': 'CmdOrCtrl+]',
   'reload': 'CmdOrCtrl+R',
