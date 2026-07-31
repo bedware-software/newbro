@@ -948,6 +948,13 @@ if (STEALTH_ENABLED) try {
 // image address".
 if (STEALTH_ENABLED) try {
   window.addEventListener('contextmenu', (e: MouseEvent) => {
+    // Synthetic events are never a right-click. Menu libraries (Reka UI /
+    // Radix, and anything built on them) open their own menu from a button
+    // or keyboard by dispatching a `contextmenu` event at the anchor
+    // position — n8n's node "…" toolbar button does exactly this. Chromium
+    // only raises a context menu for a real user gesture, so an untrusted
+    // event must be left alone or we hijack the site's own menu.
+    if (!e.isTrusted) return
     // The page already handled this right-click with its own menu — defer to
     // it like a normal browser would.
     if (e.defaultPrevented) return
