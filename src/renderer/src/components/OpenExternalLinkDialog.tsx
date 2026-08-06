@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useAppStore, saveStateNow } from '../store/app-store'
-import type { PickerItem } from './PickerDialog'
+import { buildDestinationItems, decodeTarget, encodeTarget } from '../lib/tab-destinations'
 import { PickerDialog } from './PickerDialog'
 
 interface Props {
@@ -11,49 +11,6 @@ interface Props {
    *  the default destination and the initial scope. */
   currentWorkspaceId: string | null
   onClose: () => void
-}
-
-/** Same encoding scheme as MoveCopyTabDialog so the two pickers stay
- *  visually and behaviourally consistent. `__root__` means "the workspace's
- *  ungrouped surface" (i.e. addUngroupedTab). */
-function encodeTarget(workspaceId: string, groupId: string | null): string {
-  return `${workspaceId}::${groupId ?? '__root__'}`
-}
-
-function decodeTarget(id: string): { workspaceId: string; groupId: string | null } {
-  const [workspaceId, groupKey] = id.split('::')
-  return { workspaceId, groupId: groupKey === '__root__' ? null : groupKey }
-}
-
-function buildItems(
-  profiles: ReturnType<typeof useAppStore.getState>['profiles'],
-  scope: 'current' | 'all',
-  currentWorkspaceId: string | null,
-): PickerItem[] {
-  const out: PickerItem[] = []
-  for (const p of profiles) {
-    for (const w of p.workspaces) {
-      if (scope === 'current' && w.id !== currentWorkspaceId) continue
-      const section = `Profile: ${p.name} · Workspace: ${w.name}`
-      out.push({
-        id: encodeTarget(w.id, null),
-        label: `Root · ${w.name}`,
-        subLabel: 'Ungrouped tabs',
-        section,
-        trailingNote: `${(w.tabs || []).length} tabs`,
-      })
-      for (const g of w.tabGroups) {
-        out.push({
-          id: encodeTarget(w.id, g.id),
-          label: g.name,
-          color: g.color,
-          section,
-          trailingNote: `${g.tabs.length} tabs`,
-        })
-      }
-    }
-  }
-  return out
 }
 
 export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose }: Props) {
@@ -89,7 +46,7 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
   }, [open, currentWorkspaceId, activeTabGroupId, profiles])
 
   const items = useMemo(
-    () => buildItems(profiles, scope, currentWorkspaceId),
+    () => buildDestinationItems(profiles, scope, currentWorkspaceId),
     [profiles, scope, currentWorkspaceId],
   )
 

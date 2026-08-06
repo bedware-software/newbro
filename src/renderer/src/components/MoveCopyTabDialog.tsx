@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useAppStore, saveStateNow } from '../store/app-store'
-import type { PickerItem } from './PickerDialog'
+import { buildDestinationItems, decodeTarget, encodeTarget } from '../lib/tab-destinations'
 import { PickerDialog } from './PickerDialog'
 
 interface Props {
@@ -17,54 +17,6 @@ interface Props {
    *  scope toggle to limit destinations to "this workspace". */
   currentWorkspaceId: string | null
   onClose: () => void
-}
-
-/** Encodes a (workspaceId, groupId|null) pair into a single picker item id.
- *  Null group means "Root" (the workspace's ungrouped surface). */
-function encodeTarget(workspaceId: string, groupId: string | null): string {
-  return `${workspaceId}::${groupId ?? '__root__'}`
-}
-
-function decodeTarget(id: string): { workspaceId: string; groupId: string | null } {
-  const [workspaceId, groupKey] = id.split('::')
-  return { workspaceId, groupId: groupKey === '__root__' ? null : groupKey }
-}
-
-/** Build the destination list. Each workspace contributes one Root item plus
- *  one item per tab group. Items are tagged with a section header so the
- *  PickerDialog can group them by "Profile / Workspace". */
-function buildItems(
-  profiles: ReturnType<typeof useAppStore.getState>['profiles'],
-  scope: 'current' | 'all',
-  currentWorkspaceId: string | null,
-): PickerItem[] {
-  const out: PickerItem[] = []
-  for (const p of profiles) {
-    for (const w of p.workspaces) {
-      if (scope === 'current' && w.id !== currentWorkspaceId) continue
-      const section = `Profile: ${p.name} · Workspace: ${w.name}`
-      // Root entry — kept first so it always anchors each workspace's group.
-      // Label includes the workspace name because plain "Root" is ambiguous
-      // when results span multiple workspaces.
-      out.push({
-        id: encodeTarget(w.id, null),
-        label: `Root · ${w.name}`,
-        subLabel: 'Ungrouped tabs',
-        section,
-        trailingNote: `${(w.tabs || []).length} tabs`,
-      })
-      for (const g of w.tabGroups) {
-        out.push({
-          id: encodeTarget(w.id, g.id),
-          label: g.name,
-          color: g.color,
-          section,
-          trailingNote: `${g.tabs.length} tabs`,
-        })
-      }
-    }
-  }
-  return out
 }
 
 export function MoveCopyTabDialog({ open, mode, tabIds, currentWorkspaceId, onClose }: Props) {
@@ -114,7 +66,7 @@ export function MoveCopyTabDialog({ open, mode, tabIds, currentWorkspaceId, onCl
   }, [tabIds, profiles])
 
   const items = useMemo(() => {
-    const all = buildItems(profiles, scope, currentWorkspaceId)
+    const all = buildDestinationItems(profiles, scope, currentWorkspaceId)
     if (mode !== 'move' || tabs.length === 0) return all
     // For "Move" we hide containers that are already the source for ALL
     // selected tabs — moving each tab there would be a per-tab no-op.
