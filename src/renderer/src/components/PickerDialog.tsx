@@ -3,18 +3,49 @@ import { Search, ArrowUpDown, CornerDownLeft } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { fuzzyFilter } from '../lib/fuzzy'
 
+/** One crumb of a row's location path. `pill` marks the segment that names a
+ *  tab group, which is rendered as a colored pill exactly like the sidebar's
+ *  group header and the search window's breadcrumb. */
+export interface PickerPathSegment {
+  label: string
+  pill?: boolean
+}
+
 export interface PickerItem {
   id: string
   /** Primary label shown in bold/foreground. */
   label: string
-  /** Optional secondary text shown below in muted-foreground. */
-  subLabel?: string
-  /** When set, renders a colored dot at the row's leading edge. */
+  /** Full location path shown as a breadcrumb beneath the label
+   *  ("Profile / Workspace / Group"), matching the search window. */
+  path?: PickerPathSegment[]
+  /** Tab-group color. Not drawn on its own — it's what the `pill` path
+   *  segment is tinted with, so the color is stated once, in the path. */
   color?: string
   /** Items sharing the same `section` value are rendered under one header. */
   section?: string
   /** Optional verb-style hint shown right of the row, e.g. "Root". */
   trailingNote?: string
+}
+
+function pathText(segments: PickerPathSegment[]): string {
+  return segments.map((s) => s.label).join(' / ')
+}
+
+function PickerPath({ segments }: { segments: PickerPathSegment[] }) {
+  return (
+    <div className="text-[10px] text-muted-foreground truncate" title={pathText(segments)}>
+      {segments.map((segment, index) => (
+        <span key={`${index}-${segment.label}`}>
+          {index > 0 && <span aria-hidden="true"> / </span>}
+          {segment.pill ? (
+            <span data-group-pill="" className="inline rounded-sm px-1 font-medium">
+              {segment.label}
+            </span>
+          ) : segment.label}
+        </span>
+      ))}
+    </div>
+  )
 }
 
 interface ScopeChoice {
@@ -97,7 +128,10 @@ export function PickerDialog({
     if (!query.trim()) return items
     return fuzzyFilter(query, items, (item) => [
       { value: item.label, weight: 1 },
-      { value: item.subLabel, weight: 0.6 },
+      // The path carries the profile / workspace / group context, so typing a
+      // workspace name narrows to its destinations even though no section
+      // header spells it out any more.
+      { value: item.path && pathText(item.path), weight: 0.6 },
       { value: item.section, weight: 0.4 },
       { value: item.trailingNote, weight: 0.3 },
     ])
@@ -253,25 +287,20 @@ export function PickerDialog({
                     <div
                       key={item.id}
                       data-selected={isSelected}
+                      // Carrying the group color as `--gc` lets the theme
+                      // resolve it once for the whole row, so the leading dot
+                      // and the path's pill are always the same shade.
+                      data-group-container={item.color ? '' : undefined}
+                      style={item.color ? { ['--gc' as string]: item.color } : undefined}
                       className={`flex items-center gap-2 px-4 py-1.5 cursor-pointer text-sm ${
                         isSelected ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-accent/50'
                       }`}
                       onClick={(e) => onConfirm(item.id, { background: e.shiftKey })}
                       onMouseEnter={() => setSelectedIndex(idx)}
                     >
-                      {item.color !== undefined && (
-                        <div
-                          className="w-2.5 h-2.5 rounded-full shrink-0"
-                          style={{ backgroundColor: item.color }}
-                        />
-                      )}
                       <div className="flex-1 min-w-0">
                         <div className="truncate">{item.label}</div>
-                        {item.subLabel && (
-                          <div className="text-[10px] text-muted-foreground truncate">
-                            {item.subLabel}
-                          </div>
-                        )}
+                        {item.path && <PickerPath segments={item.path} />}
                       </div>
                       {item.trailingNote && (
                         <span className="text-[10px] text-muted-foreground shrink-0">

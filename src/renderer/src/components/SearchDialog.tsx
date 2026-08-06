@@ -71,7 +71,7 @@ function SearchBreadcrumb({ item }: { item: SearchableItem }) {
     <div className="text-[10px] text-muted-foreground truncate" title={fullLabel}>
       {item.pathSegments.map((segment, index) => (
         <span key={`${segment.type}-${index}`}>
-          {index > 0 && <span aria-hidden="true"> &gt; </span>}
+          {index > 0 && <span aria-hidden="true"> / </span>}
           {segment.type === 'tabGroup' && item.groupColor ? (
             <span
               data-group-pill=""
@@ -125,7 +125,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
     if (!query.trim()) return items.slice(0, 250)
     return fuzzyFilter(query, items, (item) => {
       // Combined haystack so queries can subsequence across path + url + comment
-      // (path already contains profile > workspace > group > title).
+      // (path already contains profile / workspace / group / title).
       const haystack = [item.path, item.url, item.comment]
         .filter((s): s is string => !!s && s !== 'about:blank')
         .join(' ')
@@ -133,7 +133,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
         { value: item.name, weight: 1 },
         { value: item.comment, weight: 0.9 },
         { value: item.url, weight: 0.5 },
-        // The path carries the profile > workspace > group context. Weight it
+        // The path carries the profile / workspace / group context. Weight it
         // high enough that matching a tab purely by its workspace/group name
         // (e.g. "jj" → "Jenkins Jobs") surfaces the tab prominently, not buried
         // beneath weak title coincidences.
@@ -461,14 +461,34 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
                             />
                           )}
                         </span>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex min-w-0 items-center gap-1.5">
-                            {item.comment && <CommentChip comment={item.comment} />}
-                            <span className="min-w-0 flex-1 truncate text-sm" title={item.name}>
-                              {item.name}
-                            </span>
+                        {/* Single-cell grid: both children sit in row 1 and
+                            overlap. A profile's path is just the profile name,
+                            so its breadcrumb would only echo the title — but
+                            dropping a line must not shorten the row. The
+                            invisible strut below reproduces the title +
+                            breadcrumb line boxes (same font sizes, hence the
+                            same heights) to hold the row at its normal height,
+                            and the real content centres itself against it. */}
+                        <div className="flex-1 min-w-0 grid grid-cols-1">
+                          {item.type === 'profile' && (
+                            <div aria-hidden="true" className="col-start-1 row-start-1 invisible">
+                              <div className="text-sm">&nbsp;</div>
+                              <div className="text-[10px]">&nbsp;</div>
+                            </div>
+                          )}
+                          {/* col-start-1 on BOTH children is what makes them
+                              overlap. Without it the second one is auto-placed
+                              into an implicit second column and gets pushed to
+                              the right of the strut. */}
+                          <div className="col-start-1 row-start-1 min-w-0 self-center">
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              {item.comment && <CommentChip comment={item.comment} />}
+                              <span className="min-w-0 flex-1 truncate text-sm" title={item.name}>
+                                {item.name}
+                              </span>
+                            </div>
+                            {item.type !== 'profile' && <SearchBreadcrumb item={item} />}
                           </div>
-                          <SearchBreadcrumb item={item} />
                         </div>
                       </div>
                     )

@@ -692,7 +692,7 @@ type SearchPathPart = [type: SearchPathSegment['type'], label: string]
 function makeSearchPath(...parts: SearchPathPart[]): Pick<SearchableItem, 'path' | 'pathSegments'> {
   const pathSegments = parts.map(([type, label]) => ({ type, label }))
   return {
-    path: pathSegments.map((segment) => segment.label).join(' > '),
+    path: pathSegments.map((segment) => segment.label).join(' / '),
     pathSegments,
   }
 }

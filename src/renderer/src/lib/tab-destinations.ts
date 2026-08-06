@@ -1,4 +1,4 @@
-import type { PickerItem } from '../components/PickerDialog'
+import type { PickerItem, PickerPathSegment } from '../components/PickerDialog'
 import type { Profile } from '../store/types'
 
 /** Shared vocabulary for the "pick a container for this tab" pickers
@@ -19,8 +19,10 @@ export function decodeTarget(id: string): { workspaceId: string; groupId: string
 }
 
 /** Build the destination list. Each workspace contributes one Root item plus
- *  one item per tab group. Items are tagged with a section header so the
- *  PickerDialog can group them by "Profile / Workspace". */
+ *  one item per tab group. Every row carries its own full
+ *  "Profile / Workspace / Group" path (the same breadcrumb the search window
+ *  shows), which is why there are no section headers here — the path already
+ *  says where each destination lives, and a header would only repeat it. */
 export function buildDestinationItems(
   profiles: Profile[],
   scope: 'current' | 'all',
@@ -30,16 +32,15 @@ export function buildDestinationItems(
   for (const p of profiles) {
     for (const w of p.workspaces) {
       if (scope === 'current' && w.id !== currentWorkspaceId) continue
-      const section = `Profile: ${p.name} · Workspace: ${w.name}`
-      // Root entry — kept first so it always anchors each workspace's group.
-      // Label is the workspace name with a trailing slash (a path-like "top of
-      // this workspace") because plain "Root" is ambiguous when results span
-      // multiple workspaces.
+      const workspacePath: PickerPathSegment[] = [{ label: p.name }, { label: w.name }]
+      // Root entry — kept first so it always anchors each workspace's block.
+      // Labelled with the plain workspace name: its path has no group pill,
+      // which is what distinguishes "the workspace itself" from a group inside
+      // it (plain "Root" is ambiguous when results span multiple workspaces).
       out.push({
         id: encodeTarget(w.id, null),
-        label: `${w.name}/`,
-        subLabel: `Top level in the ${w.name} workspace`,
-        section,
+        label: w.name,
+        path: workspacePath,
         trailingNote: `${(w.tabs || []).length} tabs`,
       })
       for (const g of w.tabGroups) {
@@ -47,7 +48,9 @@ export function buildDestinationItems(
           id: encodeTarget(w.id, g.id),
           label: g.name,
           color: g.color,
-          section,
+          // The group crumb repeats the label, but as the colored pill — it's
+          // what ties the row to the group's identity in the sidebar.
+          path: [...workspacePath, { label: g.name, pill: true }],
           trailingNote: `${g.tabs.length} tabs`,
         })
       }
