@@ -19,7 +19,7 @@
 // back into store updates and error-banner state.
 
 import { BrowserWindow, Menu, WebContentsView, clipboard, dialog, ipcMain, screen, session, app } from 'electron'
-import type { Session, WebContents } from 'electron'
+import type { FileFilter, Session, WebContents } from 'electron'
 import { join } from 'path'
 import { log } from './log'
 import { addVisit as addHistoryVisit, updateTitle as updateHistoryTitle } from './history'
@@ -1247,16 +1247,25 @@ export async function tabSavePage(tabId: string): Promise<boolean> {
     base = `${title || base || 'page'}.html`
   }
 
-  const isHtmlName = /\.(html?|mhtml)$/i.test(base)
+  // Offer the page-type filters first, then always "All Files" last so the
+  // extension can be typed by hand (the OS dialog only appends an extension
+  // when a concrete filter is selected).
+  const ext = (base.match(/\.([a-z0-9]{1,8})$/i)?.[1] ?? '').toLowerCase()
+  const filters: FileFilter[] = []
+  if (/^(html?|mhtml)$/.test(ext)) {
+    filters.push(
+      { name: 'Webpage, HTML Only', extensions: ['html', 'htm'] },
+      { name: 'Web Archive, Single File', extensions: ['mhtml'] },
+    )
+  } else if (ext) {
+    filters.push({ name: `${ext.toUpperCase()} File`, extensions: [ext] })
+  }
+  filters.push({ name: 'All Files', extensions: ['*'] })
+
   const result = await dialog.showSaveDialog(win, {
     title: 'Save Page',
     defaultPath: base,
-    filters: isHtmlName
-      ? [
-          { name: 'Webpage, HTML Only', extensions: ['html', 'htm'] },
-          { name: 'Web Archive, Single File', extensions: ['mhtml'] },
-        ]
-      : [{ name: 'All Files', extensions: ['*'] }],
+    filters,
   })
   if (result.canceled || !result.filePath) return false
   const saveType = /\.mhtml$/i.test(result.filePath) ? 'MHTML' : 'HTMLOnly'
