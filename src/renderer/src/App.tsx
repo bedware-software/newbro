@@ -487,6 +487,11 @@ export default function App() {
   const [commentDefault, setCommentDefault] = useState('')
   const [newGroupDialogOpen, setNewGroupDialogOpen] = useState(false)
   const [newGroupForTabId, setNewGroupForTabId] = useState<string | null>(null)
+  // Rename Group from the command palette. The sidebar's inline rename needs
+  // the group row on screen (and the sidebar can be hidden), so the palette
+  // path uses a dialog — same shape as Rename Workspace / Rename Profile.
+  const [renameGroupId, setRenameGroupId] = useState<string | null>(null)
+  const [renameGroupDefault, setRenameGroupDefault] = useState('')
   // Move/Copy Tab and Move/Copy Group dialogs. The pickers are fully
   // controlled — App owns the open state plus the source id, and resets
   // both on close so a fresh invocation always opens against the *current*
@@ -923,6 +928,14 @@ export default function App() {
             setTabPickerOpen(true)
           }
           break
+        case 'rename-tab-group': {
+          const group = s.getActiveWorkspace()?.tabGroups.find((g) => g.id === s.activeTabGroupId)
+          if (group) {
+            setRenameGroupDefault(group.name)
+            setRenameGroupId(group.id)
+          }
+          break
+        }
         case 'move-group':
           if (s.activeTabGroupId) {
             setGroupPickerMode('move')
@@ -1281,6 +1294,18 @@ export default function App() {
           setNewGroupForTabId(null)
           setNewGroupDialogOpen(false)
         }}
+      />
+      <InputDialog
+        open={!!renameGroupId}
+        title="Rename Group"
+        placeholder="Group name"
+        defaultValue={renameGroupDefault}
+        confirmLabel="Rename"
+        onConfirm={(name) => {
+          if (renameGroupId) useAppStore.getState().renameTabGroup(renameGroupId, name)
+          setRenameGroupId(null)
+        }}
+        onCancel={() => setRenameGroupId(null)}
       />
       <MoveCopyTabDialog
         open={tabPickerOpen}

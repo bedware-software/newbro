@@ -154,6 +154,7 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'duplicate-tab': [],
   'move-tab': [],
   'copy-tab': [],
+  'rename-tab-group': [],
   'move-group': [],
   'copy-group': [],
   // Add-to-bookshelf ships unbound (driven through the command palette);

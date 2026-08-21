@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAppStore } from '../store/app-store'
 import { TabFavicon } from './TabFavicon'
+import { InlineRenameInput } from './InlineRenameInput'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 import {
   BookOpen, ChevronRight, ChevronDown, Download, Loader2, WifiOff,
@@ -403,15 +404,11 @@ export function Bookshelf({ open, profileId, onClose }: Props) {
       return (
         <div key={r.id} data-sidebar-row="" className="relative flex items-center gap-1 px-1 py-1">
           <TabFavicon favicon={r.favicon} />
-          <input
-            autoFocus
+          <InlineRenameInput
             value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commitRename(r.id)
-              else if (e.key === 'Escape') { setEditingId(null); setEditValue('') }
-            }}
-            onBlur={() => commitRename(r.id)}
+            onChange={setEditValue}
+            onCommit={() => commitRename(r.id)}
+            onCancel={() => { setEditingId(null); setEditValue('') }}
             className="flex-1 min-w-0 bg-input rounded px-1.5 py-0.5 text-xs text-foreground outline-none border border-primary/40"
           />
         </div>
@@ -505,17 +502,11 @@ export function Bookshelf({ open, profileId, onClose }: Props) {
               {g.isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             </span>
             {editingGroupId === g.id ? (
-              <input
-                autoFocus
+              <InlineRenameInput
                 value={groupEditValue}
-                onChange={(e) => setGroupEditValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitGroupRename(g.id)
-                  else if (e.key === 'Escape') { setEditingGroupId(null); setGroupEditValue('') }
-                }}
-                onBlur={() => commitGroupRename(g.id)}
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
+                onChange={setGroupEditValue}
+                onCommit={() => commitGroupRename(g.id)}
+                onCancel={() => { setEditingGroupId(null); setGroupEditValue('') }}
                 className="flex-1 min-w-0 bg-transparent outline-none text-inherit placeholder:opacity-60"
               />
             ) : (

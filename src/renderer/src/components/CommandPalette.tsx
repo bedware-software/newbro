@@ -25,6 +25,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'move-tab', label: 'Move Tab...', category: 'Active Tab' },
   { id: 'copy-tab', label: 'Copy Tab...', category: 'Active Tab' },
   { id: 'add-to-new-group', label: 'Add to New Group...', category: 'Active Tab' },
+  { id: 'rename-tab-group', label: 'Rename Group…', category: 'Active Group' },
   { id: 'move-group', label: 'Move Group...', category: 'Active Group' },
   { id: 'copy-group', label: 'Copy Group...', category: 'Active Group' },
   { id: 'new-tab', label: 'New Tab', category: 'Tabs' },
@@ -147,7 +148,9 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
   const availableCommands = useMemo(() => {
     return COMMANDS.filter((cmd) => {
       if (cmd.id === 'remove-comment') return !!activeTab?.comment
-      if (cmd.id === 'move-group' || cmd.id === 'copy-group') return !!activeTabGroupId
+      if (cmd.id === 'rename-tab-group' || cmd.id === 'move-group' || cmd.id === 'copy-group') {
+        return !!activeTabGroupId
+      }
       return true
     })
   }, [activeTab?.comment, activeTabGroupId])

@@ -1,6 +1,7 @@
 import { Fragment, useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useAppStore, getSidebarOrder } from '../store/app-store'
 import { log } from '../lib/log'
+import { InlineRenameInput } from './InlineRenameInput'
 import { InputDialog } from './InputDialog'
 import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
@@ -831,18 +832,12 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
             {group.isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
           </span>
           {isEditing ? (
-            <input
+            <InlineRenameInput
               value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              onBlur={() => commitGroupRename(group.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitGroupRename(group.id)
-                if (e.key === 'Escape') setEditingGroupId(null)
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
+              onChange={setEditValue}
+              onCommit={() => commitGroupRename(group.id)}
+              onCancel={() => setEditingGroupId(null)}
               className="flex-1 min-w-0 bg-transparent outline-none placeholder:opacity-60 text-inherit"
-              autoFocus
             />
           ) : (
             <span className="flex-1 min-w-0 truncate">{group.name}</span>
