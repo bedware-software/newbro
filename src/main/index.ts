@@ -13,8 +13,9 @@ import { APP_NAME } from './branding'
 // by the time the ready handler fired.
 import './extensions/patch-lib-deps'
 import { app, BrowserWindow, ipcMain, session, Menu, nativeImage, screen, protocol, systemPreferences } from 'electron'
-import { dirname, join } from 'path'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { dirname, isAbsolute, join, resolve } from 'path'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { pathToFileURL } from 'url'
 import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers, registerDetachedPopup } from './ipc'
 import { setupAutoUpdater } from './updater'
@@ -952,12 +953,32 @@ const iconPng = join(__dirname, '../../resources/icon.png')
 const iconIco = join(__dirname, '../../resources/icon.ico')
 const windowIcon = process.platform === 'win32' ? iconIco : iconPng
 
+/** A local file handed to us as a bare path rather than a URL — Explorer's
+ *  "Open with → Newbro" on an .html file, or `newbro page.html` from a
+ *  shell — turned into the file:// URL a tab can actually load. Returns null
+ *  for anything that isn't an existing *file*: Chromium switches (`--flag`),
+ *  paths that don't exist, and directories, which matters in dev where argv[1]
+ *  is the app directory. */
+function pickFileUrlFromArg(arg: string): string | null {
+  if (!arg || arg.startsWith('-')) return null
+  try {
+    const abs = isAbsolute(arg) ? arg : resolve(process.cwd(), arg)
+    if (!statSync(abs).isFile()) return null
+    return pathToFileURL(abs).href
+  } catch {
+    return null
+  }
+}
+
 /** Pull the first URL-shaped argv entry. The OS appends the URL after our
- *  binary path on Windows / Linux when handing off http(s) clicks. */
+ *  binary path on Windows / Linux when handing off http(s) clicks, and the
+ *  *path* (not a file:// URL) when handing off a local file to open. */
 function pickUrlFromArgv(argv: string[]): string | null {
   for (const a of argv.slice(1)) {
     if (typeof a !== 'string') continue
-    if (/^https?:\/\//i.test(a)) return a
+    if (/^(https?|file):\/\//i.test(a)) return a
+    const fileUrl = pickFileUrlFromArg(a)
+    if (fileUrl) return fileUrl
   }
   return null
 }
