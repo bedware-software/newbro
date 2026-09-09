@@ -270,6 +270,21 @@ html[data-page-fullscreen] body {
   color: var(--gc-text);
 }
 
+/* Colour swatches in the group context menu. They carry `data-group-container`
+ * too, so they run the stored hex through the SAME per-theme resolution the
+ * sidebar pill uses — painting the raw hex here made every circle read darker
+ * and duller than the group it was about to produce, because the light theme
+ * lifts lightness and boosts chroma. Rings and the selected checkmark are
+ * derived from --gc-text so they flip ink with the theme alongside the pill. */
+[data-group-swatch] {
+  background-color: var(--gc-resolved);
+  color: var(--gc-text);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--gc-text) 22%, transparent);
+}
+[data-group-swatch][data-selected] {
+  box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--gc-text) 60%, transparent);
+}
+
 /* Pill/badge text colour: dark on dark theme (the Edge-style palette is
  * medium-light there, so dark text reads), white on light theme (the
  * brightened/saturated light-theme variants need a light label to keep

@@ -123,9 +123,12 @@ function SortableRow({
 // wrapped for a frame and then snap. `flex-wrap` is the safety net if a
 // caller ever passes a longer palette.
 //
-// Both rings are INSET so selection never grows the swatch's layout box and
-// pushes the strip wider. The check is dark ink because every palette hue is
-// mid-light by construction (see GROUP_COLORS).
+// Each circle carries `data-group-container` + `--gc` so the stored hex runs
+// through the same per-theme resolution the sidebar pill uses — see the
+// [data-group-swatch] rules in globals.css. Painting the raw hex here made
+// the swatches read darker than the group they produced under the light
+// theme. Rings live in that CSS too (inset, so selection never grows the
+// swatch's layout box and pushes the strip wider).
 function ColorStrip({
   colors,
   selected,
@@ -143,16 +146,17 @@ function ColorStrip({
         return (
           <button
             key={c.value}
+            data-group-container=""
+            data-group-swatch=""
+            {...(isSelected ? { 'data-selected': '' } : {})}
             title={c.label}
             aria-label={c.label}
             aria-pressed={isSelected}
             onClick={() => onEmit({ type: 'color', color: c.value })}
-            className={`h-[18px] w-[18px] shrink-0 rounded-full flex items-center justify-center transition-transform hover:scale-110 ring-inset ${
-              isSelected ? 'ring-2 ring-black/45' : 'ring-1 ring-black/15'
-            }`}
-            style={{ backgroundColor: c.value }}
+            className="h-[18px] w-[18px] shrink-0 rounded-full flex items-center justify-center transition-transform hover:scale-110"
+            style={{ ['--gc' as string]: c.value }}
           >
-            {isSelected && <Check size={11} strokeWidth={3} className="text-black/70" />}
+            {isSelected && <Check size={11} strokeWidth={3} />}
           </button>
         )
       })}
