@@ -672,8 +672,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // close Settings so the user lands on the freshly-opened page.
   const handleOpenStoreUrl = useCallback((url: string) => {
     const s = useAppStore.getState()
-    if (s.activeTabGroupId) s.addTab(s.activeTabGroupId, url)
-    else if (s.activeWorkspaceId) s.addUngroupedTab(s.activeWorkspaceId, url)
+    if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId, url)
     onClose()
   }, [onClose])
 

@@ -230,6 +230,16 @@ function findGroupById(s: AppState, groupId: string): TabGroup | undefined {
 }
 
 /** Read-only lookup of a workspace by id. */
+/** The sidebarOrder entry that stands for `tabId` at the workspace's top
+ *  level: the tab itself when it is ungrouped, otherwise the group holding
+ *  it. Grouped tabs never appear in sidebarOrder, so anchoring an insert on
+ *  the raw active-tab id would silently miss and append to the very end. */
+function topLevelAnchorId(w: Workspace, tabId: string | null): string | null {
+  if (!tabId) return null
+  if (w.tabs?.some((t) => t.id === tabId)) return tabId
+  return w.tabGroups.find((g) => g.tabs.some((t) => t.id === tabId))?.id ?? null
+}
+
 function findWorkspaceById(s: AppState, workspaceId: string): Workspace | undefined {
   for (const p of s.profiles) {
     const w = p.workspaces.find((w) => w.id === workspaceId)
@@ -448,6 +458,15 @@ export interface AppState {
   // Ungrouped tab actions
   /** Same `activate` semantics and return value as {@link addTab}. */
   addUngroupedTab: (workspaceId: string, url?: string, activate?: boolean) => string
+  /** The one place that decides WHERE a brand-new tab goes, for every
+   *  "give me a new tab" affordance (Ctrl+T, the sidebar button, search,
+   *  bookshelf, link handoffs). Lands it in the active group when that
+   *  group is expanded, and otherwise on the workspace's top level right
+   *  after it — a collapsed group means the user has put it away, so
+   *  forcing it open to reveal a tab they did not ask to file there is
+   *  exactly wrong. Returns the new tab's id, or null if `workspaceId`
+   *  does not resolve. */
+  addTabNearActive: (workspaceId: string, url?: string, activate?: boolean) => string | null
   ungroupTab: (tabId: string) => void
   ungroupAll: (groupId: string) => void
   closeGroup: (groupId: string) => void
@@ -1148,9 +1167,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (!w.tabs) w.tabs = []
           w.tabs.push(tab)
           const order = ensureSidebarOrder(w)
-          const activeIdx = s.activeTabId ? order.indexOf(s.activeTabId) : -1
-          if (activeIdx !== -1) {
-            order.splice(activeIdx + 1, 0, tab.id)
+          // Anchor on the active tab's TOP-LEVEL slot, so a tab added while
+          // sitting inside a group lands directly after that whole group
+          // rather than at the bottom of the sidebar.
+          const anchorId = topLevelAnchorId(w, s.activeTabId)
+          const anchorIdx = anchorId ? order.indexOf(anchorId) : -1
+          if (anchorIdx !== -1) {
+            order.splice(anchorIdx + 1, 0, tab.id)
           } else {
             order.push(tab.id)
           }
@@ -1163,6 +1186,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }))
     return tab.id
+  },
+
+  addTabNearActive: (workspaceId, url, activate = true) => {
+    const s = get()
+    const w = findWorkspaceById(s, workspaceId)
+    if (!w) return null
+    // activeTabGroupId is global state and can briefly point at a group in a
+    // DIFFERENT workspace mid-switch, so only reuse it when it really lives
+    // in the workspace we're adding to.
+    const group = s.activeTabGroupId
+      ? w.tabGroups.find((g) => g.id === s.activeTabGroupId)
+      : undefined
+    if (group && !group.isCollapsed) return get().addTab(group.id, url, activate)
+    // Collapsed (or no group): top level. addUngroupedTab anchors on the
+    // active tab's top-level slot, which for a tab inside the collapsed
+    // group is the group itself — so the new tab lands just below it.
+    return get().addUngroupedTab(workspaceId, url, activate)
   },
 
   ungroupTab: (tabId) => set(produce((s: AppState) => {

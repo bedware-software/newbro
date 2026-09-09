@@ -91,7 +91,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
   const setTabGroupColor = useAppStore((s) => s.setTabGroupColor)
   const toggleTabGroupCollapse = useAppStore((s) => s.toggleTabGroupCollapse)
   const addTab = useAppStore((s) => s.addTab)
-  const addUngroupedTab = useAppStore((s) => s.addUngroupedTab)
+  const addTabNearActive = useAppStore((s) => s.addTabNearActive)
   const closeTab = useAppStore((s) => s.closeTab)
   const duplicateTab = useAppStore((s) => s.duplicateTab)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
@@ -129,9 +129,8 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
   }, [])
 
   const handleNewTab = useCallback(() => {
-    if (activeTabGroupId) addTab(activeTabGroupId)
-    else if (activeWorkspaceId) addUngroupedTab(activeWorkspaceId)
-  }, [activeTabGroupId, activeWorkspaceId, addTab, addUngroupedTab])
+    if (activeWorkspaceId) addTabNearActive(activeWorkspaceId)
+  }, [activeWorkspaceId, addTabNearActive])
 
   const workspace = (() => {
     const profile = profiles.find((p) => p.id === activeProfileId)

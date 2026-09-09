@@ -146,8 +146,7 @@ export function Bookshelf({ open, profileId, onClose }: Props) {
     const url = offline && r.offlinePath
       ? `file:///${r.offlinePath.replace(/\\/g, '/')}`
       : r.url
-    if (s.activeTabGroupId) s.addTab(s.activeTabGroupId, url)
-    else if (s.activeWorkspaceId) s.addUngroupedTab(s.activeWorkspaceId, url)
+    if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId, url)
   }, [])
 
   const commitRename = useCallback((id: string) => {

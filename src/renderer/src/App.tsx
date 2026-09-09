@@ -773,8 +773,7 @@ export default function App() {
       }
       switch (action) {
         case 'new-tab':
-          if (s.activeTabGroupId) s.addTab(s.activeTabGroupId)
-          else if (s.activeWorkspaceId) s.addUngroupedTab(s.activeWorkspaceId)
+          if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId)
           break
         case 'close-tab':
           if (s.activeTabId) s.closeTab(s.activeTabId)
@@ -1023,34 +1022,13 @@ export default function App() {
       })
     })
 
-    // Lands an in-app new-tab handoff in the active group of the current
-    // workspace (falling back to the workspace's ungrouped surface), in
-    // either foreground or background. Shared between the foreground
-    // and background IPC channels — only the `background` arg differs.
+    // Lands an in-app new-tab handoff next to the user's current position
+    // (see addTabNearActive), in either foreground or background. Shared
+    // between the foreground and background IPC channels — only the
+    // `background` arg differs.
     const placeIncomingTab = (url: string, background: boolean): void => {
       const s = useAppStore.getState()
-      const wsId = s.activeWorkspaceId
-      const groupId = s.activeTabGroupId
-      // Verify the active group actually lives in the active workspace
-      // before reusing it — activeTabGroupId is global state and can
-      // briefly point at a group from a different workspace during
-      // workspace switches.
-      let groupInWorkspace = false
-      if (wsId && groupId) {
-        for (const p of s.profiles) {
-          const w = p.workspaces.find((w) => w.id === wsId)
-          if (w && w.tabGroups.some((g) => g.id === groupId)) {
-            groupInWorkspace = true
-            break
-          }
-        }
-      }
-      const activate = !background
-      if (groupInWorkspace && groupId) {
-        s.addTab(groupId, url, activate)
-      } else if (wsId) {
-        s.addUngroupedTab(wsId, url, activate)
-      }
+      if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId, url, !background)
     }
 
     // Foreground new-tab handoffs (plain LMB on target="_blank",
@@ -1128,8 +1106,7 @@ export default function App() {
       const searchUrl = normalizeURL(query)
       if (!searchUrl) return
       const s = useAppStore.getState()
-      if (s.activeTabGroupId) s.addTab(s.activeTabGroupId, searchUrl)
-      else if (s.activeWorkspaceId) s.addUngroupedTab(s.activeWorkspaceId, searchUrl)
+      if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId, searchUrl)
     })
 
     // Open Move/Copy pickers in response to context-menu choices in the
