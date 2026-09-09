@@ -11,11 +11,12 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-
 import { CSS } from '@dnd-kit/utilities'
 import {
   User, Layout, Search, Settings, Download, Info, LogOut, Plus, Pencil, Trash2, Menu, Globe, Import,
-  Upload, X, FolderPlus, FolderMinus, FolderInput, Folder, Copy, MessageSquare, MessageSquareOff,
-  FilePlus, Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose,
+  Upload, X, FolderPlus, FolderMinus, FolderInput, Folder, Copy, CopyPlus, MessageSquare,
+  MessageSquareOff, FilePlus, Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose, Check,
 } from 'lucide-react'
 import type {
   DropdownAction,
+  DropdownColor,
   DropdownEventBody,
   DropdownItem,
   DropdownSpec,
@@ -26,8 +27,8 @@ import type {
 // popup resolves them here. Keep in sync with IconName in dropdown-protocol.ts.
 const ICONS: Record<IconName, typeof User> = {
   User, Layout, Search, Settings, Download, Info, LogOut, Plus, Pencil, Trash2, Menu, Globe, Import,
-  Upload, X, FolderPlus, FolderMinus, FolderInput, Folder, Copy, MessageSquare, MessageSquareOff,
-  FilePlus, Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose,
+  Upload, X, FolderPlus, FolderMinus, FolderInput, Folder, Copy, CopyPlus, MessageSquare,
+  MessageSquareOff, FilePlus, Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose,
 }
 
 function resolveIcon(name: IconName | undefined, fallback: typeof User = User): typeof User {
@@ -111,6 +112,50 @@ function SortableRow({
           </button>
         )}
       </div>
+    </div>
+  )
+}
+
+// Edge-style swatch strip. Sized so the full 12-colour palette lands on one
+// line *within the popup window's initial width* (12x18px + 11x4px gaps +
+// 24px padding = 260px, comfortably under the 288px content box you get
+// before the measure/resize round-trip) — otherwise the strip would paint
+// wrapped for a frame and then snap. `flex-wrap` is the safety net if a
+// caller ever passes a longer palette.
+//
+// Both rings are INSET so selection never grows the swatch's layout box and
+// pushes the strip wider. The check is dark ink because every palette hue is
+// mid-light by construction (see GROUP_COLORS).
+function ColorStrip({
+  colors,
+  selected,
+  onEmit,
+}: {
+  colors: DropdownColor[]
+  selected?: string | null
+  onEmit: (evt: DropdownEventBody) => void
+}) {
+  const norm = (c: string): string => c.trim().toLowerCase()
+  return (
+    <div className="flex flex-wrap items-center gap-1 px-3 py-2">
+      {colors.map((c) => {
+        const isSelected = !!selected && norm(selected) === norm(c.value)
+        return (
+          <button
+            key={c.value}
+            title={c.label}
+            aria-label={c.label}
+            aria-pressed={isSelected}
+            onClick={() => onEmit({ type: 'color', color: c.value })}
+            className={`h-[18px] w-[18px] shrink-0 rounded-full flex items-center justify-center transition-transform hover:scale-110 ring-inset ${
+              isSelected ? 'ring-2 ring-black/45' : 'ring-1 ring-black/15'
+            }`}
+            style={{ backgroundColor: c.value }}
+          >
+            {isSelected && <Check size={11} strokeWidth={3} className="text-black/70" />}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -257,6 +302,12 @@ export function DropdownMenuContent({
           <div className="px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground truncate">
             {spec.header}
           </div>
+          <div className="h-px bg-border" />
+        </>
+      )}
+      {spec.colors && spec.colors.length > 0 && (
+        <>
+          <ColorStrip colors={spec.colors} selected={spec.selectedColor} onEmit={onEmit} />
           <div className="h-px bg-border" />
         </>
       )}

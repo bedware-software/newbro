@@ -8,20 +8,23 @@ import { log } from '../lib/log'
 // HSL wheel so dark text on top stays readable across the whole set. The
 // Catppuccin pastels we used before were too washed-out and forced light text
 // — these match the Microsoft Edge group palette pixel-for-pixel.
-const GROUP_COLORS = [
-  '#7AAFAF', // teal
-  '#9C9C9C', // gray
-  '#5681B8', // blue
-  '#D08866', // coral
-  '#C4A140', // mustard
-  '#B488C9', // pink-purple
-  '#8E81C9', // lavender
-  '#BD5E94', // magenta
-  '#7FB87F', // green
-  '#D6A87F', // peach
-  '#C46161', // red
-  '#7FA8D6', // sky
-]
+// Labels ride along with the hex so UI that lets the user *pick* a colour
+// (the group context menu swatches) can name each one for tooltips and
+// screen readers instead of showing a bare hex string.
+export const GROUP_COLORS = [
+  { value: '#7AAFAF', label: 'Teal' },
+  { value: '#9C9C9C', label: 'Gray' },
+  { value: '#5681B8', label: 'Blue' },
+  { value: '#D08866', label: 'Coral' },
+  { value: '#C4A140', label: 'Mustard' },
+  { value: '#B488C9', label: 'Pink' },
+  { value: '#8E81C9', label: 'Lavender' },
+  { value: '#BD5E94', label: 'Magenta' },
+  { value: '#7FB87F', label: 'Green' },
+  { value: '#D6A87F', label: 'Peach' },
+  { value: '#C46161', label: 'Red' },
+  { value: '#7FA8D6', label: 'Sky' },
+] as const
 
 /** Default URL for new tabs — updated from settings */
 let defaultNewTabUrl = 'about:blank'
@@ -86,7 +89,7 @@ function makeTabGroup(name = 'New Group', tabs?: Tab[]): TabGroup {
   return {
     id: uuid(),
     name,
-    color: GROUP_COLORS[Math.floor(Math.random() * GROUP_COLORS.length)],
+    color: GROUP_COLORS[Math.floor(Math.random() * GROUP_COLORS.length)].value,
     tabs: tabs || [makeTab()],
     isCollapsed: false,
   }
@@ -415,6 +418,9 @@ export interface AppState {
   addTabGroup: (workspaceId: string, name: string) => void
   removeTabGroup: (id: string) => void
   renameTabGroup: (id: string, name: string) => void
+  /** Recolour a group. Accepts any hex; the context-menu swatches feed it
+   *  values from GROUP_COLORS. */
+  setTabGroupColor: (id: string, color: string) => void
   toggleTabGroupCollapse: (id: string) => void
 
   // Tab actions
@@ -872,6 +878,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
   })),
+
+  setTabGroupColor: (id, color) => {
+    log.action('setTabGroupColor', { groupId: id, color })
+    set(produce((s: AppState) => {
+      for (const p of s.profiles) {
+        for (const w of p.workspaces) {
+          const g = w.tabGroups.find((g) => g.id === id)
+          if (g) { g.color = color; return }
+        }
+      }
+      log.warn('setTabGroupColor: group not found', id)
+    }))
+  },
 
   toggleTabGroupCollapse: (id) => {
     log.action('toggleTabGroupCollapse', id)

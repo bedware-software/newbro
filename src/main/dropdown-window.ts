@@ -43,6 +43,8 @@ interface DropdownSpecPayload {
   deletable?: boolean
   canDelete?: boolean
   newAction?: { label: string }
+  colors?: Array<{ value: string; label: string }>
+  selectedColor?: string | null
   actions?: Array<{
     id: string
     label: string

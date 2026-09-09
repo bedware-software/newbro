@@ -24,6 +24,7 @@ export type IconName =
   | 'FolderInput'
   | 'Folder'
   | 'Copy'
+  | 'CopyPlus'
   | 'MessageSquare'
   | 'MessageSquareOff'
   | 'FilePlus'
@@ -37,6 +38,14 @@ export type IconName =
 export interface DropdownItem {
   id: string
   name: string
+}
+
+/** One circle in the swatch strip (see DropdownSpec.colors). */
+export interface DropdownColor {
+  /** CSS colour — painted as the circle's fill and echoed back on pick. */
+  value: string
+  /** Human name ('Teal'), used for the tooltip / aria-label. */
+  label: string
 }
 
 export interface DropdownAction {
@@ -93,6 +102,12 @@ export interface DropdownSpec {
   // title, the group's name).
   header?: string
 
+  // Optional strip of colour circles rendered above the actions (Edge-style
+  // group recolouring). Picking one emits a 'color' event and closes the
+  // menu; `selectedColor` marks the current one with a ring + check.
+  colors?: DropdownColor[]
+  selectedColor?: string | null
+
   // List kind:
   iconName?: IconName
   selectedId?: string | null
@@ -114,6 +129,7 @@ export type DropdownEventBody =
   | { type: 'reorder'; sourceId: string; sourceIndex: number; targetIndex: number }
   | { type: 'new' }
   | { type: 'action'; actionId: string }
+  | { type: 'color'; color: string }
   | { type: 'cancel' }
 
 // Events that travel back to the parent renderer carry the originating

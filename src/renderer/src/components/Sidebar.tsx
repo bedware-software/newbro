@@ -1,5 +1,5 @@
 import { Fragment, useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { useAppStore, getSidebarOrder } from '../store/app-store'
+import { useAppStore, getSidebarOrder, GROUP_COLORS } from '../store/app-store'
 import { log } from '../lib/log'
 import { InlineRenameInput } from './InlineRenameInput'
 import { InputDialog } from './InputDialog'
@@ -88,10 +88,12 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
   const activeProfileId = useAppStore((s) => s.activeProfileId)
   const profiles = useAppStore((s) => s.profiles)
   const renameTabGroup = useAppStore((s) => s.renameTabGroup)
+  const setTabGroupColor = useAppStore((s) => s.setTabGroupColor)
   const toggleTabGroupCollapse = useAppStore((s) => s.toggleTabGroupCollapse)
   const addTab = useAppStore((s) => s.addTab)
   const addUngroupedTab = useAppStore((s) => s.addUngroupedTab)
   const closeTab = useAppStore((s) => s.closeTab)
+  const duplicateTab = useAppStore((s) => s.duplicateTab)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
   const moveTabs = useAppStore((s) => s.moveTabs)
   const moveTabGroup = useAppStore((s) => s.moveTabGroup)
@@ -520,6 +522,11 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
         ...(useSelection ? {} : { shortcut: closeShortcut }),
       },
     ]
+    actions.push({
+      id: 'duplicate',
+      label: useSelection ? `Duplicate ${targetCount} Tabs` : 'Duplicate Tab',
+      iconName: 'CopyPlus',
+    })
     if (!isUngrouped) {
       actions.push({ id: 'ungroup', label: 'Ungroup Tab', iconName: 'FolderMinus' })
     }
@@ -562,6 +569,12 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     const action = result.actionId
     if (action === 'close') {
       for (const id of actionTargets) closeTab(id)
+      if (useSelection) setSelectedTabIds(new Set())
+    }
+    else if (action === 'duplicate') {
+      // Each clone lands right after its original and becomes active, so a
+      // multi-select duplicate leaves the last copy focused.
+      for (const id of actionTargets) duplicateTab(id)
       if (useSelection) setSelectedTabIds(new Set())
     }
     else if (action === 'ungroup') ungroupTab(tabId)
@@ -613,9 +626,15 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       position: { x: e.clientX, y: e.clientY },
       ...readThemeAttrs(),
       header: group.name,
+      // Edge-style swatch strip above the actions: new groups get a random
+      // colour, and this is the one-click way to change one you don't like.
+      colors: GROUP_COLORS.map((c) => ({ value: c.value, label: c.label })),
+      selectedColor: group.color,
       actions,
     })
-    if (!result || result.type !== 'action') return
+    if (!result) return
+    if (result.type === 'color') { setTabGroupColor(groupId, result.color); return }
+    if (result.type !== 'action') return
     const action = result.actionId
     if (action === 'rename') handleGroupDoubleClick(groupId, group.name)
     else if (action === 'add-tab') addTab(groupId)
