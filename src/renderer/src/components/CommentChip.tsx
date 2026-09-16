@@ -2,11 +2,15 @@ interface Props {
   comment: string
 }
 
-/** Compact inline-code treatment for a tab's user-authored comment. */
+/**
+ * Compact inline-code treatment for a tab's user-authored comment. It keeps
+ * its full width and only truncates once the `min-w-title-stub` title beside
+ * it has nothing left to give (see globals.css).
+ */
 export function CommentChip({ comment }: Props) {
   return (
     <span
-      className="block min-w-0 max-w-[45%] shrink-0 truncate rounded-sm bg-secondary px-1 font-mono text-[10px] leading-4 text-muted-foreground ring-1 ring-inset ring-foreground/10"
+      className="block min-w-0 truncate rounded-sm bg-secondary px-1 font-mono text-[10px] leading-4 text-muted-foreground ring-1 ring-inset ring-foreground/10"
       title={comment}
       aria-label={`Comment: ${comment}`}
     >

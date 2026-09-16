@@ -101,6 +101,8 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
   const ungroupTab = useAppStore((s) => s.ungroupTab)
   const ungroupAll = useAppStore((s) => s.ungroupAll)
   const closeGroup = useAppStore((s) => s.closeGroup)
+  const convertGroupToComment = useAppStore((s) => s.convertGroupToComment)
+  const convertTabToGroup = useAppStore((s) => s.convertTabToGroup)
   const setTabComment = useAppStore((s) => s.setTabComment)
 
   // Current "new tab" keybinding, mirrored from main so the bottom-pinned
@@ -528,6 +530,10 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     })
     if (!isUngrouped) {
       actions.push({ id: 'ungroup', label: 'Ungroup Tab', iconName: 'FolderMinus' })
+    } else if (!useSelection) {
+      // The group menu's Convert to Comment, reversed. Single-tab only —
+      // wrapping a whole selection is what "Add N Tabs to New Group…" is for.
+      actions.push({ id: 'convert-to-group', label: 'Convert to Group', iconName: 'Folder' })
     }
     actions.push({
       id: 'new-group',
@@ -577,6 +583,12 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       if (useSelection) setSelectedTabIds(new Set())
     }
     else if (action === 'ungroup') ungroupTab(tabId)
+    else if (action === 'convert-to-group') {
+      const groupId = convertTabToGroup(tabId)
+      // No comment means no name to carry over, so the group comes up with
+      // the default one — put its name straight into edit mode instead.
+      if (groupId && !tab?.comment?.trim()) handleGroupDoubleClick(groupId, '')
+    }
     else if (action === 'new-group') {
       setPendingGroupTabIds(actionTargets)
       setGroupFromContextOpen(true)
@@ -612,13 +624,18 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       { id: 'move-group', label: 'Move Group…', iconName: 'FolderInput', divider: 'before' },
       { id: 'copy-group', label: 'Copy Group…', iconName: 'Copy' },
       { id: 'ungroup-all', label: 'Ungroup All Tabs', iconName: 'FolderMinus', divider: 'before' },
-      {
-        id: 'close-group',
-        label: `Close Group (${tabCount} ${tabCount === 1 ? 'tab' : 'tabs'})`,
-        iconName: 'X',
-        destructive: true,
-      },
     ]
+    // A one-tab group is really just a labelled tab, so offer to turn the
+    // label into the tab's comment (the tab menu's Convert to Group undoes it).
+    if (tabCount === 1) {
+      actions.push({ id: 'convert-to-comment', label: 'Convert to Comment', iconName: 'MessageSquare' })
+    }
+    actions.push({
+      id: 'close-group',
+      label: `Close Group (${tabCount} ${tabCount === 1 ? 'tab' : 'tabs'})`,
+      iconName: 'X',
+      destructive: true,
+    })
 
     const result = await openDropdownAsync({
       kind: 'menu',
@@ -638,6 +655,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     if (action === 'rename') handleGroupDoubleClick(groupId, group.name)
     else if (action === 'add-tab') addTab(groupId)
     else if (action === 'ungroup-all') ungroupAll(groupId)
+    else if (action === 'convert-to-comment') convertGroupToComment(groupId)
     else if (action === 'close-group') closeGroup(groupId)
     else if (action === 'move-group' || action === 'copy-group') {
       window.dispatchEvent(
@@ -734,7 +752,14 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
         )}
         <TabFavicon favicon={tab.favicon} />
         {tab.comment && <CommentChip comment={tab.comment} />}
-        <span className="min-w-0 flex-1 truncate text-xs" title={tab.title}>{tab.title}</span>
+        {/* A numbered row keeps its stub clear of the 24×24 slot below. */}
+        <span
+          className="min-w-title-stub flex-1 truncate text-xs"
+          style={tabNumber !== undefined ? { ['--title-stub-reserve' as string]: '1.5rem' } : undefined}
+          title={tab.title}
+        >
+          {tab.title}
+        </span>
         {/* Right-edge slot: the always-visible Cmd+N badge (when this tab
             is among the first 9 visible) and the hover-only close X share
             a single 24×24 cell. The Cmd+N badge is sized to match the

@@ -470,6 +470,16 @@ export interface AppState {
   ungroupTab: (tabId: string) => void
   ungroupAll: (groupId: string) => void
   closeGroup: (groupId: string) => void
+  /** Dissolve a one-tab group into a plain tab that takes over the group's
+   *  sidebar slot, with the group's name carried over as the tab's comment.
+   *  The inverse of {@link convertTabToGroup}. No-op for any other group
+   *  size. */
+  convertGroupToComment: (groupId: string) => void
+  /** Wrap an ungrouped tab in a new group that takes over the tab's sidebar
+   *  slot, named after the tab's comment (which moves onto the group, so the
+   *  tab loses it) or the default group name when it has none. Returns the
+   *  new group's id, or null if `tabId` is not an ungrouped tab. */
+  convertTabToGroup: (tabId: string) => string | null
 
   // Multi-tab operations
   moveTab: (tabId: string, targetGroupId: string | null, targetIndex: number) => void
@@ -1300,6 +1310,65 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
   })),
+
+  convertGroupToComment: (groupId) => {
+    log.action('convertGroupToComment', { groupId })
+    set(produce((s: AppState) => {
+      for (const p of s.profiles) {
+        for (const w of p.workspaces) {
+          const idx = w.tabGroups.findIndex((g) => g.id === groupId)
+          if (idx === -1) continue
+          const group = w.tabGroups[idx]
+          if (group.tabs.length !== 1) return
+          const tab = { ...group.tabs[0] }
+          // The tab may already carry a comment of its own — keep it next to
+          // the group name rather than silently dropping either label.
+          const labels = new Set([group.name.trim(), tab.comment?.trim() ?? ''].filter(Boolean))
+          tab.comment = [...labels].join(' · ') || undefined
+          // Materialise the order before the swap, or a workspace without one
+          // would get it rebuilt with the tab already in it — and then again.
+          const order = ensureSidebarOrder(w)
+          w.tabGroups.splice(idx, 1)
+          if (!w.tabs) w.tabs = []
+          w.tabs.push(tab)
+          const oi = order.indexOf(groupId)
+          if (oi !== -1) order.splice(oi, 1, tab.id)
+          else order.push(tab.id)
+          if (s.activeTabGroupId === groupId) s.activeTabGroupId = null
+          return
+        }
+      }
+      log.warn('convertGroupToComment: group not found', groupId)
+    }))
+  },
+
+  convertTabToGroup: (tabId) => {
+    log.action('convertTabToGroup', { tabId })
+    let groupId: string | null = null
+    set(produce((s: AppState) => {
+      for (const p of s.profiles) {
+        for (const w of p.workspaces) {
+          const idx = w.tabs?.findIndex((t) => t.id === tabId) ?? -1
+          if (idx === -1 || !w.tabs) continue
+          const { comment, ...tab } = w.tabs[idx]
+          const group = makeTabGroup(comment?.trim() || undefined, [tab])
+          // Same as convertGroupToComment: order first, then the swap.
+          const order = ensureSidebarOrder(w)
+          w.tabs.splice(idx, 1)
+          w.tabGroups.push(group)
+          const oi = order.indexOf(tabId)
+          if (oi !== -1) order.splice(oi, 1, group.id)
+          else order.push(group.id)
+          // The active tab stays active; only its container changed.
+          if (s.activeTabId === tabId) s.activeTabGroupId = group.id
+          groupId = group.id
+          return
+        }
+      }
+      log.warn('convertTabToGroup: ungrouped tab not found', tabId)
+    }))
+    return groupId
+  },
 
   // ── Multi-tab operations ──
   moveTab: (tabId, targetGroupId, targetIndex) => {

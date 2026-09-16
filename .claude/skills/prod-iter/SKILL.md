@@ -1,9 +1,9 @@
 ---
 name: prod-iter
-description: Ship the current working tree to this machine as a real packaged Windows build of Newbro — commit first (the pre-commit hook bumps the version), `npm run dist:win` while the app keeps running, kill + silent `/S` install, relaunch, verify the version moved. Use this whenever the user says `PROD ITER` (bare, all-caps — that phrase alone is the whole trigger, no arguments), and also when they ask in any other words to ship, install, or dogfood the current changes as a real installed build ("собери и поставь", "put the new version on my machine", "let's test this in prod"). Not for `npm run dev` — this skill is specifically the packaged-install loop.
+description: Silently update prod from current state
 ---
 
-# PROD ITER — build, install, relaunch
+# build, install, relaunch
 
 The user's standard "ship it to my own machine and dogfood it" loop after finishing a
 feature. They are usually *using Newbro right now* while you run this, so the ordering

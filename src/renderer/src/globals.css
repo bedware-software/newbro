@@ -319,6 +319,21 @@ html[data-page-fullscreen] body {
   padding-bottom: 4px;
 }
 
+/* ── Title beside a comment chip ──
+ * A CommentChip should use the room a short title leaves, and truncate only
+ * when the row genuinely runs out. The title next to it is `flex-1`, so its
+ * flex basis is 0 and it only gets what the chip leaves over; this floor
+ * stops it at a stub — its own width or 3rem, whichever is smaller — so a
+ * long comment can't squeeze the page title out of sight. Once the title is
+ * down to that stub, any remaining overflow comes out of the chip.
+ * calc-size() is what lets the floor follow the title's own width.
+ * `--title-stub-reserve` extends the floor under whatever overlays the row's
+ * right edge (the sidebar's Cmd+N badge), so the stub stays readable beside
+ * the overlay instead of vanishing beneath it. */
+@utility min-w-title-stub {
+  min-width: calc-size(max-content, min(size, 3rem) + var(--title-stub-reserve, 0px));
+}
+
 /* ── kbd key caps ── */
 kbd {
   display: inline-flex;

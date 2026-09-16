@@ -483,7 +483,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
                           <div className="col-start-1 row-start-1 min-w-0 self-center">
                             <div className="flex min-w-0 items-center gap-1.5">
                               {item.comment && <CommentChip comment={item.comment} />}
-                              <span className="min-w-0 flex-1 truncate text-sm" title={item.name}>
+                              <span className="min-w-title-stub flex-1 truncate text-sm" title={item.name}>
                                 {item.name}
                               </span>
                             </div>
