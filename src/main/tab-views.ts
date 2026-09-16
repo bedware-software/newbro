@@ -1031,7 +1031,9 @@ function loadIfNeeded(rec: TabRecord, url: string): void {
   void startTabNavigation(rec, url)
 }
 
-export function activateTab(windowId: number, tabId: string, url: string): void {
+/** `focusPage: false` switches the visible page but leaves keyboard focus on
+ *  the renderer — a sidebar in vim mode stepping through tabs with j/k. */
+export function activateTab(windowId: number, tabId: string, url: string, focusPage = true): void {
   // Determine whether this is a real activation (different tab now active)
   // or a no-op re-activation. WebviewPanel calls tabActivate from an effect
   // that re-runs whenever `profiles` changes — and `profiles` changes any
@@ -1044,7 +1046,7 @@ export function activateTab(windowId: number, tabId: string, url: string): void 
   const rec = tabs.get(tabId)
   if (!rec) return
   loadIfNeeded(rec, url)
-  if (isNewActivation) {
+  if (isNewActivation && focusPage) {
     // Take keyboard focus so typing lands in the page.
     try {
       rec.view.webContents.focus()

@@ -284,6 +284,33 @@ html[data-page-fullscreen] body {
 [data-group-swatch][data-selected] {
   box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--gc-text) 60%, transparent);
 }
+/* Swatch highlighted by keyboard navigation in a vim-mode menu. An outline,
+ * not a box-shadow, so it stacks with the selected ring above. */
+[data-group-swatch][data-focused] {
+  outline: 2px solid var(--color-foreground);
+  outline-offset: 1px;
+}
+
+/* ── Vim-mode block cursor ──
+ * Sits in the row's left padding, one text line tall, like vim's normal-mode
+ * block. Absolutely positioned so the row's content never shifts; sized to
+ * the padding so it stays clear of the favicon / count badge. Painted after
+ * a nested row's guide-line ::before, so it covers the line where they meet. */
+[data-vim-cursor] {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 1rem;
+  transform: translateY(-50%);
+  border-radius: 1px;
+  background: var(--color-foreground);
+  pointer-events: none;
+}
+[data-density="normal"] [data-vim-cursor] {
+  left: 1px;
+  width: 6px;
+}
 
 /* Pill/badge text colour: dark on dark theme (the Edge-style palette is
  * medium-light there, so dark text reads), white on light theme (the

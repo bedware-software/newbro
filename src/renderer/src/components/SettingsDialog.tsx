@@ -27,6 +27,7 @@ interface Settings {
   density: Density
   newTabFocus: 'site' | 'url'
   showTabNumbers: boolean
+  vimNavigation: boolean
   defaultPageUrl: string
   searchEngine: string
   proxy: ProxySettings
@@ -447,6 +448,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [density, setDensity] = useState<Density>(DEFAULT_DENSITY)
   const [newTabFocus, setNewTabFocus] = useState<'site' | 'url'>('site')
   const [showTabNumbers, setShowTabNumbers] = useState(true)
+  const [vimNavigation, setVimNavigation] = useState(false)
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
   const [proxy, setProxy] = useState<ProxySettings>({ ...DEFAULT_PROXY_SETTINGS })
@@ -687,6 +689,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setDensity(dens)
       setNewTabFocus(settings.newTabFocus === 'url' ? 'url' : 'site')
       setShowTabNumbers(settings.showTabNumbers !== false)
+      setVimNavigation(settings.vimNavigation === true)
       originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens }
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
@@ -1047,6 +1050,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       density,
       newTabFocus,
       showTabNumbers,
+      vimNavigation,
       defaultPageUrl: defaultUrl,
       searchEngine,
       proxy: normalizedProxy,
@@ -2286,6 +2290,23 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
           {activeTab === 'shortcuts' && (
             <div>
+              <label className="flex items-start justify-between gap-4 mb-4 px-4 py-3 border border-input rounded-md bg-card cursor-pointer">
+                <span>
+                  <span className="block text-sm text-foreground">Vim navigation in Sidebar and Bookshelf</span>
+                  <span className="block text-[11px] text-muted-foreground mt-0.5">
+                    Pressing Toggle Sidebar or Toggle Bookshelf again while the panel is open enters vim mode; a third press closes it.
+                    In vim mode: j/k move, h/l collapse/expand groups, gg/G jump to first/last, m opens the context menu (j/k, h/l for colors, Enter),
+                    x closes, Enter/Esc leave.
+                  </span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={vimNavigation}
+                  onChange={(event) => setVimNavigation(event.target.checked)}
+                  className="h-4 w-4 mt-0.5 accent-primary shrink-0"
+                />
+              </label>
+
               <div className="flex items-center justify-between gap-4 mb-4">
                 <p className="text-sm text-muted-foreground">
                   Click on a shortcut to reassign it. Each command supports up

@@ -289,10 +289,10 @@ export function registerIpcHandlers(): void {
     destroyTab(tabId)
   })
 
-  ipcMain.handle('tab:activate', (_e, tabId: string, url: string) => {
+  ipcMain.handle('tab:activate', (_e, tabId: string, url: string, focusPage?: boolean) => {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (!win) return
-    activateTab(win.id, tabId, url)
+    activateTab(win.id, tabId, url, focusPage !== false)
   })
 
   // Show no tab at all: the renderer is parked on a tab group and draws the
@@ -534,6 +534,17 @@ export function registerIpcHandlers(): void {
   ipcMain.on('window:focus-renderer', (_e) => {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (!win || win.isDestroyed()) return
+    win.webContents.focus()
+  })
+
+  // Same, but only while this window is still the focused one — i.e. focus
+  // went to one of its own tab views. When another window took it (a dialog
+  // the user just opened, a context-menu popup) that one keeps it. Vim mode
+  // uses this to win back focus from a tab view without fighting dialogs.
+  ipcMain.on('window:reclaim-renderer-focus', (_e) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win || win.isDestroyed()) return
+    if (BrowserWindow.getFocusedWindow() !== win) return
     win.webContents.focus()
   })
 

@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // currently-focused WebContentsView tab). Call before .focus()-ing a
   // renderer-side input so typed characters actually land there.
   focusWindowRenderer: (): void => { ipcRenderer.send('window:focus-renderer') },
+  reclaimWindowRendererFocus: (): void => { ipcRenderer.send('window:reclaim-renderer-focus') },
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),
   restoreWindow: (): Promise<void> => ipcRenderer.invoke('window:restore'),
@@ -180,7 +181,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ): Promise<void> =>
     ipcRenderer.invoke('tab:create', tabId, partition, url, active, eagerLoad, focusUrlBar),
   tabDestroy: (tabId: string): Promise<void> => ipcRenderer.invoke('tab:destroy', tabId),
-  tabActivate: (tabId: string, url: string): Promise<void> => ipcRenderer.invoke('tab:activate', tabId, url),
+  tabActivate: (tabId: string, url: string, focusPage = true): Promise<void> =>
+    ipcRenderer.invoke('tab:activate', tabId, url, focusPage),
   // Hide the active tab without showing another (a tab group is selected).
   tabDeactivate: (): Promise<void> => ipcRenderer.invoke('tab:deactivate'),
   // Move OS keyboard focus into the tab's page (used by the Esc handler so

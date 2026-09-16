@@ -6,7 +6,8 @@ import { InputDialog } from './InputDialog'
 import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
 import { ChevronRight, ChevronDown, Plus, X } from 'lucide-react'
-import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
+import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
+import { useVimNav, type VimCommand } from '../lib/vim-nav'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
@@ -48,6 +49,19 @@ interface GroupItem {
   color: string
   tabs: TabItem[]
   isCollapsed: boolean
+}
+
+/** Where a context menu opens, in window content coordinates. */
+interface MenuPoint {
+  x: number
+  y: number
+}
+
+/** A right-click's menu position; also keeps the native menu from opening. */
+function contextMenuPoint(e: React.MouseEvent): MenuPoint {
+  e.preventDefault()
+  e.stopPropagation()
+  return { x: e.clientX, y: e.clientY }
 }
 
 /** A multi-selection resolved for an action: whole groups, plus tabs outside them. */
@@ -93,9 +107,13 @@ interface Props {
    *  the CmdOrCtrl+N quick-jump. Visible state is owned by App.tsx because
    *  it lives in the settings store. */
   showTabNumbers: boolean
+  /** Vim mode: a block cursor on the active row, driven by hjkl & co. */
+  vimActive: boolean
+  /** Leave vim mode; `focusPage` hands the keyboard back to the page. */
+  onVimExit: (focusPage: boolean) => void
 }
 
-export function Sidebar({ visible, showTabNumbers }: Props) {
+export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -445,6 +463,32 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     return owner ? visibleRowIds.indexOf(owner.id) : -1
   }
 
+  // ── Vim mode ──
+  // The block cursor follows the active row: the active tab, the group we're
+  // parked on, or the header of the collapsed group hiding the active tab.
+  // The override pins it to a group header after h/l, so expanding a group
+  // that holds the active tab leaves the cursor on the header rather than
+  // jumping to the tab that just came into view.
+  const [vimCursorOverride, setVimCursorOverride] = useState<string | null>(null)
+  useEffect(() => { setVimCursorOverride(null) }, [activeTabId, activeTabGroupId, vimActive])
+  const activeRowId = activeTabId === null
+    ? activeTabGroupId
+    : visibleRowIds[rowIndexOf(activeTabId)] ?? null
+  const vimCursorId = vimCursorOverride !== null && visibleRowIds.includes(vimCursorOverride)
+    ? vimCursorOverride
+    : activeRowId
+  const { runMenu } = useVimNav(
+    visible && vimActive,
+    (cmd) => handleVimCommand(cmd),
+    () => onVimExit(false),
+  )
+  const findVimRow = (id: string): Element | null =>
+    sidebarRef.current?.querySelector(`[data-vim-row="${CSS.escape(id)}"]`) ?? null
+  useEffect(() => {
+    if (!visible || !vimActive || !vimCursorId) return
+    findVimRow(vimCursorId)?.scrollIntoView({ block: 'nearest' })
+  }, [visible, vimActive, vimCursorId])
+
   // Visible-order positions (1..9) for the quick-jump badges. Mirrors
   // App.tsx's CmdOrCtrl+N handler: ungrouped tabs and the children of
   // expanded groups, in sidebar order, skipping collapsed groups. Beyond
@@ -552,20 +596,27 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     setSelectedIds(new Set(duplicateItems(ids)))
   }
 
+  /** Opens a sidebar menu. One opened from vim mode (m) takes the keyboard:
+   *  its first action starts highlighted and hjkl move around it. */
+  const showMenu = (spec: Omit<DropdownSpec, 'openerId'>, keyboard: boolean) =>
+    keyboard
+      ? runMenu(() => openDropdownAsync({ ...spec, keyboard: true }))
+      : openDropdownAsync(spec)
+
   /** Menu for a multi-selection that includes a group. Only actions that
    *  work on whole groups and single tabs alike are offered; the tab-only
    *  ones (Move, Add to New Group, comments) stay on the tab menu. */
-  const openSelectionMenu = async (e: React.MouseEvent, { groupIds, tabIds }: SelectionTargets): Promise<void> => {
+  const openSelectionMenu = async (at: MenuPoint, { groupIds, tabIds }: SelectionTargets, keyboard: boolean): Promise<void> => {
     const target = describeSelection(groupIds.length, tabIds.length)
-    const result = await openDropdownAsync({
+    const result = await showMenu({
       kind: 'menu',
-      position: { x: e.clientX, y: e.clientY },
+      position: at,
       ...readThemeAttrs(),
       actions: [
         { id: 'duplicate', label: `Duplicate ${target}`, iconName: 'CopyPlus' },
         { id: 'close', label: `Close ${target}`, iconName: 'X', destructive: true, divider: 'before' },
       ],
-    })
+    }, keyboard)
     if (!result || result.type !== 'action') return
     if (result.actionId === 'duplicate') duplicateSelection([...groupIds, ...tabIds])
     else if (result.actionId === 'close') {
@@ -575,15 +626,13 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     }
   }
 
-  const handleTabContextMenu = async (tabId: string, e: React.MouseEvent): Promise<void> => {
-    e.preventDefault()
-    e.stopPropagation()
+  const openTabMenu = async (tabId: string, at: MenuPoint, keyboard = false): Promise<void> => {
     if (!workspace) return
     // Right-clicking a selected row acts on the whole selection; anywhere
     // else it's a focused action on this one tab.
     const selection = getContextSelection(tabId)
     if (selection && selection.groupIds.length > 0) {
-      await openSelectionMenu(e, selection)
+      await openSelectionMenu(at, selection, keyboard)
       return
     }
     const tabGroupId = findTabGroup(tabId)
@@ -651,13 +700,13 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       divider: 'before',
     })
 
-    const result = await openDropdownAsync({
+    const result = await showMenu({
       kind: 'menu',
-      position: { x: e.clientX, y: e.clientY },
+      position: at,
       ...readThemeAttrs(),
       header,
       actions,
-    })
+    }, keyboard)
     if (!result || result.type !== 'action') return
     const action = result.actionId
     if (action === 'close') {
@@ -697,15 +746,13 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     }
   }
 
-  const handleGroupContextMenu = async (groupId: string, e: React.MouseEvent): Promise<void> => {
-    e.preventDefault()
-    e.stopPropagation()
+  const openGroupMenu = async (groupId: string, at: MenuPoint, keyboard = false): Promise<void> => {
     if (!workspace) return
     const group = workspace.tabGroups.find((g) => g.id === groupId)
     if (!group) return
     const selection = getContextSelection(groupId)
     if (selection) {
-      await openSelectionMenu(e, selection)
+      await openSelectionMenu(at, selection, keyboard)
       return
     }
 
@@ -729,9 +776,9 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       destructive: true,
     })
 
-    const result = await openDropdownAsync({
+    const result = await showMenu({
       kind: 'menu',
-      position: { x: e.clientX, y: e.clientY },
+      position: at,
       ...readThemeAttrs(),
       header: group.name,
       // Edge-style swatch strip above the actions: new groups get a random
@@ -739,7 +786,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       colors: GROUP_COLORS.map((c) => ({ value: c.value, label: c.label })),
       selectedColor: group.color,
       actions,
-    })
+    }, keyboard)
     if (!result) return
     if (result.type === 'color') { setTabGroupColor(groupId, result.color); return }
     if (result.type !== 'action') return
@@ -774,6 +821,63 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       }
     }
     return ordered.length > 0 ? ordered : ids
+  }
+
+  const handleVimCommand = (cmd: VimCommand): void => {
+    if (!workspace) return
+    const groupById = (id: string | null) => (id ? workspace.tabGroups.find((g) => g.id === id) : undefined)
+    const at = vimCursorId ? visibleRowIds.indexOf(vimCursorId) : -1
+    // Moving switches live, the way Ctrl+Tab does: a tab row activates the
+    // tab, a group header parks on the group.
+    const moveTo = (index: number): void => {
+      const id = visibleRowIds[Math.max(0, Math.min(visibleRowIds.length - 1, index))]
+      if (!id) return
+      setVimCursorOverride(null)
+      if (groupById(id)) setActiveGroup(id)
+      else setActiveTab(id)
+    }
+    switch (cmd) {
+      case 'down': moveTo(at === -1 ? 0 : at + 1); break
+      case 'up': moveTo(at === -1 ? 0 : at - 1); break
+      case 'top': moveTo(0); break
+      case 'bottom': moveTo(visibleRowIds.length - 1); break
+      case 'collapse': {
+        if (!vimCursorId) break
+        // On a tab inside a group, h climbs to the group's header and folds it.
+        const group = groupById(vimCursorId) ?? groupById(findTabGroup(vimCursorId))
+        if (!group) break
+        if (!group.isCollapsed) toggleTabGroupCollapse(group.id)
+        setVimCursorOverride(group.id)
+        break
+      }
+      case 'expand': {
+        const group = groupById(vimCursorId)
+        if (!group?.isCollapsed) break
+        toggleTabGroupCollapse(group.id)
+        setVimCursorOverride(group.id)
+        break
+      }
+      case 'close':
+        if (!vimCursorId) break
+        if (groupById(vimCursorId)) closeGroup(vimCursorId)
+        else closeTab(vimCursorId)
+        break
+      case 'menu': {
+        if (!vimCursorId) break
+        const row = findVimRow(vimCursorId)
+        if (!row) break
+        // Just under the row, past the cursor block and the favicon column.
+        const rect = row.getBoundingClientRect()
+        const point = { x: rect.left + 24, y: rect.bottom }
+        if (groupById(vimCursorId)) void openGroupMenu(vimCursorId, point, true)
+        else void openTabMenu(vimCursorId, point, true)
+        break
+      }
+      case 'enter':
+      case 'escape':
+        onVimExit(true)
+        break
+    }
   }
 
   // ── Drop indicator helpers ──
@@ -818,6 +922,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       <div
         key={tab.id}
         data-sidebar-row=""
+        data-vim-row={tab.id}
         data-drop-tab-id={tab.id}
         data-drop-container={containerAttr}
         data-drop-index={index}
@@ -836,11 +941,12 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
             : [tab.id]
           startDragStable('tab', tab.id, ids, e)
         }}
-        onContextMenu={(e) => handleTabContextMenu(tab.id, e)}
+        onContextMenu={(e) => openTabMenu(tab.id, contextMenuPoint(e))}
       >
         {showBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
+        {vimActive && vimCursorId === tab.id && <span data-vim-cursor="" aria-hidden />}
         <TabFavicon favicon={tab.favicon} />
         {tab.comment && <CommentChip comment={tab.comment} />}
         {/* A numbered row keeps its stub clear of the 24×24 slot below. */}
@@ -911,6 +1017,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       <div
         data-sidebar-row=""
         data-sidebar-group-row=""
+        data-vim-row={group.id}
         data-drop-group-header={group.id}
         data-sidebar-index={sidebarIdx}
         {...(expanded ? { 'data-group-expanded': '' } : {})}
@@ -944,11 +1051,12 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
           setActiveGroup(group.id)
           selectionAnchorRef.current = group.id
         }}
-        onContextMenu={(e) => handleGroupContextMenu(group.id, e)}
+        onContextMenu={(e) => openGroupMenu(group.id, contextMenuPoint(e))}
       >
         {showGroupBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
+        {vimActive && vimCursorId === group.id && <span data-vim-cursor="" aria-hidden />}
         {/* Count badge — leading-edge column. Sized to match a tab row's
             favicon (w-4 h-4) so the leftmost glyph in every sidebar row
             sits on the same vertical axis. Colored with the group's hue

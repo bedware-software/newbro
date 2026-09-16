@@ -119,6 +119,11 @@ export interface DropdownSpec {
 
   // Both kinds (list = bottom actions; menu = the entire body):
   actions?: DropdownAction[]
+
+  // Menu kind: opened from a panel's vim mode (m). The first action starts
+  // highlighted; j/k move through the actions, h/l across the colour
+  // swatches, Enter picks the highlighted one.
+  keyboard?: boolean
 }
 
 export type DropdownEventBody =

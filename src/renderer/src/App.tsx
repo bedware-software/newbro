@@ -3,6 +3,7 @@ import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getV
 import { normalizeURL, setSearchEngine } from './lib/url'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
+import { setVimNavActive } from './lib/vim-nav'
 import { setHistory } from './lib/history'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
@@ -33,6 +34,8 @@ interface Settings {
   density: Density
   newTabFocus: NewTabFocus
   showTabNumbers: boolean
+  /** Panel hotkeys cycle open → vim mode → closed instead of open/close. */
+  vimNavigation: boolean
   defaultPageUrl: string
   searchEngine: string
   dohMode: 'off' | 'automatic' | 'secure'
@@ -152,6 +155,7 @@ declare global {
       toggleFocusedDevTools?: () => Promise<void>
       closeWindow: () => Promise<void>
       focusWindowRenderer: () => void
+      reclaimWindowRendererFocus?: () => void
       minimizeWindow: () => Promise<void>
       maximizeWindow: () => Promise<void>
       restoreWindow: () => Promise<void>
@@ -225,7 +229,7 @@ declare global {
       // Tab hosting (WebContentsView in main)
       tabCreate?: (tabId: string, partition: string, url: string, active: boolean, eagerLoad?: boolean, focusUrlBar?: boolean) => Promise<void>
       tabDestroy?: (tabId: string) => Promise<void>
-      tabActivate?: (tabId: string, url: string) => Promise<void>
+      tabActivate?: (tabId: string, url: string, focusPage?: boolean) => Promise<void>
       tabDeactivate?: () => Promise<void>
       tabFocus?: (tabId: string) => Promise<void>
       tabSetBounds?: (bounds: { x: number; y: number; width: number; height: number }) => void
@@ -439,6 +443,8 @@ function applyTheme(theme: ThemeChoice, lightVariant: string, darkVariant: strin
 
 const SIDEBAR_VISIBLE_KEY = 'newbro-sidebar-visible'
 
+type VimPanel = 'sidebar' | 'bookshelf'
+
 export default function App() {
   const [ready, setReady] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -524,6 +530,30 @@ export default function App() {
       return next
     })
   }, [])
+
+  // Which panel (if any) is in vim mode. Only one at a time: its keys would
+  // otherwise drive both. The module flag is set in the same call so a tab
+  // activation rendered alongside the change already knows whether to leave
+  // keyboard focus on the renderer (see lib/vim-nav.ts).
+  const [vimPanel, setVimPanelState] = useState<VimPanel | null>(null)
+  const vimPanelRef = useRef<VimPanel | null>(null)
+  const setVimPanel = useCallback((panel: VimPanel | null) => {
+    vimPanelRef.current = panel
+    setVimNavActive(panel !== null)
+    setVimPanelState(panel)
+  }, [])
+  // Esc / Enter leave vim mode and give the keyboard back to the page; losing
+  // focus to the page on its own just leaves.
+  const exitVim = useCallback((focusPage: boolean) => {
+    setVimPanel(null)
+    if (!focusPage) return
+    const { activeTabId } = useAppStore.getState()
+    if (activeTabId) window.electronAPI.tabFocus?.(activeTabId)
+  }, [setVimPanel])
+
+  // Latest visibility for the shortcut handler, which is registered once.
+  const panelOpenRef = useRef<Record<VimPanel, boolean>>({ sidebar: false, bookshelf: false })
+  const vimEnabledRef = useRef(false)
 
   // Page-fullscreen "cinema mode". A video going fullscreen fills only the
   // tab's view rect, so the window chrome stays on screen. We lean into
@@ -768,6 +798,18 @@ export default function App() {
       else state.setActiveTab(nextId)
     }
 
+    // With vim navigation on, a panel's hotkey cycles open → vim mode → closed
+    // instead of toggling. Closing from vim mode hands the keyboard back to
+    // the page, since the renderer had taken it.
+    const cyclePanel = (panel: VimPanel, toggle: () => void) => {
+      if (vimEnabledRef.current && panelOpenRef.current[panel] && vimPanelRef.current !== panel) {
+        setVimPanel(panel)
+        return
+      }
+      if (vimPanelRef.current === panel) exitVim(true)
+      toggle()
+    }
+
     const handleAction = (action: string) => {
       const s = useAppStore.getState()
       // tab-1..tab-9 quick-jump: parse the digit and index into the visible
@@ -807,7 +849,7 @@ export default function App() {
           break
         }
         case 'toggle-bookshelf':
-          setBookshelfOpen((v) => !v)
+          cyclePanel('bookshelf', () => setBookshelfOpen((v) => !v))
           break
         case 'duplicate-tab':
           if (s.activeTabId) s.duplicateTab(s.activeTabId)
@@ -843,7 +885,7 @@ export default function App() {
           setFindBarFocusTick((t) => t + 1)
           break
         case 'toggle-sidebar':
-          toggleSidebar()
+          cyclePanel('sidebar', toggleSidebar)
           break
         case 'back': {
           if (s.activeTabId) window.electronAPI.tabGoBack?.(s.activeTabId)
@@ -1143,7 +1185,7 @@ export default function App() {
       window.removeEventListener('newbro:open-move-tab', handleOpenMoveTab)
       window.removeEventListener('newbro:open-move-group', handleOpenMoveGroup)
     }
-  }, [hydrate, windowWorkspaceId, toggleSidebar])
+  }, [hydrate, windowWorkspaceId, toggleSidebar, setVimPanel, exitVim])
 
   // When the user has the theme set to "system", follow the OS when it
   // flips between light and dark by re-resolving which variant to apply.
@@ -1202,13 +1244,30 @@ export default function App() {
     await window.electronAPI.saveSettings(normalized)
   }
 
+  const bookshelfVisible = bookshelfOpen && !pageFullscreen
+  panelOpenRef.current = { sidebar: sidebarVisible, bookshelf: bookshelfVisible }
+  vimEnabledRef.current = settings?.vimNavigation === true
+
+  // Vim mode ends with its panel: closed by mouse, hidden by cinema mode, or
+  // the setting switched off.
+  useEffect(() => {
+    if (vimPanel === null) return
+    const open = vimPanel === 'sidebar' ? sidebarVisible : bookshelfVisible
+    if (!open || settings?.vimNavigation !== true) setVimPanel(null)
+  }, [vimPanel, sidebarVisible, bookshelfVisible, settings?.vimNavigation, setVimPanel])
+
   if (!ready) return null
 
   return (
     <>
       <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} pageFullscreen={pageFullscreen} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        <Sidebar visible={sidebarVisible} showTabNumbers={settings?.showTabNumbers ?? true} />
+        <Sidebar
+          visible={sidebarVisible}
+          showTabNumbers={settings?.showTabNumbers ?? true}
+          vimActive={vimPanel === 'sidebar'}
+          onVimExit={exitVim}
+        />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
           <FindBar
             open={findBarOpen}
@@ -1220,7 +1279,13 @@ export default function App() {
         {/* Hide the bookshelf while a page is in fullscreen (cinema mode) so
             the tab view can fill the full width — it reappears with its prior
             open state when fullscreen exits. */}
-        <Bookshelf open={bookshelfOpen && !pageFullscreen} profileId={windowProfileId ?? activeProfileId} onClose={() => setBookshelfOpen(false)} />
+        <Bookshelf
+          open={bookshelfVisible}
+          profileId={windowProfileId ?? activeProfileId}
+          onClose={() => setBookshelfOpen(false)}
+          vimActive={vimPanel === 'bookshelf'}
+          onVimExit={exitVim}
+        />
       </div>
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} windowWorkspaceId={windowWorkspaceId} />
       <SettingsDialog

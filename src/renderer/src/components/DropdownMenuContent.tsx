@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   DndContext,
   PointerSensor,
@@ -132,16 +132,19 @@ function SortableRow({
 function ColorStrip({
   colors,
   selected,
+  focusedIndex,
   onEmit,
 }: {
   colors: DropdownColor[]
   selected?: string | null
+  /** Swatch highlighted by keyboard navigation, if any. */
+  focusedIndex: number | null
   onEmit: (evt: DropdownEventBody) => void
 }) {
   const norm = (c: string): string => c.trim().toLowerCase()
   return (
     <div className="flex flex-wrap items-center gap-1 px-3 py-2">
-      {colors.map((c) => {
+      {colors.map((c, index) => {
         const isSelected = !!selected && norm(selected) === norm(c.value)
         return (
           <button
@@ -149,6 +152,7 @@ function ColorStrip({
             data-group-container=""
             data-group-swatch=""
             {...(isSelected ? { 'data-selected': '' } : {})}
+            {...(focusedIndex === index ? { 'data-focused': '' } : {})}
             title={c.label}
             aria-label={c.label}
             aria-pressed={isSelected}
@@ -164,7 +168,16 @@ function ColorStrip({
   )
 }
 
-function ActionRow({ action, onEmit }: { action: DropdownAction; onEmit: (evt: DropdownEventBody) => void }) {
+function ActionRow({
+  action,
+  focused,
+  onEmit,
+}: {
+  action: DropdownAction
+  /** Highlighted by keyboard navigation. */
+  focused: boolean
+  onEmit: (evt: DropdownEventBody) => void
+}) {
   const Icon = resolveIcon(action.iconName)
   const disabled = !!action.disabled
   return (
@@ -175,7 +188,7 @@ function ActionRow({ action, onEmit }: { action: DropdownAction; onEmit: (evt: D
       className={`w-full flex items-center justify-between px-3 py-1.5 text-left ${
         disabled
           ? 'opacity-60 cursor-not-allowed text-muted-foreground'
-          : `hover:bg-accent ${action.destructive ? 'text-destructive' : ''}`
+          : `hover:bg-accent ${focused ? 'bg-accent' : ''} ${action.destructive ? 'text-destructive' : ''}`
       }`}
     >
       <span className="flex items-center gap-2">
@@ -247,6 +260,59 @@ export function DropdownMenuContent({
 
   const items = spec.items ?? []
   const Icon = resolveIcon(spec.iconName)
+  const actions = spec.actions ?? []
+  const colors = spec.colors ?? []
+
+  // Keyboard navigation for menus opened from a panel's vim mode: j/k step
+  // through the enabled actions, h/l across the colour swatches, and Enter
+  // picks whichever was moved to last.
+  const [keyFocus, setKeyFocus] = useState<{ zone: 'actions' | 'colors'; index: number } | null>(null)
+  useEffect(() => {
+    const first = actions.findIndex((a) => !a.disabled)
+    setKeyFocus(spec.keyboard && first !== -1 ? { zone: 'actions', index: first } : null)
+  }, [spec])
+
+  useEffect(() => {
+    if (!spec.keyboard) return
+    const handler = (e: KeyboardEvent): void => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const enabled = actions.flatMap((a, i) => (a.disabled ? [] : [i]))
+      if (e.key === 'j' || e.key === 'k') {
+        if (enabled.length === 0) return
+        e.preventDefault()
+        setKeyFocus((prev) => {
+          // Back from the swatches: resume on the action last highlighted.
+          if (prev?.zone === 'actions' && enabled.includes(prev.index)) {
+            const at = enabled.indexOf(prev.index) + (e.key === 'j' ? 1 : -1)
+            return { zone: 'actions', index: enabled[Math.max(0, Math.min(enabled.length - 1, at))] }
+          }
+          return { zone: 'actions', index: enabled[0] }
+        })
+      } else if (e.key === 'h' || e.key === 'l') {
+        if (colors.length === 0) return
+        e.preventDefault()
+        setKeyFocus((prev) => {
+          // Entering the strip starts from the group's current colour.
+          const from = prev?.zone === 'colors'
+            ? prev.index
+            : colors.findIndex((c) => c.value.trim().toLowerCase() === spec.selectedColor?.trim().toLowerCase())
+          const at = from === -1 ? 0 : from + (e.key === 'l' ? 1 : -1)
+          return { zone: 'colors', index: Math.max(0, Math.min(colors.length - 1, at)) }
+        })
+      } else if (e.key === 'Enter' && keyFocus) {
+        e.preventDefault()
+        if (keyFocus.zone === 'colors') {
+          const color = colors[keyFocus.index]
+          if (color) onEmit({ type: 'color', color: color.value })
+        } else {
+          const action = actions[keyFocus.index]
+          if (action && !action.disabled) onEmit({ type: 'action', actionId: action.id })
+        }
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [spec, actions, colors, keyFocus, onEmit])
 
   const handleDragEnd = (event: DragEndEvent): void => {
     const { active, over } = event
@@ -309,9 +375,14 @@ export function DropdownMenuContent({
           <div className="h-px bg-border" />
         </>
       )}
-      {spec.colors && spec.colors.length > 0 && (
+      {colors.length > 0 && (
         <>
-          <ColorStrip colors={spec.colors} selected={spec.selectedColor} onEmit={onEmit} />
+          <ColorStrip
+            colors={colors}
+            selected={spec.selectedColor}
+            focusedIndex={keyFocus?.zone === 'colors' ? keyFocus.index : null}
+            onEmit={onEmit}
+          />
           <div className="h-px bg-border" />
         </>
       )}
@@ -328,13 +399,17 @@ export function DropdownMenuContent({
           </button>
         </>
       )}
-      {spec.actions && spec.actions.length > 0 && (
+      {actions.length > 0 && (
         <>
           {(items.length > 0 || spec.newAction) && <div className="h-px bg-border" />}
-          {spec.actions.map((action, idx) => (
+          {actions.map((action, idx) => (
             <div key={action.id}>
               {action.divider === 'before' && idx > 0 && <div className="border-t border-border" />}
-              <ActionRow action={action} onEmit={onEmit} />
+              <ActionRow
+                action={action}
+                focused={keyFocus?.zone === 'actions' && keyFocus.index === idx}
+                onEmit={onEmit}
+              />
             </div>
           ))}
         </>

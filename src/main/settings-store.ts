@@ -16,6 +16,11 @@ export interface Settings {
    *  CmdOrCtrl+N quick-jump shortcut. Always-visible (not hover-gated)
    *  because their job is to advertise the shortcut at a glance. */
   showTabNumbers: boolean
+  /** Vim-style keyboard navigation for the Sidebar and Bookshelf. When on, a
+   *  panel's toggle hotkey cycles open → vim mode → closed (instead of
+   *  open → closed); vim mode puts a block cursor on a row driven by
+   *  j/k/h/l, gg/G, m (context menu), x, Enter and Esc. */
+  vimNavigation: boolean
   defaultPageUrl: string
   searchEngine: string
   proxy: ProxySettings
@@ -178,6 +183,7 @@ export const DEFAULT_SETTINGS: Settings = {
   density: 'normal',
   newTabFocus: 'site',
   showTabNumbers: true,
+  vimNavigation: false,
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
   proxy: {
@@ -385,6 +391,7 @@ export function loadSettings(): Settings {
     newTabFocus: KNOWN_NEW_TAB_FOCUS.has(saved?.newTabFocus as string)
       ? (saved!.newTabFocus as 'site' | 'url')
       : DEFAULT_SETTINGS.newTabFocus,
+    vimNavigation: saved?.vimNavigation === true,
     dohMode: KNOWN_DOH_MODES.has(saved?.dohMode as string)
       ? (saved!.dohMode as 'off' | 'automatic' | 'secure')
       : DEFAULT_SETTINGS.dohMode,
@@ -426,6 +433,7 @@ export function saveSettings(settings: Settings): void {
     newTabFocus: KNOWN_NEW_TAB_FOCUS.has(settings.newTabFocus)
       ? settings.newTabFocus
       : DEFAULT_SETTINGS.newTabFocus,
+    vimNavigation: settings.vimNavigation === true,
     dohMode: KNOWN_DOH_MODES.has(settings.dohMode as string)
       ? settings.dohMode
       : DEFAULT_SETTINGS.dohMode,
