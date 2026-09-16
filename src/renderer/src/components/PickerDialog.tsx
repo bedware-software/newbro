@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, ArrowUpDown, CornerDownLeft } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { GroupPill } from './GroupPill'
+import { ScopeSwitch } from './ScopeSwitch'
 import { fuzzyFilter } from '../lib/fuzzy'
 
 /** One crumb of a row's location path. `pill` marks the segment that names a
- *  tab group, which is rendered as a colored pill exactly like the sidebar's
- *  group header and the search window's breadcrumb. */
+ *  tab group, which is rendered as a colored pill like the sidebar's group
+ *  header — except on that group's own row, whose label already carries the
+ *  color, so the crumb stays plain there. */
 export interface PickerPathSegment {
   label: string
   pill?: boolean
@@ -20,7 +22,8 @@ export interface PickerItem {
    *  ("Profile / Workspace / Group"), matching the search window. */
   path?: PickerPathSegment[]
   /** Tab-group color. Its presence marks the row as a tab group: the label
-   *  is drawn as the group's pill, tinted like the `pill` path segment. */
+   *  is drawn as the group's pill and the path's `pill` segment stays plain,
+   *  so the group is colored once per row. */
   color?: string
   /** Items sharing the same `section` value are rendered under one header. */
   section?: string
@@ -32,23 +35,17 @@ function pathText(segments: PickerPathSegment[]): string {
   return segments.map((s) => s.label).join(' / ')
 }
 
-function PickerPath({ segments }: { segments: PickerPathSegment[] }) {
+function PickerPath({ segments, pills }: { segments: PickerPathSegment[]; pills: boolean }) {
   return (
     <div className="text-[10px] text-muted-foreground truncate" title={pathText(segments)}>
       {segments.map((segment, index) => (
         <span key={`${index}-${segment.label}`}>
           {index > 0 && <span aria-hidden="true"> / </span>}
-          {segment.pill ? <GroupPill name={segment.label} /> : segment.label}
+          {segment.pill && pills ? <GroupPill name={segment.label} /> : segment.label}
         </span>
       ))}
     </div>
   )
-}
-
-interface ScopeChoice {
-  /** 'current' = first tab — restricted scope; 'all' = second tab — full corpus. */
-  value: 'current' | 'all'
-  label: string
 }
 
 interface Props {
@@ -67,7 +64,7 @@ interface Props {
   /** Empty-state message shown when there are no items to pick from at all
    *  (i.e. items list is empty for the current scope). */
   emptyMessage?: string
-  /** Verb to put on the confirm action in the footer (e.g. "Move", "Copy"). */
+  /** Verb to put on the confirm action in the footer (e.g. "Move", "Open"). */
   confirmVerb?: string
   /** When set, holding Shift while confirming (Enter or click) is surfaced to
    *  `onConfirm` via `opts.background`, and this label is shown next to a
@@ -77,9 +74,12 @@ interface Props {
   /** Item id to pre-select when the dialog opens. Falls back to the first
    *  row if the id isn't present in the (filtered) list. */
   initialItemId?: string
+  /** 'current' narrows the list to where the user is; 'all' spans everything. */
   scope: 'current' | 'all'
   onScopeChange: (scope: 'current' | 'all') => void
-  scopeChoices: [ScopeChoice, ScopeChoice]
+  /** What the scope switch reads in each position, e.g. "This workspace" /
+   *  "All workspaces". */
+  scopeLabels: Record<'current' | 'all', string>
   /** `opts.background` is true when the user held Shift while confirming. */
   onConfirm: (itemId: string, opts: { background: boolean }) => void
   onCancel: () => void
@@ -100,7 +100,7 @@ export function PickerDialog({
   initialItemId,
   scope,
   onScopeChange,
-  scopeChoices,
+  scopeLabels,
   onConfirm,
   onCancel,
 }: Props) {
@@ -173,12 +173,12 @@ export function PickerDialog({
   }, [filtered])
 
   const handleKeyDown = (e: React.KeyboardEvent): void => {
-    // Tab flips between the two scopes (and Shift+Tab does the same — there
-    // are only two). We trap it so focus stays in the search input rather than
-    // tabbing out to the buttons.
+    // Tab flips the scope switch (and Shift+Tab does the same — there are
+    // only two positions). We trap it so focus stays in the search input
+    // rather than tabbing out to the switch.
     if (e.key === 'Tab' && !e.altKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault()
-      onScopeChange(scope === scopeChoices[0].value ? scopeChoices[1].value : scopeChoices[0].value)
+      onScopeChange(scope === 'current' ? 'all' : 'current')
       return
     }
 
@@ -232,36 +232,29 @@ export function PickerDialog({
           />
         </div>
 
-        {subtitle && (
-          <div className="px-4 py-1.5 border-b border-border text-[11px] text-muted-foreground truncate shrink-0">
-            {subtitle}
-          </div>
-        )}
-
-        {/* Scope tabs. The dialog is fully controlled — scope state lives in
-            the caller so the items list and the highlighted button stay in
-            sync without an extra round-trip. */}
-        <div className="flex items-center gap-1 px-3 py-2 border-b border-border shrink-0">
-          {scopeChoices.map((choice) => {
-            const active = scope === choice.value
-            return (
-              <button
-                key={choice.value}
-                type="button"
-                onClick={() => onScopeChange(choice.value)}
-                className={`flex items-center gap-1 h-6 px-2 rounded-full text-[10px] font-medium transition-colors ${
-                  active
-                    ? 'bg-primary/20 text-primary border border-primary/30'
-                    : 'bg-secondary text-muted-foreground border border-transparent hover:bg-accent'
-                }`}
-              >
-                {choice.label}
-              </button>
-            )
-          })}
-          <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground/70">
-            Toggle <kbd>⇥</kbd>
-          </span>
+        {/* What's being acted on, with the scope switch at the row's end —
+            the same switch, in the same spot, as the search window's. The
+            dialog is fully controlled: scope state lives in the caller so
+            the items list and the switch stay in sync without an extra
+            round-trip. */}
+        <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border shrink-0">
+          {subtitle && (
+            <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+              {subtitle}
+            </div>
+          )}
+          <ScopeSwitch
+            on={scope === 'current'}
+            label={scopeLabels[scope]}
+            onToggle={() => {
+              onScopeChange(scope === 'current' ? 'all' : 'current')
+              // A click moves focus to the switch; hand it back so typing and
+              // the arrow keys keep driving the list.
+              inputRef.current?.focus()
+            }}
+            title="Toggle scope (Tab)"
+            className="ml-auto shrink-0"
+          />
         </div>
 
         <div ref={listRef} className="flex-1 overflow-y-auto py-1">
@@ -301,7 +294,7 @@ export function PickerDialog({
                         ) : (
                           <div className="truncate">{item.label}</div>
                         )}
-                        {item.path && <PickerPath segments={item.path} />}
+                        {item.path && <PickerPath segments={item.path} pills={!item.color} />}
                       </div>
                       {item.trailingNote && (
                         <span className="text-[10px] text-muted-foreground shrink-0">

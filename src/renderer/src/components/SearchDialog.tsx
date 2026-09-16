@@ -8,6 +8,7 @@ import { DetachedWindow } from './DetachedWindow'
 import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
 import { GroupPill } from './GroupPill'
+import { ScopeSwitch } from './ScopeSwitch'
 
 interface Props {
   open: boolean
@@ -67,13 +68,16 @@ function saveScope(scope: SearchScope) {
 function SearchBreadcrumb({ item }: { item: SearchableItem }) {
   const visibleUrl = item.url && item.url !== 'about:blank' ? item.url : undefined
   const fullLabel = `${item.path}${visibleUrl ? ` · ${visibleUrl}` : ''}`
+  // A group's own row already wears the colour on its label, so the group
+  // crumb is only a pill where the label is something else (a tab).
+  const pillGroupCrumb = !!item.groupColor && item.type !== 'tabGroup'
 
   return (
     <div className="text-[10px] text-muted-foreground truncate" title={fullLabel}>
       {item.pathSegments.map((segment, index) => (
         <span key={`${segment.type}-${index}`}>
           {index > 0 && <span aria-hidden="true"> / </span>}
-          {segment.type === 'tabGroup' && item.groupColor
+          {segment.type === 'tabGroup' && pillGroupCrumb
             ? <GroupPill name={segment.label} />
             : segment.label}
         </span>
@@ -378,27 +382,13 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
             )
           })}
           {scopeApplies && (
-            <button
-              onClick={toggleScope}
+            <ScopeSwitch
+              on={scope === 'current'}
+              label={scope === 'current' ? 'This workspace' : 'All workspaces'}
+              onToggle={toggleScope}
               title="Toggle search scope (Tab)"
-              role="switch"
-              aria-checked={scope === 'current'}
-              className="ml-auto flex items-center gap-1.5 h-6 px-2 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {scope === 'current' ? 'This workspace' : 'All workspaces'}
-              <span
-                className={`relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full px-0.5 transition-colors ${
-                  scope === 'current' ? 'bg-primary' : 'bg-muted-foreground/30'
-                }`}
-              >
-                <span
-                  className={`h-2.5 w-2.5 rounded-full bg-white shadow-sm transition-transform ${
-                    scope === 'current' ? 'translate-x-[10px]' : 'translate-x-0'
-                  }`}
-                />
-              </span>
-              <span className="opacity-50">⇥</span>
-            </button>
+              className="ml-auto"
+            />
           )}
         </div>
 

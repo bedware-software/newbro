@@ -11,8 +11,8 @@ interface Props {
    *  are selected) pass the full set. Empty while the dialog closes —
    *  the dialog renders nothing when open is false anyway. */
   tabIds: string[]
-  /** The workspace the user is currently looking at — used by the default
-   *  scope toggle to limit destinations to "this workspace". */
+  /** The workspace the user is currently looking at — used by the scope
+   *  switch to limit destinations to "this workspace". */
   currentWorkspaceId: string | null
   onClose: () => void
 }
@@ -20,12 +20,14 @@ interface Props {
 export function MoveTabDialog({ open, tabIds, currentWorkspaceId, onClose }: Props) {
   const profiles = useAppStore((s) => s.profiles)
   const moveTabAcross = useAppStore((s) => s.moveTabAcross)
-  const [scope, setScope] = useState<'current' | 'all'>('current')
+  // Moves usually head somewhere else, so every workspace is on offer until
+  // the user narrows it down.
+  const [scope, setScope] = useState<'current' | 'all'>('all')
 
   // Reset scope when the dialog (re)opens so each invocation starts at the
   // documented default rather than carrying the previous session's choice.
   useEffect(() => {
-    if (open) setScope('current')
+    if (open) setScope('all')
   }, [open])
 
   const isMulti = tabIds.length > 1
@@ -137,10 +139,7 @@ export function MoveTabDialog({ open, tabIds, currentWorkspaceId, onClose }: Pro
       backgroundHint="In background"
       scope={scope}
       onScopeChange={setScope}
-      scopeChoices={[
-        { value: 'current', label: 'Current Workspace' },
-        { value: 'all', label: 'Any Workspace' },
-      ]}
+      scopeLabels={{ current: 'This workspace', all: 'All workspaces' }}
       onConfirm={handleConfirm}
       onCancel={onClose}
     />

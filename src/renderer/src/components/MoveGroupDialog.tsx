@@ -7,10 +7,10 @@ interface Props {
   open: boolean
   /** Group whose destination is being chosen. */
   groupId: string | null
-  /** Profile of the source — used by the default scope toggle to limit
-   *  destinations to "workspaces in this profile". Null means "no current
-   *  profile context", in which case the default-scope filter is a no-op
-   *  and all profiles' workspaces appear. */
+  /** Profile of the source — used by the scope switch to limit destinations
+   *  to "workspaces in this profile". Null means "no current profile
+   *  context", in which case that filter is a no-op and all profiles'
+   *  workspaces appear. */
   currentProfileId: string | null
   onClose: () => void
 }
@@ -46,10 +46,12 @@ function buildItems(
 export function MoveGroupDialog({ open, groupId, currentProfileId, onClose }: Props) {
   const profiles = useAppStore((s) => s.profiles)
   const moveGroupAcross = useAppStore((s) => s.moveGroupAcross)
-  const [scope, setScope] = useState<'current' | 'all'>('current')
+  // Every profile is on offer by default, like the Move Tab picker; each
+  // (re)open starts there again.
+  const [scope, setScope] = useState<'current' | 'all'>('all')
 
   useEffect(() => {
-    if (open) setScope('current')
+    if (open) setScope('all')
   }, [open])
 
   // Snapshot of the source group plus the workspace that owns it. Used to
@@ -123,10 +125,7 @@ export function MoveGroupDialog({ open, groupId, currentProfileId, onClose }: Pr
       backgroundHint="In background"
       scope={scope}
       onScopeChange={setScope}
-      scopeChoices={[
-        { value: 'current', label: 'Current Profile' },
-        { value: 'all', label: 'Any Profile' },
-      ]}
+      scopeLabels={{ current: 'This profile', all: 'All profiles' }}
       onConfirm={handleConfirm}
       onCancel={onClose}
     />

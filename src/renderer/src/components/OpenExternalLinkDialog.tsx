@@ -114,10 +114,7 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
       initialItemId={initialItemId}
       scope={scope}
       onScopeChange={setScope}
-      scopeChoices={[
-        { value: 'current', label: 'Current Workspace' },
-        { value: 'all', label: 'Any Workspace' },
-      ]}
+      scopeLabels={{ current: 'This workspace', all: 'All workspaces' }}
       onConfirm={handleConfirm}
       onCancel={onClose}
     />

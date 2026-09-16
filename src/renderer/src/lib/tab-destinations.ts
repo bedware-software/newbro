@@ -48,9 +48,9 @@ export function buildDestinationItems(
           id: encodeTarget(w.id, g.id),
           label: g.name,
           color: g.color,
-          // The group crumb repeats the label, and `color` has the picker draw
-          // both as the group's colored pill — what ties the row to the
-          // group's identity in the sidebar.
+          // `color` has the picker draw the label as the group's colored pill —
+          // what ties the row to the group's identity in the sidebar. The crumb
+          // is still marked as the group's, but stays plain beside that label.
           path: [...workspacePath, { label: g.name, pill: true }],
           trailingNote: `${g.tabs.length} tabs`,
         })
