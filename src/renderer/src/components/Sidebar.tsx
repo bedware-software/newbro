@@ -969,22 +969,22 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
             the pill (see absolute overlay below) so the pill always has
             the full row to use; we don't have to leave a fixed gap on
             the right for them. */}
+        {/* A plain click on the pill collapses or expands without parking on
+            the group, and leaves the selection alone, so a group can be
+            opened halfway through picking tabs out of it. Modifier clicks
+            fall through to the row and select the group. */}
         <span
           data-group-pill=""
-          className="inline-flex items-center gap-1 min-w-0 pl-1.5 pr-3 py-1 rounded-md text-xs font-medium overflow-hidden"
+          className={`inline-flex items-center gap-1 min-w-0 pl-1.5 pr-3 py-1 rounded-md text-xs font-medium overflow-hidden ${
+            isEditing ? '' : 'hover:brightness-110'
+          }`}
+          onClick={(e) => {
+            if (isEditing || e.shiftKey || e.metaKey || e.ctrlKey) return
+            e.stopPropagation()
+            toggleTabGroupCollapse(group.id)
+          }}
         >
-          {/* Collapses or expands without parking on the group, and leaves
-              the selection alone, so a group can be opened halfway through
-              picking tabs out of it. */}
-          <span
-            className="shrink-0 inline-flex items-center rounded-sm hover:bg-current/15"
-            title={group.isCollapsed ? 'Expand group' : 'Collapse group'}
-            onClick={(e) => {
-              if (isEditing) return
-              e.stopPropagation()
-              toggleTabGroupCollapse(group.id)
-            }}
-          >
+          <span className="shrink-0 inline-flex items-center">
             {group.isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
           </span>
           {isEditing ? (
