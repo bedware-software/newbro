@@ -589,24 +589,19 @@ export function WebviewPanel() {
   )
 }
 
-/** The page area while parked on a tab group: the group's sidebar header —
- *  tab-count badge and coloured name pill — scaled up in the middle, so the
- *  stop reads at a glance as a group rather than a page. Colours come from
- *  the same [data-group-*] rules in globals.css that paint the sidebar. */
+/** The page area while parked on a tab group: the group's coloured name pill
+ *  from the sidebar header, scaled up in the middle, so the stop reads at a
+ *  glance as a group rather than a page. The header's tab-count badge stays
+ *  in the sidebar. Colours come from the same [data-group-*] rules in
+ *  globals.css that paint the sidebar. */
 function ParkedGroupCard({ group }: { group: TabGroup }) {
   return (
     <div className="absolute inset-0 z-50 flex select-none items-center justify-center bg-background">
       <div
         data-group-container=""
         style={{ ['--gc' as string]: group.color }}
-        className="flex min-w-0 max-w-full -translate-y-[8vh] items-center gap-3 px-8"
+        className="flex min-w-0 max-w-full -translate-y-[8vh] items-center px-8"
       >
-        <span
-          data-group-badge=""
-          className="inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded-lg px-1.5 text-lg font-semibold tabular-nums leading-none"
-        >
-          {group.tabs.length}
-        </span>
         <span
           data-group-pill=""
           className="min-w-0 truncate rounded-xl px-4 py-1.5 text-3xl font-semibold tracking-tight"

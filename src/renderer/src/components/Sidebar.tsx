@@ -110,6 +110,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
   const duplicateTab = useAppStore((s) => s.duplicateTab)
   const duplicateItems = useAppStore((s) => s.duplicateItems)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
+  const setActiveGroup = useAppStore((s) => s.setActiveGroup)
   const moveTabs = useAppStore((s) => s.moveTabs)
   const moveTabGroup = useAppStore((s) => s.moveTabGroup)
   const moveTabsToNewGroup = useAppStore((s) => s.moveTabsToNewGroup)
@@ -902,7 +903,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     const containsActive = group.isCollapsed
       && activeTabId != null
       && group.tabs.some((t) => t.id === activeTabId)
-    // Parked on this group with Ctrl+Tab: no tab is active, the header is.
+    // Parked on this group (a click or Ctrl+Tab): no tab is active, the header is.
     const parked = activeTabId === null && activeTabGroupId === group.id
     const selected = selectedIds.has(group.id)
 
@@ -936,11 +937,12 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
         }}
         onClick={(e) => {
           if (isEditing) return
-          // Modifier clicks select the group. A plain click only collapses or
-          // expands it and leaves the selection alone, so a group can be
-          // opened halfway through picking tabs out of it.
+          // Modifier clicks select the group. A plain click parks on it, the
+          // way Ctrl+Tab does — collapsing lives on the chevron.
           if (handleSelectionClick(group.id, e)) return
-          toggleTabGroupCollapse(group.id)
+          setSelectedIds(new Set())
+          setActiveGroup(group.id)
+          selectionAnchorRef.current = group.id
         }}
         onContextMenu={(e) => handleGroupContextMenu(group.id, e)}
       >
@@ -971,7 +973,18 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
           data-group-pill=""
           className="inline-flex items-center gap-1 min-w-0 pl-1.5 pr-3 py-1 rounded-md text-xs font-medium overflow-hidden"
         >
-          <span className="shrink-0 inline-flex items-center">
+          {/* Collapses or expands without parking on the group, and leaves
+              the selection alone, so a group can be opened halfway through
+              picking tabs out of it. */}
+          <span
+            className="shrink-0 inline-flex items-center rounded-sm hover:bg-current/15"
+            title={group.isCollapsed ? 'Expand group' : 'Collapse group'}
+            onClick={(e) => {
+              if (isEditing) return
+              e.stopPropagation()
+              toggleTabGroupCollapse(group.id)
+            }}
+          >
             {group.isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
           </span>
           {isEditing ? (
