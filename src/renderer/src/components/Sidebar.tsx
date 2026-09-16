@@ -50,6 +50,20 @@ interface GroupItem {
   isCollapsed: boolean
 }
 
+/** A multi-selection resolved for an action: whole groups, plus tabs outside them. */
+interface SelectionTargets {
+  groupIds: string[]
+  tabIds: string[]
+}
+
+/** "2 Groups and 3 Tabs" — what a selection-wide menu action applies to. */
+function describeSelection(groupCount: number, tabCount: number): string {
+  const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
+  return [groupCount > 0 && count(groupCount, 'Group'), tabCount > 0 && count(tabCount, 'Tab')]
+    .filter(Boolean)
+    .join(' and ')
+}
+
 const MIN_WIDTH = 180
 const DEFAULT_WIDTH = 256
 const SIDEBAR_WIDTH_KEY = 'newbro-sidebar-width'
@@ -94,6 +108,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
   const addTabNearActive = useAppStore((s) => s.addTabNearActive)
   const closeTab = useAppStore((s) => s.closeTab)
   const duplicateTab = useAppStore((s) => s.duplicateTab)
+  const duplicateItems = useAppStore((s) => s.duplicateItems)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
   const moveTabs = useAppStore((s) => s.moveTabs)
   const moveTabGroup = useAppStore((s) => s.moveTabGroup)
@@ -186,8 +201,12 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
   // ── Group editing ──
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
-  const [selectedTabIds, setSelectedTabIds] = useState<Set<string>>(new Set())
-  const lastClickedTabRef = useRef<string | null>(null)
+  // Multi-selection built with Cmd/Ctrl+Click and Shift+Click. It holds tab
+  // ids and group ids alike: a selected group stands for the whole group,
+  // the way a selected folder does in a file tree.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // Where Shift+Click ranges start from.
+  const selectionAnchorRef = useRef<string | null>(null)
   const [groupFromContextOpen, setGroupFromContextOpen] = useState(false)
   // Tab ids feeding the "New Group…" prompt. Populated from the multi-
   // selection when the right-clicked tab is part of it; otherwise just
@@ -346,7 +365,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
 
     if (d.type === 'tab' && dt.type === 'tab') {
       moveTabs(d.ids, dt.containerId, dt.index)
-      setSelectedTabIds(new Set())
+      setSelectedIds(new Set())
     } else if (d.type === 'group' && dt.type === 'group') {
       moveTabGroup(d.id, dt.index)
     }
@@ -406,11 +425,23 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       .filter((x): x is NonNullable<typeof x> => x !== null)
   }, [workspace])
 
-  // ── Tab click handlers ──
-  const allTabIds: string[] = []
+  // ── Selection ──
+  // Rows in on-screen order: every top-level tab and group header, plus the
+  // tabs of expanded groups. Shift+Click ranges run over this list.
+  const visibleRowIds: string[] = []
   for (const item of sidebarItems) {
-    if (item.type === 'tab') allTabIds.push(item.id)
-    else for (const t of item.group.tabs) allTabIds.push(t.id)
+    visibleRowIds.push(item.id)
+    if (item.type === 'group' && !item.group.isCollapsed) {
+      for (const t of item.group.tabs) visibleRowIds.push(t.id)
+    }
+  }
+
+  // A tab tucked away in a collapsed group counts as its group's header row.
+  const rowIndexOf = (id: string): number => {
+    const idx = visibleRowIds.indexOf(id)
+    if (idx !== -1) return idx
+    const owner = sidebarItems.find((item) => item.type === 'group' && item.group.tabs.some((t) => t.id === id))
+    return owner ? visibleRowIds.indexOf(owner.id) : -1
   }
 
   // Visible-order positions (1..9) for the quick-jump badges. Mirrors
@@ -436,41 +467,49 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     return m
   }, [sidebarItems, showTabNumbers])
 
-  const handleTabClick = (tabId: string, e: React.MouseEvent) => {
+  /** Cmd/Ctrl+Click toggles a row (tab or group header) in the selection;
+   *  Shift+Click selects every visible row between the anchor and this one.
+   *  Returns false for a plain click, which each row type handles itself. */
+  const handleSelectionClick = (id: string, e: React.MouseEvent): boolean => {
     if (e.metaKey || e.ctrlKey) {
-      setSelectedTabIds((prev) => {
+      setSelectedIds((prev) => {
         const next = new Set(prev)
         // First Cmd/Ctrl+Click bootstraps the multi-selection with the
         // active tab. Without this, "New Group from Selection" (and any
-        // other action that targets selectedTabIds) silently drops the
-        // active tab — Shift+Click already gets this right because
-        // lastClickedTabRef.current points at the active tab after a
-        // regular click. Skip the seed when the user is Cmd-clicking
-        // the active tab itself (otherwise toggling it would never
-        // remove it).
-        if (prev.size === 0 && activeTabId != null && activeTabId !== tabId) {
+        // other action that targets the selection) silently drops the
+        // active tab — Shift+Click already gets this right because the
+        // anchor is the active tab after a regular click. Skip the seed
+        // when the user is Cmd-clicking the active tab itself (otherwise
+        // toggling it would never remove it), and when its row is hidden
+        // in a collapsed group, where nothing would show it got selected.
+        if (prev.size === 0 && activeTabId != null && activeTabId !== id && visibleRowIds.includes(activeTabId)) {
           next.add(activeTabId)
         }
-        if (next.has(tabId)) next.delete(tabId)
-        else next.add(tabId)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
         return next
       })
-      lastClickedTabRef.current = tabId
-      return
+      selectionAnchorRef.current = id
+      return true
     }
 
-    if (e.shiftKey && lastClickedTabRef.current) {
-      const s = allTabIds.indexOf(lastClickedTabRef.current)
-      const end = allTabIds.indexOf(tabId)
-      if (s !== -1 && end !== -1) {
-        setSelectedTabIds(new Set(allTabIds.slice(Math.min(s, end), Math.max(s, end) + 1)))
+    if (e.shiftKey) {
+      const anchor = selectionAnchorRef.current ?? activeTabId
+      const from = anchor ? rowIndexOf(anchor) : -1
+      const to = rowIndexOf(id)
+      if (from !== -1 && to !== -1) {
+        setSelectedIds(new Set(visibleRowIds.slice(Math.min(from, to), Math.max(from, to) + 1)))
+        return true
       }
-      return
     }
+    return false
+  }
 
-    setSelectedTabIds(new Set())
+  const handleTabClick = (tabId: string, e: React.MouseEvent) => {
+    if (handleSelectionClick(tabId, e)) return
+    setSelectedIds(new Set())
     setActiveTab(tabId)
-    lastClickedTabRef.current = tabId
+    selectionAnchorRef.current = tabId
   }
 
   const handleGroupDoubleClick = (id: string, name: string) => {
@@ -483,26 +522,79 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     setEditingGroupId(null)
   }
 
+  /** The multi-selection a context menu on `rowId` acts on, in sidebar order:
+   *  whole groups, plus the tabs that aren't inside one of those groups.
+   *  Null when the menu is for that row alone — the row isn't selected, or
+   *  the selection comes down to a single thing once tabs are folded into
+   *  their selected groups. Snapshotted at right-click, so the labels and
+   *  the targets match what the user saw even if state shifts while the
+   *  async dropdown is open. */
+  const getContextSelection = (rowId: string): SelectionTargets | null => {
+    if (!selectedIds.has(rowId) || selectedIds.size < 2) return null
+    const groupIds: string[] = []
+    const tabIds: string[] = []
+    for (const item of sidebarItems) {
+      if (item.type === 'tab') {
+        if (selectedIds.has(item.id)) tabIds.push(item.id)
+      } else if (selectedIds.has(item.id)) {
+        groupIds.push(item.id)
+      } else {
+        for (const t of item.group.tabs) if (selectedIds.has(t.id)) tabIds.push(t.id)
+      }
+    }
+    return groupIds.length + tabIds.length > 1 ? { groupIds, tabIds } : null
+  }
+
+  // The copies take over the selection, so whatever comes next — Move, a
+  // drag, Close — picks them up rather than the originals.
+  const duplicateSelection = (ids: string[]) => {
+    setSelectedIds(new Set(duplicateItems(ids)))
+  }
+
+  /** Menu for a multi-selection that includes a group. Only actions that
+   *  work on whole groups and single tabs alike are offered; the tab-only
+   *  ones (Move, Add to New Group, comments) stay on the tab menu. */
+  const openSelectionMenu = async (e: React.MouseEvent, { groupIds, tabIds }: SelectionTargets): Promise<void> => {
+    const target = describeSelection(groupIds.length, tabIds.length)
+    const result = await openDropdownAsync({
+      kind: 'menu',
+      position: { x: e.clientX, y: e.clientY },
+      ...readThemeAttrs(),
+      actions: [
+        { id: 'duplicate', label: `Duplicate ${target}`, iconName: 'CopyPlus' },
+        { id: 'close', label: `Close ${target}`, iconName: 'X', destructive: true, divider: 'before' },
+      ],
+    })
+    if (!result || result.type !== 'action') return
+    if (result.actionId === 'duplicate') duplicateSelection([...groupIds, ...tabIds])
+    else if (result.actionId === 'close') {
+      for (const id of tabIds) closeTab(id)
+      for (const id of groupIds) closeGroup(id)
+      setSelectedIds(new Set())
+    }
+  }
+
   const handleTabContextMenu = async (tabId: string, e: React.MouseEvent): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
     if (!workspace) return
+    // Right-clicking a selected row acts on the whole selection; anywhere
+    // else it's a focused action on this one tab.
+    const selection = getContextSelection(tabId)
+    if (selection && selection.groupIds.length > 0) {
+      await openSelectionMenu(e, selection)
+      return
+    }
     const tabGroupId = findTabGroup(tabId)
     const isUngrouped = tabGroupId === null
     const tab = workspace.tabs?.find((t) => t.id === tabId)
       || workspace.tabGroups.flatMap((g) => g.tabs).find((t) => t.id === tabId)
     const hasComment = !!tab?.comment
     const closeShortcut = [isMacOS ? '⌘' : 'Ctrl', 'W']
-    // Snapshot the multi-selection at the moment of right-click so the
-    // menu labels and the eventual target list match what the user saw
-    // when they opened the menu, regardless of any state changes that
-    // happen while the async dropdown is open. The "act on the whole
-    // selection" path only kicks in when the right-clicked tab IS in
-    // the selection — right-clicking outside is treated as a focused
-    // action on that one tab. The same target list feeds close, move,
-    // copy, and new-group so all four feel consistent.
-    const useSelection = selectedTabIds.has(tabId) && selectedTabIds.size > 1
-    const actionTargets = useSelection ? [...selectedTabIds] : [tabId]
+    // One target list feeds close, duplicate, move, and new-group so all
+    // four feel consistent.
+    const useSelection = selection !== null
+    const actionTargets = selection ? selection.tabIds : [tabId]
     const targetCount = actionTargets.length
 
     // Header shows the tab's title (truncated by the popup) so the user has
@@ -557,11 +649,6 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
       iconName: 'FolderInput',
       divider: 'before',
     })
-    actions.push({
-      id: 'copy-tab',
-      label: useSelection ? `Copy ${targetCount} Tabs…` : 'Copy Tab…',
-      iconName: 'Copy',
-    })
 
     const result = await openDropdownAsync({
       kind: 'menu',
@@ -574,13 +661,14 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     const action = result.actionId
     if (action === 'close') {
       for (const id of actionTargets) closeTab(id)
-      if (useSelection) setSelectedTabIds(new Set())
+      if (useSelection) setSelectedIds(new Set())
     }
     else if (action === 'duplicate') {
-      // Each clone lands right after its original and becomes active, so a
-      // multi-select duplicate leaves the last copy focused.
-      for (const id of actionTargets) duplicateTab(id)
-      if (useSelection) setSelectedTabIds(new Set())
+      // A lone duplicate opens like a browser's Duplicate Tab and becomes
+      // active; copies of a selection land next to their originals quietly
+      // and become the selection instead.
+      if (useSelection) duplicateSelection(actionTargets)
+      else duplicateTab(tabId)
     }
     else if (action === 'ungroup') ungroupTab(tabId)
     else if (action === 'convert-to-group') {
@@ -595,18 +683,16 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     }
     else if (action === 'set-comment') { setCommentTabId(tabId); setCommentDefault(tab?.comment || ''); setCommentDialogOpen(true) }
     else if (action === 'remove-comment') setTabComment(tabId, '')
-    else if (action === 'move-tab' || action === 'copy-tab') {
+    else if (action === 'move-tab') {
       // App owns the picker dialog state. We forward the resolved target
       // list via a CustomEvent so App can open the dialog targeting these
       // tabs — the keyboard shortcut path always targets the active tab,
       // but context menu lets the user act on any tab or the whole
       // multi-selection.
       window.dispatchEvent(
-        new CustomEvent('newbro:open-move-copy-tab', {
-          detail: { mode: action === 'move-tab' ? 'move' : 'copy', tabIds: actionTargets },
-        }),
+        new CustomEvent('newbro:open-move-tab', { detail: { tabIds: actionTargets } }),
       )
-      if (useSelection) setSelectedTabIds(new Set())
+      if (useSelection) setSelectedIds(new Set())
     }
   }
 
@@ -616,13 +702,18 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     if (!workspace) return
     const group = workspace.tabGroups.find((g) => g.id === groupId)
     if (!group) return
+    const selection = getContextSelection(groupId)
+    if (selection) {
+      await openSelectionMenu(e, selection)
+      return
+    }
 
     const tabCount = group.tabs.length
     const actions: DropdownAction[] = [
       { id: 'rename', label: 'Rename Group', iconName: 'Pencil' },
       { id: 'add-tab', label: 'Add Tab to Group', iconName: 'FilePlus' },
       { id: 'move-group', label: 'Move Group…', iconName: 'FolderInput', divider: 'before' },
-      { id: 'copy-group', label: 'Copy Group…', iconName: 'Copy' },
+      { id: 'duplicate-group', label: 'Duplicate Group', iconName: 'CopyPlus' },
       { id: 'ungroup-all', label: 'Ungroup All Tabs', iconName: 'FolderMinus', divider: 'before' },
     ]
     // A one-tab group is really just a labelled tab, so offer to turn the
@@ -657,12 +748,10 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     else if (action === 'ungroup-all') ungroupAll(groupId)
     else if (action === 'convert-to-comment') convertGroupToComment(groupId)
     else if (action === 'close-group') closeGroup(groupId)
-    else if (action === 'move-group' || action === 'copy-group') {
-      window.dispatchEvent(
-        new CustomEvent('newbro:open-move-copy-group', {
-          detail: { mode: action === 'move-group' ? 'move' : 'copy', groupId },
-        }),
-      )
+    // The copy lands right below the original and nothing else changes.
+    else if (action === 'duplicate-group') duplicateItems([groupId])
+    else if (action === 'move-group') {
+      window.dispatchEvent(new CustomEvent('newbro:open-move-group', { detail: { groupId } }))
     }
   }
 
@@ -716,7 +805,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
 
   const renderTabRow = (tab: TabItem, containerId: string | null, index: number) => {
     const isBeingDragged = dragging?.ids.includes(tab.id) ?? false
-    const selected = selectedTabIds.has(tab.id)
+    const selected = selectedIds.has(tab.id)
     const active = tab.id === activeTabId
     const tabNumber = tabNumberById.get(tab.id)
     const showBefore = containerId === null
@@ -740,8 +829,9 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
         onClick={(e) => handleTabClick(tab.id, e)}
         onMouseDown={(e) => {
           if (e.button !== 0) return
-          const ids = selectedTabIds.has(tab.id) && selectedTabIds.size > 1
-            ? getOrderedDraggedTabIds([...selectedTabIds])
+          // Selected group headers stay put: a drag carries only the tabs.
+          const ids = selectedIds.has(tab.id) && selectedIds.size > 1
+            ? getOrderedDraggedTabIds([...selectedIds])
             : [tab.id]
           startDragStable('tab', tab.id, ids, e)
         }}
@@ -812,6 +902,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     const containsActive = group.isCollapsed
       && activeTabId != null
       && group.tabs.some((t) => t.id === activeTabId)
+    const selected = selectedIds.has(group.id)
 
     return (
       <div
@@ -823,23 +914,30 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
         className={`relative flex items-center gap-1 px-1 py-1 cursor-pointer group ${
           isBeingDragged ? 'opacity-30' : ''
         } ${
-          // During tab drag: "drop into" highlight wins over both the active
-          // and hover states; otherwise active-containing groups stay lit and
-          // the rest get the standard hover treatment.
+          // During tab drag: "drop into" highlight wins over every other
+          // state; otherwise a selected group takes the same tint as a
+          // selected tab row, active-containing groups stay lit, and the
+          // rest get the standard hover treatment.
           isDraggingTab
             ? isDropIntoTarget
               ? 'bg-primary/30 ring-1 ring-inset ring-primary/40'
               : ''
-            : containsActive
-              ? 'bg-accent text-accent-foreground'
-              : 'hover:bg-accent'
+            : selected
+              ? 'bg-primary/20'
+              : containsActive
+                ? 'bg-accent text-accent-foreground'
+                : 'hover:bg-accent'
         }`}
         onMouseDown={(e) => {
           if (e.button !== 0 || isEditing) return
           startDragStable('group', group.id, [group.id], e)
         }}
-        onClick={() => {
+        onClick={(e) => {
           if (isEditing) return
+          // Modifier clicks select the group. A plain click only collapses or
+          // expands it and leaves the selection alone, so a group can be
+          // opened halfway through picking tabs out of it.
+          if (handleSelectionClick(group.id, e)) return
           toggleTabGroupCollapse(group.id)
         }}
         onContextMenu={(e) => handleGroupContextMenu(group.id, e)}
@@ -1010,7 +1108,7 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
             // Multi-tab group consumed the selection — clear it so the
             // moved tabs don't keep their selected highlight in their
             // new container.
-            if (pendingGroupTabIds.length > 1) setSelectedTabIds(new Set())
+            if (pendingGroupTabIds.length > 1) setSelectedIds(new Set())
           }
           setPendingGroupTabIds([])
           setGroupFromContextOpen(false)

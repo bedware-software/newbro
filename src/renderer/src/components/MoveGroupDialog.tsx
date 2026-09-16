@@ -5,8 +5,6 @@ import { PickerDialog } from './PickerDialog'
 
 interface Props {
   open: boolean
-  /** 'move' rehomes the source group; 'copy' clones it (group + every tab). */
-  mode: 'move' | 'copy'
   /** Group whose destination is being chosen. */
   groupId: string | null
   /** Profile of the source — used by the default scope toggle to limit
@@ -45,10 +43,9 @@ function buildItems(
   return out
 }
 
-export function MoveCopyGroupDialog({ open, mode, groupId, currentProfileId, onClose }: Props) {
+export function MoveGroupDialog({ open, groupId, currentProfileId, onClose }: Props) {
   const profiles = useAppStore((s) => s.profiles)
   const moveGroupAcross = useAppStore((s) => s.moveGroupAcross)
-  const copyGroupAcross = useAppStore((s) => s.copyGroupAcross)
   const [scope, setScope] = useState<'current' | 'all'>('current')
 
   useEffect(() => {
@@ -74,9 +71,6 @@ export function MoveCopyGroupDialog({ open, mode, groupId, currentProfileId, onC
     [profiles, scope, currentProfileId, sourceInfo],
   )
 
-  const verb = mode === 'move' ? 'Move' : 'Copy'
-  const verbing = mode === 'move' ? 'Moving' : 'Copying'
-
   // Default confirm opens (and focuses) the destination workspace window and
   // activates the group's first tab, so the user follows the group to its new
   // home. Holding Shift (`background`) relocates it silently and keeps focus
@@ -84,14 +78,9 @@ export function MoveCopyGroupDialog({ open, mode, groupId, currentProfileId, onC
   const handleConfirm = async (workspaceId: string, { background }: { background: boolean }): Promise<void> => {
     if (!groupId) return
 
-    let targetTabId: string | null = null
-    if (mode === 'move') {
-      moveGroupAcross(groupId, workspaceId)
-      // Move preserves tab ids, so the snapshot's first tab is the one to focus.
-      targetTabId = sourceInfo?.group.tabs[0]?.id ?? null
-    } else {
-      targetTabId = copyGroupAcross(groupId, workspaceId)
-    }
+    moveGroupAcross(groupId, workspaceId)
+    // Move preserves tab ids, so the snapshot's first tab is the one to focus.
+    const targetTabId = sourceInfo?.group.tabs[0]?.id ?? null
 
     if (!background) {
       let destProfileId: string | null = null
@@ -117,20 +106,20 @@ export function MoveCopyGroupDialog({ open, mode, groupId, currentProfileId, onC
 
   const subtitle = sourceInfo ? (
     <>
-      {verbing} group <span className="text-foreground font-medium">{sourceInfo.group.name}</span>
+      Moving group <span className="text-foreground font-medium">{sourceInfo.group.name}</span>
     </>
   ) : undefined
 
   return (
     <PickerDialog
       open={open}
-      title={`${verb} Group`}
-      windowTitle={`${verb} Group - Newbro`}
-      placeholder={`${verb} group to workspace…`}
+      title="Move Group"
+      windowTitle="Move Group - Newbro"
+      placeholder="Move group to workspace…"
       subtitle={subtitle}
       items={items}
       emptyMessage="No other workspaces available"
-      confirmVerb={verb}
+      confirmVerb="Move"
       backgroundHint="In background"
       scope={scope}
       onScopeChange={setScope}

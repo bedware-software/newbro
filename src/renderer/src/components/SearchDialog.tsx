@@ -7,6 +7,7 @@ import type { SearchableItem } from '../store/types'
 import { DetachedWindow } from './DetachedWindow'
 import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
+import { GroupPill } from './GroupPill'
 
 interface Props {
   open: boolean
@@ -72,14 +73,9 @@ function SearchBreadcrumb({ item }: { item: SearchableItem }) {
       {item.pathSegments.map((segment, index) => (
         <span key={`${segment.type}-${index}`}>
           {index > 0 && <span aria-hidden="true"> / </span>}
-          {segment.type === 'tabGroup' && item.groupColor ? (
-            <span
-              data-group-pill=""
-              className="inline rounded-sm px-1 font-medium"
-            >
-              {segment.label}
-            </span>
-          ) : segment.label}
+          {segment.type === 'tabGroup' && item.groupColor
+            ? <GroupPill name={segment.label} />
+            : segment.label}
         </span>
       ))}
       {visibleUrl && ` · ${visibleUrl}`}
@@ -483,9 +479,13 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
                           <div className="col-start-1 row-start-1 min-w-0 self-center">
                             <div className="flex min-w-0 items-center gap-1.5">
                               {item.comment && <CommentChip comment={item.comment} />}
-                              <span className="min-w-title-stub flex-1 truncate text-sm" title={item.name}>
-                                {item.name}
-                              </span>
+                              {item.type === 'tabGroup' && item.groupColor ? (
+                                <GroupPill name={item.name} title={item.name} className="min-w-0 truncate text-sm" />
+                              ) : (
+                                <span className="min-w-title-stub flex-1 truncate text-sm" title={item.name}>
+                                  {item.name}
+                                </span>
+                              )}
                             </div>
                             {item.type !== 'profile' && <SearchBreadcrumb item={item} />}
                           </div>

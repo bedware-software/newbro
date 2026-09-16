@@ -23,11 +23,10 @@ const COMMANDS: CommandItem[] = [
   { id: 'set-comment', label: 'Set Comment', category: 'Active Tab' },
   { id: 'remove-comment', label: 'Remove Comment', category: 'Active Tab' },
   { id: 'move-tab', label: 'Move Tab...', category: 'Active Tab' },
-  { id: 'copy-tab', label: 'Copy Tab...', category: 'Active Tab' },
   { id: 'add-to-new-group', label: 'Add to New Group...', category: 'Active Tab' },
   { id: 'rename-tab-group', label: 'Rename Group…', category: 'Active Group' },
   { id: 'move-group', label: 'Move Group...', category: 'Active Group' },
-  { id: 'copy-group', label: 'Copy Group...', category: 'Active Group' },
+  { id: 'duplicate-group', label: 'Duplicate Group', category: 'Active Group' },
   { id: 'new-tab', label: 'New Tab', category: 'Tabs' },
   { id: 'reopen-closed-tab', label: 'Reopen Closed Tab', category: 'Tabs' },
   { id: 'next-tab', label: 'Next Tab', category: 'Tabs' },
@@ -148,7 +147,7 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
   const availableCommands = useMemo(() => {
     return COMMANDS.filter((cmd) => {
       if (cmd.id === 'remove-comment') return !!activeTab?.comment
-      if (cmd.id === 'rename-tab-group' || cmd.id === 'move-group' || cmd.id === 'copy-group') {
+      if (cmd.id === 'rename-tab-group' || cmd.id === 'move-group' || cmd.id === 'duplicate-group') {
         return !!activeTabGroupId
       }
       return true

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, ArrowUpDown, CornerDownLeft } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
+import { GroupPill } from './GroupPill'
 import { fuzzyFilter } from '../lib/fuzzy'
 
 /** One crumb of a row's location path. `pill` marks the segment that names a
@@ -18,8 +19,8 @@ export interface PickerItem {
   /** Full location path shown as a breadcrumb beneath the label
    *  ("Profile / Workspace / Group"), matching the search window. */
   path?: PickerPathSegment[]
-  /** Tab-group color. Not drawn on its own — it's what the `pill` path
-   *  segment is tinted with, so the color is stated once, in the path. */
+  /** Tab-group color. Its presence marks the row as a tab group: the label
+   *  is drawn as the group's pill, tinted like the `pill` path segment. */
   color?: string
   /** Items sharing the same `section` value are rendered under one header. */
   section?: string
@@ -37,11 +38,7 @@ function PickerPath({ segments }: { segments: PickerPathSegment[] }) {
       {segments.map((segment, index) => (
         <span key={`${index}-${segment.label}`}>
           {index > 0 && <span aria-hidden="true"> / </span>}
-          {segment.pill ? (
-            <span data-group-pill="" className="inline rounded-sm px-1 font-medium">
-              {segment.label}
-            </span>
-          ) : segment.label}
+          {segment.pill ? <GroupPill name={segment.label} /> : segment.label}
         </span>
       ))}
     </div>
@@ -288,7 +285,7 @@ export function PickerDialog({
                       key={item.id}
                       data-selected={isSelected}
                       // Carrying the group color as `--gc` lets the theme
-                      // resolve it once for the whole row, so the leading dot
+                      // resolve it once for the whole row, so the label's pill
                       // and the path's pill are always the same shade.
                       data-group-container={item.color ? '' : undefined}
                       style={item.color ? { ['--gc' as string]: item.color } : undefined}
@@ -299,7 +296,11 @@ export function PickerDialog({
                       onMouseEnter={() => setSelectedIndex(idx)}
                     >
                       <div className="flex-1 min-w-0">
-                        <div className="truncate">{item.label}</div>
+                        {item.color ? (
+                          <GroupPill name={item.label} className="block w-fit max-w-full truncate" />
+                        ) : (
+                          <div className="truncate">{item.label}</div>
+                        )}
                         {item.path && <PickerPath segments={item.path} />}
                       </div>
                       {item.trailingNote && (

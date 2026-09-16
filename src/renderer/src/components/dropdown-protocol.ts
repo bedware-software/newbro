@@ -23,7 +23,6 @@ export type IconName =
   | 'FolderMinus'
   | 'FolderInput'
   | 'Folder'
-  | 'Copy'
   | 'CopyPlus'
   | 'MessageSquare'
   | 'MessageSquareOff'

@@ -5,8 +5,6 @@ import { PickerDialog } from './PickerDialog'
 
 interface Props {
   open: boolean
-  /** 'move' rewrites each source tab's parent; 'copy' clones each one. */
-  mode: 'move' | 'copy'
   /** Tabs whose destination is being chosen. A single-tab call (keyboard
    *  shortcut, or right-click on an unselected tab) passes a one-element
    *  array; multi-tab calls (right-click on a selected tab while more
@@ -19,10 +17,9 @@ interface Props {
   onClose: () => void
 }
 
-export function MoveCopyTabDialog({ open, mode, tabIds, currentWorkspaceId, onClose }: Props) {
+export function MoveTabDialog({ open, tabIds, currentWorkspaceId, onClose }: Props) {
   const profiles = useAppStore((s) => s.profiles)
   const moveTabAcross = useAppStore((s) => s.moveTabAcross)
-  const copyTabAcross = useAppStore((s) => s.copyTabAcross)
   const [scope, setScope] = useState<'current' | 'all'>('current')
 
   // Reset scope when the dialog (re)opens so each invocation starts at the
@@ -67,42 +64,29 @@ export function MoveCopyTabDialog({ open, mode, tabIds, currentWorkspaceId, onCl
 
   const items = useMemo(() => {
     const all = buildDestinationItems(profiles, scope, currentWorkspaceId)
-    if (mode !== 'move' || tabs.length === 0) return all
-    // For "Move" we hide containers that are already the source for ALL
-    // selected tabs — moving each tab there would be a per-tab no-op.
-    // When the selection spans multiple containers, every destination is
-    // a meaningful target for at least one tab, so the filter doesn't
-    // exclude anything. Copy keeps every option (a user might genuinely
-    // want a duplicate next to the original).
+    if (tabs.length === 0) return all
+    // Hide containers that are already the source for ALL selected tabs —
+    // moving each tab there would be a per-tab no-op. When the selection
+    // spans multiple containers, every destination is a meaningful target
+    // for at least one tab, so the filter doesn't exclude anything.
     const sourceIds = new Set(tabs.map((t) => encodeTarget(t.workspaceId, t.groupId)))
     if (sourceIds.size !== 1) return all
     const onlySource = sourceIds.values().next().value
     return all.filter((item) => item.id !== onlySource)
-  }, [profiles, scope, currentWorkspaceId, mode, tabs])
-
-  const verb = mode === 'move' ? 'Move' : 'Copy'
-  const verbing = mode === 'move' ? 'Moving' : 'Copying'
+  }, [profiles, scope, currentWorkspaceId, tabs])
 
   // Default confirm opens (and focuses) the destination workspace window and
-  // activates the moved/copied tab, so the user follows it to its new home.
-  // Holding Shift (`background`) skips that — the tab is relocated silently and
-  // the current window keeps focus.
+  // activates the moved tab, so the user follows it to its new home. Holding
+  // Shift (`background`) skips that — the tab is relocated silently and the
+  // current window keeps focus.
   const handleConfirm = async (itemId: string, { background }: { background: boolean }): Promise<void> => {
     if (tabIds.length === 0) return
     const { workspaceId, groupId } = decodeTarget(itemId)
 
-    // Relocate every tab; remember the first resulting tab id to activate in
-    // the destination. Move preserves ids, copy mints new ones.
-    let targetTabId: string | null = null
-    for (const id of tabIds) {
-      if (mode === 'move') {
-        moveTabAcross(id, workspaceId, groupId)
-        if (targetTabId === null) targetTabId = id
-      } else {
-        const newId = copyTabAcross(id, workspaceId, groupId)
-        if (targetTabId === null) targetTabId = newId
-      }
-    }
+    // Moves keep tab ids, so the first source tab is the one to activate in
+    // the destination.
+    for (const id of tabIds) moveTabAcross(id, workspaceId, groupId)
+    const targetTabId = tabIds[0]
 
     if (!background) {
       // Resolve the destination's profile + name to open its window.
@@ -120,7 +104,7 @@ export function MoveCopyTabDialog({ open, mode, tabIds, currentWorkspaceId, onCl
           destProfileId,
           workspaceId,
           destWorkspaceName,
-          targetTabId ?? undefined,
+          targetTabId,
         )
       }
     }
@@ -131,25 +115,25 @@ export function MoveCopyTabDialog({ open, mode, tabIds, currentWorkspaceId, onCl
   const subtitle = isMulti
     ? (
       <>
-        {verbing} <span className="text-foreground font-medium">{tabIds.length} tabs</span>
+        Moving <span className="text-foreground font-medium">{tabIds.length} tabs</span>
       </>
     )
     : tabs[0] ? (
       <>
-        {verbing} <span className="text-foreground font-medium">{tabs[0].tab.title || tabs[0].tab.url}</span>
+        Moving <span className="text-foreground font-medium">{tabs[0].tab.title || tabs[0].tab.url}</span>
       </>
     ) : undefined
 
   return (
     <PickerDialog
       open={open}
-      title={`${verb} ${titleSuffix}`}
-      windowTitle={`${verb} ${titleSuffix} - Newbro`}
-      placeholder={isMulti ? `${verb} tabs to…` : `${verb} tab to…`}
+      title={`Move ${titleSuffix}`}
+      windowTitle={`Move ${titleSuffix} - Newbro`}
+      placeholder={isMulti ? 'Move tabs to…' : 'Move tab to…'}
       subtitle={subtitle}
       items={items}
       emptyMessage="No destinations available"
-      confirmVerb={verb}
+      confirmVerb="Move"
       backgroundHint="In background"
       scope={scope}
       onScopeChange={setScope}

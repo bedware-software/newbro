@@ -147,16 +147,15 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'tab-7': ['CmdOrCtrl+7'],
   'tab-8': ['CmdOrCtrl+8'],
   'tab-9': ['CmdOrCtrl+9'],
-  // Move/Copy/Duplicate actions ship without a default accelerator — they're
+  // Move/Duplicate actions ship without a default accelerator — they're
   // driven primarily through context menus and the command palette. The keys
   // must still be present so normalizeAndFilterKeybindings preserves any user-
   // recorded binding (it iterates Object.keys(DEFAULT_KEYBINDINGS)).
   'duplicate-tab': [],
   'move-tab': [],
-  'copy-tab': [],
   'rename-tab-group': [],
   'move-group': [],
-  'copy-group': [],
+  'duplicate-group': [],
   // Add-to-bookshelf ships unbound (driven through the command palette);
   // toggle-bookshelf gets a default so the reading queue has a one-key show/
   // hide. Existing installs are seeded with it once — see migrateNewKeybindingDefaults.

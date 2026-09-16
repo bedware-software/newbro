@@ -116,16 +116,15 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'tab-7': ['CmdOrCtrl+7'],
   'tab-8': ['CmdOrCtrl+8'],
   'tab-9': ['CmdOrCtrl+9'],
-  // Move/Copy/Duplicate actions ship unbound — they're surfaced through
-  // context menus and the command palette by default. An empty array keeps
-  // the parsing path in main/index.ts a no-op (parseAcceleratorShortcut
-  // returns null) until the user records a binding here.
+  // Move/Duplicate actions ship unbound — they're surfaced through context
+  // menus and the command palette by default. An empty array keeps the
+  // parsing path in main/index.ts a no-op (parseAcceleratorShortcut returns
+  // null) until the user records a binding here.
   'duplicate-tab': [],
   'move-tab': [],
-  'copy-tab': [],
   'rename-tab-group': [],
   'move-group': [],
-  'copy-group': [],
+  'duplicate-group': [],
   'add-to-bookshelf': [],
   'toggle-bookshelf': ['CmdOrCtrl+Shift+B'],
 }
@@ -180,10 +179,9 @@ const ACTION_LABELS: Record<string, string> = {
   'tab-9': 'Switch to Tab 9',
   'duplicate-tab': 'Duplicate Tab',
   'move-tab': 'Move Tab',
-  'copy-tab': 'Copy Tab',
   'rename-tab-group': 'Rename Group',
   'move-group': 'Move Group',
-  'copy-group': 'Copy Group',
+  'duplicate-group': 'Duplicate Group',
   'add-to-bookshelf': 'Add to Bookshelf',
   'toggle-bookshelf': 'Toggle Bookshelf',
 }

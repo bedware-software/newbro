@@ -2,7 +2,7 @@ import type { PickerItem, PickerPathSegment } from '../components/PickerDialog'
 import type { Profile } from '../store/types'
 
 /** Shared vocabulary for the "pick a container for this tab" pickers
- *  (MoveCopyTabDialog, OpenExternalLinkDialog). Keeping the encoding and the
+ *  (MoveTabDialog, OpenExternalLinkDialog). Keeping the encoding and the
  *  item construction in one place is what makes those dialogs read and behave
  *  identically — the wording of a Root row is a UI decision that should never
  *  drift between them. */
@@ -48,8 +48,9 @@ export function buildDestinationItems(
           id: encodeTarget(w.id, g.id),
           label: g.name,
           color: g.color,
-          // The group crumb repeats the label, but as the colored pill — it's
-          // what ties the row to the group's identity in the sidebar.
+          // The group crumb repeats the label, and `color` has the picker draw
+          // both as the group's colored pill — what ties the row to the
+          // group's identity in the sidebar.
           path: [...workspacePath, { label: g.name, pill: true }],
           trailingNote: `${g.tabs.length} tabs`,
         })

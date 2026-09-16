@@ -13,8 +13,8 @@ import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDi
 import { CommandPalette } from './components/CommandPalette'
 import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
 import { InputDialog } from './components/InputDialog'
-import { MoveCopyTabDialog } from './components/MoveCopyTabDialog'
-import { MoveCopyGroupDialog } from './components/MoveCopyGroupDialog'
+import { MoveTabDialog } from './components/MoveTabDialog'
+import { MoveGroupDialog } from './components/MoveGroupDialog'
 import { OpenExternalLinkDialog } from './components/OpenExternalLinkDialog'
 import { CloudSyncSetupDialog } from './components/CloudSyncSetupDialog'
 import { HttpAuthDialog } from './components/HttpAuthDialog'
@@ -492,15 +492,13 @@ export default function App() {
   // path uses a dialog — same shape as Rename Workspace / Rename Profile.
   const [renameGroupId, setRenameGroupId] = useState<string | null>(null)
   const [renameGroupDefault, setRenameGroupDefault] = useState('')
-  // Move/Copy Tab and Move/Copy Group dialogs. The pickers are fully
-  // controlled — App owns the open state plus the source id, and resets
-  // both on close so a fresh invocation always opens against the *current*
-  // active tab/group rather than a stale one.
+  // Move Tab and Move Group dialogs. The pickers are fully controlled — App
+  // owns the open state plus the source id, and resets both on close so a
+  // fresh invocation always opens against the *current* active tab/group
+  // rather than a stale one.
   const [tabPickerOpen, setTabPickerOpen] = useState(false)
-  const [tabPickerMode, setTabPickerMode] = useState<'move' | 'copy'>('move')
   const [tabPickerTabIds, setTabPickerTabIds] = useState<string[]>([])
   const [groupPickerOpen, setGroupPickerOpen] = useState(false)
-  const [groupPickerMode, setGroupPickerMode] = useState<'move' | 'copy'>('move')
   const [groupPickerGroupId, setGroupPickerGroupId] = useState<string | null>(null)
   // External-link picker. The URL the user is being asked to place sits in
   // `pendingUrl`; any URLs that arrive while the picker is already open are
@@ -915,14 +913,6 @@ export default function App() {
           break
         case 'move-tab':
           if (s.activeTabId) {
-            setTabPickerMode('move')
-            setTabPickerTabIds([s.activeTabId])
-            setTabPickerOpen(true)
-          }
-          break
-        case 'copy-tab':
-          if (s.activeTabId) {
-            setTabPickerMode('copy')
             setTabPickerTabIds([s.activeTabId])
             setTabPickerOpen(true)
           }
@@ -937,17 +927,12 @@ export default function App() {
         }
         case 'move-group':
           if (s.activeTabGroupId) {
-            setGroupPickerMode('move')
             setGroupPickerGroupId(s.activeTabGroupId)
             setGroupPickerOpen(true)
           }
           break
-        case 'copy-group':
-          if (s.activeTabGroupId) {
-            setGroupPickerMode('copy')
-            setGroupPickerGroupId(s.activeTabGroupId)
-            setGroupPickerOpen(true)
-          }
+        case 'duplicate-group':
+          if (s.activeTabGroupId) s.duplicateItems([s.activeTabGroupId])
           break
         case 'add-to-new-group':
           if (s.activeTabId) {
@@ -1109,26 +1094,24 @@ export default function App() {
       if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId, searchUrl)
     })
 
-    // Open Move/Copy pickers in response to context-menu choices in the
-    // sidebar. The Sidebar dispatches a CustomEvent rather than reaching
-    // into App's setters directly so the cross-component contract stays
-    // narrow — App is the sole owner of the dialogs' open/source state.
-    const handleOpenMoveCopyTab = (e: Event): void => {
-      const detail = (e as CustomEvent<{ mode: 'move' | 'copy'; tabIds: string[] }>).detail
+    // Open Move pickers in response to context-menu choices in the sidebar.
+    // The Sidebar dispatches a CustomEvent rather than reaching into App's
+    // setters directly so the cross-component contract stays narrow — App is
+    // the sole owner of the dialogs' open/source state.
+    const handleOpenMoveTab = (e: Event): void => {
+      const detail = (e as CustomEvent<{ tabIds: string[] }>).detail
       if (!detail?.tabIds || detail.tabIds.length === 0) return
-      setTabPickerMode(detail.mode)
       setTabPickerTabIds(detail.tabIds)
       setTabPickerOpen(true)
     }
-    const handleOpenMoveCopyGroup = (e: Event): void => {
-      const detail = (e as CustomEvent<{ mode: 'move' | 'copy'; groupId: string }>).detail
+    const handleOpenMoveGroup = (e: Event): void => {
+      const detail = (e as CustomEvent<{ groupId: string }>).detail
       if (!detail?.groupId) return
-      setGroupPickerMode(detail.mode)
       setGroupPickerGroupId(detail.groupId)
       setGroupPickerOpen(true)
     }
-    window.addEventListener('newbro:open-move-copy-tab', handleOpenMoveCopyTab)
-    window.addEventListener('newbro:open-move-copy-group', handleOpenMoveCopyGroup)
+    window.addEventListener('newbro:open-move-tab', handleOpenMoveTab)
+    window.addEventListener('newbro:open-move-group', handleOpenMoveGroup)
 
     return () => {
       cleanupShortcut()
@@ -1140,8 +1123,8 @@ export default function App() {
       cleanupSettings()
       cleanupActivateTab()
       cleanupContextSearch?.()
-      window.removeEventListener('newbro:open-move-copy-tab', handleOpenMoveCopyTab)
-      window.removeEventListener('newbro:open-move-copy-group', handleOpenMoveCopyGroup)
+      window.removeEventListener('newbro:open-move-tab', handleOpenMoveTab)
+      window.removeEventListener('newbro:open-move-group', handleOpenMoveGroup)
     }
   }, [hydrate, windowWorkspaceId, toggleSidebar])
 
@@ -1284,9 +1267,8 @@ export default function App() {
         }}
         onCancel={() => setRenameGroupId(null)}
       />
-      <MoveCopyTabDialog
+      <MoveTabDialog
         open={tabPickerOpen}
-        mode={tabPickerMode}
         tabIds={tabPickerTabIds}
         currentWorkspaceId={activeWorkspaceId}
         onClose={() => {
@@ -1294,9 +1276,8 @@ export default function App() {
           setTabPickerTabIds([])
         }}
       />
-      <MoveCopyGroupDialog
+      <MoveGroupDialog
         open={groupPickerOpen}
-        mode={groupPickerMode}
         groupId={groupPickerGroupId}
         currentProfileId={activeProfileId}
         onClose={() => {

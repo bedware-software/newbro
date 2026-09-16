@@ -21,7 +21,7 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
   const [scope, setScope] = useState<'current' | 'all'>('current')
 
   // Reset scope on each (re)open so the user always starts in the workspace
-  // the link was routed to — mirrors MoveCopyTabDialog's behavior.
+  // the link was routed to — mirrors MoveTabDialog's behavior.
   useEffect(() => {
     if (open) setScope('current')
   }, [open])
