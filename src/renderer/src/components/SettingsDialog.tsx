@@ -494,6 +494,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [addSiteError, setAddSiteError] = useState<string | null>(null)
   const [recordingTarget, setRecordingTarget] = useState<{ action: string; slot: number } | null>(null)
   const [conflictError, setConflictError] = useState<string | null>(null)
+  const [shortcutFilter, setShortcutFilter] = useState('')
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
   const [syncRestartConfirmOpen, setSyncRestartConfirmOpen] = useState(false)
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false)
@@ -898,6 +899,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     setPasswordEditor(null)
     setPasswordNotice('All saved passwords were removed from this profile.')
   }, [passwordPartition])
+
+  const filteredShortcutActions = Object.keys(ACTION_LABELS).filter((action) => {
+    const query = shortcutFilter.trim().toLowerCase()
+    if (!query) return true
+    return ACTION_LABELS[action].toLowerCase().includes(query)
+  })
 
   const filteredPasswordEntries = passwordEntries.filter((entry) => {
     const query = passwordSearch.trim().toLowerCase()
@@ -2300,81 +2307,113 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </div>
               )}
 
-              <div className="flex flex-col divide-y divide-border border border-input rounded-md bg-card overflow-hidden">
-                {Object.keys(ACTION_LABELS).map((action) => {
-                  const bindings = keybindings[action] || []
-                  const isCustom = isCustomBinding(action, bindings)
-                  return (
-                    <div
-                      key={action}
-                      className="flex items-center justify-between gap-4 px-4 py-3"
-                    >
-                      <span className="text-sm text-foreground">{ACTION_LABELS[action]}</span>
-                      <div className="flex items-center gap-2">
-                        {isCustom && (
-                          <button
-                            onClick={() => {
-                              setKeybindings((prev) => ({
-                                ...prev,
-                                [action]: [...(DEFAULT_KEYBINDINGS[action] || [])],
-                              }))
-                              setConflictError(null)
-                            }}
-                            className="h-5 w-5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
-                            title="Reset to default"
-                          >
-                            <RotateCcw size={10} />
-                          </button>
-                        )}
-                        {Array.from({ length: MAX_BINDINGS_PER_ACTION }).map((_, slot) => {
-                          const isRecording =
-                            recordingTarget?.action === action && recordingTarget.slot === slot
-                          const binding = bindings[slot]
-                          // Don't let the user start in a slot that's "ahead"
-                          // of any empty slot to its left — keeps storage
-                          // compact (no holes) and matches what the user
-                          // sees: filling slot 1 only makes sense once
-                          // slot 0 has something.
-                          const disabled = !binding && !isRecording && slot > bindings.length
-                          return (
-                            <div key={slot} className="relative inline-flex items-center">
-                              <button
-                                onClick={() => !disabled && startRecording(action, slot)}
-                                disabled={disabled}
-                                className={`min-w-[120px] h-8 px-3 ${binding && !isRecording ? 'pr-7' : ''} rounded-md text-xs flex items-center justify-center transition-colors ${
-                                  isRecording
-                                    ? 'bg-background border border-ring text-primary'
-                                    : binding
-                                      ? 'bg-card border border-input text-foreground hover:bg-accent/40'
-                                      : 'bg-card border border-dashed border-input text-muted-foreground/70 hover:bg-accent/30'
-                                } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-                              >
-                                {isRecording
-                                  ? 'Press keys...'
-                                  : binding
-                                    ? formatAccelerator(binding)
-                                    : 'Add shortcut'}
-                              </button>
-                              {binding && !isRecording && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    clearBindingSlot(action, slot)
-                                  }}
-                                  className="absolute right-1 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
-                                  title="Clear this shortcut"
-                                >
-                                  <X size={10} />
-                                </button>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )
-                })}
+              <div className="relative mb-3">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                <input
+                  type="text"
+                  value={shortcutFilter}
+                  onChange={(event) => setShortcutFilter(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === 'Escape') setShortcutFilter('') }}
+                  // Recording captures every keydown on the host window, so
+                  // typing here would be swallowed — stop recording instead.
+                  onFocus={() => setRecordingTarget(null)}
+                  placeholder="Filter shortcuts by name"
+                  autoFocus
+                  className="w-full h-9 pl-9 pr-8 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                />
+                {shortcutFilter && (
+                  <button
+                    type="button"
+                    // Keep focus in the input so the user can keep typing.
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => setShortcutFilter('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
+                    title="Clear filter"
+                  >
+                    <X size={10} />
+                  </button>
+                )}
               </div>
+
+              {filteredShortcutActions.length === 0 ? (
+                <p className="py-8 text-center text-xs text-muted-foreground border border-input rounded-md">No shortcuts match your filter.</p>
+              ) : (
+                <div className="flex flex-col divide-y divide-border border border-input rounded-md bg-card overflow-hidden">
+                  {filteredShortcutActions.map((action) => {
+                    const bindings = keybindings[action] || []
+                    const isCustom = isCustomBinding(action, bindings)
+                    return (
+                      <div
+                        key={action}
+                        className="flex items-center justify-between gap-4 px-4 py-3"
+                      >
+                        <span className="text-sm text-foreground">{ACTION_LABELS[action]}</span>
+                        <div className="flex items-center gap-2">
+                          {isCustom && (
+                            <button
+                              onClick={() => {
+                                setKeybindings((prev) => ({
+                                  ...prev,
+                                  [action]: [...(DEFAULT_KEYBINDINGS[action] || [])],
+                                }))
+                                setConflictError(null)
+                              }}
+                              className="h-5 w-5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
+                              title="Reset to default"
+                            >
+                              <RotateCcw size={10} />
+                            </button>
+                          )}
+                          {Array.from({ length: MAX_BINDINGS_PER_ACTION }).map((_, slot) => {
+                            const isRecording =
+                              recordingTarget?.action === action && recordingTarget.slot === slot
+                            const binding = bindings[slot]
+                            // Don't let the user start in a slot that's "ahead"
+                            // of any empty slot to its left — keeps storage
+                            // compact (no holes) and matches what the user
+                            // sees: filling slot 1 only makes sense once
+                            // slot 0 has something.
+                            const disabled = !binding && !isRecording && slot > bindings.length
+                            return (
+                              <div key={slot} className="relative inline-flex items-center">
+                                <button
+                                  onClick={() => !disabled && startRecording(action, slot)}
+                                  disabled={disabled}
+                                  className={`min-w-[120px] h-8 px-3 ${binding && !isRecording ? 'pr-7' : ''} rounded-md text-xs flex items-center justify-center transition-colors ${
+                                    isRecording
+                                      ? 'bg-background border border-ring text-primary'
+                                      : binding
+                                        ? 'bg-card border border-input text-foreground hover:bg-accent/40'
+                                        : 'bg-card border border-dashed border-input text-muted-foreground/70 hover:bg-accent/30'
+                                  } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                >
+                                  {isRecording
+                                    ? 'Press keys...'
+                                    : binding
+                                      ? formatAccelerator(binding)
+                                      : 'Add shortcut'}
+                                </button>
+                                {binding && !isRecording && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      clearBindingSlot(action, slot)
+                                    }}
+                                    className="absolute right-1 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
+                                    title="Clear this shortcut"
+                                  >
+                                    <X size={10} />
+                                  </button>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
 
