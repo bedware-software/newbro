@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getVisibleTabOrder, type NewTabFocus } from './store/app-store'
+import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getVisibleTabOrder, getTabCycleOrder, type NewTabFocus } from './store/app-store'
 import { normalizeURL, setSearchEngine } from './lib/url'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
@@ -226,6 +226,7 @@ declare global {
       tabCreate?: (tabId: string, partition: string, url: string, active: boolean, eagerLoad?: boolean, focusUrlBar?: boolean) => Promise<void>
       tabDestroy?: (tabId: string) => Promise<void>
       tabActivate?: (tabId: string, url: string) => Promise<void>
+      tabDeactivate?: () => Promise<void>
       tabFocus?: (tabId: string) => Promise<void>
       tabSetBounds?: (bounds: { x: number; y: number; width: number; height: number }) => void
       tabNavigate?: (tabId: string, url: string) => Promise<void>
@@ -740,26 +741,38 @@ export default function App() {
       return getVisibleTabOrder(workspace)
     }
 
+    // Steps through every sidebar row, group headers included: landing on a
+    // group parks on it (the page area then shows the group, not a page).
     const cycleTab = (direction: 1 | -1) => {
-      const orderedTabIds = getOrderedTabIdsForActive()
       const state = useAppStore.getState()
-      if (orderedTabIds.length === 0) return
+      const workspace = state.getActiveWorkspace()
+      if (!workspace) return
+      const stops = getTabCycleOrder(workspace)
+      if (stops.length === 0) return
 
-      const currentIndex = state.activeTabId ? orderedTabIds.indexOf(state.activeTabId) : -1
+      // Where we stand: the group we're parked on, the active tab's row, or
+      // its group's header when a collapsed group hides that row.
+      const hereId = state.activeTabId === null
+        ? state.activeTabGroupId
+        : stops.includes(state.activeTabId)
+          ? state.activeTabId
+          : workspace.tabGroups.find((g) => g.tabs.some((t) => t.id === state.activeTabId))?.id
+      const currentIndex = hereId ? stops.indexOf(hereId) : -1
       const nextIndex = currentIndex === -1
         ? 0
-        : (currentIndex + direction + orderedTabIds.length) % orderedTabIds.length
-      const nextTabId = orderedTabIds[nextIndex]
-      if (!nextTabId) return
+        : (currentIndex + direction + stops.length) % stops.length
+      const nextId = stops[nextIndex]
+      if (!nextId) return
 
-      state.setActiveTab(nextTabId)
+      if (workspace.tabGroups.some((g) => g.id === nextId)) state.setActiveGroup(nextId)
+      else state.setActiveTab(nextId)
     }
 
     const handleAction = (action: string) => {
       const s = useAppStore.getState()
-      // tab-1..tab-9 quick-jump: parse the digit and index into the same
-      // visible-order list cycleTab uses, so what you press matches what
-      // you see numbered in the sidebar.
+      // tab-1..tab-9 quick-jump: parse the digit and index into the visible
+      // tabs (unlike cycleTab, group headers don't count), so what you press
+      // matches what you see numbered in the sidebar.
       if (action.startsWith('tab-')) {
         const n = parseInt(action.slice('tab-'.length), 10)
         if (Number.isInteger(n) && n >= 1 && n <= 9) {
@@ -997,7 +1010,11 @@ export default function App() {
         if (!ws) return
 
         const allTabs = [...(ws.tabs || []), ...ws.tabGroups.flatMap((g: any) => g.tabs)]
-        if (current.activeTabId && !allTabs.some((t: any) => t.id === current.activeTabId)) {
+        // The tab we're on — or the group we're parked on — went away elsewhere.
+        const activeGone = current.activeTabId
+          ? !allTabs.some((t: any) => t.id === current.activeTabId)
+          : !!current.activeTabGroupId && !ws.tabGroups.some((g: any) => g.id === current.activeTabGroupId)
+        if (activeGone) {
           const firstGroup = ws.tabGroups[0]
           useAppStore.setState({
             activeTabGroupId: firstGroup?.id || null,

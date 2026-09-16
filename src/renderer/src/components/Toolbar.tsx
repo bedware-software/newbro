@@ -978,7 +978,13 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
   // main as WebContentsViews; we subscribe to tab-event via electronAPI
   // instead of wiring DOM events on a <webview> element.
   useEffect(() => {
-    if (!activeTabId) return
+    if (!activeTabId) {
+      // No page (parked on a tab group): drop the last tab's spinner and padlock.
+      setIsLoading(false)
+      setCanGoForward(false)
+      setSecurity('internal')
+      return
+    }
     let cancelled = false
 
     // Seed from the live main-process state in case the tab was already

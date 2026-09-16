@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAppStore, consumeNewTabUrlFocus, consumeEagerLoad } from '../store/app-store'
+import type { TabGroup } from '../store/types'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
 import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, Mic, Camera, MapPin, Bell, Clipboard, Music, X, type LucideIcon } from 'lucide-react'
@@ -177,6 +178,11 @@ export function WebviewPanel() {
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
+  // Parked on a tab group (Ctrl+Tab stops on group headers): no tab is
+  // active, so the group takes the page's place.
+  const parkedGroup = useAppStore((s) => (s.activeTabId === null
+    ? s.getActiveWorkspace()?.tabGroups.find((g) => g.id === s.activeTabGroupId)
+    : undefined))
 
   // Collect tabs from the active workspace. We only host one workspace per
   // window; tabs from other workspaces are not reified as WebContentsViews.
@@ -259,6 +265,11 @@ export function WebviewPanel() {
       if (focusUrlBarForNewTab) {
         focusAndSelectUrlBar()
       }
+    } else if (!activeTabId) {
+      // No tab to show (parked on a group): main hides the page so the
+      // group card shows through, and moves keyboard focus to the renderer
+      // so shortcuts keep working. A no-op when nothing was showing.
+      window.electronAPI.tabDeactivate?.()
     }
   }, [profiles, activeTabId, activeWorkspaceId, activeProfileId])
 
@@ -532,6 +543,8 @@ export function WebviewPanel() {
           here would overlap the tab view in unpredictable ways. */}
       <div ref={containerRef} style={{ flex: 1, minHeight: 0 }} />
 
+      {parkedGroup && <ParkedGroupCard group={parkedGroup} />}
+
       {showError && activeError && errorInfo && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">
           {/* Nudged above dead-centre so the block sits a touch higher than
@@ -572,6 +585,35 @@ export function WebviewPanel() {
           onContinue={() => handleCertContinue(activeCertError)}
         />
       )}
+    </div>
+  )
+}
+
+/** The page area while parked on a tab group: the group's sidebar header —
+ *  tab-count badge and coloured name pill — scaled up in the middle, so the
+ *  stop reads at a glance as a group rather than a page. Colours come from
+ *  the same [data-group-*] rules in globals.css that paint the sidebar. */
+function ParkedGroupCard({ group }: { group: TabGroup }) {
+  return (
+    <div className="absolute inset-0 z-50 flex select-none items-center justify-center bg-background">
+      <div
+        data-group-container=""
+        style={{ ['--gc' as string]: group.color }}
+        className="flex min-w-0 max-w-full -translate-y-[8vh] items-center gap-3 px-8"
+      >
+        <span
+          data-group-badge=""
+          className="inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded-lg px-1.5 text-lg font-semibold tabular-nums leading-none"
+        >
+          {group.tabs.length}
+        </span>
+        <span
+          data-group-pill=""
+          className="min-w-0 truncate rounded-xl px-4 py-1.5 text-3xl font-semibold tracking-tight"
+        >
+          {group.name}
+        </span>
+      </div>
     </div>
   )
 }

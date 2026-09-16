@@ -902,6 +902,8 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
     const containsActive = group.isCollapsed
       && activeTabId != null
       && group.tabs.some((t) => t.id === activeTabId)
+    // Parked on this group with Ctrl+Tab: no tab is active, the header is.
+    const parked = activeTabId === null && activeTabGroupId === group.id
     const selected = selectedIds.has(group.id)
 
     return (
@@ -916,15 +918,15 @@ export function Sidebar({ visible, showTabNumbers }: Props) {
         } ${
           // During tab drag: "drop into" highlight wins over every other
           // state; otherwise a selected group takes the same tint as a
-          // selected tab row, active-containing groups stay lit, and the
-          // rest get the standard hover treatment.
+          // selected tab row, active-containing and parked-on groups stay
+          // lit, and the rest get the standard hover treatment.
           isDraggingTab
             ? isDropIntoTarget
               ? 'bg-primary/30 ring-1 ring-inset ring-primary/40'
               : ''
             : selected
               ? 'bg-primary/20'
-              : containsActive
+              : containsActive || parked
                 ? 'bg-accent text-accent-foreground'
                 : 'hover:bg-accent'
         }`}

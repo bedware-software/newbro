@@ -34,6 +34,16 @@ const FILTER_TYPES = ['profile', 'workspace', 'tabGroup', 'tab'] as const
 
 type FilterType = (typeof FILTER_TYPES)[number]
 
+/** Each filter's mnemonic hotkey — Ctrl/⌘ plus its initial — alongside the
+ *  positional Ctrl/⌘ + digit. Matched by physical key, so they work on any
+ *  keyboard layout. */
+const FILTER_LETTERS: Record<FilterType, string> = {
+  profile: 'P',
+  workspace: 'W',
+  tabGroup: 'G',
+  tab: 'T',
+}
+
 /** Exclusive filter selection — 'all' or exactly one item type. */
 type FilterSelection = 'all' | FilterType
 
@@ -288,6 +298,19 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
         selectFilter(FILTER_TYPES[digit - 1])
         return
       }
+      // The letters overlap app-wide shortcuts (Ctrl+P search, Ctrl+W close
+      // tab, Ctrl+T new tab). Popups get no main-process shortcut
+      // interceptor, and handling the key here keeps the menu accelerator
+      // from firing — the same way Ctrl+R picks All instead of reloading.
+      // Shifted variants (Ctrl+Shift+P/W/T) are other commands; leave them be.
+      const lettered = e.shiftKey
+        ? undefined
+        : FILTER_TYPES.find((type) => e.code === `Key${FILTER_LETTERS[type]}`)
+      if (lettered) {
+        e.preventDefault()
+        selectFilter(lettered)
+        return
+      }
       if (e.code === 'KeyR') {
         e.preventDefault()
         selectFilter('all')
@@ -377,7 +400,10 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
               >
                 <Icon size={10} />
                 {TYPE_LABELS[type]}
-                <span className="opacity-50 ml-0.5">{MOD}{i + 1}</span>
+                {/* The letter shares the digit's modifier. Spelling it out
+                    ("Ctrl+1/Ctrl+P") overflows the row once the scope switch
+                    shows, so the footer carries the explicit form. */}
+                <span className="opacity-50 ml-0.5">{MOD}{i + 1}/{FILTER_LETTERS[type]}</span>
               </button>
             )
           })}
@@ -496,7 +522,11 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
             <span className="flex items-center gap-1">Open <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
-            <span className="flex items-center gap-1">Filter <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>1…4</kbd></span>
+            <span className="flex items-center gap-1">
+              Filter <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>1…4</kbd>
+              {' / '}
+              <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>{FILTER_TYPES.map((type) => FILTER_LETTERS[type]).join(' ')}</kbd>
+            </span>
             <span className="flex items-center gap-1">All <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>R</kbd></span>
             {scopeApplies && (
               <span className="flex items-center gap-1">Scope <kbd>Tab</kbd></span>

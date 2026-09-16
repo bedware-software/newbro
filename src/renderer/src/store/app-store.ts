@@ -147,6 +147,30 @@ export function getVisibleTabOrder(w: Workspace): string[] {
   return out
 }
 
+/** Ctrl+Tab stops, one per sidebar row: ungrouped tabs, every group header
+ *  (collapsed or not), and the children of expanded groups, in sidebar
+ *  order. Tab and group ids share one uuid space, so a plain id list is
+ *  enough — landing on a group id parks on that group (setActiveGroup). */
+export function getTabCycleOrder(w: Workspace): string[] {
+  const order = getSidebarOrder(w)
+  const tabIds = new Set((w.tabs || []).map((t) => t.id))
+  const groupMap = new Map(w.tabGroups.map((g) => [g.id, g]))
+  const out: string[] = []
+  for (const id of order) {
+    if (tabIds.has(id)) {
+      out.push(id)
+      continue
+    }
+    const group = groupMap.get(id)
+    if (!group) continue
+    out.push(group.id)
+    if (!group.isCollapsed) {
+      for (const t of group.tabs) out.push(t.id)
+    }
+  }
+  return out
+}
+
 // ── Per-workspace tab activation history ──
 // In-memory only (not persisted). Closing the active tab walks this stack
 // to pick the most-recently-selected prior tab instead of an adjacent one.
@@ -171,7 +195,7 @@ function dropFromTabHistory(workspaceId: string, tabId: string): void {
 }
 
 /** Most-recent tab in this workspace's history that still exists, excluding `excludeId`. */
-function findHistoricalTabId(w: Workspace, excludeId: string): string | null {
+function findHistoricalTabId(w: Workspace, excludeId?: string): string | null {
   const hist = tabHistoryByWorkspace.get(w.id)
   if (!hist) return null
   for (let i = hist.length - 1; i >= 0; i--) {
@@ -349,6 +373,24 @@ function adoptFallbackActiveInWorkspace(s: AppState, sourceWorkspaceId: string):
   }
 }
 
+/** Parked on a group (see setActiveGroup) that no longer exists anywhere —
+ *  its last tab was closed or moved out — so nothing would be selected. Fall
+ *  back to the most recently used tab, the way closing the active tab does.
+ *  Call after any change that can drop an emptied group. Mutates draft. */
+function unparkFromVanishedGroup(s: AppState): void {
+  const groupId = s.activeTabGroupId
+  if (s.activeTabId !== null || !groupId || !s.activeWorkspaceId) return
+  if (s.profiles.some((p) => p.workspaces.some((w) => w.tabGroups.some((g) => g.id === groupId)))) return
+  const ws = findWorkspaceById(s, s.activeWorkspaceId)
+  const recentId = ws ? findHistoricalTabId(ws) : null
+  if (!ws || !recentId) {
+    adoptFallbackActiveInWorkspace(s, s.activeWorkspaceId)
+    return
+  }
+  s.activeTabId = recentId
+  s.activeTabGroupId = ws.tabGroups.find((g) => g.tabs.some((t) => t.id === recentId))?.id ?? null
+}
+
 function makeWorkspace(name = 'Default'): Workspace {
   const tab = makeTab()
   return { id: uuid(), name, tabGroups: [], tabs: [tab], sidebarOrder: [tab.id] }
@@ -388,6 +430,7 @@ export interface AppState {
   activeProfileId: string | null
   activeWorkspaceId: string | null
   activeTabGroupId: string | null
+  /** Null while parked on the activeTabGroupId group itself — see setActiveGroup. */
   activeTabId: string | null
 
   /** Origins the user bypassed a cert warning for (session-only). Drives URL-bar warning icon. */
@@ -442,6 +485,12 @@ export interface AppState {
    *  where possible, and activate it. No-op when the stack is empty. */
   reopenClosedTab: (workspaceId?: string) => void
   setActiveTab: (id: string) => void
+  /** Park on a tab group itself rather than on one of its tabs — Ctrl+Tab
+   *  stops on group headers. No tab is active while parked (activeTabId is
+   *  null): the page area shows the group instead, tab commands have nothing
+   *  to act on, and group commands act on this group. The group stays
+   *  collapsed or expanded as it was. */
+  setActiveGroup: (id: string) => void
   updateTabUrl: (id: string, url: string) => void
   updateTabTitle: (id: string, title: string) => void
   updateTabFavicon: (id: string, favicon: string) => void
@@ -1077,6 +1126,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               const order = ensureSidebarOrder(w)
               const oi = order.indexOf(g.id)
               if (oi !== -1) order.splice(oi, 1)
+              unparkFromVanishedGroup(s)
             }
             return
           }
@@ -1137,6 +1187,19 @@ export const useAppStore = create<AppState>((set, get) => ({
             return
           }
         }
+      }
+    }
+  })),
+
+  setActiveGroup: (id) => set(produce((s: AppState) => {
+    for (const p of s.profiles) {
+      for (const w of p.workspaces) {
+        if (!w.tabGroups.some((g) => g.id === id)) continue
+        s.activeProfileId = p.id
+        s.activeWorkspaceId = w.id
+        s.activeTabGroupId = id
+        s.activeTabId = null
+        return
       }
     }
   })),
@@ -1208,8 +1271,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           const order = ensureSidebarOrder(w)
           // Anchor on the active tab's TOP-LEVEL slot, so a tab added while
           // sitting inside a group lands directly after that whole group
-          // rather than at the bottom of the sidebar.
-          const anchorId = topLevelAnchorId(w, s.activeTabId)
+          // rather than at the bottom of the sidebar. Parked on a group
+          // (no active tab), that group is the slot.
+          const anchorId = s.activeTabId === null
+            ? s.activeTabGroupId
+            : topLevelAnchorId(w, s.activeTabId)
           const anchorIdx = anchorId ? order.indexOf(anchorId) : -1
           if (anchorIdx !== -1) {
             order.splice(anchorIdx + 1, 0, tab.id)
@@ -1288,6 +1354,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
     if (removedGroupIds.size > 0) {
       targetWorkspace.sidebarOrder = order.filter((id) => !removedGroupIds.has(id))
+      unparkFromVanishedGroup(s)
     }
   })),
 
@@ -1311,6 +1378,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
           if (s.activeTabGroupId === groupId) {
             s.activeTabGroupId = null
+            // Parked on the group itself: stay put on the first of its tabs,
+            // which now stand where the group did.
+            if (s.activeTabId === null) s.activeTabId = tabCopies[0]?.id ?? null
           }
           return
         }
@@ -1363,7 +1433,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           const oi = order.indexOf(groupId)
           if (oi !== -1) order.splice(oi, 1, tab.id)
           else order.push(tab.id)
-          if (s.activeTabGroupId === groupId) s.activeTabGroupId = null
+          if (s.activeTabGroupId === groupId) {
+            s.activeTabGroupId = null
+            // Parked on the group itself: the tab that replaced it is where we are.
+            if (s.activeTabId === null) s.activeTabId = tab.id
+          }
           return
         }
       }
@@ -1570,6 +1644,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
     }
+    unparkFromVanishedGroup(s)
   })),
 
   moveTabGroup: (groupId, targetIndex) => set(produce((s: AppState) => {
@@ -1683,6 +1758,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // the tab back where we found it so we never silently lose data.
       const src = findWorkspaceById(s, located.sourceWorkspaceId)
       if (src) insertTabIntoTarget(src, located.tab, null)
+      unparkFromVanishedGroup(s)
       return
     }
     insertTabIntoTarget(dst, located.tab, targetGroupId)
@@ -1691,6 +1767,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (s.activeTabId === tabId) {
       adoptFallbackActiveInWorkspace(s, located.sourceWorkspaceId)
     }
+    unparkFromVanishedGroup(s)
   })),
 
   moveGroupAcross: (groupId, targetWorkspaceId) => set(produce((s: AppState) => {

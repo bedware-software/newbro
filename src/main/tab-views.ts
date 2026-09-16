@@ -1054,6 +1054,24 @@ export function activateTab(windowId: number, tabId: string, url: string): void 
   }
 }
 
+/** Show no tab at all: the renderer is parked on a tab group (Ctrl+Tab stops
+ *  on group headers) and draws the group where the page was. Keyboard focus
+ *  moves to the renderer so shortcuts still land with no page to catch them,
+ *  and the next activateTab — even of the tab hidden here — counts as a new
+ *  activation, handing focus back to the page. */
+export function deactivateTab(windowId: number): void {
+  if (!activeTabByWindow.has(windowId)) return
+  hideOutgoingTab(windowId, null)
+  activeTabByWindow.delete(windowId)
+  const win = BrowserWindow.fromId(windowId)
+  if (!win || win.isDestroyed()) return
+  try {
+    win.webContents.focus()
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Hand OS keyboard focus to a tab's page unconditionally. Unlike
  *  activateTab (which only focuses on a *new* activation), this works for
  *  the already-active tab — used by the renderer's Escape handler to move
@@ -1078,15 +1096,15 @@ function focusTabPage(rec: TabRecord): void {
   }
 }
 
-function setActiveTab(windowId: number, tabId: string): void {
-  const prev = activeTabByWindow.get(windowId)
-  if (prev === tabId) return // already active — no need to re-bound or notify
+/** Take the window's current tab off screen for whatever replaces it:
+ *  `nextTabId`, or no tab at all (see deactivateTab). */
+function hideOutgoingTab(windowId: number, nextTabId: string | null): void {
   // Switching tabs drops out of the previous tab's HTML fullscreen (the
   // leave event isn't always emitted on a tab switch), so the new active tab
   // must not inherit cinema-mode bounds, and the window base must come
   // back from black.
   const fsTab = htmlFullscreenByWindow.get(windowId)
-  if (fsTab && fsTab !== tabId) {
+  if (fsTab && fsTab !== nextTabId) {
     const fsRec = tabs.get(fsTab)
     if (fsRec) leavePageFullscreen(fsRec, 'tab-switch')
     else {
@@ -1095,7 +1113,8 @@ function setActiveTab(windowId: number, tabId: string): void {
       try { fsWin?.setBackgroundColor(DEFAULT_WINDOW_BG) } catch { /* ignore */ }
     }
   }
-  if (prev && prev !== tabId) {
+  const prev = activeTabByWindow.get(windowId)
+  if (prev && prev !== nextTabId) {
     const prevRec = tabs.get(prev)
     if (prevRec) {
       prevRec.lastBounds = HIDDEN_BOUNDS
@@ -1105,6 +1124,12 @@ function setActiveTab(windowId: number, tabId: string): void {
       try { prevRec.view.setBackgroundColor(TAB_BG_TRANSPARENT) } catch { /* ignore */ }
     }
   }
+}
+
+function setActiveTab(windowId: number, tabId: string): void {
+  const prev = activeTabByWindow.get(windowId)
+  if (prev === tabId) return // already active — no need to re-bound or notify
+  hideOutgoingTab(windowId, tabId)
   activeTabByWindow.set(windowId, tabId)
   const rec = tabs.get(tabId)
   if (!rec) return

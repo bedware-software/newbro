@@ -181,6 +181,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('tab:create', tabId, partition, url, active, eagerLoad, focusUrlBar),
   tabDestroy: (tabId: string): Promise<void> => ipcRenderer.invoke('tab:destroy', tabId),
   tabActivate: (tabId: string, url: string): Promise<void> => ipcRenderer.invoke('tab:activate', tabId, url),
+  // Hide the active tab without showing another (a tab group is selected).
+  tabDeactivate: (): Promise<void> => ipcRenderer.invoke('tab:deactivate'),
   // Move OS keyboard focus into the tab's page (used by the Esc handler so
   // keystrokes leave the URL bar and reach the site).
   tabFocus: (tabId: string): Promise<void> => ipcRenderer.invoke('tab:focus', tabId),

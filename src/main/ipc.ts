@@ -29,6 +29,7 @@ import { checkForUpdatesNow, downloadUpdateNow, installUpdateNow, getLatestStatu
 import {
   activateTab,
   createTab,
+  deactivateTab,
   destroyTab,
   focusTab,
   toggleExtensionPopup,
@@ -292,6 +293,14 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (!win) return
     activateTab(win.id, tabId, url)
+  })
+
+  // Show no tab at all: the renderer is parked on a tab group and draws the
+  // group where the page was.
+  ipcMain.handle('tab:deactivate', (_e) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win) return
+    deactivateTab(win.id)
   })
 
   // Move OS keyboard focus into the active tab's page (e.g. when the user
