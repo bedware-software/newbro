@@ -303,6 +303,8 @@ declare global {
       bookshelfUpdate?: (profileId: string, id: string, patch: { title?: string; status?: 'toread' | 'archived' }) => Promise<boolean>
       bookshelfRemove?: (profileId: string, id: string) => Promise<boolean>
       bookshelfMoveReading?: (profileId: string, readingId: string, groupId: string | null) => Promise<boolean>
+      bookshelfDuplicate?: (profileId: string, ids: string[]) => Promise<string[]>
+      bookshelfMove?: (fromProfileId: string, ids: string[], toProfileId: string, groupId: string | null) => Promise<boolean>
       bookshelfAddGroup?: (profileId: string, name: string) => Promise<ReadingGroup | null>
       bookshelfUpdateGroup?: (profileId: string, id: string, patch: { name?: string; color?: string; isCollapsed?: boolean }) => Promise<boolean>
       bookshelfRemoveGroup?: (profileId: string, id: string, deleteReadings: boolean) => Promise<boolean>

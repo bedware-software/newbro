@@ -278,6 +278,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   bookshelfRemove: (profileId: string, id: string): Promise<boolean> => ipcRenderer.invoke('bookshelf:remove', profileId, id),
   bookshelfMoveReading: (profileId: string, readingId: string, groupId: string | null): Promise<boolean> =>
     ipcRenderer.invoke('bookshelf:move-reading', profileId, readingId, groupId),
+  bookshelfDuplicate: (profileId: string, ids: string[]): Promise<string[]> =>
+    ipcRenderer.invoke('bookshelf:duplicate', profileId, ids),
+  bookshelfMove: (fromProfileId: string, ids: string[], toProfileId: string, groupId: string | null): Promise<boolean> =>
+    ipcRenderer.invoke('bookshelf:move', fromProfileId, ids, toProfileId, groupId),
   bookshelfAddGroup: (profileId: string, name: string): Promise<unknown> => ipcRenderer.invoke('bookshelf:add-group', profileId, name),
   bookshelfUpdateGroup: (profileId: string, id: string, patch: { name?: string; color?: string; isCollapsed?: boolean }): Promise<boolean> =>
     ipcRenderer.invoke('bookshelf:update-group', profileId, id, patch),

@@ -4,6 +4,7 @@ import { TabFavicon } from './TabFavicon'
 import { InlineRenameInput } from './InlineRenameInput'
 import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
 import { useVimNav, type VimCommand } from '../lib/vim-nav'
+import { MoveBookshelfDialog, type BookshelfMoveTarget } from './MoveBookshelfDialog'
 import {
   BookOpen, ChevronRight, ChevronDown, Download, Loader2, WifiOff,
   Pencil, Archive, ArchiveRestore, Trash2, X, Plus, FolderPlus, FolderMinus,
@@ -90,6 +91,7 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null)
   const [groupEditValue, setGroupEditValue] = useState('')
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set())
+  const [moveTarget, setMoveTarget] = useState<BookshelfMoveTarget | null>(null)
 
   // ── Resize ──
   const [width, setWidth] = useState(loadWidth)
@@ -187,6 +189,15 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
 
   const remove = useCallback((id: string) => {
     if (profileId) window.electronAPI.bookshelfRemove?.(profileId, id)
+  }, [profileId])
+
+  // Readings' copies take over the selection, so a Move right after picks
+  // them up rather than the originals — Duplicate + Move is how a reading
+  // gets copied to another profile's shelf.
+  const duplicate = useCallback(async (ids: string[], selectCopies: boolean) => {
+    if (!profileId) return
+    const copies = await window.electronAPI.bookshelfDuplicate?.(profileId, ids)
+    if (selectCopies && copies?.length) setSelectedIds(new Set(copies))
   }, [profileId])
 
   const saveOffline = useCallback(async (id: string) => {
@@ -322,6 +333,8 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
     const actions: DropdownAction[] = [
       { id: 'rename', label: 'Rename Group', iconName: 'Pencil' },
       { id: 'collapse', label: g.isCollapsed ? 'Expand Group' : 'Collapse Group', iconName: 'Folder' },
+      { id: 'move-group', label: 'Move Group…', iconName: 'FolderInput', divider: 'before' },
+      { id: 'duplicate-group', label: 'Duplicate Group', iconName: 'CopyPlus' },
       { id: 'ungroup', label: 'Ungroup (keep readings)', iconName: 'FolderMinus', divider: 'before' },
       {
         id: 'delete',
@@ -340,9 +353,12 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
     if (!result || result.type !== 'action') return
     if (result.actionId === 'rename') { setEditingGroupId(g.id); setGroupEditValue(g.name) }
     else if (result.actionId === 'collapse') toggleGroup(g)
+    else if (result.actionId === 'move-group') setMoveTarget({ kind: 'group', id: g.id })
+    // The copy lands right below the original and nothing else changes.
+    else if (result.actionId === 'duplicate-group') duplicate([g.id], false)
     else if (result.actionId === 'ungroup') ungroup(g.id)
     else if (result.actionId === 'delete') deleteGroup(g.id)
-  }, [profileId, readings, showMenu, toggleGroup, ungroup, deleteGroup])
+  }, [profileId, readings, showMenu, toggleGroup, duplicate, ungroup, deleteGroup])
 
   const openReadingMenu = useCallback(async (r: Reading, at: MenuPoint, keyboard = false) => {
     if (!profileId) return
@@ -359,12 +375,22 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
       actions.push({ id: 'save-offline', label: hasOffline ? 'Re-save Offline' : 'Save for Offline', iconName: 'Download' })
     }
     actions.push({
+      id: 'duplicate',
+      label: useSelection ? `Duplicate ${targets.length} Readings` : 'Duplicate',
+      iconName: 'CopyPlus',
+    })
+    actions.push({
       id: 'new-group',
       label: useSelection ? `Add ${targets.length} Readings to New Group` : 'Add to New Group',
       iconName: 'FolderPlus',
       divider: 'before',
     })
     if (!useSelection && r.groupId) actions.push({ id: 'ungroup-reading', label: 'Remove from Group', iconName: 'FolderMinus' })
+    actions.push({
+      id: 'move',
+      label: useSelection ? `Move ${targets.length} Readings…` : 'Move…',
+      iconName: 'FolderInput',
+    })
     if (!useSelection) {
       if (r.status === 'archived') actions.push({ id: 'unarchive', label: 'Move to To Read', iconName: 'FolderInput', divider: 'before' })
       else actions.push({ id: 'archive', label: 'Archive', iconName: 'EyeOff', divider: 'before' })
@@ -390,7 +416,9 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
       case 'open-offline': openReading(r, true); break
       case 'rename': setEditingId(r.id); setEditValue(r.title); break
       case 'save-offline': saveOffline(r.id); break
+      case 'duplicate': duplicate(targets, true); break
       case 'new-group': groupReadings(targets); break
+      case 'move': setMoveTarget({ kind: 'readings', ids: targets }); break
       case 'ungroup-reading': window.electronAPI.bookshelfMoveReading?.(profileId, r.id, null); break
       case 'archive': setStatus(r.id, 'archived'); break
       case 'unarchive': setStatus(r.id, 'toread'); break
@@ -399,7 +427,7 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
         setSelectedIds(new Set())
         break
     }
-  }, [profileId, selectedIds, showMenu, openReading, saveOffline, setStatus, remove, groupReadings])
+  }, [profileId, selectedIds, showMenu, openReading, saveOffline, duplicate, setStatus, remove, groupReadings])
 
   const handleVimCommand = (cmd: VimCommand): void => {
     const at = vimCursor ? vimRows.indexOf(vimCursor) : -1
@@ -757,6 +785,14 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
       <div
         className="absolute top-0 left-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
         onMouseDown={onResizeStart}
+      />
+
+      <MoveBookshelfDialog
+        open={moveTarget !== null}
+        target={moveTarget}
+        profileId={profileId}
+        onMoved={() => setSelectedIds(new Set())}
+        onClose={() => setMoveTarget(null)}
       />
     </div>
   )

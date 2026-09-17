@@ -195,6 +195,89 @@ function moveReading(profileId: string, readingId: string, groupId: string | nul
   commit(profileId, shelf)
 }
 
+/** A fresh copy of a reading under a new id. Its offline snapshot is copied
+ *  too, so removing either entry never deletes the other's file. */
+function cloneReading(r: Reading, groupId: string | undefined): Reading {
+  const clone: Reading = { ...r, id: randomUUID(), groupId, addedAt: Date.now() }
+  if (r.offlinePath) {
+    const dest = path.join(offlineDir(), `${clone.id}.mhtml`)
+    try {
+      fs.copyFileSync(r.offlinePath, dest)
+      clone.offlinePath = dest
+    } catch (err) {
+      clone.offlinePath = undefined
+      log.warn('bookshelf: offline copy for duplicate failed', { id: r.id, err: String(err) })
+    }
+  }
+  return clone
+}
+
+/** Duplicate readings and groups in place, like the sidebar's Duplicate:
+ *  each copy lands right after its original, and a group's copy brings
+ *  copies of its readings. Returns the new ids. */
+function duplicateItems(profileId: string, ids: string[]): string[] {
+  const shelf = shelfFor(profileId)
+  const wanted = new Set(ids)
+  const copies: string[] = []
+  for (const g of [...shelf.groups]) {
+    if (!wanted.has(g.id)) continue
+    const clone: ReadingGroup = { ...g, id: randomUUID() }
+    shelf.groups.splice(shelf.groups.indexOf(g) + 1, 0, clone)
+    for (const r of shelf.readings.filter((r) => r.groupId === g.id)) {
+      shelf.readings.push(cloneReading(r, clone.id))
+    }
+    copies.push(clone.id)
+  }
+  // Walk a snapshot: every copy is spliced in right after its original.
+  for (const r of [...shelf.readings]) {
+    if (!wanted.has(r.id)) continue
+    const clone = cloneReading(r, r.groupId)
+    shelf.readings.splice(shelf.readings.indexOf(r) + 1, 0, clone)
+    copies.push(clone.id)
+  }
+  if (copies.length > 0) commit(profileId, shelf)
+  return copies
+}
+
+/** Move readings into a group or the ungrouped list (groupId null) of any
+ *  profile's shelf, or whole groups — with their readings — to another
+ *  profile's shelf. Moved entries keep their ids and offline copies and land
+ *  at the end of the target, like the sidebar's Move. */
+function moveItems(fromProfileId: string, ids: string[], toProfileId: string, groupId: string | null): void {
+  if (!fromProfileId || !toProfileId) return
+  const same = fromProfileId === toProfileId
+  const src = shelfFor(fromProfileId)
+  const dst = same ? src : shelfFor(toProfileId)
+  const wanted = new Set(ids)
+
+  // Groups have no nesting, so moving one only means changing shelves.
+  const movedGroups = same ? [] : src.groups.filter((g) => wanted.has(g.id))
+  const movedGroupIds = new Set(movedGroups.map((g) => g.id))
+  const moving = src.readings.filter((r) => wanted.has(r.id) || (r.groupId && movedGroupIds.has(r.groupId)))
+  if (movedGroups.length === 0 && moving.length === 0) return
+
+  src.groups = src.groups.filter((g) => !movedGroupIds.has(g.id))
+  dst.groups.push(...movedGroups)
+
+  // A group that vanished mid-flight falls back to ungrouped so nothing is lost.
+  const target = groupId ? dst.groups.find((g) => g.id === groupId) : undefined
+  if (target) target.isCollapsed = false
+  const movingSet = new Set(moving)
+  src.readings = src.readings.filter((r) => !movingSet.has(r))
+  for (const r of moving) {
+    if (!(r.groupId && movedGroupIds.has(r.groupId))) {
+      r.groupId = target?.id
+      // Groups live in the To Read area; an archived reading moved to the
+      // ungrouped list stays archived.
+      if (target) r.status = 'toread'
+    }
+    dst.readings.push(r)
+  }
+
+  commit(fromProfileId, src)
+  if (!same) commit(toProfileId, dst)
+}
+
 function addGroup(profileId: string, name?: string): ReadingGroup | null {
   if (!profileId) return null
   const shelf = shelfFor(profileId)
@@ -293,7 +376,12 @@ export function registerBookshelfIpc(): void {
     moveReading(profileId, readingId, groupId)
     return true
   })
-  ipcMain.handle('bookshelf:add-group', (_e, profileId: string, name: string) => addGroup(profileId, name))
+  ipcMain.handle('bookshelf:duplicate', (_e, profileId: string, ids: string[]) => duplicateItems(profileId, ids))
+  ipcMain.handle('bookshelf:move', (_e, fromProfileId: string, ids: string[], toProfileId: string, groupId: string | null) => {
+    moveItems(fromProfileId, ids, toProfileId, groupId)
+    return true
+  })
+  ipcMain.handle('bookshelf:add-group',(_e, profileId: string, name: string) => addGroup(profileId, name))
   ipcMain.handle('bookshelf:update-group', (_e, profileId: string, id: string, patch: { name?: string; color?: string; isCollapsed?: boolean }) => {
     updateGroup(profileId, id, patch)
     return true

@@ -74,12 +74,14 @@ interface Props {
   /** Item id to pre-select when the dialog opens. Falls back to the first
    *  row if the id isn't present in the (filtered) list. */
   initialItemId?: string
-  /** 'current' narrows the list to where the user is; 'all' spans everything. */
-  scope: 'current' | 'all'
-  onScopeChange: (scope: 'current' | 'all') => void
+  /** 'current' narrows the list to where the user is; 'all' spans everything.
+   *  Leave the scope props out for a picker with nothing to narrow — the
+   *  switch, its Tab key and its footer hint are left out with them. */
+  scope?: 'current' | 'all'
+  onScopeChange?: (scope: 'current' | 'all') => void
   /** What the scope switch reads in each position, e.g. "This workspace" /
    *  "All workspaces". */
-  scopeLabels: Record<'current' | 'all', string>
+  scopeLabels?: Record<'current' | 'all', string>
   /** `opts.background` is true when the user held Shift while confirming. */
   onConfirm: (itemId: string, opts: { background: boolean }) => void
   onCancel: () => void
@@ -172,13 +174,17 @@ export function PickerDialog({
     return out
   }, [filtered])
 
+  const scopeSwitch = scope && onScopeChange && scopeLabels
+    ? { scope, onScopeChange, scopeLabels }
+    : null
+
   const handleKeyDown = (e: React.KeyboardEvent): void => {
     // Tab flips the scope switch (and Shift+Tab does the same — there are
     // only two positions). We trap it so focus stays in the search input
     // rather than tabbing out to the switch.
-    if (e.key === 'Tab' && !e.altKey && !e.metaKey && !e.ctrlKey) {
+    if (scopeSwitch && e.key === 'Tab' && !e.altKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault()
-      onScopeChange(scope === 'current' ? 'all' : 'current')
+      scopeSwitch.onScopeChange(scopeSwitch.scope === 'current' ? 'all' : 'current')
       return
     }
 
@@ -237,25 +243,29 @@ export function PickerDialog({
             dialog is fully controlled: scope state lives in the caller so
             the items list and the switch stay in sync without an extra
             round-trip. */}
-        <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border shrink-0">
-          {subtitle && (
-            <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-              {subtitle}
-            </div>
-          )}
-          <ScopeSwitch
-            on={scope === 'current'}
-            label={scopeLabels[scope]}
-            onToggle={() => {
-              onScopeChange(scope === 'current' ? 'all' : 'current')
-              // A click moves focus to the switch; hand it back so typing and
-              // the arrow keys keep driving the list.
-              inputRef.current?.focus()
-            }}
-            title="Toggle scope (Tab)"
-            className="ml-auto shrink-0"
-          />
-        </div>
+        {(subtitle || scopeSwitch) && (
+          <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border shrink-0">
+            {subtitle && (
+              <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                {subtitle}
+              </div>
+            )}
+            {scopeSwitch && (
+              <ScopeSwitch
+                on={scopeSwitch.scope === 'current'}
+                label={scopeSwitch.scopeLabels[scopeSwitch.scope]}
+                onToggle={() => {
+                  scopeSwitch.onScopeChange(scopeSwitch.scope === 'current' ? 'all' : 'current')
+                  // A click moves focus to the switch; hand it back so typing and
+                  // the arrow keys keep driving the list.
+                  inputRef.current?.focus()
+                }}
+                title="Toggle scope (Tab)"
+                className="ml-auto shrink-0"
+              />
+            )}
+          </div>
+        )}
 
         <div ref={listRef} className="flex-1 overflow-y-auto py-1">
           {filtered.length === 0 ? (
@@ -319,7 +329,7 @@ export function PickerDialog({
             {backgroundHint && (
               <span className="flex items-center gap-1">{backgroundHint} <kbd>⇧</kbd><kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
             )}
-            <span className="flex items-center gap-1">Scope <kbd>⇥</kbd></span>
+            {scopeSwitch && <span className="flex items-center gap-1">Scope <kbd>⇥</kbd></span>}
           </div>
           <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>
         </div>
