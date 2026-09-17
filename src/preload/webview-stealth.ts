@@ -686,8 +686,11 @@ if (STEALTH_ENABLED) {
 // page scrolling / Chromium rubber-banding while the swipe is in flight.
 // preventDefault does not stop us receiving the event, so sites that
 // preventDefault wheels (Confluence/Jira/GitLab) can't hide the gesture
-// from us. We accumulate dx directly rather than checking a scroll-edge,
-// so non-document scroll containers don't matter.
+// from us. We accumulate dx directly rather than checking the document's
+// scroll edge, so pages that don't scroll the document (Sheets/Figma/Slack)
+// still get the gesture — but a native horizontal scroller under the
+// pointer that can still move (Jira board columns, wide tables, code
+// blocks) wins, like in Chrome: the page keeps that whole gesture.
 //
 // Main pushes the current history bounds via 'newbro-gesture-bounds' so we
 // don't engage a direction the tab can't go; on commit we reuse the
@@ -787,8 +790,44 @@ if (STEALTH_ENABLED) try {
     canGoForward = p.canGoForward === true
   })
 
+  // Can the wheel's scroll chain still move horizontally in dx's direction?
+  // Walks the event path (shadow DOM included) like Chromium's scroll
+  // chaining: any user-scrollable box (overflow-x auto/scroll, not hidden
+  // or clip) that isn't already at its edge would consume the scroll.
+  // Positions are normalised to 0..max left-to-right so RTL boxes, whose
+  // scrollLeft runs 0..-max, compare the same way.
+  const canScrollX = (e: WheelEvent, dx: number): boolean => {
+    const html = document.documentElement
+    const body = document.body
+    const htmlOverflowX = html ? getComputedStyle(html).overflowX : 'visible'
+    const hasRoom = (el: Element, overflowX: string): boolean => {
+      if (overflowX === 'hidden' || overflowX === 'clip') return false
+      const max = el.scrollWidth - el.clientWidth
+      if (max <= 1) return false
+      const rtl = getComputedStyle(el).direction === 'rtl'
+      const pos = rtl ? max + el.scrollLeft : el.scrollLeft
+      return dx > 0 ? pos < max - 1 : pos > 1
+    }
+    for (const node of e.composedPath()) {
+      if (!(node instanceof Element) || node === html) continue
+      // With html overflow visible, body's overflow belongs to the viewport.
+      if (node === body && htmlOverflowX === 'visible') continue
+      const overflowX = getComputedStyle(node).overflowX
+      if (overflowX !== 'auto' && overflowX !== 'scroll' && overflowX !== 'overlay') continue
+      if (hasRoom(node, overflowX)) return true
+    }
+    // The viewport ends every chain. Its overflow comes from html, or from
+    // body when html leaves it visible.
+    const root = document.scrollingElement
+    if (!root) return false
+    const viewportOverflowX =
+      htmlOverflowX === 'visible' && body ? getComputedStyle(body).overflowX : htmlOverflowX
+    return hasRoom(root, viewportOverflowX)
+  }
+
   // Per-swipe state machine.
   let engaged = false
+  let pageScrolling = false                   // this session scrolls the page, not history
   let committed = false                       // already navigated this session
   let committedDxSign = 0                     // dx sign of the committed swipe (its tail keeps it)
   let tailMinAbsDx = Infinity                 // decay floor of the momentum tail since commit
@@ -799,6 +838,7 @@ if (STEALTH_ENABLED) try {
   const endSession = (): void => {
     sessionTimer = null
     engaged = false
+    pageScrolling = false
     committed = false
     committedDxSign = 0
     tailMinAbsDx = Infinity
@@ -880,6 +920,14 @@ if (STEALTH_ENABLED) try {
       if (!engaged && adx < Math.abs(dy) * 1.5) return
 
       if (!engaged) {
+        // Latched to page scrolling for the rest of this gesture: once a
+        // scroller took the swipe, running it into its edge (finger or
+        // momentum tail) must not turn into a history jump.
+        if (pageScrolling) return
+        if (canScrollX(e, dx)) {
+          pageScrolling = true
+          return
+        }
         // dx<0 = fingers moving right (content right) = "back"; dx>0 = "forward".
         const dir: 'back' | 'forward' = dx < 0 ? 'back' : 'forward'
         if (dir === 'back' && !canGoBack) return
