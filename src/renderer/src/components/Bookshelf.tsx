@@ -39,6 +39,31 @@ type ShelfRow =
   | { kind: 'archive'; id: string }
 
 const ARCHIVE_ROW_ID = '__archive__'
+/** Container key of the To Read list's ungrouped readings. Group containers
+ *  are keyed by group id, the archive by ARCHIVE_ROW_ID. */
+const UNGROUPED = '__ungrouped__'
+
+/** What's being dragged: readings (the selection, in display order) or a group. */
+type ShelfDrag =
+  | { type: 'reading'; ids: string[] }
+  | { type: 'group'; id: string }
+
+/** Where a drag lands. Readings go into a container right before `beforeId`
+ *  (its end when null); `into` marks a drop on the container's header or empty
+ *  placeholder rather than between rows. Groups go before another group. */
+type ShelfDrop =
+  | { type: 'reading'; container: string; beforeId: string | null; into: boolean }
+  | { type: 'group'; beforeId: string | null }
+
+/** The drop-position line, like the sidebar's. */
+function DropLine() {
+  return <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10 pointer-events-none" />
+}
+
+/** The drop line after a container's last row. */
+function EndDropLine() {
+  return <div className="relative h-0"><DropLine /></div>
+}
 
 export type ReadingStatus = 'toread' | 'archived'
 
@@ -144,9 +169,11 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const lastClickedRef = useRef<string | null>(null)
 
-  // ── pointer-based drag (move a reading into a group / out to ungrouped) ──
-  const [dragId, setDragId] = useState<string | null>(null)
-  const [dropZone, setDropZone] = useState<string | null>(null) // group id or 'ungrouped'
+  // ── pointer-based drag & drop: reorder readings and groups, move readings
+  // between the ungrouped list, groups and the archive ──
+  const [drag, setDrag] = useState<ShelfDrag | null>(null)
+  const [drop, setDrop] = useState<ShelfDrop | null>(null)
+  const dropRef = useRef<ShelfDrop | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const startPos = useRef<{ x: number; y: number } | null>(null)
   const activated = useRef(false)
@@ -505,32 +532,91 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
   }
 
   // ── drag handlers ──
-  const computeZone = (y: number): void => {
+  /** A container's readings in display order. */
+  const containerReadings = useCallback((key: string): Reading[] => {
+    if (key === UNGROUPED) return readings.filter((r) => r.status === 'toread' && !r.groupId)
+    if (key === ARCHIVE_ROW_ID) return readings.filter((r) => r.status === 'archived')
+    return readings.filter((r) => r.status === 'toread' && r.groupId === key)
+  }, [readings])
+
+  // Hit-test the pointer against the rendered rows the sidebar's way: the
+  // nearest row edge wins, and a header or empty placeholder under the
+  // pointer takes the drop into its container.
+  const computeDrop = useCallback((y: number, d: ShelfDrag): void => {
     const root = listRef.current
     if (!root) return
-    let found: string | null = null
-    root.querySelectorAll('[data-drop-zone]').forEach((z) => {
-      const rect = z.getBoundingClientRect()
-      if (y >= rect.top && y <= rect.bottom) found = z.getAttribute('data-drop-zone')
+    let best: ShelfDrop | null = null
+    let bestDist = Infinity
+    const settle = (): void => { dropRef.current = best; setDrop(best) }
+    if (d.type === 'group') {
+      root.querySelectorAll<HTMLElement>('[data-drop-group-block]').forEach((el) => {
+        const i = groups.findIndex((g) => g.id === el.dataset.dropGroupBlock)
+        if (i === -1) return
+        const rect = el.getBoundingClientRect()
+        const mid = rect.top + rect.height / 2
+        const dist = Math.abs(y - mid)
+        if (dist >= bestDist) return
+        bestDist = dist
+        let at = y < mid ? i : i + 1
+        // Right before itself is its own spot — anchor on what follows.
+        if (groups[at]?.id === d.id) at++
+        best = { type: 'group', beforeId: groups[at]?.id ?? null }
+      })
+      settle()
+      return
+    }
+    const dragged = new Set(d.ids)
+    // The first reading from `index` on that isn't itself being dragged.
+    const anchorFrom = (container: string, index: number): string | null =>
+      containerReadings(container).slice(index).find((r) => !dragged.has(r.id))?.id ?? null
+    root.querySelectorAll<HTMLElement>('[data-drop-reading], [data-drop-into]').forEach((el) => {
+      const rect = el.getBoundingClientRect()
+      const into = el.dataset.dropInto
+      if (into !== undefined) {
+        if (y < rect.top || y > rect.bottom) return
+        bestDist = 0
+        best = { type: 'reading', container: into, beforeId: anchorFrom(into, 0), into: true }
+        return
+      }
+      const container = el.dataset.dropContainer ?? UNGROUPED
+      const index = containerReadings(container).findIndex((r) => r.id === el.dataset.dropReading)
+      if (index === -1) return
+      const above = y < rect.top + rect.height / 2
+      const dist = Math.abs(y - (above ? rect.top : rect.bottom))
+      if (dist >= bestDist) return
+      bestDist = dist
+      best = { type: 'reading', container, beforeId: anchorFrom(container, above ? index : index + 1), into: false }
     })
-    setDropZone(found)
-  }
+    settle()
+  }, [groups, containerReadings])
 
-  const finish = useCallback(() => {
-    const id = dragId
-    const zone = dropZone
-    setDragId(null)
-    setDropZone(null)
-    if (!id || !zone || !profileId) return
-    const target = zone === 'ungrouped' ? null : zone
-    const current = readings.find((x) => x.id === id)?.groupId ?? null
-    if (current === target) return
-    window.electronAPI.bookshelfMoveReading?.(profileId, id, target)
-  }, [dragId, dropZone, profileId, readings])
+  // Read by the window listeners a drag installs, which outlive the render
+  // that started it.
+  const computeDropRef = useRef(computeDrop)
+  computeDropRef.current = computeDrop
+
+  const finish = useCallback((d: ShelfDrag) => {
+    // The ref, not state: the last move's target may not have rendered yet.
+    const dt = dropRef.current
+    dropRef.current = null
+    setDrag(null)
+    setDrop(null)
+    window.dispatchEvent(new CustomEvent('newbro-tab-show'))
+    if (!dt || !profileId) return
+    if (d.type === 'reading' && dt.type === 'reading') {
+      const target = dt.container === ARCHIVE_ROW_ID
+        ? { groupId: null, archived: true }
+        : { groupId: dt.container === UNGROUPED ? null : dt.container }
+      window.electronAPI.bookshelfPlaceReadings?.(profileId, d.ids, target, dt.beforeId)
+      setSelectedIds(new Set())
+    } else if (d.type === 'group' && dt.type === 'group') {
+      window.electronAPI.bookshelfPlaceGroup?.(profileId, d.id, dt.beforeId)
+    }
+  }, [profileId])
   const finishRef = useRef(finish)
   finishRef.current = finish
 
-  const startDrag = useCallback((id: string, e: React.MouseEvent) => {
+  const startDrag = useCallback((item: ShelfDrag, e: React.MouseEvent) => {
     // Modifier-clicks are multi-select, not drags — let them through to onClick.
     if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return
     startPos.current = { x: e.clientX, y: e.clientY }
@@ -539,13 +625,19 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
       if (!startPos.current) return
       const moved = Math.abs(me.clientX - startPos.current.x) + Math.abs(me.clientY - startPos.current.y)
       if (!activated.current && moved < 6) return
-      if (!activated.current) { activated.current = true; suppressClick.current = true; setDragId(id) }
-      computeZone(me.clientY)
+      if (!activated.current) {
+        activated.current = true
+        suppressClick.current = true
+        setDrag(item)
+        // Zero out the page's view so it can't swallow the pointer mid-drag.
+        window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+      }
+      computeDropRef.current(me.clientY, item)
     }
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
-      if (activated.current) finishRef.current()
+      if (activated.current) finishRef.current(item)
       startPos.current = null
       activated.current = false
       // Let the row's click fire first and be swallowed, then re-enable.
@@ -561,6 +653,11 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
   const archived = readings.filter((r) => r.status === 'archived')
   const inGroup = (gid: string) => readings.filter((r) => r.status === 'toread' && r.groupId === gid)
   const isEmpty = readings.length === 0 && groups.length === 0
+
+  const isDropInto = (container: string): boolean =>
+    drop?.type === 'reading' && drop.into && drop.container === container
+  const isDropAtEnd = (container: string): boolean =>
+    drop?.type === 'reading' && !drop.into && drop.container === container && drop.beforeId === null
 
   const renderRow = (r: Reading, isArchived: boolean) => {
     const saving = savingIds.has(r.id)
@@ -580,19 +677,29 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
       )
     }
     const selected = selectedIds.has(r.id)
+    const dragged = drag?.type === 'reading' && drag.ids.includes(r.id)
     return (
       <div
         key={r.id}
         data-sidebar-row=""
         data-vim-row={r.id}
+        data-drop-reading={r.id}
+        data-drop-container={isArchived ? ARCHIVE_ROW_ID : r.groupId ?? UNGROUPED}
         className={`relative flex items-center gap-1 px-1 py-1 cursor-pointer group/row transition-colors ${
           selected ? 'bg-primary/20 text-foreground' : 'hover:bg-accent/50 text-muted-foreground hover:text-foreground'
-        } ${isArchived ? 'opacity-60' : ''} ${dragId === r.id ? 'opacity-30' : ''}`}
+        } ${dragged ? 'opacity-30' : isArchived ? 'opacity-60' : ''}`}
         title={r.url}
-        onMouseDown={(e) => startDrag(r.id, e)}
+        onMouseDown={(e) => {
+          // A selected row carries the whole selection, in display order.
+          const ids = selected && selectedIds.size > 1
+            ? orderedIds().filter((id) => selectedIds.has(id))
+            : [r.id]
+          startDrag({ type: 'reading', ids }, e)
+        }}
         onClick={(e) => handleReadingClick(r, e)}
         onContextMenu={(e) => openReadingMenu(r, contextMenuPoint(e))}
       >
+        {drop?.type === 'reading' && !drop.into && drop.beforeId === r.id && <DropLine />}
         {vimActive && vimCursor?.id === r.id && <span data-vim-cursor="" aria-hidden />}
         <TabFavicon favicon={r.favicon} />
         <span className="flex-1 text-xs truncate">{r.title}</span>
@@ -634,15 +741,15 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
 
   const renderGroup = (g: ReadingGroup) => {
     const items = inGroup(g.id)
-    const isDrop = dropZone === g.id
     return (
       <div
         key={g.id}
         data-group-container=""
-        data-drop-zone={g.id}
-        className={`relative transition-colors ${isDrop ? 'ring-1 ring-inset ring-primary/50 bg-primary/5' : ''}`}
+        data-drop-group-block={g.id}
+        className={`relative ${drag?.type === 'group' && drag.id === g.id ? 'opacity-30' : ''}`}
         style={{ ['--gc' as string]: g.color }}
       >
+        {drop?.type === 'group' && drop.beforeId === g.id && <DropLine />}
         {/* Header mirrors the sidebar tab-group: a colored count badge on the
             leading edge, then an Edge-style colored pill that swallows the
             collapse chevron + name. Colors come from globals.css via --gc. */}
@@ -650,9 +757,13 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
           data-sidebar-row=""
           data-sidebar-group-row=""
           data-vim-row={g.id}
+          data-drop-into={g.id}
           {...(!g.isCollapsed && items.length > 0 ? { 'data-group-expanded': '' } : {})}
-          className="group/gh relative flex items-center gap-1 px-1 py-1 cursor-pointer hover:bg-accent"
-          onClick={() => { if (editingGroupId !== g.id) toggleGroup(g) }}
+          className={`group/gh relative flex items-center gap-1 px-1 py-1 cursor-pointer ${
+            isDropInto(g.id) ? 'bg-primary/30 ring-1 ring-inset ring-primary/40' : 'hover:bg-accent'
+          }`}
+          onMouseDown={(e) => { if (editingGroupId !== g.id) startDrag({ type: 'group', id: g.id }, e) }}
+          onClick={() => { if (!suppressClick.current && editingGroupId !== g.id) toggleGroup(g) }}
           onContextMenu={(e) => openGroupMenu(g, contextMenuPoint(e))}
         >
           {vimActive && vimCursor?.id === g.id && <span data-vim-cursor="" aria-hidden />}
@@ -699,10 +810,11 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
         {!g.isCollapsed && (
           <div data-group-children="">
             {items.length === 0 ? (
-              <div className="px-2 py-1.5 pl-3 text-[10px] text-muted-foreground/60">Drop readings here</div>
+              <div data-drop-into={g.id} className="px-2 py-1.5 pl-3 text-[10px] text-muted-foreground/60">Drop readings here</div>
             ) : (
               items.map((r) => renderRow(r, false))
             )}
+            {isDropAtEnd(g.id) && items.length > 0 && <EndDropLine />}
           </div>
         )}
       </div>
@@ -751,9 +863,10 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
         </div>
 
         <div
-          data-drop-zone="ungrouped"
-          className={`transition-colors ${dropZone === 'ungrouped' ? 'ring-1 ring-inset ring-primary/50 bg-primary/5' : ''}`}
-          style={{ minHeight: groups.length > 0 ? 12 : undefined }}
+          // Once it's empty, the whole strip takes a drop back into To Read.
+          {...(ungrouped.length === 0 ? { 'data-drop-into': UNGROUPED } : {})}
+          className={`transition-colors ${isDropInto(UNGROUPED) ? 'ring-1 ring-inset ring-primary/50 bg-primary/5' : ''}`}
+          style={{ minHeight: ungrouped.length === 0 && !isEmpty ? 12 : undefined }}
         >
           {isEmpty ? (
             <div className="px-2 py-3 text-xs text-muted-foreground/70">
@@ -762,22 +875,30 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
           ) : (
             ungrouped.map((r) => renderRow(r, false))
           )}
+          {isDropAtEnd(UNGROUPED) && ungrouped.length > 0 && <EndDropLine />}
         </div>
 
         {groups.map(renderGroup)}
+        {drop?.type === 'group' && drop.beforeId === null && groups.length > 0 && <EndDropLine />}
 
         {archived.length > 0 && (
           <div className="mt-2">
             <button
               data-vim-row={ARCHIVE_ROW_ID}
+              data-drop-into={ARCHIVE_ROW_ID}
               onClick={() => setArchiveCollapsed((v) => !v)}
-              className="relative w-full flex items-center gap-1 px-2 py-1 text-[10px] font-semibold text-muted-foreground/80 uppercase tracking-wider hover:text-foreground"
+              className={`relative w-full flex items-center gap-1 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider ${
+                isDropInto(ARCHIVE_ROW_ID)
+                  ? 'bg-primary/30 ring-1 ring-inset ring-primary/40 text-foreground'
+                  : 'text-muted-foreground/80 hover:text-foreground'
+              }`}
             >
               {vimActive && vimCursor?.id === ARCHIVE_ROW_ID && <span data-vim-cursor="" aria-hidden />}
               {archiveCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
               Archive · {archived.length}
             </button>
             {!archiveCollapsed && archived.map((r) => renderRow(r, true))}
+            {!archiveCollapsed && isDropAtEnd(ARCHIVE_ROW_ID) && <EndDropLine />}
           </div>
         )}
       </div>

@@ -182,17 +182,55 @@ function removeReading(profileId: string, id: string): void {
   commit(profileId, shelf)
 }
 
+/** Where drag and drop puts readings: a group, the ungrouped list (groupId
+ *  null), or the archive. */
+interface PlaceTarget {
+  groupId: string | null
+  archived?: boolean
+}
+
+/** Put readings, in the given order, into a container right before `beforeId`
+ *  — or at its end when that's null. Array order is display order, so
+ *  splicing before the anchor is what places them within the container. */
+function placeReadings(profileId: string, ids: string[], target: PlaceTarget, beforeId: string | null): void {
+  const shelf = shelfFor(profileId)
+  const moving = ids
+    .map((id) => shelf.readings.find((r) => r.id === id))
+    .filter((r): r is Reading => !!r)
+  if (moving.length === 0) return
+  const snapshot = JSON.stringify(shelf.readings)
+  // A group that vanished mid-drag falls back to ungrouped.
+  const group = target.groupId ? shelf.groups.find((g) => g.id === target.groupId) : undefined
+  const movingSet = new Set(moving)
+  shelf.readings = shelf.readings.filter((r) => !movingSet.has(r))
+  for (const r of moving) {
+    r.status = target.archived ? 'archived' : 'toread'
+    // Groups live in the To Read area.
+    r.groupId = target.archived ? undefined : group?.id
+  }
+  const at = beforeId ? shelf.readings.findIndex((r) => r.id === beforeId) : -1
+  if (at === -1) shelf.readings.push(...moving)
+  else shelf.readings.splice(at, 0, ...moving)
+  if (JSON.stringify(shelf.readings) !== snapshot) commit(profileId, shelf)
+}
+
 /** Move a reading into a group (or out to ungrouped when groupId is null),
  *  dropping it at the end of the target container. */
 function moveReading(profileId: string, readingId: string, groupId: string | null): void {
+  placeReadings(profileId, [readingId], { groupId }, null)
+}
+
+/** Reorder a group to sit right before `beforeGroupId`, or last when null. */
+function placeGroup(profileId: string, groupId: string, beforeGroupId: string | null): void {
   const shelf = shelfFor(profileId)
-  const idx = shelf.readings.findIndex((r) => r.id === readingId)
-  if (idx === -1) return
-  const [r] = shelf.readings.splice(idx, 1)
-  r.groupId = groupId ?? undefined
-  r.status = 'toread' // dragging it into view un-archives it
-  shelf.readings.push(r) // last within its container (array order = display order)
-  commit(profileId, shelf)
+  const group = shelf.groups.find((g) => g.id === groupId)
+  if (!group || beforeGroupId === groupId) return
+  const snapshot = shelf.groups.map((g) => g.id).join()
+  shelf.groups = shelf.groups.filter((g) => g !== group)
+  const at = beforeGroupId ? shelf.groups.findIndex((g) => g.id === beforeGroupId) : -1
+  if (at === -1) shelf.groups.push(group)
+  else shelf.groups.splice(at, 0, group)
+  if (shelf.groups.map((g) => g.id).join() !== snapshot) commit(profileId, shelf)
 }
 
 /** A fresh copy of a reading under a new id. Its offline snapshot is copied
@@ -376,7 +414,15 @@ export function registerBookshelfIpc(): void {
     moveReading(profileId, readingId, groupId)
     return true
   })
-  ipcMain.handle('bookshelf:duplicate', (_e, profileId: string, ids: string[]) => duplicateItems(profileId, ids))
+  ipcMain.handle('bookshelf:place-readings', (_e, profileId: string, ids: string[], target: PlaceTarget, beforeId: string | null) => {
+    placeReadings(profileId, ids, target, beforeId)
+    return true
+  })
+  ipcMain.handle('bookshelf:place-group', (_e, profileId: string, groupId: string, beforeGroupId: string | null) => {
+    placeGroup(profileId, groupId, beforeGroupId)
+    return true
+  })
+  ipcMain.handle('bookshelf:duplicate',(_e, profileId: string, ids: string[]) => duplicateItems(profileId, ids))
   ipcMain.handle('bookshelf:move', (_e, fromProfileId: string, ids: string[], toProfileId: string, groupId: string | null) => {
     moveItems(fromProfileId, ids, toProfileId, groupId)
     return true
