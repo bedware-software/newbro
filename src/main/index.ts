@@ -1294,6 +1294,23 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
         const parsed = parseAcceleratorShortcut(binding)
         if (!parsed) continue
         if (matchesAccelerator(input, parsed)) {
+          // Find-in-page from inside a tab goes to the page first, like
+          // Chrome. Sites with viewport-virtualized content (CodeMirror in
+          // Bitbucket's source view, GitLab diffs, …) listen for Ctrl+F to
+          // render every line — swallowing the key here left native find
+          // matching only what was on screen. If the page doesn't
+          // preventDefault, the key comes back unhandled and the "Find in
+          // Page" menu accelerator opens our bar; if it does, the site's
+          // own search wins, same as Chrome. Only the first binding is
+          // registered on the menu, so a second binding still dispatches
+          // directly.
+          if (
+            action === 'find-in-page' &&
+            binding === bindings[0] &&
+            source !== targetWindow.webContents
+          ) {
+            return
+          }
           event.preventDefault()
           if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', action)
           return
