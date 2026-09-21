@@ -210,27 +210,50 @@ function findHistoricalTabId(w: Workspace, excludeId?: string): string | null {
 // ── Per-workspace closed-tab history ──
 // In-memory only (not persisted, like tab activation history above). Each
 // close pushes a snapshot so Ctrl+Shift+T can pop the most-recent one back.
-// Stored newest-last (chronological); reopen pops from the end.
-interface ClosedTabEntry {
-  tab: Tab
-  /** Source container: a group id, or null for an ungrouped (Root) tab. */
-  groupId: string | null
-  /** Index within the source container (group.tabs or workspace.tabs). */
-  index: number
-  /** Index within the workspace's sidebarOrder at close time (ungrouped only; -1 for grouped). */
-  orderIndex: number
-}
-const closedTabsByWorkspace = new Map<string, ClosedTabEntry[]>()
+// Stored newest-last (chronological); reopen pops from the end. A closed
+// group is one entry, so a single Ctrl+Shift+T brings all of it back.
+type ClosedEntry =
+  | {
+      kind: 'tab'
+      tab: Tab
+      /** Source container: a group id, or null for an ungrouped (Root) tab. */
+      groupId: string | null
+      /** Index within the source container (group.tabs or workspace.tabs). */
+      index: number
+      /** Index within the workspace's sidebarOrder at close time (ungrouped only; -1 for grouped). */
+      orderIndex: number
+    }
+  | {
+      kind: 'group'
+      group: TabGroup
+      /** Index within workspace.tabGroups at close time. */
+      index: number
+      /** Index within the workspace's sidebarOrder at close time. */
+      orderIndex: number
+    }
+const closedTabsByWorkspace = new Map<string, ClosedEntry[]>()
 const CLOSED_TAB_LIMIT = 20
 
-function pushClosedTab(workspaceId: string, entry: ClosedTabEntry): void {
+function pushClosedTab(workspaceId: string, entry: ClosedEntry): void {
   let stack = closedTabsByWorkspace.get(workspaceId)
   if (!stack) { stack = []; closedTabsByWorkspace.set(workspaceId, stack) }
   stack.push(entry)
   if (stack.length > CLOSED_TAB_LIMIT) stack.splice(0, stack.length - CLOSED_TAB_LIMIT)
 }
 
-function popClosedTab(workspaceId: string): ClosedTabEntry | null {
+/** Plain snapshot of a group for the closed stack — never the immer draft,
+ *  which is revoked once produce returns. */
+function snapshotGroup(g: TabGroup, tabs: Tab[] = g.tabs): TabGroup {
+  return {
+    id: g.id,
+    name: g.name,
+    color: g.color,
+    isCollapsed: g.isCollapsed,
+    tabs: tabs.map((t) => ({ ...t })),
+  }
+}
+
+function popClosedTab(workspaceId: string): ClosedEntry | null {
   const stack = closedTabsByWorkspace.get(workspaceId)
   if (!stack || stack.length === 0) return null
   return stack.pop() ?? null
@@ -1092,7 +1115,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (uIdx !== -1) {
             const order = ensureSidebarOrder(w)
             const oi = order.indexOf(id)
-            pushClosedTab(w.id, { tab: { ...w.tabs[uIdx] }, groupId: null, index: uIdx, orderIndex: oi })
+            pushClosedTab(w.id, { kind: 'tab', tab: { ...w.tabs[uIdx] }, groupId: null, index: uIdx, orderIndex: oi })
             w.tabs.splice(uIdx, 1)
             if (oi !== -1) order.splice(oi, 1)
             if (s.activeTabId === id) {
@@ -1111,7 +1134,18 @@ export const useAppStore = create<AppState>((set, get) => ({
         for (const g of w.tabGroups) {
           const idx = g.tabs.findIndex((t) => t.id === id)
           if (idx !== -1) {
-            pushClosedTab(w.id, { tab: { ...g.tabs[idx] }, groupId: g.id, index: idx, orderIndex: -1 })
+            // The last tab takes its group with it, so remember the group too:
+            // reopening then brings back the group, not a stray Root tab.
+            if (g.tabs.length === 1) {
+              pushClosedTab(w.id, {
+                kind: 'group',
+                group: snapshotGroup(g),
+                index: w.tabGroups.indexOf(g),
+                orderIndex: ensureSidebarOrder(w).indexOf(g.id),
+              })
+            } else {
+              pushClosedTab(w.id, { kind: 'tab', tab: { ...g.tabs[idx] }, groupId: g.id, index: idx, orderIndex: -1 })
+            }
             g.tabs.splice(idx, 1)
             if (s.activeTabId === id) {
               const historical = findHistoricalTabId(w, id)
@@ -1142,6 +1176,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!entry) return
     const w = findWorkspaceById(s, wsId)
     if (!w) return
+
+    if (entry.kind === 'group') {
+      // Tabs get fresh ids, same as a single tab below. The group keeps its
+      // own, so tabs closed out of it earlier reopen back inside it.
+      const g = cloneGroup(entry.group)
+      if (!w.tabGroups.some((x) => x.id === entry.group.id)) g.id = entry.group.id
+      w.tabGroups.splice(Math.min(entry.index, w.tabGroups.length), 0, g)
+      const order = ensureSidebarOrder(w)
+      order.splice(entry.orderIndex >= 0 ? Math.min(entry.orderIndex, order.length) : order.length, 0, g.id)
+      // Back as it was: an expanded group lands on its first tab, a
+      // collapsed one parks on its header rather than springing open.
+      s.activeTabGroupId = g.id
+      s.activeTabId = g.isCollapsed ? null : g.tabs[0]?.id ?? null
+      return
+    }
+
     // Fresh id: the original tab (and its WebContentsView) was torn down on
     // close, so we restore the page's url/title/comment under a new identity.
     const restored = cloneTab(entry.tab)
@@ -1395,9 +1445,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (idx !== -1) {
           const group = w.tabGroups[idx]
           const closedTabIds = new Set(group.tabs.map((t) => t.id))
-          w.tabGroups.splice(idx, 1)
           const order = ensureSidebarOrder(w)
           const oi = order.indexOf(groupId)
+          if (group.tabs.length > 0) {
+            pushClosedTab(w.id, { kind: 'group', group: snapshotGroup(group), index: idx, orderIndex: oi })
+          }
+          w.tabGroups.splice(idx, 1)
           if (oi !== -1) order.splice(oi, 1)
           if (s.activeTabGroupId === groupId || closedTabIds.has(s.activeTabId || '')) {
             const nextGroup = w.tabGroups[0]
