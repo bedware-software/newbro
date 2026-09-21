@@ -55,6 +55,12 @@ type ShelfDrop =
   | { type: 'reading'; container: string; beforeId: string | null; into: boolean }
   | { type: 'group'; beforeId: string | null }
 
+/** The place-readings target for a container key. */
+function placeTarget(container: string): { groupId: string | null; archived?: boolean } {
+  if (container === ARCHIVE_ROW_ID) return { groupId: null, archived: true }
+  return { groupId: container === UNGROUPED ? null : container }
+}
+
 /** The drop-position line, like the sidebar's. */
 function DropLine() {
   return <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10 pointer-events-none" />
@@ -195,6 +201,14 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
     })
     return () => { active = false; cleanup?.() }
   }, [profileId])
+
+  /** Show the shelf a reorder hands back right away instead of waiting for the
+   *  debounced broadcast, which holding J/K would outrun. */
+  const applyShelf = useCallback((shelf: { readings: Reading[]; groups: ReadingGroup[] } | undefined) => {
+    if (!shelf) return
+    setReadings(shelf.readings || [])
+    setGroups(shelf.groups || [])
+  }, [])
 
   const openReading = useCallback((r: Reading, offline: boolean) => {
     const s = useAppStore.getState()
@@ -340,10 +354,11 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
   )
   const findVimRow = (id: string): Element | null =>
     listRef.current?.querySelector(`[data-vim-row="${CSS.escape(id)}"]`) ?? null
+  // Also on shelf changes, so a row J/K carried out of view is followed.
   useEffect(() => {
     if (!open || !vimActive || !vimCursor) return
     findVimRow(vimCursor.id)?.scrollIntoView({ block: 'nearest' })
-  }, [open, vimActive, vimCursor?.id])
+  }, [open, vimActive, vimCursor?.id, readings, groups])
 
   /** Opens a shelf menu. One opened from vim mode (m) takes the keyboard:
    *  its first action starts highlighted and hjkl move around it. */
@@ -474,9 +489,46 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
         setArchiveCollapsed(collapsed)
       }
     }
+    // J/K carry the row under the cursor one visible row down/up, the way the
+    // sidebar does: a group swaps with its neighbour, a reading steps through
+    // its list and on into the next or previous group (expanding it). The
+    // archive is a status rather than a place, so readings neither step into
+    // it nor out of it.
+    const moveRow = (dir: 1 | -1): void => {
+      if (!profileId || !vimCursor || vimCursor.kind === 'archive') return
+      // Pin the cursor to what's moving — unpinned, it sits on the first row.
+      setVimCursorId(vimCursor.id)
+      if (vimCursor.kind === 'group') {
+        const i = groups.findIndex((g) => g.id === vimCursor.id)
+        if (!groups[i + dir]) return
+        const before = dir === 1 ? groups[i + 2] : groups[i - 1]
+        window.electronAPI.bookshelfPlaceGroup?.(profileId, vimCursor.id, before?.id ?? null).then(applyShelf)
+        return
+      }
+      const r = vimCursor.reading
+      const container = r.status === 'archived' ? ARCHIVE_ROW_ID : r.groupId ?? UNGROUPED
+      const list = containerReadings(container)
+      const i = list.findIndex((x) => x.id === r.id)
+      let target = container
+      let beforeId: string | null
+      if (list[i + dir]) {
+        beforeId = dir === 1 ? list[i + 2]?.id ?? null : list[i - 1].id
+      } else {
+        if (container === ARCHIVE_ROW_ID) return
+        const order = [UNGROUPED, ...groups.map((g) => g.id)]
+        const next = order[order.indexOf(container) + dir]
+        if (!next) return
+        // Down lands first in the next list, up lands last in the previous one.
+        target = next
+        beforeId = dir === 1 ? containerReadings(next)[0]?.id ?? null : null
+      }
+      window.electronAPI.bookshelfPlaceReadings?.(profileId, [r.id], placeTarget(target), beforeId).then(applyShelf)
+    }
     switch (cmd) {
       case 'down': moveTo(at + 1); break
       case 'up': moveTo(at - 1); break
+      case 'move-down': moveRow(1); break
+      case 'move-up': moveRow(-1); break
       case 'top': moveTo(0); break
       case 'bottom': moveTo(vimRows.length - 1); break
       case 'collapse': {
@@ -604,15 +656,12 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
     window.dispatchEvent(new CustomEvent('newbro-tab-show'))
     if (!dt || !profileId) return
     if (d.type === 'reading' && dt.type === 'reading') {
-      const target = dt.container === ARCHIVE_ROW_ID
-        ? { groupId: null, archived: true }
-        : { groupId: dt.container === UNGROUPED ? null : dt.container }
-      window.electronAPI.bookshelfPlaceReadings?.(profileId, d.ids, target, dt.beforeId)
+      window.electronAPI.bookshelfPlaceReadings?.(profileId, d.ids, placeTarget(dt.container), dt.beforeId).then(applyShelf)
       setSelectedIds(new Set())
     } else if (d.type === 'group' && dt.type === 'group') {
-      window.electronAPI.bookshelfPlaceGroup?.(profileId, d.id, dt.beforeId)
+      window.electronAPI.bookshelfPlaceGroup?.(profileId, d.id, dt.beforeId).then(applyShelf)
     }
-  }, [profileId])
+  }, [profileId, applyShelf])
   const finishRef = useRef(finish)
   finishRef.current = finish
 

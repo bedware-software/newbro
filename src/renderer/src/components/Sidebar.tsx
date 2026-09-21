@@ -836,9 +836,41 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props
       if (groupById(id)) setActiveGroup(id)
       else setActiveTab(id)
     }
+    // J/K carry the row under the cursor one visible row down/up. A group
+    // swaps places with its neighbour. A tab steps into an expanded group it
+    // runs into, out of its own group at either end, and over a collapsed
+    // group as if it were one row. The cursor follows the active row, so it
+    // stays on what moved.
+    const moveRow = (dir: 1 | -1): void => {
+      if (!vimCursorId) return
+      const id = vimCursorId
+      const top = sidebarItems.findIndex((item) => item.id === id)
+      if (top !== -1) {
+        const neighbour = sidebarItems[top + dir]
+        if (!neighbour) return
+        if (sidebarItems[top].type === 'group') {
+          moveTabGroup(id, dir === 1 ? top + 2 : top - 1)
+        } else if (neighbour.type === 'group' && !neighbour.group.isCollapsed && neighbour.group.tabs.length > 0) {
+          moveTabs([id], neighbour.id, dir === 1 ? 0 : neighbour.group.tabs.length)
+        } else {
+          moveTabs([id], null, dir === 1 ? top + 2 : top - 1)
+        }
+      } else {
+        const group = groupById(findTabGroup(id))
+        if (!group) return
+        const pos = group.tabs.findIndex((t) => t.id === id)
+        const groupTop = sidebarItems.findIndex((item) => item.id === group.id)
+        if (dir === -1 && pos === 0) moveTabs([id], null, groupTop)
+        else if (dir === 1 && pos === group.tabs.length - 1) moveTabs([id], null, groupTop + 1)
+        else moveTabs([id], group.id, dir === 1 ? pos + 2 : pos - 1)
+      }
+      requestAnimationFrame(() => findVimRow(id)?.scrollIntoView({ block: 'nearest' }))
+    }
     switch (cmd) {
       case 'down': moveTo(at === -1 ? 0 : at + 1); break
       case 'up': moveTo(at === -1 ? 0 : at - 1); break
+      case 'move-down': moveRow(1); break
+      case 'move-up': moveRow(-1); break
       case 'top': moveTo(0); break
       case 'bottom': moveTo(visibleRowIds.length - 1); break
       case 'collapse': {

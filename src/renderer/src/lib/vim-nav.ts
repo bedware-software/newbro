@@ -9,6 +9,8 @@ import { useCallback, useEffect, useRef } from 'react'
 export type VimCommand =
   | 'down' // j
   | 'up' // k
+  | 'move-down' // J — move the row under the cursor one row down
+  | 'move-up' // K — …or up
   | 'collapse' // h
   | 'expand' // l
   | 'top' // gg
@@ -126,6 +128,10 @@ export function useVimNav(
         switch (e.key) {
           case 'j': cmd = 'down'; break
           case 'k': cmd = 'up'; break
+          // Checking Shift, not just the capital, keeps Caps Lock from
+          // turning navigation into moves.
+          case 'J': cmd = e.shiftKey ? 'move-down' : 'down'; break
+          case 'K': cmd = e.shiftKey ? 'move-up' : 'up'; break
           case 'h': cmd = 'collapse'; break
           case 'l': cmd = 'expand'; break
           case 'G': cmd = 'bottom'; break
@@ -136,8 +142,8 @@ export function useVimNav(
         }
       }
       if (!cmd) return
-      // Holding j/k scrolls through rows; anything else fires once per press.
-      if (e.repeat && cmd !== 'down' && cmd !== 'up') return
+      // Holding j/k (or J/K) keeps going; anything else fires once per press.
+      if (e.repeat && cmd !== 'down' && cmd !== 'up' && cmd !== 'move-down' && cmd !== 'move-up') return
       e.preventDefault()
       // Capture phase on window, so App's global Escape handler and any row
       // handlers never see a key vim mode consumed.

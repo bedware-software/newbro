@@ -191,16 +191,19 @@ interface PlaceTarget {
 
 /** Put readings, in the given order, into a container right before `beforeId`
  *  — or at its end when that's null. Array order is display order, so
- *  splicing before the anchor is what places them within the container. */
-function placeReadings(profileId: string, ids: string[], target: PlaceTarget, beforeId: string | null): void {
+ *  splicing before the anchor is what places them within the container.
+ *  A target group is expanded, as the sidebar does, so they stay in view.
+ *  Returns the resulting shelf. */
+function placeReadings(profileId: string, ids: string[], target: PlaceTarget, beforeId: string | null): Shelf {
   const shelf = shelfFor(profileId)
   const moving = ids
     .map((id) => shelf.readings.find((r) => r.id === id))
     .filter((r): r is Reading => !!r)
-  if (moving.length === 0) return
-  const snapshot = JSON.stringify(shelf.readings)
+  if (moving.length === 0) return shelf
+  const snapshot = JSON.stringify(shelf)
   // A group that vanished mid-drag falls back to ungrouped.
   const group = target.groupId ? shelf.groups.find((g) => g.id === target.groupId) : undefined
+  if (group) group.isCollapsed = false
   const movingSet = new Set(moving)
   shelf.readings = shelf.readings.filter((r) => !movingSet.has(r))
   for (const r of moving) {
@@ -211,7 +214,8 @@ function placeReadings(profileId: string, ids: string[], target: PlaceTarget, be
   const at = beforeId ? shelf.readings.findIndex((r) => r.id === beforeId) : -1
   if (at === -1) shelf.readings.push(...moving)
   else shelf.readings.splice(at, 0, ...moving)
-  if (JSON.stringify(shelf.readings) !== snapshot) commit(profileId, shelf)
+  if (JSON.stringify(shelf) !== snapshot) commit(profileId, shelf)
+  return shelf
 }
 
 /** Move a reading into a group (or out to ungrouped when groupId is null),
@@ -220,17 +224,19 @@ function moveReading(profileId: string, readingId: string, groupId: string | nul
   placeReadings(profileId, [readingId], { groupId }, null)
 }
 
-/** Reorder a group to sit right before `beforeGroupId`, or last when null. */
-function placeGroup(profileId: string, groupId: string, beforeGroupId: string | null): void {
+/** Reorder a group to sit right before `beforeGroupId`, or last when null.
+ *  Returns the resulting shelf. */
+function placeGroup(profileId: string, groupId: string, beforeGroupId: string | null): Shelf {
   const shelf = shelfFor(profileId)
   const group = shelf.groups.find((g) => g.id === groupId)
-  if (!group || beforeGroupId === groupId) return
+  if (!group || beforeGroupId === groupId) return shelf
   const snapshot = shelf.groups.map((g) => g.id).join()
   shelf.groups = shelf.groups.filter((g) => g !== group)
   const at = beforeGroupId ? shelf.groups.findIndex((g) => g.id === beforeGroupId) : -1
   if (at === -1) shelf.groups.push(group)
   else shelf.groups.splice(at, 0, group)
   if (shelf.groups.map((g) => g.id).join() !== snapshot) commit(profileId, shelf)
+  return shelf
 }
 
 /** A fresh copy of a reading under a new id. Its offline snapshot is copied
@@ -414,14 +420,12 @@ export function registerBookshelfIpc(): void {
     moveReading(profileId, readingId, groupId)
     return true
   })
-  ipcMain.handle('bookshelf:place-readings', (_e, profileId: string, ids: string[], target: PlaceTarget, beforeId: string | null) => {
-    placeReadings(profileId, ids, target, beforeId)
-    return true
-  })
-  ipcMain.handle('bookshelf:place-group', (_e, profileId: string, groupId: string, beforeGroupId: string | null) => {
-    placeGroup(profileId, groupId, beforeGroupId)
-    return true
-  })
+  ipcMain.handle('bookshelf:place-readings', (_e, profileId: string, ids: string[], target: PlaceTarget, beforeId: string | null) =>
+    placeReadings(profileId, ids, target, beforeId),
+  )
+  ipcMain.handle('bookshelf:place-group', (_e, profileId: string, groupId: string, beforeGroupId: string | null) =>
+    placeGroup(profileId, groupId, beforeGroupId),
+  )
   ipcMain.handle('bookshelf:duplicate',(_e, profileId: string, ids: string[]) => duplicateItems(profileId, ids))
   ipcMain.handle('bookshelf:move', (_e, fromProfileId: string, ids: string[], toProfileId: string, groupId: string | null) => {
     moveItems(fromProfileId, ids, toProfileId, groupId)

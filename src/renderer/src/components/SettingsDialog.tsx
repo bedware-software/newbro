@@ -2295,7 +2295,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <span className="block text-sm text-foreground">Vim navigation in Sidebar and Bookshelf</span>
                   <span className="block text-[11px] text-muted-foreground mt-0.5">
                     Pressing Toggle Sidebar or Toggle Bookshelf again while the panel is open enters vim mode; a third press closes it.
-                    In vim mode: j/k move, h/l collapse/expand groups, gg/G jump to first/last, m opens the context menu (j/k, h/l for colors, Enter),
+                    In vim mode: j/k move, Shift+J/K move the tab, group or reading itself down/up, h/l collapse/expand groups, gg/G jump to first/last, m opens the context menu (j/k, h/l for colors, Enter),
                     x closes, Enter/Esc leave.
                   </span>
                 </span>
