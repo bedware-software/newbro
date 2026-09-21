@@ -966,12 +966,19 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props
         } ${isBeingDragged ? 'opacity-30' : ''}`}
         onClick={(e) => handleTabClick(tab.id, e)}
         onMouseDown={(e) => {
+          // Middle press would start Chromium's autoscroll; the close runs on auxclick.
+          if (e.button === 1) { e.preventDefault(); return }
           if (e.button !== 0) return
           // Selected group headers stay put: a drag carries only the tabs.
           const ids = selectedIds.has(tab.id) && selectedIds.size > 1
             ? getOrderedDraggedTabIds([...selectedIds])
             : [tab.id]
           startDragStable('tab', tab.id, ids, e)
+        }}
+        onAuxClick={(e) => {
+          if (e.button !== 1) return
+          e.preventDefault()
+          closeTab(tab.id)
         }}
         onContextMenu={(e) => openTabMenu(tab.id, contextMenuPoint(e))}
       >
@@ -1071,8 +1078,14 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props
                 : 'hover:bg-accent'
         }`}
         onMouseDown={(e) => {
+          if (e.button === 1 && !isEditing) { e.preventDefault(); return }
           if (e.button !== 0 || isEditing) return
           startDragStable('group', group.id, [group.id], e)
+        }}
+        onAuxClick={(e) => {
+          if (e.button !== 1 || isEditing) return
+          e.preventDefault()
+          closeGroup(group.id)
         }}
         onClick={(e) => {
           if (isEditing) return
@@ -1146,6 +1159,8 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props
         <div className="absolute right-1 top-0 bottom-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto">
           <button
             onMouseDown={(e) => e.stopPropagation()}
+            // A middle click on "Add tab" must not fall through and close the group.
+            onAuxClick={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation()
               addTab(group.id)
