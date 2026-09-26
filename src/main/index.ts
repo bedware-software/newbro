@@ -1636,9 +1636,9 @@ function configureSession(ses: Electron.Session, partition: string): void {
     .replace(/\s*Newbro\/\S+/g, '')
   ses.setUserAgent(cleanUA)
   installPermissionHandlers(ses, partition)
-  // Listen for file downloads so the renderer's downloads panel can show
-  // progress + history. Idempotent — guarded inside attachDownloadHandler.
-  attachDownloadHandler(ses)
+  // Listen for file downloads so the Downloads page can show progress +
+  // history. Idempotent — guarded inside attachDownloadHandler.
+  attachDownloadHandler(ses, partition)
   applyProxyToSession(ses, loadSettings())
   // Restore the VPN extension's last-known proxy BEFORE any tab in this
   // partition starts navigating — otherwise tab loads that fire between
@@ -3490,6 +3490,11 @@ function buildMenu(): void {
           label: 'Command Palette',
           accelerator: kb['command-palette'],
           click: (_item, win) => sendShortcutToWindow(win, 'command-palette'),
+        },
+        {
+          label: 'Downloads',
+          accelerator: kb['open-downloads'],
+          click: (_item, win) => sendShortcutToWindow(win, 'open-downloads'),
         },
         {
           label: 'Toggle Sidebar',

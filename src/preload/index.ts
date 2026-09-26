@@ -54,9 +54,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveSettings: (settings: unknown): Promise<void> => ipcRenderer.invoke('settings:save', settings),
 
   // Browser-form password manager. List calls return metadata only; saved
-  // passwords are decrypted exclusively for the isolated preload of a page
-  // whose origin matches the credential.
+  // passwords are decrypted for the isolated preload of a page whose origin
+  // matches the credential, and — after a once-per-session device check —
+  // for Settings → Passwords to show or copy (reveal resolves null, copy
+  // false, when the check is declined).
   passwordsList: (partition: string): Promise<unknown[]> => ipcRenderer.invoke('passwords:list', partition),
+  passwordReveal: (partition: string, id: string): Promise<string | null> =>
+    ipcRenderer.invoke('passwords:reveal', partition, id),
+  passwordCopy: (partition: string, id: string): Promise<boolean> =>
+    ipcRenderer.invoke('passwords:copy', partition, id),
   passwordUpsert: (input: unknown): Promise<unknown[]> => ipcRenderer.invoke('passwords:upsert', input),
   passwordDelete: (partition: string, id: string): Promise<unknown[]> =>
     ipcRenderer.invoke('passwords:delete', partition, id),
@@ -256,15 +262,40 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener('extension-popup-closed', handler) }
   },
 
-  // URL visit history (for address-bar autocomplete). list() returns the
-  // full LRU snapshot; the renderer keeps a local mirror via the
-  // onHistoryUpdated broadcast so per-keystroke lookups stay synchronous.
-  historyList: (): Promise<unknown[]> => ipcRenderer.invoke('history:list'),
+  // Address-bar history (src/main/history.ts). query() answers one input —
+  // the default match to complete inline plus the dropdown's history rows
+  // and past searches — from main's in-memory index. noteTyped marks a
+  // tab's next navigation as started from the address bar (Chrome's typed
+  // count); it's a plain send so it's ordered before the navigation itself.
+  historyQuery: (text: string, allowInline: boolean): Promise<unknown> =>
+    ipcRenderer.invoke('history:query', text, allowInline),
+  historyRemove: (url: string): Promise<void> => ipcRenderer.invoke('history:remove', url),
+  historyRemoveSearchTerm: (term: string): Promise<void> => ipcRenderer.invoke('history:remove-search-term', term),
+  historyAddSearchTerm: (term: string): Promise<void> => ipcRenderer.invoke('history:add-search-term', term),
+  historyNoteTyped: (tabId: string, url: string): void => { ipcRenderer.send('history:note-typed', tabId, url) },
   historyClear: (): Promise<boolean> => ipcRenderer.invoke('history:clear'),
-  onHistoryUpdated: (callback: (entries: unknown[]) => void) => {
-    const handler = (_e: Electron.IpcRendererEvent, entries: unknown[]) => callback(entries)
-    ipcRenderer.on('history:updated', handler)
-    return () => { ipcRenderer.removeListener('history:updated', handler) }
+  // Search-engine suggestions for the address bar (src/main/omnibox-suggest.ts).
+  omniboxSuggest: (query: string, partition?: string): Promise<string[]> =>
+    ipcRenderer.invoke('omnibox:suggest', query, partition),
+
+  // ── Address-bar suggestion popup (separate non-focusable window) ──
+  // The Toolbar shows / updates / hides it and listens for its clicks; the
+  // popup renderer (omnibox.tsx) uses the popup-side calls. See
+  // src/main/omnibox-popup.ts.
+  omniboxPrewarm: (): void => { ipcRenderer.send('omnibox:prewarm') },
+  omniboxShow: (spec: unknown): void => { ipcRenderer.send('omnibox:show', spec) },
+  omniboxHide: (): void => { ipcRenderer.send('omnibox:hide') },
+  onOmniboxEvent: (callback: (evt: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, evt: unknown) => callback(evt)
+    ipcRenderer.on('omnibox:event', handler)
+    return () => { ipcRenderer.removeListener('omnibox:event', handler) }
+  },
+  omniboxPopupEvent: (evt: unknown): void => { ipcRenderer.send('omnibox:popup-event', evt) },
+  omniboxPopupResize: (size: { height: number }): void => { ipcRenderer.send('omnibox:popup-resize', size) },
+  onOmniboxPopupSpec: (callback: (spec: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, spec: unknown) => callback(spec)
+    ipcRenderer.on('omnibox:popup-spec', handler)
+    return () => { ipcRenderer.removeListener('omnibox:popup-spec', handler) }
   },
 
   // Per-profile Bookshelf reading queue (src/main/bookshelf.ts). Each window
@@ -311,6 +342,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   downloadsClear: (): Promise<boolean> => ipcRenderer.invoke('downloads:clear'),
   downloadsShowInFolder: (id: string): Promise<boolean> => ipcRenderer.invoke('downloads:show-in-folder', id),
   downloadsOpenFile: (id: string): Promise<boolean> => ipcRenderer.invoke('downloads:open-file', id),
+  downloadsRetry: (id: string, fallbackPartition?: string): Promise<boolean> =>
+    ipcRenderer.invoke('downloads:retry', id, fallbackPartition),
+  downloadsFileIcon: (id: string): Promise<string | null> => ipcRenderer.invoke('downloads:file-icon', id),
+  downloadsOpenFolder: (): Promise<boolean> => ipcRenderer.invoke('downloads:open-folder'),
   downloadsRefresh: (): Promise<unknown[]> => ipcRenderer.invoke('downloads:refresh'),
   onDownloadsUpdated: (callback: (entries: unknown[]) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, entries: unknown[]) => callback(entries)

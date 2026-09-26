@@ -16,8 +16,10 @@ import {
   lookupPasswords,
   markPasswordUsed,
   normalizePasswordOrigin,
+  revealPassword,
   upsertPassword,
 } from './password-store'
+import { ensureVaultAccess, isAppUiSender } from './vault-access'
 import { detectEdgePasswords, importEdgePasswords, openEdgePasswordExport } from './edge-password-import'
 import {
   registerSyncCategory,
@@ -66,6 +68,8 @@ import { registerUpdateToastIpc } from './update-toast-window'
 import { registerDefaultBrowserIpc } from './default-browser'
 import { registerDownloadsIpc } from './downloads'
 import { registerHistoryIpc, exportEntries, replaceEntries } from './history'
+import { registerOmniboxSuggestIpc } from './omnibox-suggest'
+import { registerOmniboxPopupIpc } from './omnibox-popup'
 import { registerBookshelfIpc, exportShelves, importShelves } from './bookshelf'
 
 interface CertInfo {
@@ -763,9 +767,24 @@ export function registerIpcHandlers(): void {
     if (context && typeof id === 'string') markPasswordUsed(context.partition, id)
   })
 
-  // Settings-facing management API. These calls never return decrypted
-  // passwords; editing an entry can replace a password but cannot reveal it.
+  // Settings-facing management API. Listing returns metadata only; a saved
+  // password leaves the vault only through reveal / copy below, for the app's
+  // own UI and after the once-per-session device check (vault-access.ts).
   ipcMain.handle('passwords:list', (_event, partition: string) => listPasswordEntries(partition))
+  // Resolves to the password, or null when the device check was declined.
+  ipcMain.handle('passwords:reveal', async (event, partition: string, id: string) => {
+    if (!isAppUiSender(event)) throw new Error('Not allowed.')
+    if (!(await ensureVaultAccess())) return null
+    return revealPassword(partition, id)
+  })
+  // Copy straight to the clipboard from main, so copying doesn't need the
+  // password shown first. False when the device check was declined.
+  ipcMain.handle('passwords:copy', async (event, partition: string, id: string) => {
+    if (!isAppUiSender(event)) throw new Error('Not allowed.')
+    if (!(await ensureVaultAccess())) return false
+    clipboard.writeText(await revealPassword(partition, id))
+    return true
+  })
   ipcMain.handle(
     'passwords:upsert',
     async (_event, input: { id?: string; partition: string; origin: string; name?: string; username: string; password?: string }) => {
@@ -1103,6 +1122,8 @@ function alive(p) {
   registerDefaultBrowserIpc()
   registerDownloadsIpc()
   registerHistoryIpc()
+  registerOmniboxSuggestIpc()
+  registerOmniboxPopupIpc()
   registerBookshelfIpc()
 
   // ── Cloud sync ──

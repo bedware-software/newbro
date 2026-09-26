@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Globe } from 'lucide-react'
+import { Globe, Download, CircleAlert, type LucideIcon } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
+import { INTERNAL_ICON_PREFIX } from '../lib/internal-pages'
+
+// Icons for internal pages (newbro://…), keyed by the name after the
+// favicon marker — see lib/internal-pages.ts.
+const INTERNAL_ICONS: Record<string, LucideIcon> = {
+  download: Download,
+  alert: CircleAlert,
+}
 
 interface Props {
   favicon?: string
@@ -28,6 +36,10 @@ export function TabFavicon({
   const certBypassedOrigins = useAppStore((s) => s.certBypassedOrigins)
   useEffect(() => { setBroken(false) }, [favicon, certBypassedOrigins])
 
+  if (favicon?.startsWith(INTERNAL_ICON_PREFIX)) {
+    const Icon = INTERNAL_ICONS[favicon.slice(INTERNAL_ICON_PREFIX.length)] ?? Globe
+    return <Icon size={globeSize} className="shrink-0 text-muted-foreground" />
+  }
   if (!favicon || broken) {
     return <Globe size={globeSize} className="shrink-0 text-muted-foreground" />
   }

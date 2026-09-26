@@ -3,6 +3,7 @@ import { produce } from 'immer'
 import { v4 as uuid } from 'uuid'
 import type { Profile, Workspace, TabGroup, Tab, SearchableItem, SearchPathSegment, WorkspaceCandidate } from './types'
 import { log } from '../lib/log'
+import { internalPageOf, internalTabMeta } from '../lib/internal-pages'
 
 // Edge-style palette: medium-saturation, medium-light hues spread around the
 // HSL wheel so dark text on top stays readable across the whole set. The
@@ -71,7 +72,16 @@ export function consumeEagerLoad(tabId: string): boolean {
 }
 
 function makeTab(url?: string): Tab {
-  return { id: uuid(), title: 'New Tab', url: url || defaultNewTabUrl, favicon: '' }
+  const target = url || defaultNewTabUrl
+  // Internal pages (newbro://…) never report a title or favicon of their own —
+  // there's no page to report them — so they're set up front.
+  const meta = internalTabMeta(target)
+  return { id: uuid(), title: meta?.title ?? 'New Tab', url: target, favicon: meta?.favicon ?? '' }
+}
+
+/** Every tab of a workspace, ungrouped first, then group by group. */
+function workspaceTabs(w: Workspace): Tab[] {
+  return [...(w.tabs || []), ...w.tabGroups.flatMap((g) => g.tabs)]
 }
 
 /** Copy of a tab under a fresh id. Used by duplicate and reopen-closed-tab. */
@@ -515,6 +525,16 @@ export interface AppState {
    *  collapsed or expanded as it was. */
   setActiveGroup: (id: string) => void
   updateTabUrl: (id: string, url: string) => void
+  /** Point a tab at a URL outside of page navigation, resetting its title and
+   *  favicon to match. For moves between an internal page (newbro://…) and
+   *  the web, which the tab's view can't make itself: WebviewPanel drops the
+   *  view when the tab turns internal and creates one on the new URL when it
+   *  turns back into a web page. */
+  retargetTab: (id: string, url: string) => void
+  /** Open an internal page the way Chrome opens its singleton pages: switch
+   *  to the active workspace's tab already showing it, else open it in a new
+   *  tab next to the active one. */
+  showInternalPage: (url: string) => void
   updateTabTitle: (id: string, title: string) => void
   updateTabFavicon: (id: string, favicon: string) => void
   setTabComment: (id: string, comment: string) => void
@@ -1266,6 +1286,37 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
   })),
+
+  retargetTab: (id, url) => set(produce((s: AppState) => {
+    const meta = internalTabMeta(url)
+    // A web page reports its real title and favicon once it loads; until then
+    // the host stands in, like a tab still loading.
+    let title = meta?.title
+    if (!title) {
+      try { title = new URL(url).host || url } catch { title = url }
+    }
+    for (const p of s.profiles) {
+      for (const w of p.workspaces) {
+        const t = workspaceTabs(w).find((t) => t.id === id)
+        if (!t) continue
+        t.url = url
+        t.title = title
+        t.favicon = meta?.favicon ?? ''
+        return
+      }
+    }
+  })),
+
+  showInternalPage: (url) => {
+    const s = get()
+    const w = s.getActiveWorkspace()
+    if (!w || !s.activeWorkspaceId) return
+    const page = internalPageOf(url)
+    const existing = workspaceTabs(w).find((t) => t.url === url || (page !== null && internalPageOf(t.url) === page))
+    log.action('showInternalPage', { url, existing: existing?.id ?? null })
+    if (existing) s.setActiveTab(existing.id)
+    else s.addTabNearActive(s.activeWorkspaceId, url, true)
+  },
 
   updateTabTitle: (id, title) => set(produce((s: AppState) => {
     for (const p of s.profiles) {

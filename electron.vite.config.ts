@@ -31,6 +31,7 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
           dropdown: resolve(__dirname, 'src/renderer/dropdown.html'),
+          omnibox: resolve(__dirname, 'src/renderer/omnibox.html'),
           'update-toast': resolve(__dirname, 'src/renderer/update-toast.html')
         }
       }

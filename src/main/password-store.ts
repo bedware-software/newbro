@@ -3,7 +3,8 @@
 // This is deliberately separate from credentials-store.ts: that store answers
 // HTTP Basic/Digest/NTLM/Negotiate challenges, while this one holds credentials
 // entered into ordinary HTML forms. Passwords never appear in list APIs and are
-// never registered as a Cloud Sync category.
+// never registered as a Cloud Sync category. The one way out to the app's UI
+// is revealPassword, behind the vault-access check (see vault-access.ts).
 
 import Store from 'electron-store'
 import { safeStorage } from 'electron'
@@ -158,6 +159,15 @@ export async function lookupPasswords(partition: string, origin: string): Promis
     }
   }
   return out
+}
+
+/** Decrypt one saved password for Settings → Passwords (show / copy). The
+ *  caller is responsible for the vault-access check. */
+export async function revealPassword(partition: string, id: string): Promise<string> {
+  const normalizedPartition = normalizePartition(partition)
+  const entry = store.get('entries')[id]
+  if (!entry || entry.partition !== normalizedPartition) throw new Error('Password entry not found.')
+  return decryptSecret(entry.passwordEnc)
 }
 
 export async function upsertPassword(input: {
