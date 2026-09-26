@@ -4,8 +4,10 @@ import type { TabGroup } from '../store/types'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
 import { isVimNavActive } from '../lib/vim-nav'
-import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, Mic, Camera, MapPin, Bell, Clipboard, Music, X, type LucideIcon } from 'lucide-react'
+import { internalPageOf, isInternalUrl } from '../lib/internal-pages'
+import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, Mic, Camera, MapPin, Bell, Clipboard, Music, X, CircleAlert, type LucideIcon } from 'lucide-react'
 import { describePermissionKinds, type PermissionKind } from '../lib/permissions'
+import { DownloadsPage } from './DownloadsPage'
 
 // Tab rendering lives in the main process now, as a WebContentsView per tab
 // attached to the window's root contentView. This component is a thin layout
@@ -184,6 +186,11 @@ export function WebviewPanel() {
   const parkedGroup = useAppStore((s) => (s.activeTabId === null
     ? s.getActiveWorkspace()?.tabGroups.find((g) => g.id === s.activeTabGroupId)
     : undefined))
+  // An internal page (newbro://…) takes the page's place, drawn right here.
+  const activeInternalUrl = useAppStore((s) => {
+    const url = s.getActiveTab()?.url
+    return url && isInternalUrl(url) ? url : null
+  })
 
   // Collect tabs from the active workspace. We only host one workspace per
   // window; tabs from other workspaces are not reified as WebContentsViews.
@@ -212,10 +219,13 @@ export function WebviewPanel() {
   useEffect(() => {
     const currentTabs = getWorkspaceTabs()
     const currentTabIds = new Set(currentTabs.map((t) => t.id))
+    const tabById = new Map(currentTabs.map((t) => [t.id, t]))
 
-    // Destroy tabs no longer in scope
+    // Destroy views no longer needed: the tab is gone, or it turned into an
+    // internal page (those are drawn by the renderer and have no view).
     for (const id of Array.from(createdTabsRef.current)) {
-      if (!currentTabIds.has(id)) {
+      const tab = tabById.get(id)
+      if (!tab || isInternalUrl(tab.url)) {
         window.electronAPI.tabDestroy?.(id)
         createdTabsRef.current.delete(id)
         activatedTabsRef.current.delete(id)
@@ -236,6 +246,13 @@ export function WebviewPanel() {
     // user-opened background tabs).
     let focusUrlBarForNewTab = false
     for (const tab of currentTabs) {
+      if (isInternalUrl(tab.url)) {
+        // No view to load or focus: drop the one-shot flags so they don't
+        // linger for a view created if the tab later turns into a web page.
+        consumeEagerLoad(tab.id)
+        consumeNewTabUrlFocus(tab.id)
+        continue
+      }
       if (!createdTabsRef.current.has(tab.id)) {
         const isActiveNow = tab.id === activeTabId
         const eagerLoad = consumeEagerLoad(tab.id)
@@ -254,7 +271,12 @@ export function WebviewPanel() {
     }
 
     // Activate the current tab (this also lazy-loads it if it's the first time)
-    if (activeTabId && createdTabsRef.current.has(activeTabId)) {
+    const activeTab = activeTabId ? tabById.get(activeTabId) : undefined
+    if (activeTab && isInternalUrl(activeTab.url)) {
+      // Internal page: take the previous page off screen and keep keyboard
+      // focus on the renderer, which draws the page (like a parked group).
+      window.electronAPI.tabDeactivate?.()
+    } else if (activeTabId && createdTabsRef.current.has(activeTabId)) {
       const tab = currentTabs.find((t) => t.id === activeTabId)
       const url = tab?.url || 'about:blank'
       // In vim mode j/k switch tabs live while the panel keeps the keyboard.
@@ -447,8 +469,10 @@ export function WebviewPanel() {
     }
   }, [])
 
-  const activeError = activeTabId ? errors.get(activeTabId) ?? null : null
-  const activeCertError = activeTabId ? certErrors.get(activeTabId) ?? null : null
+  // A tab that failed as a web page and was then pointed at an internal page
+  // keeps its stale error entry; the internal page wins.
+  const activeError = activeTabId && !activeInternalUrl ? errors.get(activeTabId) ?? null : null
+  const activeCertError = activeTabId && !activeInternalUrl ? certErrors.get(activeTabId) ?? null : null
   const showCertError = activeCertError !== null
   const showError = activeError !== null && !showCertError
   // Show the prompt belonging to the active tab (requests almost always come
@@ -548,6 +572,10 @@ export function WebviewPanel() {
 
       {parkedGroup && <ParkedGroupCard group={parkedGroup} />}
 
+      {activeInternalUrl && (internalPageOf(activeInternalUrl) === 'downloads'
+        ? <DownloadsPage />
+        : <UnknownInternalPage url={activeInternalUrl} />)}
+
       {showError && activeError && errorInfo && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">
           {/* Nudged above dead-centre so the block sits a touch higher than
@@ -588,6 +616,21 @@ export function WebviewPanel() {
           onContinue={() => handleCertContinue(activeCertError)}
         />
       )}
+    </div>
+  )
+}
+
+/** A newbro:// address that isn't one of our pages. */
+function UnknownInternalPage({ url }: { url: string }) {
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">
+      <div className="w-full max-w-[440px] -translate-y-[8vh] px-8">
+        <CircleAlert size={26} strokeWidth={1.75} className="mb-4 text-muted-foreground" />
+        <h2 className="mb-2 text-2xl font-semibold tracking-tight">This page doesn&apos;t exist</h2>
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          <span className="font-mono text-foreground">{url}</span> isn&apos;t a Newbro page.
+        </p>
+      </div>
     </div>
   )
 }

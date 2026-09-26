@@ -23,6 +23,9 @@ export interface Settings {
   vimNavigation: boolean
   defaultPageUrl: string
   searchEngine: string
+  /** Fetch search suggestions from the default engine while typing in the
+   *  address bar, as Chrome / Edge do (see omnibox-suggest.ts). */
+  searchSuggestions: boolean
   proxy: ProxySettings
   /** DNS-over-HTTPS mode.
    *  - 'off': use the OS resolver only (system DNS, hosts file, corp VPN's
@@ -166,6 +169,10 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   // hide. Existing installs are seeded with it once — see migrateNewKeybindingDefaults.
   'add-to-bookshelf': [],
   'toggle-bookshelf': ['CmdOrCtrl+Shift+B'],
+  // Chrome / Edge's Downloads shortcut. Opens (or switches to) the
+  // newbro://downloads tab. New keys fall back to their default on existing
+  // installs through the loadSettings merge, so no seeding migration.
+  'open-downloads': ['CmdOrCtrl+J'],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -186,6 +193,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vimNavigation: false,
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
+  searchSuggestions: true,
   proxy: {
     mode: 'system',
     proxyRules: '',
@@ -392,6 +400,7 @@ export function loadSettings(): Settings {
       ? (saved!.newTabFocus as 'site' | 'url')
       : DEFAULT_SETTINGS.newTabFocus,
     vimNavigation: saved?.vimNavigation === true,
+    searchSuggestions: saved?.searchSuggestions !== false,
     dohMode: KNOWN_DOH_MODES.has(saved?.dohMode as string)
       ? (saved!.dohMode as 'off' | 'automatic' | 'secure')
       : DEFAULT_SETTINGS.dohMode,
@@ -434,6 +443,7 @@ export function saveSettings(settings: Settings): void {
       ? settings.newTabFocus
       : DEFAULT_SETTINGS.newTabFocus,
     vimNavigation: settings.vimNavigation === true,
+    searchSuggestions: settings.searchSuggestions !== false,
     dohMode: KNOWN_DOH_MODES.has(settings.dohMode as string)
       ? settings.dohMode
       : DEFAULT_SETTINGS.dohMode,

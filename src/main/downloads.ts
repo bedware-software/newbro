@@ -15,13 +15,18 @@
 // History is capped (HISTORY_LIMIT) and stored in the same electron-store
 // instance as the rest of the app — separate key so it doesn't entangle
 // with the renderer-managed workspace state.
+//
+// The renderer side is the Downloads page (newbro://downloads, see
+// src/renderer/src/components/DownloadsPage.tsx).
 
 import { ipcMain, session as electronSession, BrowserWindow, shell, app } from 'electron'
 import { randomUUID } from 'crypto'
+import * as fs from 'fs'
 import * as path from 'path'
 import Store from 'electron-store'
 import { log } from './log'
 import { findTabByWebContents } from './tab-views'
+import { setupPartitionSession } from './index'
 
 export type DownloadState =
   | 'progressing'
@@ -45,6 +50,13 @@ export interface DownloadEntry {
   originUrl?: string
   /** Bytes/sec, computed on the renderer side from receivedBytes deltas. */
   bytesPerSecond?: number
+  /** Session partition the download ran in, so Retry downloads again with the
+   *  same profile's cookies. Absent on entries saved before it was recorded. */
+  partition?: string
+  /** Whether the saved file is still on disk (completed entries only). Filled
+   *  in when a renderer lists downloads, so files deleted outside the browser
+   *  show as "Deleted" instead of failing to open. */
+  fileExists?: boolean
 }
 
 const HISTORY_LIMIT = 500
@@ -59,6 +71,33 @@ interface LiveDownload {
 }
 
 const live = new Map<string, LiveDownload>()
+
+/** id → whether a completed download's file is still on disk. */
+const fileExists = new Map<string, boolean>()
+
+function refreshFileExists(entries: DownloadEntry[]): void {
+  for (const e of entries) {
+    if (e.state !== 'completed') continue
+    try { fileExists.set(e.id, fs.existsSync(e.savePath)) }
+    catch { fileExists.set(e.id, false) }
+  }
+}
+
+/** Chrome never overwrites: a second "report.pdf" lands as "report (1).pdf".
+ *  Paths claimed by in-flight downloads count as taken too — their file isn't
+ *  complete on disk until the download finishes. */
+function uniqueSavePath(dir: string, filename: string): string {
+  // Keep compound extensions together: archive.tar.gz → archive (1).tar.gz.
+  const ext = /\.tar\.[a-z0-9]+$/i.exec(filename)?.[0] ?? path.extname(filename)
+  const base = filename.slice(0, filename.length - ext.length)
+  const taken = (candidate: string): boolean =>
+    fs.existsSync(candidate) || [...live.values()].some((dl) => dl.entry.savePath === candidate)
+  let candidate = path.join(dir, filename)
+  for (let n = 1; n < 10_000 && taken(candidate); n++) {
+    candidate = path.join(dir, `${base} (${n})${ext}`)
+  }
+  return candidate
+}
 
 const store = new Store({
   name: 'newbro-downloads',
@@ -87,7 +126,9 @@ function buildSnapshot(): DownloadEntry[] {
   const out: DownloadEntry[] = []
   for (const dl of live.values()) out.push({ ...dl.entry })
   for (const e of loadHistory()) {
-    if (!liveIds.has(e.id)) out.push(e)
+    if (liveIds.has(e.id)) continue
+    const exists = e.state === 'completed' ? fileExists.get(e.id) : undefined
+    out.push(exists === undefined ? e : { ...e, fileExists: exists })
   }
   // Newest first.
   out.sort((a, b) => b.startedAt - a.startedAt)
@@ -117,7 +158,7 @@ function mapItemState(item: Electron.DownloadItem): DownloadState {
 }
 
 /** Wire a session so user-initiated downloads get tracked + broadcast. */
-export function attachDownloadHandler(ses: Electron.Session): void {
+export function attachDownloadHandler(ses: Electron.Session, partition: string): void {
   // Sessions may be configured multiple times (re-entry through
   // configureSession during partition recreation); guard against
   // attaching the same listener twice.
@@ -128,7 +169,7 @@ export function attachDownloadHandler(ses: Electron.Session): void {
   ses.on('will-download', (_e, item, webContents) => {
     const id = randomUUID()
     const startedAt = Date.now()
-    const savePath = item.getSavePath() || path.join(app.getPath('downloads'), item.getFilename())
+    const savePath = item.getSavePath() || uniqueSavePath(app.getPath('downloads'), item.getFilename())
     // Pre-bind a save path so Electron doesn't show the OS save dialog —
     // matches Chrome's default behavior of downloading straight to the
     // user's downloads folder.
@@ -145,6 +186,7 @@ export function attachDownloadHandler(ses: Electron.Session): void {
       state: mapItemState(item),
       startedAt,
       originUrl: webContents?.getURL?.() || undefined,
+      partition,
     }
     const dl: LiveDownload = {
       entry,
@@ -221,6 +263,7 @@ export function attachDownloadHandler(ses: Electron.Session): void {
       const history = loadHistory()
       history.push({ ...e })
       saveHistory(history)
+      if (e.state === 'completed') fileExists.set(id, true)
       live.delete(id)
       log.info('downloads: done', { id, state: e.state, filename: e.filename })
       broadcast()
@@ -237,7 +280,13 @@ function findEntry(id: string): { entry: DownloadEntry; live: LiveDownload | nul
 }
 
 export function registerDownloadsIpc(): void {
-  ipcMain.handle('downloads:list', () => buildSnapshot())
+  // Listing re-checks which saved files are still on disk — the Downloads
+  // page lists on open and whenever its window regains focus, which is when
+  // files deleted in Explorer / Finder should turn into "Deleted".
+  ipcMain.handle('downloads:list', () => {
+    refreshFileExists(loadHistory())
+    return buildSnapshot()
+  })
 
   ipcMain.handle('downloads:pause', (_e, id: string) => {
     const found = findEntry(id)
@@ -267,6 +316,7 @@ export function registerDownloadsIpc(): void {
     if (live.has(id)) return false
     const next = loadHistory().filter((e) => e.id !== id)
     saveHistory(next)
+    fileExists.delete(id)
     broadcast()
     return true
   })
@@ -274,8 +324,56 @@ export function registerDownloadsIpc(): void {
   // Clear every finished entry — leaves in-flight downloads alone.
   ipcMain.handle('downloads:clear', () => {
     saveHistory([])
+    fileExists.clear()
     broadcast()
     return true
+  })
+
+  // Download a cancelled / failed entry again, through the session it first
+  // ran in (the renderer passes the active profile's partition for entries
+  // saved before partitions were recorded). The retry arrives through
+  // 'will-download' as a fresh download, so the failed row is dropped.
+  ipcMain.handle('downloads:retry', (_e, id: string, fallbackPartition?: string) => {
+    if (live.has(id)) return false
+    const entry = loadHistory().find((e) => e.id === id)
+    if (!entry || entry.state === 'completed') return false
+    const isProfilePartition = (p: unknown): p is string =>
+      typeof p === 'string' && /^persist:profile-[A-Za-z0-9-]+$/.test(p)
+    const partition = isProfilePartition(entry.partition)
+      ? entry.partition
+      : isProfilePartition(fallbackPartition) ? fallbackPartition : null
+    let ses = electronSession.defaultSession
+    if (partition) {
+      // Configures the session (and this download handler) if no tab of that
+      // profile has run yet this launch.
+      setupPartitionSession(partition)
+      ses = electronSession.fromPartition(partition)
+    }
+    saveHistory(loadHistory().filter((e) => e.id !== id))
+    fileExists.delete(id)
+    log.info('downloads: retry', { id, url: entry.url, partition })
+    ses.downloadURL(entry.url)
+    broadcast()
+    return true
+  })
+
+  // The OS icon for a download's file, as a data URL (null when the OS has
+  // none to give, e.g. the file is gone).
+  ipcMain.handle('downloads:file-icon', async (_e, id: string) => {
+    const found = findEntry(id)
+    if (!found) return null
+    try {
+      const icon = await app.getFileIcon(found.entry.savePath, { size: 'normal' })
+      return icon.isEmpty() ? null : icon.toDataURL()
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle('downloads:open-folder', async () => {
+    const errMsg = await shell.openPath(app.getPath('downloads'))
+    if (errMsg) log.warn('downloads: open downloads folder failed', { errMsg })
+    return !errMsg
   })
 
   ipcMain.handle('downloads:show-in-folder', (_e, id: string) => {
@@ -293,6 +391,12 @@ export function registerDownloadsIpc(): void {
   ipcMain.handle('downloads:open-file', async (_e, id: string) => {
     const found = findEntry(id)
     if (!found || found.entry.state !== 'completed') return false
+    if (!fs.existsSync(found.entry.savePath)) {
+      // Deleted outside the browser since the last listing — show it as such.
+      fileExists.set(id, false)
+      broadcast()
+      return false
+    }
     try {
       const errMsg = await shell.openPath(found.entry.savePath)
       if (errMsg) {
@@ -319,5 +423,5 @@ export function registerDownloadsIpc(): void {
 /** Attach the handler to a session set up outside configureSession (e.g. the
  *  default session, or a partition created lazily). */
 export function attachDownloadHandlerToDefault(): void {
-  attachDownloadHandler(electronSession.defaultSession)
+  attachDownloadHandler(electronSession.defaultSession, 'persist:default')
 }

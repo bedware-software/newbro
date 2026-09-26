@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil, Copy, Check, Eye, EyeOff, ChevronDown, UserRound } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo, PasswordEntryInfo, PasswordImportResult, EdgePasswordSourceInfo, EdgePasswordImportResult } from '../App'
 import { DetachedWindow } from './DetachedWindow'
@@ -30,6 +30,7 @@ interface Settings {
   vimNavigation: boolean
   defaultPageUrl: string
   searchEngine: string
+  searchSuggestions: boolean
   proxy: ProxySettings
   dohMode: 'off' | 'automatic' | 'secure'
   authServerAllowlist: string
@@ -128,6 +129,7 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'duplicate-group': [],
   'add-to-bookshelf': [],
   'toggle-bookshelf': ['CmdOrCtrl+Shift+B'],
+  'open-downloads': ['CmdOrCtrl+J'],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -185,6 +187,7 @@ const ACTION_LABELS: Record<string, string> = {
   'duplicate-group': 'Duplicate Group',
   'add-to-bookshelf': 'Add to Bookshelf',
   'toggle-bookshelf': 'Toggle Bookshelf',
+  'open-downloads': 'Open Downloads',
 }
 
 interface Props {
@@ -195,6 +198,14 @@ interface Props {
   onAppearancePreview?: (preview: AppearancePreview) => void
   /** Versioned request to switch panes. See {@link SettingsTabRequest}. */
   tabRequest?: SettingsTabRequest | null
+}
+
+function originHost(origin: string): string {
+  try { return new URL(origin).host } catch { return origin }
+}
+
+function formatPasswordDate(ms: number): string {
+  return new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 /** Convert a KeyboardEvent into an Electron accelerator string */
@@ -451,6 +462,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [vimNavigation, setVimNavigation] = useState(false)
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
+  const [searchSuggestions, setSearchSuggestions] = useState(true)
   const [proxy, setProxy] = useState<ProxySettings>({ ...DEFAULT_PROXY_SETTINGS })
   const [dohMode, setDohMode] = useState<'off' | 'automatic' | 'secure'>('automatic')
   const [authServerAllowlist, setAuthServerAllowlist] = useState('')
@@ -487,7 +499,18 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     origin: string
     username: string
     password: string
+    /** The saved password the editor was filled with, when it could be
+     *  fetched — saving it unchanged keeps the stored value as is. */
+    original?: string
   } | null>(null)
+  const [editorPasswordVisible, setEditorPasswordVisible] = useState(false)
+  // Edge-style record view: the open entry shows its details, the password
+  // masked until clicked. Revealed passwords are kept only while this pane
+  // shows the profile they belong to.
+  const [openPasswordId, setOpenPasswordId] = useState<string | null>(null)
+  const [revealedPasswords, setRevealedPasswords] = useState<Record<string, string>>({})
+  const [passwordBusyId, setPasswordBusyId] = useState<string | null>(null)
+  const [copiedPasswordField, setCopiedPasswordField] = useState<{ id: string; field: 'username' | 'password' } | null>(null)
   // Manual "add a site" form (for when a site never triggers an auto-prompt).
   const [addSiteOrigin, setAddSiteOrigin] = useState('')
   const [addSiteKind, setAddSiteKind] = useState<PermissionKind>('microphone')
@@ -693,6 +716,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens }
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
+      setSearchSuggestions(settings.searchSuggestions !== false)
       setProxy({ ...DEFAULT_PROXY_SETTINGS, ...settings.proxy })
       setDohMode(
         settings.dohMode === 'off' || settings.dohMode === 'secure' ? settings.dohMode : 'automatic'
@@ -733,6 +757,20 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setPasswordError(err instanceof Error ? err.message : String(err))
     })
   }, [open, activeTab, profiles, activeProfileId, passwordPartition])
+
+  // Revealed passwords don't outlive the pane: forget them (and close the open
+  // record) when Settings closes or moves to another pane.
+  useEffect(() => {
+    if (open && activeTab === 'passwords') return
+    setRevealedPasswords({})
+    setOpenPasswordId(null)
+  }, [open, activeTab])
+
+  useEffect(() => {
+    if (!copiedPasswordField) return
+    const t = setTimeout(() => setCopiedPasswordField(null), 1400)
+    return () => clearTimeout(t)
+  }, [copiedPasswordField])
 
   // Edge detection reads profile names and password counts only. The actual
   // password database is not decrypted until the user confirms an import.
@@ -807,7 +845,80 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     setPasswordNotice(null)
     setPasswordError(null)
     setPasswordEditor(null)
+    setOpenPasswordId(null)
+    setRevealedPasswords({})
   }, [])
+
+  /** Fetch a saved password from main. The first call in a session may show
+   *  the OS device check (Touch ID); null when it was declined or failed. */
+  const fetchSavedPassword = useCallback(async (id: string): Promise<string | null> => {
+    if (!passwordPartition) return null
+    setPasswordBusyId(id)
+    try {
+      const value = await window.electronAPI.passwordReveal(passwordPartition, id)
+      if (value === null) setPasswordError('Showing saved passwords needs your device confirmation.')
+      return value
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : String(err))
+      return null
+    } finally {
+      setPasswordBusyId(null)
+    }
+  }, [passwordPartition])
+
+  /** Click on the dots / the eye: show the password, or hide it again. */
+  const togglePasswordReveal = useCallback(async (id: string) => {
+    if (revealedPasswords[id] !== undefined) {
+      setRevealedPasswords(({ [id]: _hidden, ...rest }) => rest)
+      return
+    }
+    setPasswordError(null)
+    const value = await fetchSavedPassword(id)
+    if (value !== null) setRevealedPasswords((current) => ({ ...current, [id]: value }))
+  }, [revealedPasswords, fetchSavedPassword])
+
+  const copyPasswordEntryField = useCallback(async (entry: PasswordEntryInfo, field: 'username' | 'password') => {
+    setPasswordError(null)
+    if (field === 'username') {
+      window.electronAPI.clipboardWriteText(entry.username)
+    } else if (revealedPasswords[entry.id] !== undefined) {
+      window.electronAPI.clipboardWriteText(revealedPasswords[entry.id])
+    } else {
+      if (!passwordPartition) return
+      // Copied in main, so the password doesn't have to be shown first.
+      setPasswordBusyId(entry.id)
+      try {
+        const copied = await window.electronAPI.passwordCopy(passwordPartition, entry.id)
+        if (!copied) {
+          setPasswordError('Copying saved passwords needs your device confirmation.')
+          return
+        }
+      } catch (err) {
+        setPasswordError(err instanceof Error ? err.message : String(err))
+        return
+      } finally {
+        setPasswordBusyId(null)
+      }
+    }
+    setCopiedPasswordField({ id: entry.id, field })
+  }, [passwordPartition, revealedPasswords])
+
+  /** Edit opens with the current password filled in (behind the same device
+   *  check as showing it); if it can't be fetched the field starts blank and
+   *  a blank field keeps the saved password. */
+  const startEditPassword = useCallback(async (entry: PasswordEntryInfo) => {
+    setPasswordError(null)
+    setPasswordNotice(null)
+    setEditorPasswordVisible(false)
+    setPasswordEditor({ id: entry.id, origin: entry.origin, username: entry.username, password: '' })
+    const current = revealedPasswords[entry.id] ?? await fetchSavedPassword(entry.id)
+    if (current === null) return
+    // Only fill a form still editing this entry and untouched meanwhile.
+    setPasswordEditor((editor) =>
+      editor && editor.id === entry.id && editor.password === '' && editor.original === undefined
+        ? { ...editor, password: current, original: current }
+        : editor)
+  }, [revealedPasswords, fetchSavedPassword])
 
   const handleImportPasswords = useCallback(async () => {
     if (!passwordPartition) return
@@ -873,15 +984,21 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     setPasswordNotice(null)
     setPasswordError(null)
     try {
+      const keepPassword = !!passwordEditor.id &&
+        (!passwordEditor.password || passwordEditor.password === passwordEditor.original)
       const entries = await window.electronAPI.passwordUpsert({
         id: passwordEditor.id,
         partition: passwordPartition,
         origin: passwordEditor.origin,
         username: passwordEditor.username,
-        // A blank password while editing means "keep the encrypted value".
-        password: passwordEditor.id && !passwordEditor.password ? undefined : passwordEditor.password,
+        // Blank (or unchanged) while editing means "keep the encrypted value".
+        password: keepPassword ? undefined : passwordEditor.password,
       })
       setPasswordEntries(entries)
+      if (passwordEditor.id && !keepPassword) {
+        const editedId = passwordEditor.id
+        setRevealedPasswords(({ [editedId]: _stale, ...rest }) => rest)
+      }
       setPasswordEditor(null)
       setPasswordNotice(passwordEditor.id ? 'Password entry updated.' : 'Password entry added.')
     } catch (err) {
@@ -893,6 +1010,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     if (!passwordPartition) return
     setPasswordEntries(await window.electronAPI.passwordDelete(passwordPartition, id))
     setPasswordEditor((editor) => editor?.id === id ? null : editor)
+    setOpenPasswordId((current) => current === id ? null : current)
+    setRevealedPasswords(({ [id]: _deleted, ...rest }) => rest)
   }, [passwordPartition])
 
   const handleClearPasswords = useCallback(async () => {
@@ -900,6 +1019,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     if (!passwordPartition) return
     setPasswordEntries(await window.electronAPI.passwordsClear(passwordPartition))
     setPasswordEditor(null)
+    setOpenPasswordId(null)
+    setRevealedPasswords({})
     setPasswordNotice('All saved passwords were removed from this profile.')
   }, [passwordPartition])
 
@@ -908,6 +1029,21 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     if (!query) return true
     return ACTION_LABELS[action].toLowerCase().includes(query)
   })
+
+  /** ↑ / ↓ step between saved passwords, from wherever focus sits in an entry. */
+  const handlePasswordListKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    // Settings renders into its own window; its document holds the focus.
+    const focused = event.currentTarget.ownerDocument.activeElement
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-password-item]'))
+    const at = items.findIndex((item) => focused instanceof Node && item.contains(focused))
+    if (at === -1) return
+    const next = items[at + (event.key === 'ArrowDown' ? 1 : -1)]
+    const row = next?.querySelector<HTMLElement>('[data-password-row]')
+    if (!row) return
+    event.preventDefault()
+    row.focus()
+  }, [])
 
   const filteredPasswordEntries = passwordEntries.filter((entry) => {
     const query = passwordSearch.trim().toLowerCase()
@@ -1053,6 +1189,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       vimNavigation,
       defaultPageUrl: defaultUrl,
       searchEngine,
+      searchSuggestions,
       proxy: normalizedProxy,
       dohMode,
       authServerAllowlist: authServerAllowlist.trim(),
@@ -1335,7 +1472,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 <div className="flex items-end justify-between gap-4 mb-3">
                   <div>
                     <h3 className="text-sm font-semibold text-foreground mb-1">Saved passwords</h3>
-                    <p className="text-[11px] text-muted-foreground">Each browser profile has its own password vault.</p>
+                    <p className="text-[11px] text-muted-foreground">Each browser profile has its own password vault. Open an entry to see or copy its password.</p>
                   </div>
                   <select
                     value={passwordPartition}
@@ -1537,15 +1674,30 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </label>
                       <label>
                         <span className="block text-[11px] font-medium text-muted-foreground mb-1">
-                          Password {passwordEditor.id && <span className="font-normal">(blank keeps current)</span>}
+                          Password {passwordEditor.id && passwordEditor.original === undefined && passwordBusyId !== passwordEditor.id && (
+                            <span className="font-normal">(blank keeps current)</span>
+                          )}
                         </span>
-                        <input
-                          type="password"
-                          value={passwordEditor.password}
-                          onChange={(event) => setPasswordEditor((current) => current ? { ...current, password: event.target.value } : current)}
-                          autoComplete="new-password"
-                          className="w-full h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
-                        />
+                        <div className="relative">
+                          <input
+                            type={editorPasswordVisible ? 'text' : 'password'}
+                            value={passwordEditor.password}
+                            onChange={(event) => setPasswordEditor((current) => current ? { ...current, password: event.target.value } : current)}
+                            autoComplete="new-password"
+                            spellCheck={false}
+                            placeholder={passwordEditor.id && passwordBusyId === passwordEditor.id ? 'Loading…' : undefined}
+                            className="w-full h-9 pl-3 pr-9 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setEditorPasswordVisible((visible) => !visible)}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                            aria-label={editorPasswordVisible ? 'Hide password' : 'Show password'}
+                            title={editorPasswordVisible ? 'Hide password' : 'Show password'}
+                          >
+                            {editorPasswordVisible ? <EyeOff size={13} /> : <Eye size={13} />}
+                          </button>
+                        </div>
                       </label>
                     </div>
                     <div className="flex justify-end gap-2 mt-3">
@@ -1589,38 +1741,166 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 ) : filteredPasswordEntries.length === 0 ? (
                   <p className="py-8 text-center text-xs text-muted-foreground border-y border-border">No passwords match your search.</p>
                 ) : (
-                  <div className="border-y border-border divide-y divide-border">
-                    {filteredPasswordEntries.map((entry) => (
-                      <div key={entry.id} className="flex items-center gap-3 py-3">
-                        <div className="h-8 w-8 rounded-md bg-secondary flex items-center justify-center text-muted-foreground shrink-0">
-                          <Globe size={14} />
+                  <div className="border-y border-border divide-y divide-border" onKeyDown={handlePasswordListKeyDown}>
+                    {filteredPasswordEntries.map((entry) => {
+                      const host = originHost(entry.origin)
+                      const isOpen = openPasswordId === entry.id
+                      const revealed = revealedPasswords[entry.id]
+                      const busy = passwordBusyId === entry.id
+                      const copied = (field: 'username' | 'password'): boolean =>
+                        copiedPasswordField?.id === entry.id && copiedPasswordField.field === field
+                      const rowButton = 'h-7 w-7 shrink-0 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground'
+                      return (
+                        <div key={entry.id} data-password-item>
+                          <div className="group flex items-center gap-1 py-2">
+                            {/* The row opens the record — Edge's password details. */}
+                            <button
+                              type="button"
+                              data-password-row
+                              onClick={() => setOpenPasswordId(isOpen ? null : entry.id)}
+                              aria-expanded={isOpen}
+                              className="min-w-0 flex-1 flex items-center gap-3 rounded-md py-1 pl-1 pr-2 text-left outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                              <div className="h-8 w-8 rounded-md bg-secondary flex items-center justify-center text-muted-foreground shrink-0">
+                                <Globe size={14} />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-sm text-foreground truncate" title={entry.origin}>
+                                  {entry.name || host}
+                                </p>
+                                <p className="text-[11px] text-muted-foreground truncate">
+                                  {entry.username} · {host}
+                                </p>
+                              </div>
+                              <ChevronDown size={14} className={`shrink-0 text-muted-foreground transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => copyPasswordEntryField(entry, 'username')}
+                              className={rowButton}
+                              aria-label={`Copy username ${entry.username}`}
+                              title="Copy username"
+                            >
+                              {copied('username') ? <Check size={12} className="text-green-500" /> : <UserRound size={12} />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => copyPasswordEntryField(entry, 'password')}
+                              disabled={busy}
+                              className={rowButton}
+                              aria-label={`Copy password for ${entry.username}`}
+                              title="Copy password"
+                            >
+                              {busy ? <Loader2 size={12} className="animate-spin" /> : copied('password') ? <Check size={12} className="text-green-500" /> : <KeyRound size={12} />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => startEditPassword(entry)}
+                              className={rowButton}
+                              aria-label={`Edit ${entry.username}`}
+                              title="Edit"
+                            >
+                              <Pencil size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeletePassword(entry.id)}
+                              className={`${rowButton} hover:text-destructive`}
+                              aria-label={`Remove ${entry.username}`}
+                              title="Remove"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+
+                          {isOpen && (
+                            <div className="mb-3 ml-11 mr-1 rounded-md border border-border bg-secondary/40 px-3 py-1">
+                              <dl className="divide-y divide-border">
+                                <div className="flex items-center gap-3 py-2">
+                                  <dt className="w-20 shrink-0 text-[11px] font-medium text-muted-foreground">Website</dt>
+                                  <dd className="min-w-0 flex-1 truncate text-sm text-foreground select-text" title={entry.origin}>{entry.origin}</dd>
+                                </div>
+                                <div className="flex items-center gap-3 py-2">
+                                  <dt className="w-20 shrink-0 text-[11px] font-medium text-muted-foreground">Username</dt>
+                                  <dd className="min-w-0 flex-1 truncate text-sm text-foreground select-text">{entry.username}</dd>
+                                  <button
+                                    type="button"
+                                    onClick={() => copyPasswordEntryField(entry, 'username')}
+                                    className="h-7 px-2 shrink-0 flex items-center gap-1.5 rounded-md text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                                  >
+                                    {copied('username') ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+                                    {copied('username') ? 'Copied' : 'Copy'}
+                                  </button>
+                                </div>
+                                <div className="flex items-center gap-3 py-2">
+                                  <dt className="w-20 shrink-0 text-[11px] font-medium text-muted-foreground">Password</dt>
+                                  <dd className="min-w-0 flex-1">
+                                    {revealed !== undefined ? (
+                                      <span className="font-mono text-sm text-foreground break-all select-text">{revealed}</span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => togglePasswordReveal(entry.id)}
+                                        disabled={busy}
+                                        className="font-mono text-sm tracking-[0.2em] text-foreground hover:text-primary disabled:opacity-60"
+                                        title="Show password"
+                                      >
+                                        ••••••••••
+                                      </button>
+                                    )}
+                                  </dd>
+                                  <button
+                                    type="button"
+                                    onClick={() => togglePasswordReveal(entry.id)}
+                                    disabled={busy}
+                                    className="h-7 w-7 shrink-0 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                                    aria-label={revealed !== undefined ? 'Hide password' : 'Show password'}
+                                    title={revealed !== undefined ? 'Hide password' : 'Show password'}
+                                  >
+                                    {busy ? <Loader2 size={12} className="animate-spin" /> : revealed !== undefined ? <EyeOff size={12} /> : <Eye size={12} />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => copyPasswordEntryField(entry, 'password')}
+                                    disabled={busy}
+                                    className="h-7 px-2 shrink-0 flex items-center gap-1.5 rounded-md text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                                  >
+                                    {copied('password') ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+                                    {copied('password') ? 'Copied' : 'Copy'}
+                                  </button>
+                                </div>
+                                <div className="flex items-center gap-3 py-2">
+                                  <dt className="w-20 shrink-0 text-[11px] font-medium text-muted-foreground">Activity</dt>
+                                  <dd className="min-w-0 flex-1 text-[11px] text-muted-foreground">
+                                    {entry.lastUsedAt ? `Last used ${formatPasswordDate(entry.lastUsedAt)}` : 'Never used to sign in'}
+                                    {' · '}Saved {formatPasswordDate(entry.createdAt)}
+                                    {entry.updatedAt > entry.createdAt && ` · Changed ${formatPasswordDate(entry.updatedAt)}`}
+                                  </dd>
+                                </div>
+                              </dl>
+                              <div className="flex justify-end gap-2 py-2">
+                                <button
+                                  type="button"
+                                  onClick={() => startEditPassword(entry)}
+                                  className="h-7 px-2.5 flex items-center gap-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted"
+                                >
+                                  <Pencil size={12} />
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeletePassword(entry.id)}
+                                  className="h-7 px-2.5 flex items-center gap-1.5 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10"
+                                >
+                                  <Trash2 size={12} />
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm text-foreground truncate" title={entry.origin}>
-                            {entry.name || new URL(entry.origin).host}
-                          </p>
-                          <p className="text-[11px] text-muted-foreground truncate">
-                            {entry.username} · {new URL(entry.origin).host}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => { setPasswordEditor({ id: entry.id, origin: entry.origin, username: entry.username, password: '' }); setPasswordError(null); setPasswordNotice(null) }}
-                          className="h-7 w-7 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                          aria-label={`Edit ${entry.username}`}
-                        >
-                          <Pencil size={12} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeletePassword(entry.id)}
-                          className="h-7 w-7 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-destructive"
-                          aria-label={`Remove ${entry.username}`}
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
                 <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
@@ -1869,6 +2149,20 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     </>
                   )
                 })()}
+                <label className="flex items-center justify-between gap-4 mt-3 cursor-pointer">
+                  <span>
+                    <span className="block text-sm text-foreground">Show search suggestions</span>
+                    <span className="block text-[11px] text-muted-foreground mt-0.5">
+                      Ask the search engine for suggestions while you type in the address bar (Google, Yandex, DuckDuckGo, Bing).
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={searchSuggestions}
+                    onChange={(event) => setSearchSuggestions(event.target.checked)}
+                    className="h-4 w-4 accent-primary shrink-0"
+                  />
+                </label>
               </div>
 
               {/* Default browser */}

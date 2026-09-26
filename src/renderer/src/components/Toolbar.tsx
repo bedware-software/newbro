@@ -1,12 +1,10 @@
-import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useAppStore, saveStateNow, findWorkspaceCandidates, buildBookmarkHTML } from '../store/app-store'
-import { normalizeURL } from '../lib/url'
 import { log } from '../lib/log'
-import { suggestFor, subscribe as subscribeHistory, type Suggestion } from '../lib/history'
 import { InputDialog } from './InputDialog'
+import { Omnibox } from './Omnibox'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CertificatePopup } from './CertificatePopup'
-import { DownloadsPanel } from './DownloadsPanel'
 import { ImportWorkspaceDialog } from './ImportWorkspaceDialog'
 import { ExportWorkspaceDialog } from './ExportWorkspaceDialog'
 import type { Workspace, WorkspaceCandidate } from '../store/types'
@@ -19,6 +17,7 @@ import {
   RefreshCw, ArrowDown,
 } from 'lucide-react'
 import type { DownloadEntry } from '../App'
+import { DOWNLOADS_URL, internalPageOf } from '../lib/internal-pages'
 
 // Trigger-side icon registry. Only the icons used on dropdown trigger
 // buttons appear here — row icons are resolved inside the popup window
@@ -642,10 +641,10 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
         shortcut: shortcutFor('toggle-sidebar'),
       },
       { id: 'search', label: 'Search Everything', iconName: 'Search', shortcut: shortcutFor('search') },
-      // Permanent entry point for the downloads panel: the toolbar button
+      // Permanent entry point for the Downloads page: the toolbar button
       // hides itself once the list is empty, so this row is what guarantees
-      // the panel is always reachable.
-      { id: 'downloads', label: 'Downloads', iconName: 'Download' },
+      // the page is always reachable.
+      { id: 'downloads', label: 'Downloads', iconName: 'Download', shortcut: shortcutFor('open-downloads') },
       { id: 'settings', label: 'Settings', iconName: 'Settings', shortcut: shortcutFor('settings') },
       updateReady
         ? {
@@ -761,30 +760,8 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
   const activeProfile = getActiveProfile()
   const activeTab = getActiveTab()
 
-  const [urlValue, setUrlValue] = useState(activeTab?.url || '')
-  const urlRef = useRef<HTMLInputElement>(null)
-
-  // Address-bar autocomplete state. The "typed" portion is what the user
-  // actually typed (no protocol guessing, no suggestion); the suggestion's
-  // suffix is appended to the input value and shown selected so further
-  // typing replaces it naturally. Tab accepts the suggestion (collapses the
-  // selection to the end). Empty suggestion = no autocomplete active.
-  //
-  // - autoActive: true while the user is editing in the URL bar. We don't
-  //   want history suggestions overriding the URL we sync from active tab
-  //   navigation, only when the user is actively typing.
-  // - suggestion: holds the matched URL plus its tail and navigation target
-  //   so Enter can dispatch to the right place even after Tab.
-  const [autoActive, setAutoActive] = useState(false)
-  const [suggestion, setSuggestion] = useState<Suggestion | null>(null)
-  const typedRef = useRef<string>('')
-  // Subscribe to history-cache updates so suggestions reflect the latest
-  // snapshot from main. We don't read it directly here — suggestFor() pulls
-  // from the cache at call time — but this re-renders the address-bar
-  // effects when the cache changes so a freshly-visited URL becomes
-  // available immediately.
-  const [, setHistoryTick] = useState(0)
-  useEffect(() => subscribeHistory(() => setHistoryTick((n) => n + 1)), [])
+  // The URL bar box — the address bar's suggestion list opens under it.
+  const urlBarRef = useRef<HTMLDivElement>(null)
 
   // Create/rename dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -811,24 +788,31 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
   const [canGoForward, setCanGoForward] = useState(false)
   const [certPopupOpen, setCertPopupOpen] = useState(false)
 
-  // Downloads — open state for the panel plus the two counts the toolbar
-  // button's badge is derived from: in-flight downloads (blue progress badge)
-  // and the total number of entries the panel would list (grey resting badge).
-  // The button itself only exists while that total is non-zero — once the user
-  // clears the list the toolbar affordance disappears and Menu → Downloads is
-  // the only way back in. Both counts stay in sync via onDownloadsUpdated.
-  const [downloadsPanelOpen, setDownloadsPanelOpen] = useState(false)
+  // Downloads — the two counts the toolbar button's badge is derived from:
+  // in-flight downloads (blue progress badge) and the total number of entries
+  // the Downloads page lists (grey resting badge). The button itself only
+  // exists while that total is non-zero — once the user clears the list the
+  // toolbar affordance disappears and Menu → Downloads (or its shortcut) is
+  // the way back in. Both counts stay in sync via onDownloadsUpdated.
   const [activeDownloads, setActiveDownloads] = useState(0)
   const [totalDownloads, setTotalDownloads] = useState(0)
   // True once a download finishes and stays true until the user opens the
-  // panel — drives a green ✓ "done" badge so a completed download is visible
-  // at a glance even when nothing is in flight, the way Chrome/Edge flag
-  // freshly-finished downloads. `downloadsPanelOpen` is read through a ref so
-  // the broadcast handler (registered once) can suppress the badge while the
-  // panel is already showing the result.
+  // Downloads page — drives a green ✓ "done" badge so a completed download is
+  // visible at a glance even when nothing is in flight, the way Chrome/Edge
+  // flag freshly-finished downloads. Read through a ref so the broadcast
+  // handler (registered once) can skip the badge while the page is already
+  // showing the result.
   const [downloadsDone, setDownloadsDone] = useState(false)
-  const downloadsPanelOpenRef = useRef(downloadsPanelOpen)
-  downloadsPanelOpenRef.current = downloadsPanelOpen
+  const downloadsPageActive = internalPageOf(activeTab?.url) === 'downloads'
+  const downloadsPageActiveRef = useRef(downloadsPageActive)
+  downloadsPageActiveRef.current = downloadsPageActive
+  useEffect(() => {
+    if (downloadsPageActive) setDownloadsDone(false)
+  }, [downloadsPageActive])
+  const openDownloadsPage = (): void => {
+    setDownloadsDone(false)
+    useAppStore.getState().showInternalPage(DOWNLOADS_URL)
+  }
   useEffect(() => {
     let alive = true
     // Remember each download's last-seen state so we can detect the
@@ -855,7 +839,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
       // drop any pending "done" flag with it — otherwise a later download
       // would briefly inherit the stale green tick before its own first tick.
       if (entries.length === 0) setDownloadsDone(false)
-      else if (justCompleted && !downloadsPanelOpenRef.current) setDownloadsDone(true)
+      else if (justCompleted && !downloadsPageActiveRef.current) setDownloadsDone(true)
     }
     void window.electronAPI.downloadsList?.().then((list) => {
       if (!alive) return
@@ -889,46 +873,11 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
     return () => window.removeEventListener('newbro-open-new-workspace-dialog', handler)
   }, [])
 
+  // The padlock follows the active tab's URL. (The address bar's own text is
+  // the Omnibox's business.)
   useEffect(() => {
-    const url = activeTab?.url || ''
-    // While the user is actively editing the address bar, don't let
-    // background tab.url updates (did-navigate fired by a backgrounded tab,
-    // a redirect on the current tab settling after the user already started
-    // typing, etc.) clobber their input. Security state still tracks the
-    // real URL.
-    if (autoActive) {
-      if (activeTabId) updateSecurity(url, activeTabId)
-      return
-    }
-    // Preserve the "select-all" state across a value sync. When the user
-    // opens a new tab with the "focus URL bar" preference, we focus +
-    // select-all the input. Any subsequent activeTab.url update from the
-    // store (did-navigate, redirects, final page URL once the load
-    // finishes, or a security-state-driven re-render) would otherwise
-    // clobber the highlight — React rewrites the input's value and the
-    // browser resets the selection. If the input is focused AND was
-    // fully selected before the sync, reapply the select after React
-    // commits the new value.
-    const input = urlRef.current
-    const hadFullSelection =
-      !!input &&
-      document.activeElement === input &&
-      input.value.length > 0 &&
-      input.selectionStart === 0 &&
-      input.selectionEnd === input.value.length
-    setUrlValue(url)
-    setSuggestion(null)
-    typedRef.current = ''
-    if (activeTabId) updateSecurity(url, activeTabId)
-    if (hadFullSelection) {
-      setTimeout(() => {
-        const el = urlRef.current
-        if (!el || document.activeElement !== el) return
-        try { el.select() }
-        catch (err) { console.warn('Toolbar: urlRef.select() threw:', err) }
-      }, 0)
-    }
-  }, [activeTab?.url, activeTabId, certBypassedOrigins, autoActive])
+    if (activeTabId) updateSecurity(activeTab?.url || '', activeTabId)
+  }, [activeTab?.url, activeTabId, certBypassedOrigins])
 
   // Derive security state from URL
   const updateSecurity = (url: string, tabId: string) => {
@@ -1047,112 +996,6 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
       cleanup?.()
     }
   }, [activeTabId])
-
-  const handleNavigate = async () => {
-    // If the user pressed Enter with a live autocomplete suggestion, treat
-    // their accepted URL as the navigation target — not the bare typed
-    // prefix that's also still in the value pre-acceptance. We commit the
-    // suggestion's canonical URL (which still goes through normalizeURL so
-    // bare hosts get https:// prepended).
-    const inputText = suggestion ? suggestion.url : urlValue
-    const resolved = normalizeURL(inputText)
-    if (!resolved || !activeTabId) return
-    setSuggestion(null)
-    setAutoActive(false)
-    typedRef.current = ''
-    // Ask main for the live URL so hitting Enter on an unchanged URL triggers
-    // a reload (matches old <webview>.reload behavior), not a redundant load.
-    const state = await window.electronAPI.tabGetState?.(activeTabId)
-    if (state && state.url === resolved) {
-      window.electronAPI.tabReload?.(activeTabId, true)
-    } else {
-      window.electronAPI.tabNavigate?.(activeTabId, resolved)
-    }
-    useAppStore.getState().updateTabUrl(activeTabId, resolved)
-  }
-
-  // When a suggestion is active, set the input's selection to cover the
-  // appended suffix so further typing replaces it (same trick Chrome /
-  // Firefox use). Runs in layout effect so it lands before paint and the
-  // user never sees the unselected appended chars flicker.
-  useLayoutEffect(() => {
-    const input = urlRef.current
-    if (!input) return
-    if (!suggestion || !autoActive) return
-    if (document.activeElement !== input) return
-    const typedLen = urlValue.length - suggestion.suffix.length
-    if (typedLen < 0) return
-    try { input.setSelectionRange(typedLen, urlValue.length) }
-    catch (err) { console.warn('Toolbar: url suggestion setSelectionRange threw:', err) }
-  }, [urlValue, suggestion, autoActive])
-
-  // Compute the next state after an edit. Detects deletion vs insertion
-  // from InputEvent.inputType so backspace doesn't immediately re-suggest
-  // the same URL the user just deleted from (which would be infuriating).
-  // Returns the typed portion plus an optional suggestion to surface.
-  const handleUrlChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
-    const next = e.target.value
-    const inputType = (e.nativeEvent as InputEvent).inputType
-    const isDeletion = inputType ? inputType.startsWith('delete') : next.length < typedRef.current.length
-    const isPaste = inputType === 'insertFromPaste'
-    const isComposition = inputType === 'insertCompositionText'
-
-    typedRef.current = next
-    if (isDeletion || isPaste || isComposition) {
-      // No autocomplete after delete / paste / IME. The user either wants
-      // the bare value they ended up with, or we'd interfere with the
-      // composition session.
-      setUrlValue(next)
-      setSuggestion(null)
-      return
-    }
-
-    const match = suggestFor(next)
-    if (!match) {
-      setUrlValue(next)
-      setSuggestion(null)
-      return
-    }
-    setUrlValue(next + match.suffix)
-    setSuggestion(match)
-  }
-
-  const handleUrlKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'Enter') {
-      // Enter accepts whatever's showing — the navigation handler reads
-      // suggestion.url when a suggestion is present so a partial-typed
-      // value still navigates to the matched URL.
-      handleNavigate()
-      return
-    }
-    if (e.key === 'Tab' && suggestion) {
-      // Accept the suggestion: collapse selection to end, keep the value.
-      // preventDefault so Tab doesn't move focus to the next element.
-      e.preventDefault()
-      const input = urlRef.current
-      typedRef.current = urlValue
-      setSuggestion(null)
-      if (input) {
-        const end = urlValue.length
-        try { input.setSelectionRange(end, end) }
-        catch (err) { console.warn('Toolbar: url Tab accept setSelectionRange threw:', err) }
-      }
-      return
-    }
-    if (e.key === 'Escape' && suggestion) {
-      // First Esc: back out of autocomplete, keep the typed text, and stay
-      // in the URL bar — the browser convention of "dismiss the suggestion
-      // without losing what I typed." stopPropagation keeps the global Esc
-      // handler (App.tsx) from also firing and yanking focus to the page;
-      // a second Esc (now with no suggestion) does that instead.
-      e.preventDefault()
-      e.stopPropagation()
-      const typed = typedRef.current
-      setUrlValue(typed)
-      setSuggestion(null)
-      return
-    }
-  }
 
   const handleBack = () => {
     if (activeTabId) window.electronAPI.tabGoBack?.(activeTabId)
@@ -1443,7 +1286,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
         } as React.CSSProperties}
       >
         {/* App menu */}
-        <AppMenu sidebarVisible={sidebarVisible} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} onOpenDownloads={() => { setDownloadsPanelOpen(true); setDownloadsDone(false) }} />
+        <AppMenu sidebarVisible={sidebarVisible} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} onOpenDownloads={openDownloadsPage} />
 
         {/* Profile selector */}
         <Dropdown
@@ -1480,17 +1323,17 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
 
         <div className="w-px h-5 bg-border shrink-0" />
 
-        {/* Downloads — opens a detached panel with active + recent downloads.
-            The badge has three resting states: a blue count while downloads
-            are in flight, a green ✓ once they finish (so a completed download
-            is visible without opening the panel), and — after the panel has
-            been seen — a grey count of everything the panel still lists. The
-            button is dropped entirely when that list is empty; Menu →
-            Downloads remains the way in. All of it seeds/clears via
-            onDownloadsUpdated. */}
+        {/* Downloads — opens the Downloads page (newbro://downloads) in a tab,
+            or switches to it. The badge has three resting states: a blue
+            count while downloads are in flight, a green ✓ once they finish
+            (so a completed download is visible without opening the page),
+            and — after the page has been seen — a grey count of everything
+            the page still lists. The button is dropped entirely when that
+            list is empty; Menu → Downloads remains the way in. All of it
+            seeds/clears via onDownloadsUpdated. */}
         {totalDownloads > 0 && (
           <button
-            onClick={() => { setDownloadsPanelOpen((v) => !v); setDownloadsDone(false) }}
+            onClick={openDownloadsPage}
             className="relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             title={
@@ -1562,6 +1405,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
 
         {/* URL bar with security indicator + tab title */}
         <div
+          ref={urlBarRef}
           className="flex-[5] min-w-0 flex items-center h-8 rounded-md bg-secondary hover:bg-muted focus-within:bg-background"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
@@ -1593,41 +1437,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
             </button>
             <div className="w-px h-full ml-1.5 bg-card" />
           </>)}
-          <input
-            id="url-bar"
-            ref={urlRef}
-            type="text"
-            value={urlValue}
-            onChange={handleUrlChange}
-            onKeyDown={handleUrlKeyDown}
-            onFocus={() => {
-              // Mark the address bar as active so background tab.url syncs
-              // don't clobber whatever the user is typing. Cleared on blur.
-              setAutoActive(true)
-              typedRef.current = urlValue
-            }}
-            onBlur={(e) => {
-              // Browsers keep the visual selection highlight on a blurred
-              // input (just dimmed). Collapse the selection to position 0
-              // so the URL bar reads as plain unselected text once focus
-              // moves away — matches typical address-bar behavior.
-              try { e.currentTarget.setSelectionRange(0, 0) }
-              catch (err) { console.warn('Toolbar: url onBlur setSelectionRange threw:', err) }
-              // Clear autocomplete state on blur so the URL bar revisits
-              // the active tab's URL on next focus / activeTab change.
-              setAutoActive(false)
-              if (suggestion) {
-                // Drop the auto-appended suffix back to just what the user
-                // actually typed; otherwise the next time we sync from
-                // activeTab.url we'd briefly show a stale suggestion.
-                setUrlValue(typedRef.current)
-                setSuggestion(null)
-              }
-            }}
-            placeholder="Enter URL or search..."
-            spellCheck={false}
-            className="flex-1 h-full px-2.5 bg-transparent border-none text-sm text-foreground outline-none"
-          />
+          <Omnibox tabId={activeTabId} tabUrl={activeTab?.url || ''} anchorRef={urlBarRef} />
         </div>
 
         {/* Extensions cluster sits at the far right of the toolbar so it
@@ -1680,7 +1490,6 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
         />
       )}
 
-      <DownloadsPanel open={downloadsPanelOpen} onClose={() => setDownloadsPanelOpen(false)} />
     </>
   )
 }

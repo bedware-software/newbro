@@ -33,6 +33,12 @@ export type IconName =
   | 'Puzzle'
   | 'PanelLeft'
   | 'PanelLeftClose'
+  | 'FolderOpen'
+  | 'Link'
+  | 'Pause'
+  | 'Play'
+  | 'RotateCw'
+  | 'ListX'
 
 export interface DropdownItem {
   id: string
@@ -120,9 +126,10 @@ export interface DropdownSpec {
   // Both kinds (list = bottom actions; menu = the entire body):
   actions?: DropdownAction[]
 
-  // Menu kind: opened from a panel's vim mode (m). The first action starts
-  // highlighted; j/k move through the actions, h/l across the colour
-  // swatches, Enter picks the highlighted one.
+  // Menu kind: opened from the keyboard (a panel's vim mode, or m on the
+  // Downloads page). The first action starts highlighted; j/k (or the arrow
+  // keys) move through the actions, h/l across the colour swatches, Enter
+  // picks the highlighted one.
   keyboard?: boolean
 }
 

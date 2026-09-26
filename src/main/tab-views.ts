@@ -22,7 +22,12 @@ import { BrowserWindow, Menu, WebContentsView, clipboard, dialog, ipcMain, scree
 import type { FileFilter, Session, WebContents } from 'electron'
 import { join } from 'path'
 import { log } from './log'
-import { addVisit as addHistoryVisit, updateTitle as updateHistoryTitle } from './history'
+import {
+  dropTypedNavigation,
+  recordTabNavigation,
+  updateFavicon as updateHistoryFavicon,
+  updateTitle as updateHistoryTitle,
+} from './history'
 import { setupPartitionSession, shouldDropExtConsoleMessage } from './index'
 import { ensureExtensionInSession } from './extensions/manager'
 import { injectMatchingUserScripts } from './extensions/userscripts'
@@ -627,13 +632,21 @@ function wireEvents(rec: TabRecord): void {
   wc.on('did-navigate', (_e, url) => {
     emit({ type: 'did-navigate', tabId: rec.tabId, url })
     emitNavState()
-    // Record an autocomplete entry for the URL bar. did-navigate fires once
-    // per main-frame commit, so each real navigation is counted exactly once;
-    // in-page hash changes go through did-navigate-in-page (skipped here on
-    // purpose — they'd inflate the LRU with anchor variants of the same
-    // page). The history module itself filters non-http schemes.
-    try { addHistoryVisit(url) }
-    catch (err) { log.warn('history.addVisit failed', String(err)) }
+    // Record the visit for the address bar's history — typed when the
+    // address bar started this navigation. did-navigate fires once per
+    // main-frame commit (never for error pages), so each real navigation is
+    // counted exactly once; in-page hash changes go through
+    // did-navigate-in-page (skipped on purpose — they'd flood history with
+    // anchor variants of one page). The history module filters non-http
+    // schemes.
+    try { recordTabNavigation(rec.tabId, url) }
+    catch (err) { log.warn('history visit failed', String(err)) }
+  })
+  // An address-bar navigation counts as typed only for the commit it leads
+  // to: another page starting first (a link clicked meanwhile) or the load
+  // failing drops the note.
+  wc.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) dropTypedNavigation(rec.tabId, details.url)
   })
   wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
     emit({ type: 'did-navigate-in-page', tabId: rec.tabId, url, isMainFrame })
@@ -656,9 +669,21 @@ function wireEvents(rec: TabRecord): void {
       log.warn('history.updateTitle failed', String(err))
     }
   })
-  wc.on('page-favicon-updated', (_e, favicons) =>
+  wc.on('page-favicon-updated', (_e, favicons) => {
     emit({ type: 'page-favicon-updated', tabId: rec.tabId, favicons })
-  )
+    // The suggestion rows show it next to the URL.
+    try {
+      const url = wc.getURL()
+      if (url && favicons[0]) updateHistoryFavicon(url, favicons[0])
+    } catch (err) {
+      log.warn('history.updateFavicon failed', String(err))
+    }
+  })
+  wc.on('did-fail-load', (_e, errorCode, _errorDescription, _validatedURL, isMainFrame) => {
+    // ERR_ABORTED (-3) is a navigation superseded by another, which
+    // did-start-navigation already judged.
+    if (isMainFrame && errorCode !== -3) dropTypedNavigation(rec.tabId)
+  })
   wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) =>
     emit({
       type: 'did-fail-load',

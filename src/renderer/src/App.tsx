@@ -4,7 +4,6 @@ import { normalizeURL, setSearchEngine } from './lib/url'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
 import { setVimNavActive } from './lib/vim-nav'
-import { setHistory } from './lib/history'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
@@ -19,6 +18,8 @@ import { MoveGroupDialog } from './components/MoveGroupDialog'
 import { OpenExternalLinkDialog } from './components/OpenExternalLinkDialog'
 import { CloudSyncSetupDialog } from './components/CloudSyncSetupDialog'
 import { HttpAuthDialog } from './components/HttpAuthDialog'
+import { DOWNLOADS_FIND_EVENT, DOWNLOADS_RELOAD_EVENT } from './components/DownloadsPage'
+import { DOWNLOADS_URL, internalPageOf, isInternalUrl } from './lib/internal-pages'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
 
@@ -38,6 +39,7 @@ interface Settings {
   vimNavigation: boolean
   defaultPageUrl: string
   searchEngine: string
+  searchSuggestions: boolean
   dohMode: 'off' | 'automatic' | 'secure'
   authServerAllowlist: string
   passwordManager: {
@@ -197,6 +199,10 @@ declare global {
       savedCredentialDelete: (host: string) => Promise<SavedCredentialInfo[]>
       savedCredentialsClearAll: () => Promise<SavedCredentialInfo[]>
       passwordsList: (partition: string) => Promise<PasswordEntryInfo[]>
+      /** The saved password, or null when the device check was declined. */
+      passwordReveal: (partition: string, id: string) => Promise<string | null>
+      /** Copies the saved password in main; false when the device check was declined. */
+      passwordCopy: (partition: string, id: string) => Promise<boolean>
       passwordUpsert: (input: {
         id?: string
         partition: string
@@ -288,14 +294,29 @@ declare global {
       downloadsClear?: () => Promise<boolean>
       downloadsShowInFolder?: (id: string) => Promise<boolean>
       downloadsOpenFile?: (id: string) => Promise<boolean>
+      downloadsRetry?: (id: string, fallbackPartition?: string) => Promise<boolean>
+      downloadsFileIcon?: (id: string) => Promise<string | null>
+      downloadsOpenFolder?: () => Promise<boolean>
       downloadsRefresh?: () => Promise<DownloadEntry[]>
       onDownloadsUpdated?: (callback: (entries: DownloadEntry[]) => void) => () => void
       onCloseBlankDownloadTab?: (callback: (tabId: string) => void) => () => void
 
-      // URL visit history for address-bar autocomplete (src/main/history.ts).
-      historyList?: () => Promise<HistoryEntry[]>
+      // Address-bar history and suggestions (src/main/history.ts,
+      // omnibox-suggest.ts, omnibox-popup.ts; see components/Omnibox.tsx).
+      historyQuery?: (text: string, allowInline: boolean) => Promise<unknown>
+      historyRemove?: (url: string) => Promise<void>
+      historyRemoveSearchTerm?: (term: string) => Promise<void>
+      historyAddSearchTerm?: (term: string) => Promise<void>
+      historyNoteTyped?: (tabId: string, url: string) => void
       historyClear?: () => Promise<boolean>
-      onHistoryUpdated?: (callback: (entries: HistoryEntry[]) => void) => () => void
+      omniboxSuggest?: (query: string, partition?: string) => Promise<string[]>
+      omniboxPrewarm?: () => void
+      omniboxShow?: (spec: unknown) => void
+      omniboxHide?: () => void
+      onOmniboxEvent?: (callback: (evt: unknown) => void) => () => void
+      omniboxPopupEvent?: (evt: unknown) => void
+      omniboxPopupResize?: (size: { height: number }) => void
+      onOmniboxPopupSpec?: (callback: (spec: unknown) => void) => () => void
 
       // Per-profile Bookshelf reading queue (src/main/bookshelf.ts).
       bookshelfList?: (profileId: string) => Promise<{ readings: Reading[]; groups: ReadingGroup[] }>
@@ -335,13 +356,6 @@ declare global {
   }
 }
 
-export interface HistoryEntry {
-  url: string
-  title?: string
-  visitedAt: number
-  visits: number
-}
-
 export type DownloadState =
   | 'progressing'
   | 'paused'
@@ -362,6 +376,10 @@ export interface DownloadEntry {
   endedAt?: number
   originUrl?: string
   bytesPerSecond?: number
+  /** Session partition the download ran in (Retry reuses it). */
+  partition?: string
+  /** Completed entries only: whether the file is still on disk. */
+  fileExists?: boolean
 }
 
 interface DefaultBrowserStatus {
@@ -736,22 +754,6 @@ export default function App() {
     load()
   }, [hydrate, windowProfileId, windowWorkspaceId, windowTabId, loadAndApplySettings])
 
-  // Address-bar autocomplete cache. Pull the full URL history snapshot once
-  // at boot and keep it in sync with the per-update broadcast from main.
-  // Suggestions resolve against this local mirror so keystrokes don't pay
-  // an IPC round-trip — see src/renderer/src/lib/history.ts.
-  useEffect(() => {
-    let alive = true
-    void window.electronAPI.historyList?.().then((list) => {
-      if (!alive) return
-      setHistory((list as HistoryEntry[]) || [])
-    })
-    const cleanup = window.electronAPI.onHistoryUpdated?.((list) => {
-      setHistory((list as HistoryEntry[]) || [])
-    })
-    return () => { alive = false; cleanup?.() }
-  }, [])
-
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
   const getActiveWorkspace = useAppStore((s) => s.getActiveWorkspace)
@@ -846,7 +848,7 @@ export default function App() {
             pid,
             bridge: typeof window.electronAPI.bookshelfAdd,
           })
-          if (tab && pid && window.electronAPI.bookshelfAdd) {
+          if (tab && pid && window.electronAPI.bookshelfAdd && !isInternalUrl(tab.url)) {
             window.electronAPI.bookshelfAdd(pid, { url: tab.url, title: tab.title, favicon: tab.favicon })
             setBookshelfOpen(true)
           }
@@ -885,8 +887,16 @@ export default function App() {
           setCommandPaletteOpen((v) => !v)
           break
         case 'find-in-page':
+          // The Downloads page has its own search box — find goes there.
+          if (internalPageOf(s.getActiveTab()?.url) === 'downloads') {
+            window.dispatchEvent(new Event(DOWNLOADS_FIND_EVENT))
+            break
+          }
           setFindBarOpen(true)
           setFindBarFocusTick((t) => t + 1)
+          break
+        case 'open-downloads':
+          s.showInternalPage(DOWNLOADS_URL)
           break
         case 'toggle-sidebar':
           cyclePanel('sidebar', toggleSidebar)
@@ -901,6 +911,10 @@ export default function App() {
         }
         case 'reload': {
           if (!s.activeTabId) break
+          if (internalPageOf(s.getActiveTab()?.url) === 'downloads') {
+            window.dispatchEvent(new Event(DOWNLOADS_RELOAD_EVENT))
+            break
+          }
           // Reload, not re-navigate. Going through tabNavigate(currentUrl)
           // would push a fresh history entry every time the user hits Cmd+R
           // and diverge from the URL-bar-Enter-on-unchanged-URL path, which
@@ -1075,6 +1089,12 @@ export default function App() {
     // between the foreground and background IPC channels — only the
     // `background` arg differs.
     const placeIncomingTab = (url: string, background: boolean): void => {
+      // Pages (and extensions) can ask for new tabs, but never for Newbro's
+      // own pages — like Chrome refusing chrome:// links from the web.
+      if (isInternalUrl(url)) {
+        log.warn('open-url-as-tab: refusing internal page', url)
+        return
+      }
       const s = useAppStore.getState()
       if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId, url, !background)
     }

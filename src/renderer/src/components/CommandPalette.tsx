@@ -52,6 +52,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'find-in-page', label: 'Find in Page...', category: 'Navigation' },
   { id: 'save-page', label: 'Save Page As…', category: 'Navigation' },
   { id: 'search', label: 'Search Everything', category: 'General' },
+  { id: 'open-downloads', label: 'Open Downloads', category: 'General' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'View' },
   { id: 'settings', label: 'Open Settings', category: 'General' },
   { id: 'about', label: 'About', category: 'General' },
@@ -340,6 +341,7 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   'page-devtools': 'CmdOrCtrl+Shift+I',
   'save-page': 'CmdOrCtrl+S',
   'toggle-bookshelf': 'CmdOrCtrl+Shift+B',
+  'open-downloads': 'CmdOrCtrl+J',
 }
 
 function getDefaultBinding(id: string): string | undefined {

@@ -13,6 +13,7 @@ import {
   User, Layout, Search, Settings, Download, Info, LogOut, Plus, Pencil, Trash2, Menu, Globe, Import,
   Upload, X, FolderPlus, FolderMinus, FolderInput, Folder, CopyPlus, MessageSquare,
   MessageSquareOff, FilePlus, Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose, Check,
+  FolderOpen, Link, Pause, Play, RotateCw, ListX,
 } from 'lucide-react'
 import type {
   DropdownAction,
@@ -29,6 +30,7 @@ const ICONS: Record<IconName, typeof User> = {
   User, Layout, Search, Settings, Download, Info, LogOut, Plus, Pencil, Trash2, Menu, Globe, Import,
   Upload, X, FolderPlus, FolderMinus, FolderInput, Folder, CopyPlus, MessageSquare,
   MessageSquareOff, FilePlus, Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose,
+  FolderOpen, Link, Pause, Play, RotateCw, ListX,
 }
 
 function resolveIcon(name: IconName | undefined, fallback: typeof User = User): typeof User {
@@ -263,9 +265,9 @@ export function DropdownMenuContent({
   const actions = spec.actions ?? []
   const colors = spec.colors ?? []
 
-  // Keyboard navigation for menus opened from a panel's vim mode: j/k step
-  // through the enabled actions, h/l across the colour swatches, and Enter
-  // picks whichever was moved to last.
+  // Keyboard navigation for menus opened from the keyboard: j/k (or ↓/↑)
+  // step through the enabled actions, h/l across the colour swatches, and
+  // Enter picks whichever was moved to last.
   const [keyFocus, setKeyFocus] = useState<{ zone: 'actions' | 'colors'; index: number } | null>(null)
   useEffect(() => {
     const first = actions.findIndex((a) => !a.disabled)
@@ -277,13 +279,14 @@ export function DropdownMenuContent({
     const handler = (e: KeyboardEvent): void => {
       if (e.metaKey || e.ctrlKey || e.altKey) return
       const enabled = actions.flatMap((a, i) => (a.disabled ? [] : [i]))
-      if (e.key === 'j' || e.key === 'k') {
+      const step = e.key === 'j' || e.key === 'ArrowDown' ? 1 : e.key === 'k' || e.key === 'ArrowUp' ? -1 : 0
+      if (step !== 0) {
         if (enabled.length === 0) return
         e.preventDefault()
         setKeyFocus((prev) => {
           // Back from the swatches: resume on the action last highlighted.
           if (prev?.zone === 'actions' && enabled.includes(prev.index)) {
-            const at = enabled.indexOf(prev.index) + (e.key === 'j' ? 1 : -1)
+            const at = enabled.indexOf(prev.index) + step
             return { zone: 'actions', index: enabled[Math.max(0, Math.min(enabled.length - 1, at))] }
           }
           return { zone: 'actions', index: enabled[0] }

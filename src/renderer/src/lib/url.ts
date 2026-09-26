@@ -4,6 +4,27 @@ export function setSearchEngine(url: string): void {
   searchEngineUrl = url || 'https://www.google.com/search?q=%s'
 }
 
+/** Results page URL for a query on the default search engine. */
+export function searchUrlFor(query: string): string {
+  return searchEngineUrl.replace('%s', encodeURIComponent(query.trim()))
+}
+
+const ENGINE_NAMES: Array<[RegExp, string]> = [
+  [/^https?:\/\/([a-z0-9-]+\.)*google\./i, 'Google'],
+  [/^https?:\/\/([a-z0-9-]+\.)*(yandex|ya)\./i, 'Yandex'],
+  [/^https?:\/\/([a-z0-9-]+\.)*duckduckgo\./i, 'DuckDuckGo'],
+  [/^https?:\/\/([a-z0-9-]+\.)*bing\./i, 'Bing'],
+  [/^https?:\/\/unduck\.link/i, 'Unduck'],
+]
+
+/** "Google", "Yandex", … — or the engine's host for a custom one. For the
+ *  address bar's "Search Google" rows. */
+export function searchEngineName(): string {
+  const known = ENGINE_NAMES.find(([re]) => re.test(searchEngineUrl))
+  if (known) return known[1]
+  try { return new URL(searchEngineUrl.replace('%s', '')).host.replace(/^www\./, '') } catch { return 'the web' }
+}
+
 /** file:// URL for a local Windows path — a drive path (`C:\dir\page.html`,
  *  `C:/dir/page.html`) or a UNC share (`\\server\share\page.html`). Segments
  *  are percent-encoded so spaces and `#`/`%`/`?` in file names survive, while
@@ -22,6 +43,10 @@ export function windowsPathToFileURL(raw: string): string | null {
   return null
 }
 
+// Local places, not queries — localhost and IP addresses, with an optional
+// port and path. Chrome opens these over http:// (no certificate to be had).
+const LOCAL_HOST = /^(localhost|(\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:.]+\])(:\d{1,5})?([/?#].*)?$/i
+
 export function normalizeURL(raw: string): string | null {
   const trimmed = raw.trim()
   if (!trimmed) return null
@@ -34,9 +59,21 @@ export function normalizeURL(raw: string): string | null {
   const fileURL = windowsPathToFileURL(trimmed)
   if (fileURL) return fileURL
 
+  if (!trimmed.includes(' ') && LOCAL_HOST.test(trimmed)) return 'http://' + trimmed
+
   if (!trimmed.includes(' ') && trimmed.includes('.')) {
     return 'https://' + trimmed
   }
 
-  return searchEngineUrl.replace('%s', encodeURIComponent(trimmed))
+  return searchUrlFor(trimmed)
+}
+
+/** Whether normalizeURL would search for this input rather than open it. */
+export function looksLikeSearch(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (!trimmed) return false
+  if (/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed)) return false
+  if (windowsPathToFileURL(trimmed)) return false
+  if (!trimmed.includes(' ') && (LOCAL_HOST.test(trimmed) || trimmed.includes('.'))) return false
+  return true
 }
