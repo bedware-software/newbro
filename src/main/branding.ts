@@ -25,3 +25,16 @@ export const APP_NAME = is.dev ? 'Newbro Dev' : 'Newbro'
 // instance is constructed. Both are guaranteed by importing this module
 // as the first internal import in src/main/index.ts.
 app.setName(APP_NAME)
+
+// Windows taskbar groups windows by AppUserModelID. Without an explicit one
+// the process starts with none — its windows group by whatever launched it
+// (the NSIS shortcut's ID, or the bare exe path for prod-iter / updater
+// relaunches) — and Electron then lazily assigns `electron.app.<name>` the
+// first time something needs it (a site's toast notification). Windows
+// opened after that land in a separate taskbar group from the earlier ones.
+// Pin it up front, before any window exists, to the ID electron-builder
+// stamps on the installer's shortcuts (package.json build.appId); dev gets
+// its own so `npm run dev` windows don't merge with the installed app.
+if (process.platform === 'win32') {
+  app.setAppUserModelId(is.dev ? 'com.newbro.browser.dev' : 'com.newbro.browser')
+}
