@@ -33,6 +33,7 @@ import {
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { attachDownloadHandler } from './downloads'
 import { log } from './log'
+import { runwaPaletteBounds, wantsRunwaPaletteGeometry } from './runwa-palette'
 import {
   registerWorkspaceWindowForTabs,
   installTabPreloadListeners,
@@ -3245,7 +3246,11 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   })
 
   // Allow renderer-created detached dialog windows and hide their native header.
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  // Bounds for the popup this handler is about to allow, picked up by
+  // did-create-window below, which fires synchronously right after.
+  let pendingPopupBounds: Electron.Rectangle | null = null
+  win.webContents.setWindowOpenHandler(({ url, features }) => {
+    pendingPopupBounds = null
     // Accept both `'about:blank'` and the empty string. `window.open('')`
     // and `window.open(undefined)` can surface here as either, depending on
     // the Chromium / Electron version, and treating only the literal
@@ -3253,6 +3258,9 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     // appear — the renderer-side React state would flip to "open" but the
     // native popup never spawned.
     if (url === 'about:blank' || url === '') {
+      // Palette-style popups open where Runwa's search window sits. Null
+      // when Runwa isn't running: the renderer's own bounds stand.
+      if (wantsRunwaPaletteGeometry(features)) pendingPopupBounds = runwaPaletteBounds()
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
@@ -3314,6 +3322,11 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   // setWindowOpenHandler callback returns `allow`, and this event fires.
   win.webContents.on('did-create-window', (childWindow) => {
     registerDetachedPopup(childWindow)
+    // setBounds rather than constructor bounds: a window.open popup built
+    // at 882x820 on a 150% display comes out 884x824, while setBounds lands
+    // on exactly the size Runwa's own window ends up at.
+    if (pendingPopupBounds) childWindow.setBounds(pendingPopupBounds)
+    pendingPopupBounds = null
     // The popup was created with show:false. Make it physically invisible via
     // OS compositor opacity, then "show" it so the renderer can paint into it.
     // The window stays at opacity 0 until the renderer signals that React has

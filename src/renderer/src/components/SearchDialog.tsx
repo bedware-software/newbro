@@ -350,6 +350,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId }: Props) {
       width={760}
       height={640}
       closeOnBlur
+      matchRunwaPalette
       onClose={() => onOpenChange(false)}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">

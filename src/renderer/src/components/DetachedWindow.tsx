@@ -5,6 +5,9 @@ import { log } from '../lib/log'
 const DRAG_HANDLE_SELECTOR = '[data-detached-drag-handle]'
 const DRAG_CANCEL_SELECTOR = '[data-detached-no-drag]'
 const DRAG_THRESHOLD_PX = 2
+/** Features-string token asking main to open the popup at Runwa's
+ *  search-window geometry. Mirrored in src/main/runwa-palette.ts. */
+const RUNWA_PALETTE_FEATURE = 'newbro-runwa-palette'
 
 interface Props {
   open: boolean
@@ -25,6 +28,10 @@ interface Props {
    *  Saved bounds override the `width` / `height` props on subsequent
    *  opens — the props become "first-launch defaults". */
   persistKey?: string
+  /** Palette-style popup: while Runwa is running, main opens it at the size
+   *  and position of Runwa's search window, overriding `width` / `height`
+   *  and the centered placement. Without Runwa nothing changes. */
+  matchRunwaPalette?: boolean
   onClose: () => void
   onWindowChange?: (popup: Window | null) => void
   children: ReactNode
@@ -96,6 +103,7 @@ export function DetachedWindow({
   closeOnBlur = false,
   alwaysOnTop = false,
   persistKey,
+  matchRunwaPalette = false,
   onClose,
   onWindowChange,
   children,
@@ -141,6 +149,7 @@ export function DetachedWindow({
         'location=no',
         'status=no',
         'menubar=no',
+        ...(matchRunwaPalette ? [`${RUNWA_PALETTE_FEATURE}=yes`] : []),
       ].join(','),
     )
 
@@ -315,7 +324,7 @@ export function DetachedWindow({
         suppressBeforeUnloadRef.current = false
       }
     }
-  }, [open, width, height, resizable, closeOnEscape, closeOnBlur, persistKey])
+  }, [open, width, height, resizable, closeOnEscape, closeOnBlur, persistKey, matchRunwaPalette])
 
   // Show the popup window once React has rendered content into the portal.
   // Double-rAF ensures the browser has committed the paint before we reveal.
