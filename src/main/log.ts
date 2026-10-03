@@ -18,20 +18,35 @@ function formatArgs(args: unknown[]): string {
     .join(' ')
 }
 
+// Lines logged before startLogSession(): module-import time, before index.ts
+// knows whether this process is the primary instance. Null once started.
+let pendingLines: string[] | null = []
+
 function writeToFile(level: string, prefix: string, msg: string): void {
   try {
     const line = `${ts()} ${level} ${prefix} ${msg}\n`
-    appendFileSync(LOG_FILE, line)
+    if (pendingLines) pendingLines.push(line)
+    else appendFileSync(LOG_FILE, line)
   } catch {
     // ignore file write errors
   }
 }
 
-// Truncate log file on startup to keep it manageable
-try {
-  writeFileSync(LOG_FILE, `--- Newbro started at ${new Date().toISOString()} ---\n`)
-} catch {
-  // ignore
+/**
+ * Truncate the previous run's log (keeps it manageable) and flush the lines
+ * buffered so far. index.ts calls this once the single-instance lock is ours.
+ * Truncating at import instead meant every second instance — a link opened
+ * from another app, a relaunch from a launcher — wiped the running
+ * instance's log on its way to handing over its argv and exiting.
+ */
+export function startLogSession(): void {
+  if (!pendingLines) return
+  try {
+    writeFileSync(LOG_FILE, `--- Newbro started at ${new Date().toISOString()} ---\n${pendingLines.join('')}`)
+  } catch {
+    // ignore
+  }
+  pendingLines = null
 }
 
 export function getLogFilePath(): string {

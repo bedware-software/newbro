@@ -90,10 +90,19 @@ try {
   if (Get-Process Newbro -ErrorAction SilentlyContinue) {
     Write-Host "Stopping $exe"
     # The Chromium helpers are Newbro.exe too and die with the main process, so "process not
-    # found" for some of them is expected.
-    Stop-Process -Name Newbro -Force -ErrorAction SilentlyContinue
-    Wait-Process -Name Newbro -Timeout 15 -ErrorAction SilentlyContinue
-    if (Get-Process Newbro -ErrorAction SilentlyContinue) { throw 'Newbro is still running after 15s' }
+    # found" for some of them is expected. A killed process gets its exit code at once but stays
+    # in the process list until Windows has torn it down (~100-200ms for the browser process,
+    # longer with many tabs), and Wait-Process counts it as exited and returns without waiting,
+    # so poll until the list is actually empty. Killing again each round also catches a helper
+    # the main process respawned just before it died.
+    $deadline = (Get-Date).AddSeconds(15)
+    while ($left = Get-Process Newbro -ErrorAction SilentlyContinue) {
+      if ((Get-Date) -gt $deadline) {
+        throw "Newbro is still running after 15s (pid $(($left | ForEach-Object Id) -join ', '))"
+      }
+      Stop-Process -Name Newbro -Force -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 100
+    }
   } else {
     Write-Host 'Newbro is not running'
   }

@@ -32,7 +32,7 @@ import {
 } from './store'
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { attachDownloadHandler } from './downloads'
-import { log } from './log'
+import { log, startLogSession } from './log'
 import { runwaPaletteBounds, wantsRunwaPaletteGeometry } from './runwa-palette'
 import {
   registerWorkspaceWindowForTabs,
@@ -90,6 +90,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
   process.exit(0)
 }
+startLogSession()
 
 // ── Chromium flags ──
 
