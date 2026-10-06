@@ -878,7 +878,7 @@ function partitionForWorkspace(workspaceId: string): string | null {
   return profileId ? `persist:profile-${profileId}` : null
 }
 
-function partitionForBrowserWindow(win: BrowserWindow): string | null {
+export function partitionForBrowserWindow(win: BrowserWindow): string | null {
   for (const [wsId, w] of workspaceWindows) {
     if (w === win) return partitionForWorkspace(wsId)
   }

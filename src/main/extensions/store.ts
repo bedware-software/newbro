@@ -6,16 +6,23 @@
 // 404s — Edge-exclusive listings have their own 32-char IDs that Google
 // doesn't know about.
 //
-// We use Electron's `net.request` so the user's configured proxy and proxy
-// auth are honoured (important for users behind corporate proxies). Both
-// endpoints respond with a 302 to the actual CRX payload — with
-// `redirect: 'follow'` (the default) Electron follows automatically, so
-// the `response` event fires on the terminal 200.
+// We use Electron's `net.request` on a caller-supplied profile session,
+// NOT Node's global fetch: Node's fetch ignores every proxy Chromium
+// knows about (system proxy, the user's Settings → Proxy, a VPN
+// extension's PAC), so on networks where Google is only reachable
+// through one of those the download died with a bare "fetch failed"
+// while the store page itself loaded fine. Going through the profile
+// session gives the CRX request the exact route the store page took,
+// proxy auth included. Both endpoints respond with a 302 to the actual
+// CRX payload — with `redirect: 'follow'` (the default) Electron follows
+// automatically, so the `response` event fires on the terminal 200.
 
-import { net, session, type Session } from 'electron'
+import { net, type Session } from 'electron'
 import { log } from '../log'
 
-const CHROME_VERSION = '125.0.0.0'
+// Google's update server withholds extensions whose minimum_chrome_version
+// is above `prodversion`, so advertise the Chromium we actually embed.
+const CHROME_VERSION = process.versions.chrome || '125.0.0.0'
 
 function buildChromeUrl(extensionId: string): string {
   // Params mirror what stable Chrome sends for an on-demand install. `os` is
@@ -88,14 +95,14 @@ class FetchError extends Error {
  *  if Chrome returns 404 (extension doesn't exist there — typical for
  *  Edge-exclusive listings) we try the Edge Add-ons CDN. Throws on
  *  network errors or non-2xx responses from both endpoints. */
-export async function fetchCrx(extensionId: string): Promise<Buffer> {
+export async function fetchCrx(extensionId: string, ses: Session): Promise<Buffer> {
   try {
-    return await fetchFrom(buildChromeUrl(extensionId), 'chrome')
+    return await fetchFrom(buildChromeUrl(extensionId), 'chrome', ses)
   } catch (err) {
     if (err instanceof FetchError && err.status === 404) {
       log.info('crx: chrome 404, trying edge', extensionId)
       try {
-        return await fetchFrom(buildEdgeUrl(extensionId), 'edge')
+        return await fetchFrom(buildEdgeUrl(extensionId), 'edge', ses)
       } catch (edgeErr) {
         if (edgeErr instanceof FetchError) {
           throw new Error(
@@ -109,56 +116,13 @@ export async function fetchCrx(extensionId: string): Promise<Buffer> {
   }
 }
 
-// Dedicated, never-touched session for CRX downloads. The default session
-// has Chrome extensions loaded into and removed from it as the user installs
-// and uninstalls them; we observed that `net.request` against the default
-// session would silently fail with `net::ERR_FAILED` on the second install
-// after a remove (the first install always worked). Routing through a
-// session that nothing else mutates avoids whatever stale state the install
-// path leaves behind in the request layer.
-//
-// Note: this is an in-memory partition (no `persist:` prefix) so cookies
-// and HTTP cache from a previous fetch can't influence the next one — we
-// want a clean slate every time.
-const CRX_FETCH_PARTITION = 'crx-fetch'
-let crxFetchSession: Session | null = null
-
-function getCrxFetchSession(): Session {
-  if (crxFetchSession) return crxFetchSession
-  const ses = session.fromPartition(CRX_FETCH_PARTITION)
-  // Disable HTTP cache entirely so a stale 404/302 from a previous install
-  // attempt can't poison the next one.
-  ses.setUserAgent(`Mozilla/5.0 (X11; Linux x86_64) Chrome/${CHROME_VERSION}`)
-  crxFetchSession = ses
-  return ses
-}
-
-async function clearCrxFetchSession(): Promise<void> {
-  if (!crxFetchSession) return
-  // Belt-and-braces: clear cookies, cache, and storage between fetches so
-  // every download is independent of what came before. We only catch errors
-  // here because clearing is best-effort — a failed clear shouldn't block
-  // an install attempt.
-  try {
-    await Promise.all([
-      crxFetchSession.clearCache(),
-      crxFetchSession.clearStorageData({
-        storages: ['cookies', 'cachestorage', 'serviceworkers'],
-      }),
-    ])
-  } catch (err) {
-    log.warn('crx: failed to clear fetch session', String(err))
-  }
-}
-
-function fetchFrom(url: string, source: 'chrome' | 'edge'): Promise<Buffer> {
+function fetchFrom(url: string, source: 'chrome' | 'edge', ses: Session): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     // `redirect: 'follow'` (the default) makes Electron follow 3xx
     // responses internally — the `response` event fires once on the
     // terminal 200. Using 'manual' without `request.followRedirect()`
     // raises "Redirect was cancelled", which is what the first
     // implementation was doing wrong.
-    const ses = getCrxFetchSession()
     const request = net.request({ method: 'GET', url, session: ses, useSessionCookies: false })
     request.setHeader('User-Agent', `Mozilla/5.0 (X11; Linux x86_64) Chrome/${CHROME_VERSION}`)
     // Bypass any HTTP cache the request layer might consult.
@@ -186,8 +150,3 @@ function fetchFrom(url: string, source: 'chrome' | 'edge'): Promise<Buffer> {
     request.end()
   })
 }
-
-// Exported so installExtensionById can wipe state between attempts. Not
-// strictly necessary now that the fetch session is isolated from the rest
-// of the app, but cheap insurance against any other state surprise.
-export { clearCrxFetchSession }

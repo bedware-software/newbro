@@ -5,7 +5,7 @@ import * as path from 'path'
 import { spawn } from 'child_process'
 import { loadState, saveState, loadLastUsedWorkspace } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
-import { setupPartitionSession, createWorkspaceWindow, getOpenWorkspaceWindows, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest, getPartitionForSession } from './index'
+import { setupPartitionSession, createWorkspaceWindow, getOpenWorkspaceWindows, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest, getPartitionForSession, partitionForBrowserWindow } from './index'
 import { listGrants, setGrant, clearGrant, clearAllGrants, exportGrants, replaceGrants, type PermissionKind, type PermissionDecision } from './permissions-store'
 import { listCredentials, deleteCredential, clearAllCredentials } from './credentials-store'
 import {
@@ -386,11 +386,15 @@ export function registerIpcHandlers(): void {
     return listExtensions()
   })
 
-  ipcMain.handle('extensions:install', async (_e, idOrUrl: string) => {
+  ipcMain.handle('extensions:install', async (e, idOrUrl: string) => {
     const id = extractExtensionIdFromUrl(idOrUrl)
     if (!id) throw new Error('Could not parse extension ID from input')
+    // Download through the sender window's profile session so the CRX
+    // takes the same proxy/VPN route as the store page the user is on.
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const partition = win ? partitionForBrowserWindow(win) : null
     try {
-      return await installExtensionById(id)
+      return await installExtensionById(id, partition ? session.fromPartition(partition) : undefined)
     } catch (err) {
       // Surface the real cause — the renderer only sees a generic
       // "install failed", so without this the failure is invisible.

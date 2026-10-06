@@ -35,9 +35,9 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, r
 import { join } from 'node:path'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { log } from '../log'
-import { deriveExtensionIdFromPublicKey } from './crx'
-import { extractExtensionIdFromUrl as _extract } from './store'
-import { downloadExtension } from 'electron-chrome-web-store'
+import { deriveExtensionIdFromPublicKey, extractCrxPublicKey, parseCrx } from './crx'
+import { extractExtensionIdFromUrl as _extract, fetchCrx } from './store'
+import { unzipTo } from './zip'
 import { buildSwShimSource, SW_SHIM_MAGIC, SW_SHIM_LEGACY_MAGIC, SW_SHIM_FOOTER } from './sw-shim'
 import { getSwRpcServerInfo } from './sw-rpc-server'
 import { clearUserScriptsForExtension } from './userscripts'
@@ -1551,19 +1551,36 @@ export async function setExtensionPinned(extensionId: string, pinned: boolean): 
   broadcastExtensionsChanged()
 }
 
-export async function installExtensionById(extensionId: string): Promise<ExtensionInfo> {
+/** `downloadSession` should be the profile session the user is browsing
+ *  in, so the CRX request is routed (proxy, VPN extension PAC, proxy
+ *  auth) exactly like the store page was. Callers without a window
+ *  context (cloud-sync reconcile) fall back to any live profile session,
+ *  then the default session, which still carries Settings → Proxy. */
+export async function installExtensionById(
+  extensionId: string,
+  downloadSession?: Session,
+): Promise<ExtensionInfo> {
   log.info('extensions: installing', extensionId)
-  // Download + unpack via electron-chrome-web-store: real CRX3 signature
-  // parsing, verification against the expected id, and it writes
-  // manifest.key itself so the id stays stable. Replaces the hand-rolled
-  // fetchCrx/parseCrx/unzipTo/extractCrxPublicKey pipeline.
+  const ses = downloadSession ?? getAllSessions()[0] ?? session.defaultSession
+  const crx = await fetchCrx(extensionId, ses)
+  // Pick the proof whose key hashes to the requested id (a CWS CRX3 also
+  // carries Google's enrollment key). No match means the store served a
+  // different extension than we asked for — refuse it.
+  const publicKey = extractCrxPublicKey(crx, extensionId)
+  if (!publicKey) {
+    throw new Error(`Downloaded CRX does not match extension ID ${extensionId}`)
+  }
   const root = extensionsRoot()
   mkdirSync(root, { recursive: true })
   const stagingDir = join(root, `.cws-staging-${Date.now()}`)
-  mkdirSync(stagingDir, { recursive: true })
   try {
-    const unpackedPath = await downloadExtension(extensionId, stagingDir)
-    return await adoptUnpackedExtension(extensionId, unpackedPath)
+    unzipTo(parseCrx(crx), stagingDir)
+    // Overwrite any `key` the publisher left in manifest.json with the
+    // CRX key so Electron derives the same id Chrome Web Store assigned.
+    const manifest = readManifest(stagingDir)
+    manifest.key = publicKey.toString('base64')
+    writeFileSync(join(stagingDir, 'manifest.json'), JSON.stringify(manifest, null, 2))
+    return await adoptUnpackedExtension(extensionId, stagingDir)
   } finally {
     try {
       rmSync(stagingDir, { recursive: true, force: true })
@@ -1592,7 +1609,7 @@ export async function adoptUnpackedExtension(
   try {
     cpSync(unpackedPath, tmpDir, { recursive: true })
     // publicKey=null: the unpacked manifest already carries `key`
-    // (electron-chrome-web-store writes it during unpack), so patch 1
+    // (installExtensionById writes it during unpack), so patch 1
     // keeps it as-is.
     patchManifest(tmpDir, null)
     const manifest = readManifest(tmpDir)
