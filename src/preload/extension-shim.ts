@@ -142,8 +142,8 @@ if (IS_SW_REALM) {
   // match — that guard silently disabling this file in SW realms is
   // exactly what the old "SW preload doesn't fire in Electron 41" bug
   // actually was. Realm detection must use process.type.
-  const onSwEvent = createEventHub('newbro-sw-event')
-  installMainWorldApis((channel, payload) => ipcRenderer.invoke('newbro-sw', channel, payload), onSwEvent)
+  const onSwEvent = createEventHub('newbro-sw-event', fromSwWire)
+  installMainWorldApis(invokeSw, onSwEvent)
   initSwRealm(onSwEvent)
 } else if (proto === 'chrome-extension:') {
   reportLoaded('preload-start')
@@ -186,17 +186,36 @@ if (IS_SW_REALM) {
 // { ok, data } | { ok: false, error }.
 type EventSubscribe = (channel: string, cb: (payload: unknown) => void) => void
 
+/** Main sends service workers JSON strings, never object graphs (see the
+ *  wire notes in main/extensions/sw-bridge.ts). */
+function fromSwWire(value: unknown): unknown {
+  return typeof value === 'string' ? JSON.parse(value) : value
+}
+
+/** SW → main request over the bridge, resolving to the decoded
+ *  { ok, data } | { ok: false, error }. */
+function invokeSw(channel: string, payload: unknown): Promise<unknown> {
+  return ipcRenderer.invoke('newbro-sw', String(channel), payload).then(fromSwWire)
+}
+
 /** Main → realm event fan-out for one ipcRenderer channel carrying
  *  (channel, payload). Pushes that arrive before anyone subscribed to
  *  their channel are buffered (bounded) and replayed to the first
  *  subscriber. Subscribers are contextBridge-proxied main-world
  *  callbacks. */
-function createEventHub(ipcChannel: string): EventSubscribe {
+function createEventHub(ipcChannel: string, decode: (wire: unknown) => unknown = (v) => v): EventSubscribe {
   const listeners = new Map<string, Array<(payload: unknown) => void>>()
   const MAX_BUFFERED = 200
   const buffered = new Map<string, unknown[]>()
-  ipcRenderer.on(ipcChannel, (_event, channel: unknown, payload: unknown) => {
+  ipcRenderer.on(ipcChannel, (_event, channel: unknown, wire: unknown) => {
     const ch = String(channel)
+    let payload: unknown
+    try {
+      payload = decode(wire)
+    } catch (err) {
+      console.error('[newbro-ext-shim] undecodable event payload:', ch, err)
+      return
+    }
     const cbs = listeners.get(ch)
     if (!cbs || cbs.length === 0) {
       const buf = buffered.get(ch) ?? []
@@ -505,8 +524,7 @@ function mainWorldApis(
 // first subscriber.
 function initSwRealm(on: EventSubscribe): void {
   const facade = {
-    invoke: (channel: string, payload: unknown): Promise<unknown> =>
-      ipcRenderer.invoke('newbro-sw', String(channel), payload),
+    invoke: invokeSw,
     notify: (channel: string, payload: unknown): void => {
       ipcRenderer.send('newbro-sw-notify', String(channel), payload)
     },
@@ -518,8 +536,7 @@ function initSwRealm(on: EventSubscribe): void {
   // chrome-extension:// workers, so a successful 'hello' doubles as
   // the extension-context check: web-site service workers get a
   // rejection and we install nothing into them.
-  ipcRenderer
-    .invoke('newbro-sw', 'hello', { realm: 'service-worker' })
+  invokeSw('hello', { realm: 'service-worker' })
     .then((ack) => {
       const ok = !!(ack as { ok?: boolean } | undefined)?.ok
       if (!ok) {

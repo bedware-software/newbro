@@ -12,7 +12,7 @@ import { APP_NAME } from './branding'
 // missed by one process-life: the lib was already in Node's require cache
 // by the time the ready handler fired.
 import './extensions/patch-lib-deps'
-import { app, BrowserWindow, ipcMain, session, Menu, nativeImage, screen, protocol, systemPreferences } from 'electron'
+import { app, BrowserWindow, crashReporter, ipcMain, session, Menu, nativeImage, screen, protocol, systemPreferences } from 'electron'
 import { dirname, isAbsolute, join, resolve } from 'path'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { pathToFileURL } from 'url'
@@ -91,6 +91,11 @@ if (!app.requestSingleInstanceLock()) {
   process.exit(0)
 }
 startLogSession()
+
+// Keep minidumps of native crashes locally (userData/Crashpad, or
+// app.getPath('crashDumps')), never uploaded: without them a crash inside
+// Electron leaves only an OS report with no usable stack.
+crashReporter.start({ uploadToServer: false })
 
 // ── Chromium flags ──
 

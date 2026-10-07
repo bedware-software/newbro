@@ -10,9 +10,17 @@
 // Wire protocol (all multiplexed over two channels so workers only
 // ever need one handle() each):
 //   SW → main  invoke: ipcRenderer.invoke('newbro-sw', channel, payload)
-//              → { ok: true, data } | { ok: false, error }
+//              → JSON of { ok: true, data } | { ok: false, error }
 //   SW → main  notify: ipcRenderer.send('newbro-sw-notify', channel, payload)
-//   main → SW  push:   worker.send('newbro-sw-event', channel, payload)
+//   main → SW  push:   worker.send('newbro-sw-event', channel, JSON of payload)
+//
+// Everything main sends a worker travels as a JSON string, parsed in the
+// worker. Objects would be rebuilt by V8's deserializer on the worker
+// thread, and a renderer died there (macOS, SIGTRAP in ValueDeserializer)
+// rebuilding Claude's ~230 KB nested feature-flag payload forwarded as a
+// storage change. A string arrives in one piece; JSON.parse is ordinary
+// script that a stopping worker can interrupt without taking the process
+// down.
 //
 // The preload realm (extension-shim.ts) exposes a `__newbroIpc`
 // facade into the SW main world so the polyfill shim can call
@@ -96,6 +104,13 @@ export function sendToExtensionWorkers(
   payload: unknown,
   mode: 'all' | 'first' = 'all',
 ): number {
+  let json: string
+  try {
+    json = JSON.stringify(payload ?? null)
+  } catch (err) {
+    log.warn('sw-bridge: push payload is not JSON', { channel, err: String(err) })
+    return 0
+  }
   let reached = 0
   for (const [ses, workers] of liveWorkers) {
     if (partition !== null && sessionPartitions.get(ses) !== partition) continue
@@ -103,7 +118,7 @@ export function sendToExtensionWorkers(
       if (extensionId !== null && id !== extensionId) continue
       if (!ready) continue
       try {
-        worker.send('newbro-sw-event', channel, payload)
+        worker.send('newbro-sw-event', channel, json)
         reached++
         if (mode === 'first') return reached
       } catch (err) {
@@ -134,9 +149,12 @@ export function wireServiceWorkerBridge(ses: Session, partition: string): void {
     const workers = liveWorkers.get(ses)
     if (!workers) return
 
-    if (runningStatus === 'stopped') {
+    // Drop the worker as soon as it starts stopping: a push landing
+    // mid-shutdown is lost at best, and the caller's queue fallback hands
+    // it to the next worker instead.
+    if (runningStatus === 'stopping' || runningStatus === 'stopped') {
       if (workers.delete(versionId)) {
-        log.info('sw-bridge: worker stopped', { partition, versionId })
+        log.info('sw-bridge: worker stopped', { partition, versionId, runningStatus })
       }
       return
     }
@@ -165,11 +183,11 @@ export function wireServiceWorkerBridge(ses: Session, partition: string): void {
         const handler = invokeHandlers.get(ch)
         if (!handler) {
           log.warn('sw-bridge: no invoke handler', { partition, extensionId, channel: ch })
-          return { ok: false, error: `no handler for '${ch}'` }
+          return JSON.stringify({ ok: false, error: `no handler for '${ch}'` })
         }
         try {
           const data = await handler(ctx, payload)
-          return { ok: true, data }
+          return JSON.stringify({ ok: true, data })
         } catch (err) {
           log.warn('sw-bridge: invoke handler threw', {
             partition,
@@ -177,7 +195,7 @@ export function wireServiceWorkerBridge(ses: Session, partition: string): void {
             channel: ch,
             err: String(err),
           })
-          return { ok: false, error: String(err) }
+          return JSON.stringify({ ok: false, error: String(err) })
         }
       })
       worker.ipc.on('newbro-sw-notify', (_event, channel: unknown, payload: unknown) => {
