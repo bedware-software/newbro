@@ -96,8 +96,11 @@
 //         while local/sync/session pass through to the real storage.
 //   V47 — 'sw-no-preload' beacon: reports a worker that started without
 //         the SW preload realm (in an unsandboxed renderer process).
+//   V48 — runtime.onMessage / onConnect / *External listeners see senders
+//         from side panels without `tab`, as in Chrome (main pushes the
+//         panel webContents ids over 'non-tab-views').
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V47__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V48__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 // Module service workers get the shim as a sibling module imported first
@@ -1043,6 +1046,59 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     var onConnectListeners = [];
     // portId → { onMessageListeners[], onDisconnectListeners[] }
     var bridgedPorts = Object.create(null);
+    // V48: Electron stamps sender.tab on every message from a webContents
+    // it owns — including extension side panels, which Chrome sends
+    // tab-less and which extensions tell apart exactly that way (Claude
+    // refuses its panel's bridge, voice port and host-info requests when
+    // sender.tab is set). Main pushes the webContents ids of those views;
+    // listeners see their senders without tab, as in Chrome.
+    var nonTabViewIds = Object.create(null);
+    function setNonTabViews(payload) {
+      var next = Object.create(null);
+      var ids = payload && payload.ids;
+      if (Array.isArray(ids)) {
+        for (var i = 0; i < ids.length; i++) next[ids[i]] = true;
+      }
+      nonTabViewIds = next;
+    }
+    var nonTabViewsAttempts = 0;
+    function subscribeNonTabViews() {
+      var ipc = getIpc();
+      if (!ipc) {
+        // The IPC facade lands right after the preload's hello; give up
+        // after ~10s (no preload realm → no IPC at all).
+        if (nonTabViewsAttempts++ < 200) setTimeout(subscribeNonTabViews, 50);
+        return;
+      }
+      try { ipc.on('non-tab-views', setNonTabViews); }
+      catch (e) { swLog('non-tab-views/on', e); }
+      var initial = ipcInvoke('non-tab-views', null);
+      if (initial) initial.then(setNonTabViews);
+    }
+    subscribeNonTabViews();
+    function untabbedSender(sender) {
+      if (!sender || !sender.tab || !nonTabViewIds[sender.tab.id]) return sender;
+      var copy = {};
+      for (var k in sender) {
+        if (k !== 'tab' && Object.prototype.hasOwnProperty.call(sender, k)) copy[k] = sender[k];
+      }
+      return copy;
+    }
+    function untabEventArgs(label, args) {
+      if (label === 'onMessage' || label === 'onMessageExternal') {
+        args[1] = untabbedSender(args[1]);
+        return;
+      }
+      var port = args[0];
+      if (!port || !port.sender) return;
+      var s = untabbedSender(port.sender);
+      if (s === port.sender) return;
+      try { port.sender = s; } catch (e) { /* read-only — try defineProperty */ }
+      if (port.sender !== s) {
+        try { Object.defineProperty(port, 'sender', { value: s, configurable: true, writable: true }); }
+        catch (e2) { swLog('untab/port-sender', e2); }
+      }
+    }
     function wrapEventForLog(real, label) {
       if (!real || typeof real !== 'object' || typeof real.addListener !== 'function') return real;
       var origAdd = real.addListener.bind(real);
@@ -1055,19 +1111,19 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
           if (label === 'onMessage') onMessageListeners.push(cb);
           if (label === 'onConnect') onConnectListeners.push(cb);
           var spy = function () {
+            var args = Array.prototype.slice.call(arguments);
             try {
-              var args = Array.prototype.slice.call(arguments);
-              var summary;
+              var summary = null;
               if (label === 'onMessage') {
                 summary = { msg: summarizeMsg(args[0]), senderId: args[1] && args[1].id, hasSendResponse: typeof args[2] === 'function' };
               } else if (label === 'onConnect') {
                 summary = { portName: args[0] && args[0].name, senderId: args[0] && args[0].sender && args[0].sender.id };
-              } else {
-                summary = { args: args.length };
               }
-              sendPost('runtime-event-' + label, { extId: extId, info: summary });
+              if (summary) sendPost('runtime-event-' + label, { extId: extId, info: summary });
             } catch (e) { swLog('runtime-event-spy/' + label, e); }
-            return cb.apply(this, arguments);
+            try { untabEventArgs(label, args); }
+            catch (e) { swLog('runtime-event-untab/' + label, e); }
+            return cb.apply(this, args);
           };
           // Tag so removeListener can find the spy if extension uses
           // the original cb reference. We can't perfectly support that
@@ -1342,6 +1398,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     catch (e) { swLog('startPortSwPoll', e); }
     var wrappedOnMessage = null;
     var wrappedOnConnect = null;
+    var wrappedExternal = Object.create(null);
     var runtimeProxy = new Proxy(Object.create(null), {
       get: function (_t, prop) {
         if (prop === 'onStartup') return onStartupEvent;
@@ -1353,6 +1410,10 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         if (prop === 'onConnect') {
           if (!wrappedOnConnect) wrappedOnConnect = wrapEventForLog(realRuntime.onConnect, 'onConnect');
           return wrappedOnConnect;
+        }
+        if (prop === 'onMessageExternal' || prop === 'onConnectExternal') {
+          if (!wrappedExternal[prop]) wrappedExternal[prop] = wrapEventForLog(realRuntime[prop], prop);
+          return wrappedExternal[prop];
         }
         var v = Reflect.get(realRuntime, prop);
         if (typeof v === 'function') return v.bind(realRuntime);

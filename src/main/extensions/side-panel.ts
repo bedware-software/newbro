@@ -26,6 +26,7 @@ import { BrowserWindow, Menu, WebContentsView, ipcMain, session } from 'electron
 import { join } from 'node:path'
 import { log } from '../log'
 import { registerExtensionApiHandler } from './api-ipc'
+import { registerSwInvokeHandler, sendToExtensionWorkers } from './sw-bridge'
 import { ensureExtensionInSession, getSidePanelDefaultPath } from './manager'
 import { setupPartitionSession, shouldDropExtConsoleMessage } from '../index'
 import {
@@ -90,6 +91,21 @@ function stateFor(partition: string, extensionId: string): ExtensionPanelState {
   return st
 }
 
+/** webContents ids of open panels. Electron reports them as sender.tab
+ *  on runtime messages; Chrome sends side panels tab-less and extensions
+ *  rely on it, so the SW shim strips tab for these ids. */
+function panelWebContentsIds(): number[] {
+  const ids: number[] = []
+  for (const e of entries) {
+    if (!e.view.webContents.isDestroyed()) ids.push(e.view.webContents.id)
+  }
+  return ids
+}
+
+function broadcastPanelIds(): void {
+  sendToExtensionWorkers(null, null, 'non-tab-views', { ids: panelWebContentsIds() })
+}
+
 function numberOrNull(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
@@ -141,6 +157,7 @@ function refreshWindow(windowId: number): void {
 function closeEntry(entry: PanelEntry, reason: string): void {
   if (!entries.delete(entry)) return
   log.info('sidepanel: closed', { extensionId: entry.extensionId, chromeTabId: entry.chromeTabId, reason })
+  broadcastPanelIds()
   // Detaches the view if it was showing, picks what shows instead and
   // tells the renderer.
   refreshWindow(entry.windowId)
@@ -164,6 +181,7 @@ function hookWindow(windowId: number, win: BrowserWindow): void {
       entries.delete(e)
       try { if (!e.view.webContents.isDestroyed()) e.view.webContents.close() } catch { /* window teardown */ }
     }
+    broadcastPanelIds()
   })
 }
 
@@ -288,6 +306,8 @@ async function showPanel(
     view.setBackgroundColor('#00000000')
     entry = { windowId, partition, extensionId, chromeTabId, path, view }
     entries.add(entry)
+    // Before the page loads, so the worker knows this sender is no tab.
+    broadcastPanelIds()
     hookWindow(windowId, win)
     wireView(entry)
     loadEntry(entry)
@@ -421,6 +441,9 @@ export function registerSidePanelIpc(): void {
   registerExtensionApiHandler('sidepanel', (caller, payload) =>
     handleCall(caller.partition, caller.extensionId, payload),
   )
+  // A worker (re)starting asks for the current list once; later changes
+  // are pushed.
+  registerSwInvokeHandler('non-tab-views', () => ({ ids: panelWebContentsIds() }))
 
   ipcMain.on('sidepanel:bounds', (e, bounds: Rect) => {
     const win = BrowserWindow.fromWebContents(e.sender)
