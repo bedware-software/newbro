@@ -2642,7 +2642,7 @@ export async function createTabForExtension(
   win: BrowserWindow,
   _partition: string,
   url: string,
-  _active: boolean,
+  active: boolean,
 ): Promise<WebContents> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -2654,7 +2654,8 @@ export async function createTabForExtension(
       pendingExtTabs.delete(url)
       resolve(wc)
     })
-    sendToWindowRenderer(win.id, 'open-url-as-tab', url)
+    // active:false (agents opening working tabs) must not steal focus.
+    sendToWindowRenderer(win.id, active ? 'open-url-as-tab' : 'open-url-as-tab-background', url)
   })
 }
 

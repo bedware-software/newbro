@@ -2985,7 +2985,12 @@ export function setupPartitionSession(partition: string): void {
   try {
     getOrCreateExtensions(ses, {
       createTab: async (details) => {
-        const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+        // The window the extension asked for (Claude opens its tabs next
+        // to its group), else the focused one.
+        const requested = typeof details.windowId === 'number' ? BrowserWindow.fromId(details.windowId) : null
+        const win = (requested && !requested.isDestroyed() ? requested : null)
+          ?? BrowserWindow.getFocusedWindow()
+          ?? BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
         if (!win || win.isDestroyed()) throw new Error('no live window for chrome.tabs.create')
         const url = typeof details.url === 'string' ? details.url : 'about:blank'
         const wc = await createTabForExtension(win, partition, url, details.active !== false)

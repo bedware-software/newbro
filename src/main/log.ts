@@ -18,6 +18,29 @@ function formatArgs(args: unknown[]): string {
     .join(' ')
 }
 
+// Console output is best-effort; the log file is the real log. The app can
+// outlive the stdout/stderr it inherited — prod-iter relaunches it from a
+// script whose pipe closes when the script exits — and a write to a closed
+// pipe fails with EPIPE, which Node raises as an 'error' on the stream. With
+// no listener that's an uncaught exception: a "JavaScript error occurred in
+// the main process" dialog for every line logged. Swallow it on both streams
+// (this also covers console writes from libraries) and stop writing.
+let consoleUsable = true
+for (const stream of [process.stdout, process.stderr]) {
+  stream?.on?.('error', () => {
+    consoleUsable = false
+  })
+}
+
+function toConsole(write: (...args: unknown[]) => void, args: unknown[]): void {
+  if (!consoleUsable) return
+  try {
+    write(...args)
+  } catch {
+    consoleUsable = false
+  }
+}
+
 // Lines logged before startLogSession(): module-import time, before index.ts
 // knows whether this process is the primary instance. Null once started.
 let pendingLines: string[] | null = []
@@ -55,23 +78,23 @@ export function getLogFilePath(): string {
 
 export const log = {
   info: (...args: unknown[]) => {
-    console.log(ts(), PREFIX, ...args)
+    toConsole(console.log, [ts(), PREFIX, ...args])
     writeToFile('INFO', PREFIX, formatArgs(args))
   },
   warn: (...args: unknown[]) => {
-    console.warn(ts(), PREFIX, ...args)
+    toConsole(console.warn, [ts(), PREFIX, ...args])
     writeToFile('WARN', PREFIX, formatArgs(args))
   },
   error: (...args: unknown[]) => {
-    console.error(ts(), PREFIX, ...args)
+    toConsole(console.error, [ts(), PREFIX, ...args])
     writeToFile('ERROR', PREFIX, formatArgs(args))
   },
   ipc: (name: string, ...args: unknown[]) => {
-    console.log(ts(), PREFIX, `[ipc] ${name}`, ...args)
+    toConsole(console.log, [ts(), PREFIX, `[ipc] ${name}`, ...args])
     writeToFile('INFO', PREFIX, `[ipc] ${name} ${formatArgs(args)}`)
   },
   window: (name: string, ...args: unknown[]) => {
-    console.log(ts(), PREFIX, `[window] ${name}`, ...args)
+    toConsole(console.log, [ts(), PREFIX, `[window] ${name}`, ...args])
     writeToFile('INFO', PREFIX, `[window] ${name} ${formatArgs(args)}`)
   },
   /** Write a renderer log line to the file (received via IPC) */

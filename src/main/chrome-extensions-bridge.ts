@@ -104,6 +104,7 @@ export function getOrCreateExtensions(
     },
   })
   instances.set(ses, ext)
+  patchLibraryHandlers(ext)
   log.info('extensions: ElectronChromeExtensions ready', { partition: '(by-session)' })
   // Listen for popups created via chrome.action.openPopup or via the
   // library's <browser-action-list>. We don't use either path
@@ -116,6 +117,78 @@ export function getOrCreateExtensions(
     })
   })
   return ext
+}
+
+type HandlerEvent = { extension?: Electron.Extension }
+
+/** Chrome's new-tab page, which Chrome lets extensions open and the
+ *  library refuses along with every other chrome:// URL ("Invalid URL").
+ *  Claude's agent opens its working tabs this way. */
+function isNewTabUrl(url: unknown): boolean {
+  return typeof url === 'string' && /^chrome:\/\/(newtab|new-tab-page)\/?$/i.test(url.trim())
+}
+
+/** A notification icon the library can load: it only takes a path inside
+ *  the extension or a data: URL ("Invalid iconUrl" otherwise), while
+ *  Chrome also takes the extension's own full URL and web images. Reduce
+ *  the first to its path; swap the rest (a site favicon) for the
+ *  extension's largest manifest icon. */
+function loadableIconUrl(extension: Electron.Extension | undefined, iconUrl: unknown): unknown {
+  if (typeof iconUrl !== 'string' || !extension || iconUrl.startsWith('data:')) return iconUrl
+  let url: URL
+  try {
+    url = new URL(iconUrl)
+  } catch {
+    return iconUrl // already a path inside the extension
+  }
+  if (url.protocol === 'chrome-extension:' && url.hostname === extension.id) return decodeURIComponent(url.pathname)
+  const icons = (extension.manifest as { icons?: Record<string, string> } | undefined)?.icons
+  const sizes = icons ? Object.keys(icons).map(Number).filter(Number.isFinite).sort((a, b) => b - a) : []
+  return sizes.length > 0 ? `/${String(icons?.[String(sizes[0])]).replace(/^\/+/, '')}` : iconUrl
+}
+
+/** Wrap a few library API handlers to accept what Chrome accepts (see
+ *  isNewTabUrl / loadableIconUrl). The router dispatches page and worker
+ *  calls through the same handler map, so this covers both. */
+function patchLibraryHandlers(ext: ElectronChromeExtensions): void {
+  const handlers = (ext as unknown as {
+    ctx?: { router?: { handlers?: Map<string, { callback: (event: HandlerEvent, ...args: unknown[]) => unknown }> } }
+  }).ctx?.router?.handlers
+  if (!handlers) {
+    log.warn('extensions: library handler map not found — chrome://newtab and notification icons stay unpatched')
+    return
+  }
+  const wrap = (name: string, fix: (event: HandlerEvent, args: unknown[]) => unknown[]): void => {
+    const handler = handlers.get(name)
+    if (!handler) return
+    const original = handler.callback
+    handler.callback = (event, ...args) => original(event, ...fix(event, args))
+  }
+  const withoutNewTab = (props: unknown, blank: string | undefined): unknown => {
+    if (!props || typeof props !== 'object') return props
+    const p = props as { url?: unknown }
+    return isNewTabUrl(p.url) ? { ...p, url: blank } : props
+  }
+  // No url → Newbro's own new tab.
+  wrap('tabs.create', (_e, [details, ...rest]) => [withoutNewTab(details, undefined), ...rest])
+  wrap('tabs.update', (_e, args) => args.map((a) => withoutNewTab(a, 'about:blank')))
+  wrap('windows.create', (_e, [details, ...rest]) => {
+    if (!details || typeof details !== 'object') return [details, ...rest]
+    const d = details as { url?: unknown }
+    if (Array.isArray(d.url)) {
+      const urls = d.url.filter((u) => !isNewTabUrl(u))
+      return [{ ...d, url: urls.length > 0 ? urls : undefined }, ...rest]
+    }
+    return [withoutNewTab(d, undefined), ...rest]
+  })
+  // notifications.create(options) or (id, options).
+  wrap('notifications.create', (event, args) =>
+    args.map((a) =>
+      a && typeof a === 'object' && 'iconUrl' in a
+        ? { ...a, iconUrl: loadableIconUrl(event.extension, (a as { iconUrl?: unknown }).iconUrl) }
+        : a,
+    ),
+  )
 }
 
 export function getExtensionsFor(ses: Session): ElectronChromeExtensions | undefined {
