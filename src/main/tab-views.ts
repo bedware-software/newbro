@@ -1436,6 +1436,8 @@ interface ExtensionPopupRecord {
   anchor: { x: number; y: number; width: number; height: number }
   width: number
   height: number
+  /** Last preferred size Chromium reported for the page. */
+  preferred?: { width: number; height: number }
   /** Stored so we can `removeListener` when the popup closes. Without
    *  this, every open/close cycle leaked a window blur listener and
    *  Node started warning at 11 popups (MaxListenersExceededWarning). */
@@ -1466,76 +1468,128 @@ const POPUP_DEFAULT_HEIGHT = 520
 /** Padding between window edge and popup so the panel never butts up
  *  against the sash. Matches Chrome's spacing. */
 const POPUP_VIEWPORT_MARGIN = 6
-/** Resize the popup WebContentsView to its content's natural size.
- *
- *  We tried `webContents.enablePreferredSizeMode(true)` +
- *  `'preferred-size-changed'` (Chrome's own mechanism) but the event
- *  never fires for our extension popup WebContents — likely because
- *  Electron's preferred-size signal needs init paths we don't go
- *  through. So we measure ourselves.
- *
- *  Naïvely reading `body.scrollWidth` doesn't work: body's `display:
- *  block` fills the viewport, so scrollWidth reports the WebContentsView
- *  width regardless of the actual UI size and the popup can grow but
- *  never shrink. Instead we walk body's flow children, take the largest
- *  intrinsic `offsetWidth` (the popup's design width is whatever its
- *  root container set explicitly) and sum heights for the stacked total.
- *  This reports the same number whether the view is 360 or 1200 wide. */
-async function fitExtensionPopupToContent(windowId: number): Promise<void> {
-  const rec = extensionPopupByWindow.get(windowId)
-  if (!rec) return
-  if (rec.view.webContents.isDestroyed()) return
+// Chrome's limits for an extension popup's size.
+const EXT_POPUP_MIN_SIZE = 25
+const EXT_POPUP_MAX_WIDTH = 800
+const EXT_POPUP_MAX_HEIGHT = 600
+
+/** Apply a popup size within Chrome's limits. */
+function resizeExtensionPopup(rec: ExtensionPopupRecord, width: number, height: number): void {
+  const w = Math.min(EXT_POPUP_MAX_WIDTH, Math.max(EXT_POPUP_MIN_SIZE, Math.ceil(width)))
+  const h = Math.min(EXT_POPUP_MAX_HEIGHT, Math.max(EXT_POPUP_MIN_SIZE, Math.ceil(height)))
+  if (w === rec.width && h === rec.height) return
+  log.info('extension popup: resize', { extensionId: rec.extensionId, w, h, prev: { w: rec.width, h: rec.height } })
+  rec.width = w
+  rec.height = h
+  // A hidden (cached) popup keeps the size for its next show.
+  if (extensionPopupByWindow.get(rec.windowId) !== rec) return
+  const ownerWindow = BrowserWindow.fromId(rec.windowId)
+  if (!ownerWindow || ownerWindow.isDestroyed()) return
+  rec.view.setBounds(clampPopupBounds(ownerWindow, rec.anchor, w, h))
+}
+
+/** Lowest rendered edge of the popup's content (body and every visible box
+ *  under it, absolutely-positioned ones included, fixed ones not; rendered
+ *  rects bake CSS zoom in), plus whether the document overflows the view
+ *  as it stands. */
+const MEASURE_CONTENT = `(() => {
+  const body = document.body;
+  if (!body) return null;
+  const html = document.documentElement;
+  let bottom = body.getBoundingClientRect().bottom + (parseFloat(getComputedStyle(body).marginBottom) || 0);
+  for (const el of body.querySelectorAll('*')) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    const cs = getComputedStyle(el);
+    if (cs.position === 'fixed' || cs.visibility === 'hidden') continue;
+    if (r.bottom > bottom) bottom = r.bottom;
+  }
+  return {
+    bottom,
+    scrollWidth: html.scrollWidth,
+    scrollHeight: html.scrollHeight,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+  };
+})()`
+
+/** Console line the popup page emits when its layout may have changed;
+ *  the popup's console-message listener refits on it. */
+const POPUP_LAYOUT_SIGNAL = '__newbro_popup_layout__'
+
+/** Installed in the popup page after load: signal (debounced) on DOM
+ *  mutations and on html/body resizes. Preferred-size events only fire when
+ *  Chromium's preferred size changes, which misses SPA popups that render
+ *  late inside a fixed-height app box (YouTube to NotebookLM). */
+const POPUP_LAYOUT_WATCH = `(() => {
+  if (window.__newbroPopupLayoutWatch) return;
+  window.__newbroPopupLayoutWatch = true;
+  let timer = 0;
+  const signal = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => console.debug(${JSON.stringify(POPUP_LAYOUT_SIGNAL)}), 50);
+  };
+  const ro = new ResizeObserver(signal);
+  ro.observe(document.documentElement);
+  if (document.body) ro.observe(document.body);
+  new MutationObserver(signal).observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true, characterData: true,
+  });
+})()`
+
+/** Size the popup to fit its page, as Chrome does. Width is the page's
+ *  preferred size, which Chromium computes itself (enablePreferredSizeMode)
+ *  — the smallest box that holds the layout without scrolling; measuring
+ *  the DOM ourselves under-sized popups like Dark Reader's, leaving clipped
+ *  content and scrollbars. Height is that, or the rendered content's bottom
+ *  when it's lower: preferred size ignores CSS zoom, and pages that scale
+ *  themselves to the window (Browsec) would otherwise sit above a blank
+ *  strip. Whatever the numbers say, a document that still overflows the
+ *  view grows to fit it (apps living in a 100vh box, like YouTube to
+ *  NotebookLM's, report their content bottom at the view's edge). */
+async function refitExtensionPopup(rec: ExtensionPopupRecord): Promise<void> {
+  const preferred = rec.preferred
+  if (!preferred || rec.view.webContents.isDestroyed()) return
+  let width = preferred.width
+  let height = preferred.height
   try {
-    const result = (await rec.view.webContents.executeJavaScript(
+    const m = (await rec.view.webContents.executeJavaScript(MEASURE_CONTENT)) as {
+      bottom: number
+      scrollWidth: number
+      scrollHeight: number
+      innerWidth: number
+      innerHeight: number
+    } | null
+    if (m) {
+      if (m.bottom > 0) height = Math.min(height, m.bottom)
+      if (m.scrollHeight > m.innerHeight) height = Math.max(height, m.scrollHeight)
+      if (m.scrollWidth > m.innerWidth) width = Math.max(width, m.scrollWidth)
+    }
+  } catch {
+    /* page tore down mid-read — fall back to the preferred size */
+  }
+  resizeExtensionPopup(rec, width, height)
+}
+
+/** Give the popup view the page's own background, so any gap between the
+ *  body box and the view (an unreset body margin) doesn't show the page
+ *  underneath. Popups that declare no background get white, like Chrome's. */
+async function paintExtensionPopupBackground(windowId: number): Promise<void> {
+  const rec = extensionPopupByWindow.get(windowId)
+  if (!rec || rec.view.webContents.isDestroyed()) return
+  try {
+    const bgColor = (await rec.view.webContents.executeJavaScript(
       `(() => {
         const body = document.body;
         if (!body) return null;
         const html = document.documentElement;
         const bs = getComputedStyle(body);
         const hs = getComputedStyle(html);
-        // Paint html with body's background so the body-margin gap doesn't
-        // render as a transparent strip showing the page through. Browsers
-        // don't render html.background by default, but assigning inline
-        // here forces it.
+        // Browsers don't paint html with body's background by default;
+        // do it so the body-margin gap isn't a transparent strip.
         if (bs.backgroundColor && bs.backgroundColor !== 'rgba(0, 0, 0, 0)') {
           html.style.backgroundColor = bs.backgroundColor;
         }
-        const flowChildren = Array.from(body.children).filter((c) => {
-          const cs = getComputedStyle(c);
-          return cs.display !== 'none'
-            && cs.position !== 'fixed'
-            && cs.position !== 'absolute';
-        });
-        if (flowChildren.length === 0) return null;
-        // getBoundingClientRect reflects POST-zoom rendered dimensions —
-        // Browsec's popup applies inline \`zoom: 0.85\` on its
-        // MainContainer, so offsetWidth (logical/pre-zoom) reported 402
-        // while the visible content was only ~343 wide. Sizing the
-        // WebContentsView to 402 left a ~59px invisible strip on the
-        // right: solid popup-bg color but no clickable UI inside it.
-        // rect.width/height bake zoom in, so the view tracks the
-        // rendered extent.
-        const bodyRect = body.getBoundingClientRect();
-        let maxRight = bodyRect.left;
-        let maxBottom = bodyRect.top;
-        for (const c of flowChildren) {
-          const cs = getComputedStyle(c);
-          const mr = parseFloat(cs.marginRight) || 0;
-          const mb = parseFloat(cs.marginBottom) || 0;
-          const cr = c.getBoundingClientRect();
-          if (cr.right + mr > maxRight) maxRight = cr.right + mr;
-          if (cr.bottom + mb > maxBottom) maxBottom = cr.bottom + mb;
-        }
-        // Distance from html's top-left to the right/bottom of content.
-        // Then add html's right/bottom padding+border so a popup whose
-        // root container has decorations on the inside still gets a
-        // box that fully contains them.
-        const htmlRight = (parseFloat(hs.paddingRight) || 0) + (parseFloat(hs.borderRightWidth) || 0);
-        const htmlBottom = (parseFloat(hs.paddingBottom) || 0) + (parseFloat(hs.borderBottomWidth) || 0);
-        const bodyMarginRight = parseFloat(bs.marginRight) || 0;
-        const bodyMarginBottom = parseFloat(bs.marginBottom) || 0;
-        const width = maxRight + bodyMarginRight + htmlRight;
-        const height = maxBottom + bodyMarginBottom + htmlBottom;
         const pickColor = (s) => {
           const m = (s.backgroundColor || '').match(/^rgba?\\(([^)]+)\\)$/);
           if (!m) return null;
@@ -1545,49 +1599,12 @@ async function fitExtensionPopupToContent(windowId: number): Promise<void> {
           const toHex = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
           return '#' + toHex(r) + toHex(g) + toHex(b);
         };
-        const bgHex = pickColor(bs) || pickColor(hs);
-        return { width, height, bgColor: bgHex };
+        return pickColor(bs) || pickColor(hs);
       })()`,
-    )) as { width?: number; height?: number; bgColor?: string | null } | null
-    if (!result || typeof result.width !== 'number' || typeof result.height !== 'number') return
-    // Ceil rather than round — under-sizing by a subpixel forces a
-    // scrollbar in the popup, which we'd rather avoid in exchange for
-    // an invisible 1px overshoot.
-    const w = Math.ceil(result.width)
-    const h = Math.ceil(result.height)
-    if (w <= 0 || h <= 0) return
-    log.info('extension popup: fit', {
-      extensionId: rec.extensionId,
-      w,
-      h,
-      bgColor: result.bgColor,
-      prev: { w: rec.width, h: rec.height },
-    })
-    // Match the view's background to the popup body so any unfilled gap
-    // between body's outer box and the WebContentsView (e.g. body margin
-    // on a page that didn't reset it) doesn't render as a transparent
-    // strip showing the page underneath. When the popup declares NO
-    // background of its own (Vimium's popup, for one), default to white —
-    // that's how Chrome/Edge render extension popups (on a white canvas),
-    // rather than letting the underlying page show through.
-    const popupBg = result.bgColor ?? '#ffffff'
-    try { rec.view.setBackgroundColor(popupBg) }
-    catch (err) {
-      log.warn('extension popup: setBackgroundColor threw', {
-        extensionId: rec.extensionId,
-        bgColor: popupBg,
-        err: String(err),
-      })
-    }
-    if (w === rec.width && h === rec.height) return
-    rec.width = w
-    rec.height = h
-    const ownerWindow = BrowserWindow.fromId(rec.windowId)
-    if (!ownerWindow || ownerWindow.isDestroyed()) return
-    const bounds = clampPopupBounds(ownerWindow, rec.anchor, w, h)
-    rec.view.setBounds(bounds)
+    )) as string | null
+    rec.view.setBackgroundColor(bgColor ?? '#ffffff')
   } catch {
-    /* page may have torn down between read and resize */
+    /* page may have torn down mid-read */
   }
 }
 
@@ -1937,6 +1954,8 @@ export async function toggleExtensionPopup(
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Chromium reports the page's preferred size — see resizeExtensionPopup.
+      enablePreferredSizeMode: true,
     },
   })
 
@@ -1946,7 +1965,7 @@ export async function toggleExtensionPopup(
   view.setBounds(bounds)
   // Transparent so any unfilled gap between our WebContentsView and the
   // popup HTML's own background colour doesn't render as a white border
-  // around the popup. After fitExtensionPopupToContent runs there should
+  // around the popup. Once the preferred size lands there should
   // be no gap, but on first paint and during loadURL the gap is visible.
   view.setBackgroundColor('#00000000')
   ownerWindow.contentView.addChildView(view)
@@ -2031,6 +2050,10 @@ export async function toggleExtensionPopup(
     onBlur,
   }
   extensionPopupByWindow.set(windowId, rec)
+  view.webContents.on('preferred-size-changed', (_e, size) => {
+    rec.preferred = { width: size.width, height: size.height }
+    void refitExtensionPopup(rec)
+  })
 
   const url = `chrome-extension://${extensionId}/${popupPath.replace(/^\//, '')}`
   view.webContents.loadURL(url).catch((err) => {
@@ -2103,6 +2126,10 @@ export async function toggleExtensionPopup(
   view.webContents.on('console-message', (e) => {
     const detail = e as unknown as { level?: string; message?: string; sourceId?: string; line?: number }
     const msg = String(detail.message ?? '')
+    if (msg === POPUP_LAYOUT_SIGNAL) {
+      void refitExtensionPopup(rec)
+      return
+    }
     const isError = detail.level === 'warning' || detail.level === 'error'
     if (!isError && shouldDropExtConsoleMessage(msg)) return
     const truncated = msg.length > 400 ? msg.slice(0, 400) + ` …(${msg.length - 400} more)` : msg
@@ -2154,16 +2181,14 @@ export async function toggleExtensionPopup(
         err: String(err),
       })
     })
-    // Fit the WebContentsView to the popup's natural content size.
-    // Most popups settle synchronously on first paint, but Tampermonkey
-    // / Dark Reader / Browsec hydrate UI from chrome.storage promises
-    // and grow late, so we retry out to ~1.2s. Each attempt is a single
-    // executeJavaScript round-trip + setBounds when changed.
-    fitExtensionPopupToContent(windowId)
-    setTimeout(() => fitExtensionPopupToContent(windowId), 50)
-    setTimeout(() => fitExtensionPopupToContent(windowId), 200)
-    setTimeout(() => fitExtensionPopupToContent(windowId), 600)
-    setTimeout(() => fitExtensionPopupToContent(windowId), 1200)
+    // Background now and once more after storage-hydrated popups settle;
+    // size whenever the page's layout changes (POPUP_LAYOUT_WATCH).
+    void paintExtensionPopupBackground(windowId)
+    setTimeout(() => void paintExtensionPopupBackground(windowId), 1200)
+    void refitExtensionPopup(rec)
+    view.webContents.executeJavaScript(POPUP_LAYOUT_WATCH).catch(() => {
+      /* page navigated away mid-install */
+    })
   })
 
   // Tear down on owner-window destroy. Map cleanup happens here too in
