@@ -1230,6 +1230,8 @@ function alive(p) {
   registerSyncCategory('extensions', {
     read: () => exportExtensionManifest(),
     write: (data) => applyExtensionManifest(data),
+    // Per-extension ledger merge — see exportExtensionManifest.
+    merge: true,
   })
   registerCloudSyncIpc()
 }

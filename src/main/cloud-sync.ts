@@ -42,6 +42,11 @@ export const SYNC_CATEGORIES: readonly SyncCategory[] = [
 export interface SyncAdapter {
   read: () => unknown
   write: (data: unknown) => void | Promise<void>
+  /** write() merges an incoming payload into local data (entry-level, its
+   *  own conflict rules) instead of replacing it. Such a category folds in
+   *  every other device's copy, not just the newest — an older copy can
+   *  still carry entries we lack — and republishes when that changed ours. */
+  merge?: boolean
 }
 
 interface SeenMark {
@@ -588,6 +593,41 @@ function pushIfChanged(cat: SyncCategory): void {
 }
 
 // ── Pull (folder → local) ──
+/** Hashes of remote copies a merge category has already folded in (this
+ *  run) — merging is idempotent, this just skips the work. */
+const mergedHashes = new Map<SyncCategory, Set<string>>()
+
+async function mergeCategory(
+  cat: SyncCategory,
+  adapter: SyncAdapter,
+  envs: SyncEnvelope[],
+  deviceId: string,
+  generation: number,
+): Promise<void> {
+  const merged = mergedHashes.get(cat) ?? new Set<string>()
+  mergedHashes.set(cat, merged)
+  const others = envs
+    .filter((env) => env.deviceId !== deviceId && !merged.has(env.hash))
+    .sort((a, b) => a.updatedAt - b.updatedAt)
+  if (others.length === 0) return
+  applying = true
+  try {
+    for (const env of others) {
+      if (!isRunCurrent(generation) || !isActive(cat)) return
+      await adapter.write(env.data)
+      merged.add(env.hash)
+      log.info('cloud-sync: merged', { cat, from: env.deviceId })
+    }
+  } catch (err) {
+    log.warn('cloud-sync: merge failed', { cat, err: String(err) })
+  } finally {
+    applying = false
+  }
+  touchLastSync()
+  // Publish ours when the merge changed it (no-op when it didn't).
+  pushIfChanged(cat)
+}
+
 async function pullCategory(cat: SyncCategory, generation = syncGeneration): Promise<void> {
   if (!isRunCurrent(generation) || !isActive(cat)) return
   const adapter = adapters.get(cat)!
@@ -598,6 +638,10 @@ async function pullCategory(cat: SyncCategory, generation = syncGeneration): Pro
   // Our own file is authoritative for us, so it never overwrites local state.
   const envs = await listEnvelopes(cat)
   if (!isRunCurrent(generation) || !isActive(cat)) return
+  if (adapter.merge) {
+    await mergeCategory(cat, adapter, envs, deviceId, generation)
+    return
+  }
   let winner: SyncEnvelope | null = null
   for (const env of envs) {
     if (env.deviceId === deviceId) continue

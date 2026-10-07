@@ -91,9 +91,18 @@ interface PersistedEntry {
   installedAt: number
 }
 
-const store = new Store<{ extensions: Record<string, PersistedEntry> }>({
+/** One extension's last sync-relevant decision — installed or removed,
+ *  enabled, pinned — and when it was made. See exportExtensionManifest. */
+interface LedgerEntry {
+  enabled: boolean
+  pinned: boolean
+  removed: boolean
+  changedAt: number
+}
+
+const store = new Store<{ extensions: Record<string, PersistedEntry>; syncLedger: Record<string, LedgerEntry> }>({
   name: 'newbro-extensions',
-  defaults: { extensions: {} },
+  defaults: { extensions: {}, syncLedger: {} },
 })
 
 export const extractExtensionIdFromUrl = _extract
@@ -1359,51 +1368,119 @@ function fireExtensionDeactivated(extensionId: string): void {
 }
 
 // ── Cloud sync adapters ──
-// Extensions sync as a portable manifest — the installed IDs plus their
-// enabled/pinned state — never the unpacked bytes (those are large, version-
-// specific, and carry device-local paths). A receiving device reconciles by
-// re-downloading anything it's missing via installExtensionById (the same path
-// the manual install + startup rehydrate use).
+// Extensions sync as a ledger, not a snapshot: one entry per extension with
+// its last install / uninstall / enable / pin decision and when it was made,
+// uninstalls kept as tombstones. Devices merge ledgers entry by entry and the
+// newer decision wins, so an extension missing from another device's list —
+// it never received it, or failed to install it — is never taken to mean
+// "uninstall it here". (The old snapshot mirrored the newest list, and one
+// device's failed install deleted the extension everywhere.) Only the ids
+// and decisions travel, never the unpacked bytes; a device installs what its
+// ledger wants via installExtensionById.
 
 export interface ExtensionManifestEntry {
   id: string
   enabled: boolean
   pinned: boolean
+  removed?: boolean
+  /** ms epoch of the decision; absent in manifests from older builds. */
+  changedAt?: number
+}
+
+/** >0 while sync applies a merged ledger: the installs, uninstalls and
+ *  toggles it performs carry the remote decisions' timestamps instead of
+ *  recording new local ones. */
+let syncApplyDepth = 0
+
+/** The ledger, with an entry for every installed extension (installs from
+ *  before the ledger existed date from their install). */
+function currentLedger(): Record<string, LedgerEntry> {
+  const ledger = { ...store.get('syncLedger') }
+  let seeded = false
+  for (const e of Object.values(store.get('extensions'))) {
+    if (ledger[e.id]) continue
+    ledger[e.id] = { enabled: e.enabled ?? true, pinned: e.pinned ?? true, removed: false, changedAt: e.installedAt ?? 0 }
+    seeded = true
+  }
+  if (seeded) store.set('syncLedger', ledger)
+  return ledger
+}
+
+/** Record a local user decision about an extension (now). No-op while
+ *  sync is applying remote decisions. */
+function recordDecision(extensionId: string, patch: Partial<Omit<LedgerEntry, 'changedAt'>>): void {
+  if (syncApplyDepth > 0) return
+  const ledger = currentLedger()
+  const prev = ledger[extensionId] ?? { enabled: true, pinned: true, removed: false, changedAt: 0 }
+  ledger[extensionId] = { ...prev, ...patch, changedAt: Date.now() }
+  store.set('syncLedger', ledger)
 }
 
 export function exportExtensionManifest(): ExtensionManifestEntry[] {
-  return Object.values(store.get('extensions'))
-    .map((e) => ({ id: e.id, enabled: e.enabled ?? true, pinned: e.pinned ?? true }))
+  return Object.entries(currentLedger())
+    .map(([id, e]) => ({ id, enabled: e.enabled, pinned: e.pinned, removed: e.removed, changedAt: e.changedAt }))
     .sort((a, b) => a.id.localeCompare(b.id))
 }
 
-/** Reconcile the locally-installed set toward an incoming manifest: install
- *  anything missing, apply enabled/pinned for shared IDs, and uninstall extras
- *  so the set mirrors. Best-effort and async — a delisted extension simply
- *  fails to reinstall (logged) rather than aborting the whole reconcile. */
+/** Merge another device's ledger into ours — per extension, the newer
+ *  decision wins; extensions it doesn't mention are left alone — then make
+ *  the installed set match. A manifest from an older build (no changedAt)
+ *  can only add extensions we've never had a decision about. */
 export async function applyExtensionManifest(incoming: unknown): Promise<void> {
-  const list = Array.isArray(incoming) ? (incoming as ExtensionManifestEntry[]) : []
-  const wanted = new Map<string, ExtensionManifestEntry>()
+  const list = Array.isArray(incoming) ? (incoming as Partial<ExtensionManifestEntry>[]) : []
+  const ledger = currentLedger()
+  let changed = false
   for (const e of list) {
-    if (e && typeof e.id === 'string' && /^[a-p]{32}$/.test(e.id)) wanted.set(e.id, e)
+    if (!e || typeof e.id !== 'string' || !/^[a-p]{32}$/.test(e.id)) continue
+    const theirs: LedgerEntry = {
+      enabled: e.enabled !== false,
+      pinned: e.pinned !== false,
+      removed: e.removed === true,
+      changedAt: typeof e.changedAt === 'number' ? e.changedAt : 0,
+    }
+    const ours = ledger[e.id]
+    if (ours && theirs.changedAt <= ours.changedAt) continue
+    ledger[e.id] = theirs
+    changed = true
   }
-  const haveIds = new Set(Object.keys(store.get('extensions')))
+  if (changed) store.set('syncLedger', ledger)
+  await realizeLedger()
+}
 
-  // Remove extras (present locally, absent from the synced manifest).
-  for (const id of haveIds) {
-    if (!wanted.has(id)) {
-      try { await uninstallExtension(id) } catch (err) { log.warn('cloud-sync: uninstall failed', { id, err: String(err) }) }
+/** Install retries for a ledger entry this device couldn't install (CWS
+ *  unreachable, delisted) — at most every 10 minutes, since sync folder
+ *  changes call in here often. */
+const INSTALL_RETRY_MS = 10 * 60 * 1000
+const lastInstallAttempt = new Map<string, number>()
+
+/** Bring the installed set in line with the ledger. A failed install keeps
+ *  its ledger entry — the decision stands and is retried — rather than
+ *  being re-published as a removal. */
+async function realizeLedger(): Promise<void> {
+  syncApplyDepth++
+  try {
+    const ledger = currentLedger()
+    for (const [id, want] of Object.entries(ledger)) {
+      const installed = !!store.get('extensions')[id]
+      try {
+        if (want.removed) {
+          if (installed) await uninstallExtension(id)
+          continue
+        }
+        if (!installed) {
+          const last = lastInstallAttempt.get(id) ?? 0
+          if (Date.now() - last < INSTALL_RETRY_MS) continue
+          lastInstallAttempt.set(id, Date.now())
+          await installExtensionById(id)
+        }
+        await setExtensionEnabled(id, want.enabled)
+        await setExtensionPinned(id, want.pinned)
+      } catch (err) {
+        log.warn('cloud-sync: extension reconcile failed', { id, err: String(err) })
+      }
     }
-  }
-  // Install missing, then apply state for everything wanted.
-  for (const [id, want] of wanted) {
-    try {
-      if (!haveIds.has(id)) await installExtensionById(id)
-      await setExtensionEnabled(id, want.enabled)
-      await setExtensionPinned(id, want.pinned)
-    } catch (err) {
-      log.warn('cloud-sync: extension reconcile failed', { id, err: String(err) })
-    }
+  } finally {
+    syncApplyDepth--
   }
 }
 
@@ -1588,6 +1665,7 @@ export async function setExtensionPinned(extensionId: string, pinned: boolean): 
   entry.pinned = pinned
   all[extensionId] = entry
   store.set('extensions', all)
+  recordDecision(extensionId, { pinned })
   broadcastExtensionsChanged()
 }
 
@@ -1671,6 +1749,7 @@ export async function adoptUnpackedExtension(
     const all = { ...store.get('extensions') }
     all[extensionId] = entry
     store.set('extensions', all)
+    recordDecision(extensionId, { removed: false, enabled: entry.enabled, pinned: entry.pinned ?? true })
 
     for (const ses of getAllSessions()) {
       await loadExtensionInto(ses, entry)
@@ -1702,6 +1781,7 @@ export async function uninstallExtension(extensionId: string): Promise<void> {
   const entry = all[extensionId]
   delete all[extensionId]
   store.set('extensions', all)
+  recordDecision(extensionId, { removed: true })
   if (entry) {
     try {
       rmSync(join(extensionsRoot(), extensionId), { recursive: true, force: true })
@@ -1720,6 +1800,7 @@ export async function setExtensionEnabled(extensionId: string, enabled: boolean)
   entry.enabled = enabled
   all[extensionId] = entry
   store.set('extensions', all)
+  recordDecision(extensionId, { enabled })
 
   if (enabled) {
     for (const ses of getAllSessions()) {
