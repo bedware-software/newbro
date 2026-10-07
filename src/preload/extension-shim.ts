@@ -62,6 +62,80 @@ const proto = (() => {
   return ''
 })()
 
+// Chrome turns API arguments into JSON-like values, silently dropping
+// functions; electron-chrome-extensions sends them over IPC
+// ('crx-msg'), whose structured clone throws on one instead. Vimium's
+// key registry holds a function (`x`'s repeatLimit), so its
+// storage.session.set threw "An object could not be cloned", init
+// stopped, and no Vimium key mapping (?, i, j...) was ever stored. Every
+// preload in this realm shares one ipcRenderer, and the library reads
+// `.invoke` per call — so wrapping it here covers the library's calls
+// whichever preload runs first. A clone failure means nothing was sent,
+// so retrying with Chrome-style values is safe.
+function makeLibraryIpcCloneSafe(): void {
+  const ipc = ipcRenderer as unknown as {
+    invoke: ((channel: string, ...args: unknown[]) => Promise<unknown>) & { __newbroCloneSafe?: true }
+  }
+  const original = ipc.invoke
+  if (typeof original !== 'function' || original.__newbroCloneSafe) return
+  const isCloneError = (err: unknown): boolean => /could not be cloned/i.test(String(err))
+  const wrapped = function (this: unknown, channel: string, ...args: unknown[]): Promise<unknown> {
+    if (channel !== 'crx-msg') return original.call(this, channel, ...args)
+    const retry = (err: unknown): Promise<unknown> => {
+      if (!isCloneError(err)) throw err
+      return original.call(this, channel, ...args.map((a) => toChromeValue(a, new WeakMap())))
+    }
+    try {
+      return Promise.resolve(original.call(this, channel, ...args)).catch(retry)
+    } catch (err) {
+      return retry(err)
+    }
+  } as typeof ipc.invoke
+  wrapped.__newbroCloneSafe = true
+  try {
+    ipc.invoke = wrapped
+  } catch {
+    /* frozen — leave the library as is */
+  }
+}
+
+/** Copy `value` the way Chrome hands API arguments to the browser:
+ *  functions and symbols vanish from objects (null in arrays), every
+ *  structured-cloneable value is kept. */
+function toChromeValue(value: unknown, seen: WeakMap<object, unknown>): unknown {
+  if (typeof value === 'function' || typeof value === 'symbol') return undefined
+  if (value === null || typeof value !== 'object') return value
+  if (
+    value instanceof Date ||
+    value instanceof RegExp ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value) ||
+    (typeof Blob !== 'undefined' && value instanceof Blob)
+  ) {
+    return value
+  }
+  const prior = seen.get(value)
+  if (prior !== undefined) return prior
+  if (Array.isArray(value)) {
+    const out: unknown[] = []
+    seen.set(value, out)
+    for (const item of value) {
+      const v = toChromeValue(item, seen)
+      out.push(v === undefined ? null : v)
+    }
+    return out
+  }
+  const out: Record<string, unknown> = {}
+  seen.set(value, out)
+  for (const key of Object.keys(value)) {
+    const v = toChromeValue((value as Record<string, unknown>)[key], seen)
+    if (v !== undefined) out[key] = v
+  }
+  return out
+}
+
+makeLibraryIpcCloneSafe()
+
 if (IS_SW_REALM) {
   // Service-worker preload realm. CRITICAL: `location` is undefined
   // here, so the frame-style `location.protocol` guard below can never

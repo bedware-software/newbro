@@ -490,6 +490,10 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
   // extension's own declared content_scripts (Vimium, NotebookLM, etc.).
   if (prependCsStoragePolyfill(manifest, extDir)) modified = true
 
+  // Patch 7: load the frame storage bridge first in every extension page,
+  // for pages framed where our preloads don't run (not a manifest change).
+  injectFrameStorageBridge(extDir)
+
   if (modified) {
     try {
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
@@ -838,6 +842,139 @@ function prependCsStoragePolyfill(manifest: Record<string, unknown>, extDir: str
     changed = true
   }
   return changed
+}
+
+/** Extension pages framed inside other pages (Vimium's HUD, help dialog
+ *  and Vomnibar are iframes in the web page) run without our frame
+ *  preloads, which Electron only runs in main frames. There chrome.storage
+ *  is Electron's native one, whose `session` is a different store from the
+ *  library's in-memory one that the service worker and every top-level
+ *  extension page use — so Vimium's iframes never see the vimiumSecret the
+ *  worker stored, fail its handshake and stay hidden. When no preload ran,
+ *  route `session` through the worker (the content-script polyfill's port)
+ *  and alias sync/managed to local, matching the library. */
+const FRAME_STORAGE_BRIDGE_FILENAME = 'newbro-frame-storage.js'
+const FRAME_STORAGE_BRIDGE_TAG = `<script src="/${FRAME_STORAGE_BRIDGE_FILENAME}"></script>`
+const FRAME_STORAGE_BRIDGE_SOURCE = `// __NEWBRO_FRAME_STORAGE_V1__
+(function () {
+  try {
+    if (globalThis.__newbroPreloadRan) return;
+    var rt = (typeof chrome !== "undefined") && chrome.runtime;
+    var native = (typeof chrome !== "undefined") && chrome.storage;
+    if (!rt || typeof rt.connect !== "function" || !native || !native.local) return;
+    var port = null, nextId = 1, pending = {};
+    function ensurePort() {
+      if (port) return port;
+      try {
+        port = rt.connect({ name: "__newbro_cs_storage" });
+        port.onMessage.addListener(function (msg) {
+          if (!msg || typeof msg.id === "undefined") return;
+          var cb = pending[msg.id];
+          if (cb) { delete pending[msg.id]; cb(msg.result); }
+        });
+        port.onDisconnect.addListener(function () {
+          void (chrome.runtime && chrome.runtime.lastError);
+          port = null;
+          var stale = pending;
+          pending = {};
+          for (var id in stale) { try { stale[id](void 0); } catch (e) {} }
+        });
+      } catch (e) { port = null; }
+      return port;
+    }
+    function call(method, args) {
+      return new Promise(function (resolve) {
+        var p = ensurePort();
+        if (!p) { resolve(void 0); return; }
+        var id = nextId++;
+        pending[id] = resolve;
+        try { p.postMessage({ id: id, area: "session", method: method, args: args }); }
+        catch (e) { delete pending[id]; resolve(void 0); }
+      });
+    }
+    function op(method) {
+      return function () {
+        var a = Array.prototype.slice.call(arguments);
+        var cb = (typeof a[a.length - 1] === "function") ? a.pop() : void 0;
+        var p = call(method, a);
+        // An unreachable worker reads as empty, like a fresh session.
+        if (method === "get") p = p.then(function (r) { return r || {}; });
+        if (cb) p.then(function (r) { try { cb(r); } catch (e) {} });
+        return p;
+      };
+    }
+    var listeners = [];
+    var session = {
+      get: op("get"), set: op("set"), remove: op("remove"), clear: op("clear"),
+      getKeys: op("getKeys"), getBytesInUse: op("getBytesInUse"),
+      setAccessLevel: function () { return Promise.resolve(); },
+      onChanged: {
+        addListener: function (cb) { if (typeof cb === "function") listeners.push(cb); },
+        removeListener: function (cb) { var i = listeners.indexOf(cb); if (i !== -1) listeners.splice(i, 1); },
+        hasListener: function (cb) { return listeners.indexOf(cb) !== -1; },
+        hasListeners: function () { return listeners.length > 0; }
+      },
+      QUOTA_BYTES: 10485760
+    };
+    var storage = {
+      local: native.local, sync: native.local, managed: native.local, session: session,
+      onChanged: native.onChanged, AccessLevel: native.AccessLevel
+    };
+    try { Object.defineProperty(chrome, "storage", { value: storage, configurable: true, writable: true, enumerable: true }); } catch (e) {}
+    if (chrome.storage !== storage) {
+      try { Object.defineProperty(native, "session", { value: session, configurable: true, writable: true, enumerable: true }); } catch (e) {}
+      try { Object.defineProperty(native, "sync", { value: native.local, configurable: true, writable: true, enumerable: true }); } catch (e) {}
+    }
+  } catch (e) {}
+})();
+`
+
+/** Write the frame storage bridge into the extension dir and load it as
+ *  the first script of every HTML document there. Idempotent: pages that
+ *  already reference it are left alone. Files without a document shell
+ *  (<html>/<head>/doctype) are skipped — they're usually templates the
+ *  extension fetches and splices into its own pages. */
+function injectFrameStorageBridge(extDir: string): void {
+  try {
+    const bridgePath = join(extDir, FRAME_STORAGE_BRIDGE_FILENAME)
+    let existing: string | null = null
+    try { existing = readFileSync(bridgePath, 'utf8') } catch { /* not present */ }
+    if (existing !== FRAME_STORAGE_BRIDGE_SOURCE) writeFileSync(bridgePath, FRAME_STORAGE_BRIDGE_SOURCE)
+  } catch (err) {
+    log.warn('extensions: frame storage bridge write failed', { extDir, err: String(err) })
+    return
+  }
+  const pages: string[] = []
+  const walk = (dir: string): void => {
+    let entries: import('node:fs').Dirent[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      if (e.name.startsWith('.') || e.name === '_metadata') continue
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (/\.html?$/i.test(e.name)) pages.push(p)
+    }
+  }
+  walk(extDir)
+  let patched = 0
+  for (const page of pages) {
+    try {
+      const html = readFileSync(page, 'utf8')
+      if (html.includes(FRAME_STORAGE_BRIDGE_TAG)) continue
+      const anchor = /<head\b[^>]*>/i.exec(html) ?? /<html\b[^>]*>/i.exec(html) ?? /<!doctype[^>]*>/i.exec(html)
+      if (!anchor) continue
+      const at = anchor.index + anchor[0].length
+      writeFileSync(page, html.slice(0, at) + FRAME_STORAGE_BRIDGE_TAG + html.slice(at))
+      patched++
+    } catch (err) {
+      log.warn('extensions: frame storage bridge page patch failed', { page, err: String(err) })
+    }
+  }
+  if (patched > 0) log.info('extensions: frame storage bridge added to pages', { extDir, patched })
 }
 
 const NEWBRO_CSP_CONNECT_SOURCES = ['newbro-ipc:', 'https://newbro-ext-ipc.test']
