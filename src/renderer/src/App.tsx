@@ -1024,6 +1024,12 @@ export default function App() {
         case 'duplicate-group':
           if (s.activeTabGroupId) s.duplicateItems([s.activeTabGroupId])
           break
+        case 'ungroup-tab':
+          if (s.activeTabId && s.activeTabGroupId) s.ungroupTab(s.activeTabId)
+          break
+        case 'ungroup-all-tabs':
+          if (s.activeTabGroupId) s.ungroupAll(s.activeTabGroupId)
+          break
         case 'add-to-new-group':
           if (s.activeTabId) {
             setNewGroupForTabId(s.activeTabId)
