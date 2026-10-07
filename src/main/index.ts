@@ -3279,10 +3279,14 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
       // Palette-style popups open where Runwa's search window sits. Null
       // when Runwa isn't running: the renderer's own bounds stand.
       if (wantsRunwaPaletteGeometry(features)) pendingPopupBounds = runwaPaletteBounds()
+      // The renderer passes its themed page background (newbro-bg=RRGGBB in
+      // DetachedWindow) so the native window never shows default white.
+      const background = /(?:^|,)\s*newbro-bg=([0-9a-f]{6})\s*(?:,|$)/i.exec(features)?.[1]
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
           show: false,
+          ...(background ? { backgroundColor: `#${background}` } : {}),
           frame: false,
           autoHideMenuBar: true,
           fullscreenable: false,

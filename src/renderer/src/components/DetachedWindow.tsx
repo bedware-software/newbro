@@ -8,6 +8,9 @@ const DRAG_THRESHOLD_PX = 2
 /** Features-string token asking main to open the popup at Runwa's
  *  search-window geometry. Mirrored in src/main/runwa-palette.ts. */
 const RUNWA_PALETTE_FEATURE = 'newbro-runwa-palette'
+/** Features-string token carrying the popup's native background color as
+ *  RRGGBB. Mirrored in src/main/index.ts (setWindowOpenHandler). */
+const BACKGROUND_FEATURE = 'newbro-bg'
 
 interface Props {
   open: boolean
@@ -86,9 +89,47 @@ function syncThemeToPopup(popupDoc: Document): void {
   else popupDoc.documentElement.removeAttribute('data-theme-variant')
 }
 
+/** The page background as RRGGBB, for the popup's native window background,
+ *  which shows wherever the page hasn't painted yet. The canvas round trip
+ *  turns any CSS color syntax (the theme tokens are oklch) into sRGB. */
+function pageBackgroundHex(): string | null {
+  try {
+    const color = getComputedStyle(document.body).backgroundColor
+    const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
+    if (!ctx) return null
+    ctx.fillStyle = color
+    ctx.fillRect(0, 0, 1, 1)
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data
+    if (a === 0) return null
+    return [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')
+  } catch {
+    return null
+  }
+}
+
+/** Copy the app's styles into the popup as inline text. Cloning the
+ *  <link rel="stylesheet"> tags made the popup fetch the stylesheet again,
+ *  asynchronously: the popup was revealed before it arrived and showed
+ *  unstyled — white — for a few frames before switching to the theme. */
 function copyStylesToPopup(popupDoc: Document): void {
   const nodes = document.querySelectorAll('style, link[rel="stylesheet"]')
   nodes.forEach((node) => {
+    const sheet = node instanceof HTMLLinkElement ? node.sheet : null
+    if (sheet) {
+      try {
+        const style = popupDoc.createElement('style')
+        style.textContent = Array.from(sheet.cssRules, (rule) => rule.cssText)
+          .join('\n')
+          // Relative url()s resolved against the stylesheet; keep them so.
+          .replace(/url\((['"]?)(?![a-z][a-z0-9+.-]*:|\/|#)([^'")]+)\1\)/gi, (_m, q: string, path: string) =>
+            `url(${q}${new URL(path, sheet.href ?? document.baseURI).href}${q})`,
+          )
+        popupDoc.head.appendChild(style)
+        return
+      } catch {
+        /* rules unreadable — fall back to loading the stylesheet */
+      }
+    }
     popupDoc.head.appendChild(node.cloneNode(true))
   })
 }
@@ -133,6 +174,7 @@ export function DetachedWindow({
     const finalHeight = saved?.height ?? height
     const left = saved?.left ?? Math.max(0, window.screenX + Math.round((window.outerWidth - finalWidth) / 2))
     const top = saved?.top ?? Math.max(0, window.screenY + Math.round((window.outerHeight - finalHeight) / 2))
+    const background = pageBackgroundHex()
 
     const popup = window.open(
       '',
@@ -150,6 +192,7 @@ export function DetachedWindow({
         'status=no',
         'menubar=no',
         ...(matchRunwaPalette ? [`${RUNWA_PALETTE_FEATURE}=yes`] : []),
+        ...(background ? [`${BACKGROUND_FEATURE}=${background}`] : []),
       ].join(','),
     )
 
@@ -327,17 +370,28 @@ export function DetachedWindow({
   }, [open, width, height, resizable, closeOnEscape, closeOnBlur, persistKey, matchRunwaPalette])
 
   // Show the popup window once React has rendered content into the portal.
-  // Double-rAF ensures the browser has committed the paint before we reveal.
+  // Double-rAF on the POPUP's own frame clock ensures the popup has
+  // committed its paint before we reveal (the opener's frames say nothing
+  // about the popup's).
   useEffect(() => {
     if (!containerEl) return
     const popup = popupRef.current
     if (!popup || popup.closed) return
-    const id = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        ;(window as any).electronAPI?.detachedWindowShow(alwaysOnTop)
-      })
+    let shown = false
+    const show = (): void => {
+      if (shown) return
+      shown = true
+      ;(window as any).electronAPI?.detachedWindowShow(alwaysOnTop)
+    }
+    let id = popup.requestAnimationFrame(() => {
+      id = popup.requestAnimationFrame(show)
     })
-    return () => cancelAnimationFrame(id)
+    // Never leave a dialog invisible if the popup's frames don't come.
+    const fallback = setTimeout(show, 500)
+    return () => {
+      clearTimeout(fallback)
+      if (!popup.closed) popup.cancelAnimationFrame(id)
+    }
   }, [containerEl, alwaysOnTop])
 
   useEffect(() => {
