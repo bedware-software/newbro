@@ -49,8 +49,14 @@ import {
   tabStop,
   tabStopFindInPage,
   tabToggleDevTools,
+  getChromeTabIdForTab,
+  pickPartitionForWindow,
   type TabBounds,
 } from './tab-views'
+import { registerSidePanelIpc, sidePanelOpensOnActionClick, toggleSidePanelForActionClick } from './extensions/side-panel'
+import { registerExtensionFrameIpc } from './extensions/api-ipc'
+import { registerIdentityIpc } from './extensions/identity'
+import { dispatchActionClicked } from './chrome-extensions-bridge'
 import {
   listExtensions,
   installExtensionById,
@@ -430,19 +436,36 @@ export function registerIpcHandlers(): void {
 
   // Toggle the extension's popup. Pass the icon's bounding rect (in window-
   // relative CSS pixels) so main can position the floating popup relative
-  // to it. Returns 'opened' | 'closed' | 'no-popup' so the renderer can
-  // update the icon's pressed state.
+  // to it. Returns 'opened' | 'closed' so the renderer can update the
+  // icon's pressed state. Popup-less extensions get what Chrome gives
+  // them — their side panel (openPanelOnActionClick) or
+  // chrome.action.onClicked ('side-panel' | 'clicked') — and 'no-popup'
+  // when neither applies, so the renderer falls back to the options page.
   ipcMain.handle(
     'extensions:open-action',
-    (
+    async (
       _e,
       extensionId: string,
       tabId: string | null,
       anchor: { x: number; y: number; width: number; height: number } | null
     ) => {
       const popupPath = getActionPopupPathForTab(extensionId, tabId)
-      if (!popupPath) return 'no-popup'
       const win = BrowserWindow.fromWebContents(_e.sender)
+      if (!popupPath) {
+        const chromeTabId = tabId ? getChromeTabIdForTab(tabId) : null
+        if (!win || chromeTabId === null) return 'no-popup'
+        const partition = partitionForBrowserWindow(win) ?? pickPartitionForWindow(win.id)
+        if (sidePanelOpensOnActionClick(partition, extensionId)) {
+          try {
+            await toggleSidePanelForActionClick(win.id, partition, extensionId, chromeTabId)
+            return 'side-panel'
+          } catch (err) {
+            log.warn('extensions: side panel action toggle failed', { extensionId, err: String(err) })
+          }
+        }
+        if (await dispatchActionClicked(session.fromPartition(partition), extensionId, chromeTabId)) return 'clicked'
+        return 'no-popup'
+      }
       if (!win) return 'closed'
       const a = anchor ?? { x: 0, y: 0, width: 0, height: 0 }
       return toggleExtensionPopup(win.id, extensionId, popupPath, a)
@@ -1125,6 +1148,9 @@ function alive(p) {
   registerUpdateToastIpc()
   registerDefaultBrowserIpc()
   registerDownloadsIpc()
+  registerExtensionFrameIpc()
+  registerSidePanelIpc()
+  registerIdentityIpc()
   registerHistoryIpc()
   registerOmniboxSuggestIpc()
   registerOmniboxPopupIpc()

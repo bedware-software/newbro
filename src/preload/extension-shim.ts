@@ -68,9 +68,11 @@ if (IS_SW_REALM) {
   // match — that guard silently disabling this file in SW realms is
   // exactly what the old "SW preload doesn't fire in Electron 41" bug
   // actually was. Realm detection must use process.type.
+  installMainWorldApis((channel, payload) => ipcRenderer.invoke('newbro-sw', channel, payload))
   initSwRealm()
 } else if (proto === 'chrome-extension:') {
   reportLoaded('preload-start')
+  installMainWorldApis((channel, payload) => ipcRenderer.invoke('newbro-ext-frame', channel, payload))
   // Wrap install() in try-catch — a thrown error in our shim would
   // bubble up out of the preload and have prevented the page's own
   // scripts from running. Better to skip the polyfill than to break
@@ -90,6 +92,195 @@ if (IS_SW_REALM) {
     }
   }
   reportLoaded('preload-end')
+}
+
+// ── Main-world chrome.* polyfills (frames + service workers) ──
+//
+// Electron ships neither chrome.sidePanel nor chrome.tabGroups. Both
+// must exist BEFORE the extension's own code runs: Claude's modules
+// read chrome.tabGroups.Color in a class static initializer at load
+// time (a missing namespace kills the whole module graph, worker and
+// side panel page alike), and they feature-test chrome.sidePanel.
+// Preloads run before page/worker scripts, and executeInMainWorld is
+// synchronous — the same mechanism electron-chrome-extensions uses for
+// its own chrome.* namespaces. `invoke` reaches main over the realm's
+// transport (ServiceWorkerMain.ipc or ipcMain) and resolves to
+// { ok, data } | { ok: false, error }.
+function installMainWorldApis(invoke: (channel: string, payload: unknown) => Promise<unknown>): void {
+  const cb = contextBridge as unknown as {
+    executeInMainWorld?: (spec: { func: (...a: never[]) => void; args?: unknown[] }) => void
+  }
+  if (typeof cb.executeInMainWorld !== 'function') return
+  try {
+    cb.executeInMainWorld({ func: mainWorldApis as (...a: never[]) => void, args: [invoke] })
+  } catch (err) {
+    try { console.error('[newbro-ext-shim] main-world API install failed:', err) }
+    catch { /* console torn down */ }
+  }
+}
+
+// SERIALIZED into the main world — must stay self-contained (no
+// references to anything outside its own body).
+function mainWorldApis(invoke: (channel: string, payload: unknown) => Promise<unknown>): void {
+  type Listener = (...args: unknown[]) => void
+  type Callback = ((value?: unknown) => void) | undefined
+  const g = globalThis as unknown as {
+    location?: { protocol?: string }
+    chrome?: Record<string, unknown> & { runtime?: { getManifest?: () => { permissions?: unknown } } }
+  }
+  try {
+    if (!g.location || g.location.protocol !== 'chrome-extension:') return
+  } catch {
+    return
+  }
+  // Proof for the worker shim that this realm's preload ran at all —
+  // Electron skips SW preloads in unsandboxed renderer processes, and
+  // sw-shim.ts reports workers that land in one.
+  try {
+    Object.defineProperty(globalThis, '__newbroPreloadRan', { value: true })
+  } catch {
+    /* already defined */
+  }
+  const chrome = g.chrome
+  if (!chrome || typeof chrome !== 'object') return
+  let permissions: unknown[] = []
+  try {
+    const p = chrome.runtime?.getManifest?.()?.permissions
+    if (Array.isArray(p)) permissions = p
+  } catch {
+    /* no manifest access — treat as no permissions */
+  }
+
+  const makeEvent = (): Record<string, unknown> => {
+    const listeners: Listener[] = []
+    return {
+      addListener: (fn: Listener) => { if (typeof fn === 'function' && !listeners.includes(fn)) listeners.push(fn) },
+      removeListener: (fn: Listener) => {
+        const i = listeners.indexOf(fn)
+        if (i !== -1) listeners.splice(i, 1)
+      },
+      hasListener: (fn: Listener) => listeners.includes(fn),
+      hasListeners: () => listeners.length > 0,
+    }
+  }
+  // Chrome APIs return a Promise unless a trailing callback is passed.
+  const settle = (p: Promise<unknown>, done: Callback): Promise<unknown> | undefined => {
+    if (typeof done !== 'function') return p
+    p.then((v) => done(v), () => done(undefined))
+    return undefined
+  }
+  const define = (name: string, value: unknown): void => {
+    if (chrome[name] !== undefined) return
+    try {
+      Object.defineProperty(chrome, name, { value, enumerable: true, configurable: true, writable: true })
+    } catch {
+      /* chrome pinned non-extensible — nothing we can do */
+    }
+  }
+
+  // The SW bridge stringifies errors ("Error: …"); hand the extension
+  // Chrome-shaped messages.
+  const callMain = (channel: string, op: string, args: unknown): Promise<unknown> =>
+    invoke(channel, { op, args }).then((r) => {
+      const res = r as { ok?: boolean; data?: unknown; error?: string } | undefined
+      if (res && res.ok) return res.data
+      throw new Error(String((res && res.error) || `${channel}.${op} failed`).replace(/^Error: /, ''))
+    })
+
+  if (permissions.includes('sidePanel')) {
+    const call = (op: string, args: unknown): Promise<unknown> => callMain('sidepanel', op, args)
+    define('sidePanel', {
+      setOptions: (options: unknown, done?: Callback) => settle(call('setOptions', options), done),
+      getOptions: (options: unknown, done?: Callback) => settle(call('getOptions', options), done),
+      setPanelBehavior: (behavior: unknown, done?: Callback) => settle(call('setPanelBehavior', behavior), done),
+      getPanelBehavior: (done?: Callback) => settle(call('getPanelBehavior', null), done),
+      open: (options: unknown, done?: Callback) => settle(call('open', options), done),
+      close: (options: unknown, done?: Callback) => settle(call('close', options), done),
+      getLayout: (done?: Callback) => settle(Promise.resolve({ side: 'right' }), done),
+      onOpened: makeEvent(),
+      onClosed: makeEvent(),
+    })
+  }
+
+  // OAuth via chrome.identity.launchWebAuthFlow (main/extensions/
+  // identity.ts). Google account tokens (getAuthToken) don't exist here.
+  if (permissions.includes('identity')) {
+    const extensionId = (chrome.runtime as { id?: string } | undefined)?.id ?? ''
+    define('identity', {
+      getRedirectURL: (path?: string) =>
+        `https://${extensionId}.chromiumapp.org/${String(path ?? '').replace(/^\/+/, '')}`,
+      launchWebAuthFlow: (details: unknown, done?: Callback) =>
+        settle(callMain('identity', 'launchWebAuthFlow', details), done),
+      getAuthToken: (...args: unknown[]) => {
+        const last = args[args.length - 1]
+        return settle(
+          Promise.reject(new Error('OAuth2 not granted or revoked.')),
+          typeof last === 'function' ? (last as Callback) : undefined,
+        )
+      },
+      removeCachedAuthToken: (_details: unknown, done?: Callback) => settle(Promise.resolve(), done),
+      clearAllCachedAuthTokens: (done?: Callback) => settle(Promise.resolve(), done),
+      getProfileUserInfo: (...args: unknown[]) => {
+        const last = args[args.length - 1]
+        return settle(
+          Promise.resolve({ email: '', id: '' }),
+          typeof last === 'function' ? (last as Callback) : undefined,
+        )
+      },
+      onSignInChanged: makeEvent(),
+    })
+  }
+
+  // No chrome.debugger yet. Claude wires chrome.debugger.onEvent at module
+  // load; give it the namespace and fail the calls that would need a
+  // real CDP session. Callback position varies (sendCommand's params are
+  // optional), so take the trailing function, if any.
+  if (permissions.includes('debugger')) {
+    const unsupported = (args: unknown[]): Promise<unknown> | undefined => {
+      const last = args[args.length - 1]
+      return settle(
+        Promise.reject(new Error('chrome.debugger is not available in Newbro.')),
+        typeof last === 'function' ? (last as Callback) : undefined,
+      )
+    }
+    define('debugger', {
+      attach: (...args: unknown[]) => unsupported(args),
+      detach: (...args: unknown[]) => unsupported(args),
+      sendCommand: (...args: unknown[]) => unsupported(args),
+      getTargets: (done?: Callback) => settle(Promise.resolve([]), done),
+      onEvent: makeEvent(),
+      onDetach: makeEvent(),
+    })
+  }
+
+  // Newbro has no tab groups: report none, refuse to edit any. Enough
+  // for extensions that only decorate their own groups.
+  if (permissions.includes('tabGroups')) {
+    const noGroup = (groupId: unknown): Promise<unknown> =>
+      Promise.reject(new Error(`No group with id: ${String(groupId)}.`))
+    define('tabGroups', {
+      TAB_GROUP_ID_NONE: -1,
+      Color: Object.freeze({
+        GREY: 'grey',
+        BLUE: 'blue',
+        RED: 'red',
+        YELLOW: 'yellow',
+        GREEN: 'green',
+        PINK: 'pink',
+        PURPLE: 'purple',
+        CYAN: 'cyan',
+        ORANGE: 'orange',
+      }),
+      get: (groupId: unknown, done?: Callback) => settle(noGroup(groupId), done),
+      query: (_info: unknown, done?: Callback) => settle(Promise.resolve([]), done),
+      update: (groupId: unknown, _props: unknown, done?: Callback) => settle(noGroup(groupId), done),
+      move: (groupId: unknown, _props: unknown, done?: Callback) => settle(noGroup(groupId), done),
+      onCreated: makeEvent(),
+      onUpdated: makeEvent(),
+      onRemoved: makeEvent(),
+      onMoved: makeEvent(),
+    })
+  }
 }
 
 // ── Service-worker realm: __newbroIpc transport facade ──

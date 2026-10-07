@@ -12,6 +12,7 @@ import { SearchDialog } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
+import { SidePanel } from './components/SidePanel'
 import { InputDialog } from './components/InputDialog'
 import { MoveTabDialog } from './components/MoveTabDialog'
 import { MoveGroupDialog } from './components/MoveGroupDialog'
@@ -239,6 +240,10 @@ declare global {
       tabDeactivate?: () => Promise<void>
       tabFocus?: (tabId: string) => Promise<void>
       tabSetBounds?: (bounds: { x: number; y: number; width: number; height: number }) => void
+      getSidePanelState?: () => Promise<{ extensionId: string | null }>
+      onSidePanelState?: (callback: (state: { extensionId: string | null }) => void) => () => void
+      sidePanelSetBounds?: (bounds: { x: number; y: number; width: number; height: number }) => void
+      closeSidePanel?: () => Promise<void>
       tabNavigate?: (tabId: string, url: string) => Promise<void>
       tabGoBack?: (tabId: string) => Promise<void>
       tabGoForward?: (tabId: string) => Promise<void>
@@ -1300,6 +1305,9 @@ export default function App() {
           />
           <WebviewPanel />
         </div>
+        {/* Extension chrome.sidePanel column; hidden in cinema mode like the
+            Bookshelf, the panel stays open behind it. */}
+        <SidePanel suppressed={pageFullscreen} />
         {/* Hide the bookshelf while a page is in fullscreen (cinema mode) so
             the tab view can fill the full width — it reappears with its prior
             open state when fullscreen exits. */}

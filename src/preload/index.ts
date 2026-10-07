@@ -242,8 +242,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     extensionId: string,
     tabId: string | null,
     anchor: { x: number; y: number; width: number; height: number } | null
-  ): Promise<'opened' | 'closed' | 'no-popup'> =>
+  ): Promise<'opened' | 'closed' | 'side-panel' | 'clicked' | 'no-popup'> =>
     ipcRenderer.invoke('extensions:open-action', extensionId, tabId, anchor),
+  // chrome.sidePanel column: main says which extension's panel the window
+  // shows; the renderer lays out the column and reports its page rect.
+  getSidePanelState: (): Promise<{ extensionId: string | null }> => ipcRenderer.invoke('sidepanel:get-state'),
+  onSidePanelState: (callback: (state: { extensionId: string | null }) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, state: { extensionId: string | null }) => callback(state)
+    ipcRenderer.on('sidepanel-state', handler)
+    return () => { ipcRenderer.removeListener('sidepanel-state', handler) }
+  },
+  sidePanelSetBounds: (bounds: { x: number; y: number; width: number; height: number }): void => {
+    ipcRenderer.send('sidepanel:bounds', bounds)
+  },
+  closeSidePanel: (): Promise<void> => ipcRenderer.invoke('sidepanel:close'),
   closeExtensionPopup: (): Promise<boolean> => ipcRenderer.invoke('extensions:close-popup'),
   moveExtensionPopup: (
     extensionId: string,

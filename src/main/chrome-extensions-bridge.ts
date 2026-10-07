@@ -279,3 +279,51 @@ export function subscribeBrowserActionUpdates(
   catch (err) { log.warn('extensions: subscribeBrowserActionUpdates initial-fire threw', String(err)) }
   return () => { observers.delete(fakeObserver) }
 }
+
+/** Fire chrome.action.onClicked for a popup-less extension, as Chrome
+ *  does on a toolbar click. Reaches into the library's router the same
+ *  way the helpers above reach into BrowserActionAPI. Resolves false when
+ *  the extension registers no onClicked listener — the click would do
+ *  nothing, so the caller can fall back to something visible. */
+export async function dispatchActionClicked(ses: Session, extensionId: string, chromeTabId: number): Promise<boolean> {
+  const internal = getExtensionsFor(ses) as unknown as {
+    ctx?: {
+      router?: {
+        listeners?: Map<string, Array<{ extensionId: string }>>
+        sendEvent?: (extensionId: string, eventName: string, ...args: unknown[]) => void
+      }
+      store?: { getTabById?: (id: number) => WebContents | undefined }
+    }
+    api?: { tabs?: { getTabDetails?: (tab: WebContents) => unknown } }
+  } | undefined
+  const router = internal?.ctx?.router
+  if (typeof router?.sendEvent !== 'function') return false
+  const hasListener = (): boolean =>
+    !!router.listeners?.get('browserAction.onClicked')?.some((l) => l.extensionId === extensionId)
+  if (!hasListener()) {
+    // The router only learns listeners when the worker runs its top-level
+    // code, and after an app restart the worker may still be idle (Chrome
+    // remembers listeners across restarts; the library doesn't). Wake it
+    // and give it a moment to register, as Chrome would for the event.
+    try {
+      await ses.serviceWorkers.startWorkerForScope(`chrome-extension://${extensionId}/`)
+    } catch {
+      return false // no service worker — nothing could be listening
+    }
+    const deadline = Date.now() + 1500
+    while (!hasListener() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+    if (!hasListener()) {
+      const events: string[] = []
+      for (const [name, list] of router.listeners ?? []) {
+        if (list.some((l) => l.extensionId === extensionId)) events.push(name)
+      }
+      log.info('extensions: no action.onClicked listener', { extensionId, events })
+      return false
+    }
+  }
+  const tab = internal?.ctx?.store?.getTabById?.(chromeTabId)
+  const details = tab ? internal?.api?.tabs?.getTabDetails?.(tab) : undefined
+  router.sendEvent(extensionId, 'browserAction.onClicked', details ?? { id: chromeTabId })
+  log.info('extensions: action.onClicked dispatched', { extensionId, chromeTabId })
+  return true
+}

@@ -40,10 +40,14 @@
 // the challenge through the same auth-poll machinery the SW shim
 // already uses for webContents-scoped challenges.
 
+import { app } from 'electron'
 import { log } from '../log'
 
 const CDP_HOST = '127.0.0.1'
-const CDP_PORT = 9229
+// Dev gets its own port: the installed build holds 9229 while the user
+// browses, and a dev instance on the same port would fail to bind and
+// then attach this inspector to the PROD instance's service workers.
+export const CDP_PORT = app.isPackaged ? 9229 : 9230
 const POLL_MS = 2000
 
 type CdpTarget = {

@@ -32,13 +32,13 @@
 import { app, BrowserWindow, session, type Session } from 'electron'
 import Store from 'electron-store'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { log } from '../log'
 import { deriveExtensionIdFromPublicKey, extractCrxPublicKey, parseCrx } from './crx'
 import { extractExtensionIdFromUrl as _extract, fetchCrx } from './store'
 import { unzipTo } from './zip'
-import { buildSwShimSource, SW_SHIM_MAGIC, SW_SHIM_LEGACY_MAGIC, SW_SHIM_FOOTER } from './sw-shim'
+import { buildSwShimSource, SW_SHIM_MAGIC, SW_SHIM_LEGACY_MAGIC, SW_SHIM_FOOTER, SW_SHIM_MODULE_FILE } from './sw-shim'
 import { getSwRpcServerInfo } from './sw-rpc-server'
 import { clearUserScriptsForExtension } from './userscripts'
 import { notifyCloudChange } from '../cloud-sync'
@@ -1022,7 +1022,34 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>, extId?:
   // queue keyed by challengeId.
   // shimSource ends with the FOOTER comment line and a trailing newline,
   // so we concat directly — no extra '\n' separator needed.
-  const shimSource = buildSwShimSource(rpc.port, rpc.secret, '*')
+  let shimSource = buildSwShimSource(rpc.port, rpc.secret, '*')
+  // Module workers: static imports are hoisted, so every module the
+  // worker imports evaluates BEFORE a prepended shim runs — Claude's
+  // worker reads chrome.tabGroups.Color and registers its runtime
+  // listeners while its modules load, ahead of our overrides. Move the
+  // shim into its own module and import it first; imports evaluate in
+  // source order. The header keeps MAGIC/FOOTER so the strip above
+  // recognises it on the next launch.
+  let shimModuleChanged = false
+  if ((manifest.background as { type?: string }).type === 'module') {
+    const shimModulePath = join(dirname(swPath), SW_SHIM_MODULE_FILE)
+    let existing: string | null = null
+    try {
+      existing = readFileSync(shimModulePath, 'utf8')
+    } catch {
+      /* first injection — no shim module yet */
+    }
+    if (existing !== shimSource) {
+      try {
+        writeFileSync(shimModulePath, shimSource)
+        shimModuleChanged = true
+      } catch (err) {
+        log.warn('extensions: SW shim — module write failed', { extDir, swRel, err: String(err) })
+        return false
+      }
+    }
+    shimSource = `${SW_SHIM_MAGIC}\nimport './${SW_SHIM_MODULE_FILE}';\n${SW_SHIM_FOOTER}\n`
+  }
   const nextContent = shimSource + body
   // Skip the write entirely when on-disk content matches what we'd
   // produce. Avoids needlessly invalidating Chromium's MV3 service
@@ -1035,7 +1062,7 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>, extId?:
   // RPC port, hits ERR_CONNECTION_REFUSED, while the freshly-
   // spawned SW polls the live port). With persistent port + secret,
   // the typical case is no-op.
-  if (nextContent === original) {
+  if (nextContent === original && !shimModuleChanged) {
     log.info('extensions: SW shim already up to date, skipping write', {
       extDir,
       swRel,
@@ -1045,7 +1072,7 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>, extId?:
     return false
   }
   try {
-    writeFileSync(swPath, nextContent)
+    if (nextContent !== original) writeFileSync(swPath, nextContent)
     const bodyLines = body.split('\n')
     const head: { line: number; text: string }[] = []
     for (let i = 0; i < 25 && i < bodyLines.length; i++) {
@@ -1221,44 +1248,56 @@ function getAllSessions(): Session[] {
  *  on first session load (clear once is enough). */
 const swShimRewrittenExtIds = new Set<string>()
 
+/** If the shim was rewritten this boot, clear the cached SW
+ *  registration + script bytes for this extension's origin so Chromium
+ *  can't activate the stale pre-rewrite version. This is
+ *  load-the-fresh-shim insurance — without it, the FIRST app launch
+ *  after a shim version bump would still run the cached SW (Browsec
+ *  sits idle, requires manual Turn on click) until Chromium's separate
+ *  update check eventually noticed the byte difference and spawned a
+ *  new SW. We DON'T clear other storage types — chrome.storage.local
+ *  data must survive so the extension's persisted settings (proxy mode,
+ *  country choice, on/off flag) are still there for the new SW's
+ *  onStartup listener to read.
+ *
+ *  Must run BEFORE the extension loads: clearing afterwards drops the
+ *  worker registration loadExtension just made, and nothing re-registers
+ *  it until the next launch. Returns true if it cleared. */
+async function clearRewrittenSwRegistration(ses: Session, extensionId: string): Promise<boolean> {
+  if (!swShimRewrittenExtIds.has(extensionId)) return false
+  swShimRewrittenExtIds.delete(extensionId)
+  try {
+    await ses.clearStorageData({
+      origin: `chrome-extension://${extensionId}`,
+      storages: ['serviceworkers'],
+    })
+    log.info('extensions: cleared SW storage after shim rewrite', { id: extensionId })
+    return true
+  } catch (err) {
+    log.warn('extensions: clearStorageData(serviceworkers) failed', { id: extensionId, err: String(err) })
+    return false
+  }
+}
+
 async function loadExtensionInto(ses: Session, entry: PersistedEntry): Promise<void> {
   if (!entry.enabled) return
   if (!existsSync(join(entry.path, 'manifest.json'))) {
     log.warn('extensions: missing manifest on disk', entry.path)
     return
   }
-  // If the shim was rewritten this boot, clear the cached SW
-  // registration + script bytes for this extension's origin so
-  // Chromium can't activate the stale pre-rewrite version. This is
-  // load-the-fresh-shim insurance — without it, the FIRST app launch
-  // after a shim version bump would still run the cached SW (Browsec
-  // sits idle, requires manual Turn on click) until Chromium's
-  // separate update check eventually noticed the byte difference and
-  // spawned a new SW. We DON'T clear other storage types — chrome.
-  // storage.local data must survive so the extension's persisted
-  // settings (proxy mode, country choice, on/off flag) are still there
-  // for the new SW's onStartup listener to read.
-  if (swShimRewrittenExtIds.has(entry.id)) {
-    swShimRewrittenExtIds.delete(entry.id)
-    try {
-      await ses.clearStorageData({
-        origin: `chrome-extension://${entry.id}`,
-        storages: ['serviceworkers'],
-      })
-      log.info('extensions: cleared SW storage after shim rewrite', { id: entry.id })
-    } catch (err) {
-      log.warn('extensions: clearStorageData(serviceworkers) failed', { id: entry.id, err: String(err) })
-    }
-  }
+  const cleared = await clearRewrittenSwRegistration(ses, entry.id)
   // Path-aware dedup: skip only when the SAME path is already registered.
   // After a CRX reinstall the new path differs from the stale registration,
   // and a plain "id matches → skip" would leave the session pointing at a
-  // directory that no longer exists. Force a remove + reload in that case.
+  // directory that no longer exists. Force a remove + reload in that case
+  // — and also when we just cleared the worker registration under an
+  // already-loaded extension (ensureExtensionInSession raced us), since
+  // only a fresh load registers the worker again.
   let stale = false
   const existing = sessionGetAllExtensions(ses)
   const same = existing.find((e) => e.id === entry.id)
   if (same) {
-    if (same.path === entry.path) return
+    if (same.path === entry.path && !cleared) return
     stale = true
   }
   if (stale) sessionRemoveExtension(ses, entry.id)
@@ -1508,6 +1547,7 @@ export async function ensureExtensionInSession(
 
   if (alreadyLoadedAtRightPath) return true
 
+  await clearRewrittenSwRegistration(ses, extensionId)
   if (stalePath) {
     log.info('ensureExtensionInSession: stale registration, removing', {
       id: extensionId,
@@ -1717,6 +1757,20 @@ export function getActionPopupPathForTab(extensionId: string, _tabId: string | n
   const popup = action.default_popup
   if (typeof popup === 'string' && popup.length > 0) return popup
   return null
+}
+
+/** manifest `side_panel.default_path` — the global chrome.sidePanel page
+ *  until the extension calls setOptions. */
+export function getSidePanelDefaultPath(extensionId: string): string | null {
+  const entry = store.get('extensions')[extensionId]
+  if (!entry) return null
+  try {
+    const sidePanel = readManifest(entry.path).side_panel as { default_path?: unknown } | undefined
+    const path = sidePanel?.default_path
+    return typeof path === 'string' && path.length > 0 ? path : null
+  } catch {
+    return null
+  }
 }
 
 export async function loadEnabledExtensionsInto(ses: Session): Promise<void> {

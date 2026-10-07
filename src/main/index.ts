@@ -57,7 +57,7 @@ import {
 } from './chrome-extensions-bridge'
 import { ElectronChromeExtensions } from 'electron-chrome-extensions'
 import { loadEnabledExtensionsInto, readBgSourceWindow, rehydrateExtensionsOnStartup, getExtensionEntry, onExtensionDeactivated } from './extensions/manager'
-import { startSwCdpInspector, setSwCdpAuthHandler, type SwCdpAuthResponse } from './extensions/sw-cdp-inspector'
+import { startSwCdpInspector, setSwCdpAuthHandler, CDP_PORT, type SwCdpAuthResponse } from './extensions/sw-cdp-inspector'
 import { startSwRpcServer, getSwRpcServerInfo, type SwRpcRoutes } from './extensions/sw-rpc-server'
 import {
   wireServiceWorkerBridge,
@@ -127,11 +127,12 @@ app.commandLine.appendSwitch(
 // Port choice: 9229 is the Node.js inspector default — Electron isn't
 // using Node inspector here so the port is free, and the number is
 // memorable. Bound to localhost so external machines can't connect.
+// Dev builds use 9230 (see CDP_PORT) so they can run beside prod.
 //
 // Connect from Chrome:
 //   chrome://inspect/#devices → "Configure" → add localhost:9229 →
 //   SWs and pages show up under "Remote Target".
-app.commandLine.appendSwitch('remote-debugging-port', '9229')
+app.commandLine.appendSwitch('remote-debugging-port', String(CDP_PORT))
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
 
 // ── Integrated Windows Authentication (SSO) ──
@@ -1986,6 +1987,15 @@ function dispatchSwShimAction(
         } else if (action === 'proxy-settings-clear') {
           log.info('extensions: chrome.proxy.settings.clear — reverting to system')
           applyProxyConfigToAllSessions({ mode: 'system' })
+        } else if (action === 'sw-no-preload') {
+          // A worker running in an unsandboxed renderer process (one an
+          // unsandboxed extension page launched) — no library chrome.*
+          // APIs, polyfills or IPC until that process goes away. Extension
+          // views are sandboxed to prevent this; this flags what slips by.
+          log.warn('extensions: SW started without preload', {
+            partition: getPartitionForSession(ses),
+            info: parsed,
+          })
         } else if (action === 'storage-bridge') {
           // Popup (or any non-SW context) writes to chrome.storage.local;
           // Electron 41 fires onChanged in the writing context only, so

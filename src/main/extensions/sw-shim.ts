@@ -94,10 +94,15 @@
 //         SW shim drains and dispatches to its bridged onChanged
 //         listeners. Wraps chrome.storage so onChanged is OUR event
 //         while local/sync/session pass through to the real storage.
+//   V47 — 'sw-no-preload' beacon: reports a worker that started without
+//         the SW preload realm (in an unsandboxed renderer process).
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V46__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V47__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
+// Module service workers get the shim as a sibling module imported first
+// (see injectSwShim) instead of prepended inline.
+export const SW_SHIM_MODULE_FILE = 'newbro-sw-shim.js'
 
 export const SW_SHIM_HOST = 'newbro-ext-ipc.test'
 
@@ -1928,6 +1933,20 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       hasScriptingExecuteScript: !!(self.chrome && self.chrome.scripting && typeof self.chrome.scripting.executeScript === 'function'),
     });
   } catch (e) { swLog('sw-shim-ran-beacon', e); }
+  // V47: no preload realm in this worker (the extension-shim preload
+  // marks every realm it runs in). Electron runs SW preloads only in
+  // sandboxed renderer processes; a worker sharing a process that an
+  // unsandboxed extension page launched goes without the library's
+  // chrome.action / tabs / windows, our sidePanel / tabGroups / identity
+  // polyfills and the IPC transport. Main sandboxes extension views to
+  // avoid that; report any worker that still slips through.
+  // Over sendPost's HTTP fallback — the IPC facade can't exist here.
+  try {
+    if (!self.__newbroPreloadRan) {
+      var noPreloadExtId = (self.chrome && self.chrome.runtime && self.chrome.runtime.id) ? String(self.chrome.runtime.id) : '';
+      sendPost('sw-no-preload', { extId: noPreloadExtId });
+    }
+  } catch (e) { swLog('sw-no-preload-beacon', e); }
   // ── Auto-stub Proxy ─────────────────────────────────────────────
   // For ANY chrome.* namespace not provided by Electron / library /
   // our specific patches, return a chainable + callable + event-like

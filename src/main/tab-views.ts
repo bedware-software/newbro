@@ -180,6 +180,26 @@ const wcIdToTabId = new Map<number, string>()
 type ShortcutInstaller = (wc: WebContents, targetWindow: BrowserWindow) => void
 const shortcutInstallers = new Map<number, ShortcutInstaller>()
 
+/** Observers of tab activation/teardown, keyed by Chrome tab id
+ *  (webContents.id) — the side panel shows tab-bound panels only while
+ *  their tab is active and drops them with the tab. */
+export interface TabActivityListener {
+  onActiveTabChanged?(windowId: number): void
+  onTabDestroyed?(chromeTabId: number, windowId: number): void
+}
+const tabActivityListeners = new Set<TabActivityListener>()
+
+export function addTabActivityListener(listener: TabActivityListener): () => void {
+  tabActivityListeners.add(listener)
+  return () => { tabActivityListeners.delete(listener) }
+}
+
+function emitTabActivity(fn: (l: TabActivityListener) => void): void {
+  for (const l of tabActivityListeners) {
+    try { fn(l) } catch (err) { log.warn('tab-views: tab activity listener threw', { err: String(err) }) }
+  }
+}
+
 /** Resolve the workspace BrowserWindow that hosts the given tab WebContents,
  *  or null if it isn't one of our tabs (e.g. a detached popup or the main
  *  renderer). Used by the HTTP-auth prompt to show the login dialog on the
@@ -891,7 +911,14 @@ export function createTab(opts: {
       preload: WEBVIEW_STEALTH_PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // Extension pages share one renderer process with their extension's
+      // service worker, and Electron only runs the worker's preload
+      // (library chrome.* APIs, our polyfills, IPC) in sandboxed renderer
+      // processes. An unsandboxed extension page that launches that
+      // process first leaves the worker without it — so tabs opened on
+      // an extension page (options, restored, chrome.tabs.create) are
+      // sandboxed, as are extension popups and side panels.
+      sandbox: opts.url.startsWith('chrome-extension://'),
       // Never let Electron auto-focus the page on navigation. It defaults
       // to true (focus the WebContents whenever it navigates), which causes
       // two distinct focus-steal bugs:
@@ -1090,6 +1117,7 @@ export function deactivateTab(windowId: number): void {
   if (!activeTabByWindow.has(windowId)) return
   hideOutgoingTab(windowId, null)
   activeTabByWindow.delete(windowId)
+  emitTabActivity((l) => l.onActiveTabChanged?.(windowId))
   const win = BrowserWindow.fromId(windowId)
   if (!win || win.isDestroyed()) return
   try {
@@ -1179,6 +1207,7 @@ function setActiveTab(windowId: number, tabId: string): void {
   } catch (err) {
     log.warn('tab-views: selectTab to extensions failed', { tabId, err: String(err) })
   }
+  emitTabActivity((l) => l.onActiveTabChanged?.(windowId))
 }
 
 export function destroyTab(tabId: string): void {
@@ -1219,6 +1248,7 @@ export function destroyTab(tabId: string): void {
   if (activeTabByWindow.get(rec.windowId) === tabId) {
     activeTabByWindow.delete(rec.windowId)
   }
+  emitTabActivity((l) => l.onTabDestroyed?.(wcId, rec.windowId))
   if (htmlFullscreenByWindow.get(rec.windowId) === tabId) {
     // Closing a tab mid-fullscreen won't emit leave, so undo the black base
     // and tell the renderer to restore normal layout.
@@ -1584,7 +1614,7 @@ async function fitExtensionPopupToContent(windowId: number): Promise<void> {
  *  cycles (we cache it instead of destroying — see hideExtensionPopup),
  *  so this is installed once per popup lifetime. For options-page tabs
  *  the listener persists for the tab's lifetime. */
-async function installFrameStorageBridge(
+export async function installFrameStorageBridge(
   wc: Electron.WebContents,
   contextLabel: string,
 ): Promise<void> {
@@ -1892,11 +1922,13 @@ export async function toggleExtensionPopup(
 
   // Match the webPreferences shape of regular tabs as closely as possible.
   // chrome-extension:// loads succeed in tab WebContentsViews, so we copy
-  // the same surface — partition + session + sandbox off. The session-level
+  // the same surface — partition + session + stealth preload. The session-level
   // stealth preload is registered via `setPreloads` and runs here too, but
   // it self-disables on `chrome-extension://` URLs (see
   // src/preload/webview-stealth.ts STEALTH_ENABLED guard) so it doesn't
   // shadow the extension's `chrome.*` API surface or neuter window.close.
+  // Sandboxed so the extension's shared renderer process runs its service
+  // worker's preload — see createTab.
   const view = new WebContentsView({
     webPreferences: {
       partition,
@@ -1904,7 +1936,7 @@ export async function toggleExtensionPopup(
       preload: WEBVIEW_STEALTH_PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   })
 
@@ -2169,7 +2201,7 @@ export function getOpenExtensionPopupId(windowId: number): string | null {
   return extensionPopupByWindow.get(windowId)?.extensionId ?? null
 }
 
-function pickPartitionForWindow(windowId: number): string {
+export function pickPartitionForWindow(windowId: number): string {
   const activeTabId = activeTabByWindow.get(windowId)
   if (activeTabId) {
     const rec = tabs.get(activeTabId)
@@ -2212,6 +2244,26 @@ export function getWebContentsByChromeTabId(chromeTabId: number): WebContents | 
   const rec = tabs.get(tabId)
   if (!rec || rec.view.webContents.isDestroyed()) return null
   return rec.view.webContents
+}
+
+/** Chrome tab id (= webContents.id) of a renderer tab, or null. */
+export function getChromeTabIdForTab(tabId: string): number | null {
+  const rec = tabs.get(tabId)
+  if (!rec || rec.view.webContents.isDestroyed()) return null
+  return rec.view.webContents.id
+}
+
+/** Chrome tab id of the window's active tab, or null when the window
+ *  shows no tab (parked on a group, still restoring). */
+export function getActiveChromeTabIdForWindow(windowId: number): number | null {
+  const tabId = activeTabByWindow.get(windowId)
+  return tabId ? getChromeTabIdForTab(tabId) : null
+}
+
+/** Window hosting the tab with this Chrome tab id, or null. */
+export function getWindowIdForChromeTabId(chromeTabId: number): number | null {
+  const tabId = wcIdToTabId.get(chromeTabId)
+  return tabId ? tabs.get(tabId)?.windowId ?? null : null
 }
 
 // Ensure app-wide cleanup so no stray child windows linger when a tab's
