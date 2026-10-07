@@ -357,6 +357,18 @@ function mainWorldApis(
   // permission; added onto whichever tabs object is there — the library's
   // own tabs namespace spreads it along if it lands after us.
   const tabs = chrome.tabs as Record<string, unknown> | undefined
+  // Chrome's chrome.tabs constants, missing here. Claude builds its voice
+  // DNR rule with tabIds: [TAB_ID_NONE]; undefined made that call throw,
+  // failing its side panel's host-info request ("Can't reach the Claude
+  // extension").
+  if (tabs) {
+    try {
+      if (tabs.TAB_ID_NONE === undefined) tabs.TAB_ID_NONE = -1
+      if (tabs.TAB_INDEX_NONE === undefined) tabs.TAB_INDEX_NONE = -1
+    } catch {
+      /* tabs object frozen */
+    }
+  }
   if (tabs && typeof tabs.group !== 'function') {
     try {
       tabs.group = (options: unknown, done?: Callback) => settle(callMain('tabgroups', 'group', options), done)

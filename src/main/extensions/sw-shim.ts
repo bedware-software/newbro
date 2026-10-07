@@ -102,8 +102,9 @@
 //   V49 — the side panel id list arrives with the hello reply (usable for
 //         the first event); external messages are logged with their
 //         response time.
+//   V50 — and with the error text of failed responses.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V49__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V50__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 // Module service workers get the shim as a sibling module imported first
@@ -1157,6 +1158,9 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
                           msg: info.msg,
                           ms: Date.now() - started,
                           keys: response && typeof response === 'object' ? Object.keys(response) : typeof response,
+                          error: response && typeof response === 'object' && response.error
+                            ? String(response.error).slice(0, 300)
+                            : undefined,
                         },
                       });
                     } catch (e) { swLog('runtime-external-response', e); }
