@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog, app, Menu, session, screen, clipboard, shell } from 'electron'
+import { ipcMain, BrowserWindow, dialog, app, Menu, session, screen, clipboard, shell, Notification, nativeImage } from 'electron'
 import * as tls from 'tls'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -409,6 +409,38 @@ export function registerIpcHandlers(): void {
       log.error('extensions: install failed', { id, err: String(err), stack: (err as Error)?.stack })
       throw err
     }
+  })
+
+  // Settings → General → "Send test notification": a real toast through
+  // Electron's Notification — the same path extensions' chrome.notifications
+  // (Claude's "needs your attention") take — reporting whether the OS took it.
+  const liveTestNotifications = new Set<Notification>()
+  ipcMain.handle('notifications:test', () => {
+    if (!Notification.isSupported()) {
+      return { shown: false, error: 'Notifications are not supported on this system.' }
+    }
+    const notification = new Notification({
+      title: 'Newbro',
+      body: 'Test notification. If you can see this, notifications work — including the ones extensions such as Claude send.',
+      icon: nativeImage.createFromPath(path.join(__dirname, '../../resources/icon.png')),
+    })
+    // Keep it referenced so it isn't collected while on screen.
+    liveTestNotifications.add(notification)
+    setTimeout(() => liveTestNotifications.delete(notification), 60_000)
+    return new Promise<{ shown: boolean; error?: string; unconfirmed?: boolean }>((resolve) => {
+      let settled = false
+      const done = (result: { shown: boolean; error?: string; unconfirmed?: boolean }): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        log.info('notifications: test', result)
+        resolve(result)
+      }
+      const timer = setTimeout(() => done({ shown: true, unconfirmed: true }), 4000)
+      notification.once('show', () => done({ shown: true }))
+      notification.once('failed', (_event, error) => done({ shown: false, error: String(error) }))
+      notification.show()
+    })
   })
 
   ipcMain.handle('extensions:uninstall', async (_e, extensionId: string) => {

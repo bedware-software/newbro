@@ -2035,6 +2035,8 @@ function dispatchSwShimAction(
           action === 'runtime-onStartup-check' ||
           action === 'runtime-event-onMessage' ||
           action === 'runtime-event-onConnect' ||
+          action === 'runtime-event-onMessageExternal' ||
+          action === 'runtime-external-response' ||
           action === 'storage-bridge-recv' ||
           action === 'storage-onChanged-missing' ||
           action === 'storage-bridge-mainworld-installed' ||

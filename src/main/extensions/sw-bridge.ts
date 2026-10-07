@@ -216,6 +216,15 @@ export function wireServiceWorkerBridge(ses: Session, partition: string): void {
 
 // ── Built-in channels ──
 
+/** Extra fields for the hello reply — state a worker needs before it
+ *  handles its first event, which can arrive before any later invoke
+ *  could return (the event that woke the worker is dispatched as soon as
+ *  its script has run). */
+let helloExtras: () => Record<string, unknown> = () => ({})
+export function setHelloExtras(fn: () => Record<string, unknown>): void {
+  helloExtras = fn
+}
+
 // Handshake: proves preload realm + IPC round-trip for a worker and
 // marks it push-ready (the preload registers its event listener before
 // invoking hello, so pushes can't outrun it).
@@ -227,7 +236,7 @@ registerSwInvokeHandler('hello', (ctx, payload) => {
     versionId: ctx.versionId,
     payload,
   })
-  return { partition: ctx.partition, extensionId: ctx.extensionId, ts: Date.now() }
+  return { ...helloExtras(), partition: ctx.partition, extensionId: ctx.extensionId, ts: Date.now() }
 })
 
 // Diagnostics from the SW shim (replaces the sw-shim-error HTTP beacon).

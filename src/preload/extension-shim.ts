@@ -447,15 +447,20 @@ function initSwRealm(on: EventSubscribe): void {
           executeInMainWorld?: (spec: { func: (...a: never[]) => void; args?: unknown[] }) => void
         }
         if (typeof cb.executeInMainWorld === 'function') {
+          // nonTabViews: webContents ids of side panels as of this
+          // worker's start (sw-shim strips sender.tab for them), handed
+          // over with the facade so it's there for the first event.
+          const nonTabViews = (ack as { data?: { nonTabViewIds?: unknown } }).data?.nonTabViewIds
           cb.executeInMainWorld({
-            func: ((invoke: unknown, notify: unknown, on: unknown) => {
+            func: ((invoke: unknown, notify: unknown, on: unknown, nonTabViews: unknown) => {
               ;(globalThis as Record<string, unknown>).__newbroIpc = Object.freeze({
                 invoke,
                 notify,
                 on,
+                nonTabViews,
               })
             }) as (...a: never[]) => void,
-            args: [facade.invoke, facade.notify, facade.on],
+            args: [facade.invoke, facade.notify, facade.on, Array.isArray(nonTabViews) ? nonTabViews : []],
           })
           // Confirm facade installation on the main side (shows up in
           // the log next to the worker's 'hello').

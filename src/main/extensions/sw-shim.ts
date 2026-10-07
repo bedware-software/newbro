@@ -99,8 +99,11 @@
 //   V48 — runtime.onMessage / onConnect / *External listeners see senders
 //         from side panels without `tab`, as in Chrome (main pushes the
 //         panel webContents ids over 'non-tab-views').
+//   V49 — the side panel id list arrives with the hello reply (usable for
+//         the first event); external messages are logged with their
+//         response time.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V48__'
+export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V49__'
 export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
 export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
 // Module service workers get the shim as a sibling module imported first
@@ -1053,6 +1056,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     // sender.tab is set). Main pushes the webContents ids of those views;
     // listeners see their senders without tab, as in Chrome.
     var nonTabViewIds = Object.create(null);
+    var nonTabViewsReady = false;
     function setNonTabViews(payload) {
       var next = Object.create(null);
       var ids = payload && payload.ids;
@@ -1061,22 +1065,28 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       }
       nonTabViewIds = next;
     }
-    var nonTabViewsAttempts = 0;
-    function subscribeNonTabViews() {
+    // The facade carries the list as of this worker's start (from the
+    // hello reply), so it's usable for the very first event — the one
+    // that woke the worker is dispatched right after its script runs, and
+    // the facade lands just before. Later changes arrive as pushes.
+    function ensureNonTabViews() {
+      if (nonTabViewsReady) return true;
       var ipc = getIpc();
-      if (!ipc) {
-        // The IPC facade lands right after the preload's hello; give up
-        // after ~10s (no preload realm → no IPC at all).
-        if (nonTabViewsAttempts++ < 200) setTimeout(subscribeNonTabViews, 50);
-        return;
-      }
+      if (!ipc) return false;
+      nonTabViewsReady = true;
+      setNonTabViews({ ids: ipc.nonTabViews });
       try { ipc.on('non-tab-views', setNonTabViews); }
       catch (e) { swLog('non-tab-views/on', e); }
-      var initial = ipcInvoke('non-tab-views', null);
-      if (initial) initial.then(setNonTabViews);
+      return true;
     }
-    subscribeNonTabViews();
+    (function pollNonTabViews(attempt) {
+      // No preload realm → no facade ever; stop after ~10s.
+      if (!ensureNonTabViews() && attempt < 200) {
+        setTimeout(function () { pollNonTabViews(attempt + 1); }, 50);
+      }
+    })(0);
     function untabbedSender(sender) {
+      ensureNonTabViews();
       if (!sender || !sender.tab || !nonTabViewIds[sender.tab.id]) return sender;
       var copy = {};
       for (var k in sender) {
@@ -1121,8 +1131,40 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
               }
               if (summary) sendPost('runtime-event-' + label, { extId: extId, info: summary });
             } catch (e) { swLog('runtime-event-spy/' + label, e); }
+            var hadTab = label === 'onMessageExternal' && !!(args[1] && args[1].tab);
             try { untabEventArgs(label, args); }
             catch (e) { swLog('runtime-event-untab/' + label, e); }
+            // V49: external messages (claude.ai's side panel iframe asking
+            // for host info) — log each with how long its answer took, so a
+            // "the extension didn't respond" has a trail.
+            if (label === 'onMessageExternal') {
+              try {
+                var started = Date.now();
+                var info = {
+                  msg: summarizeMsg(args[0]),
+                  origin: args[1] && (args[1].origin || args[1].url),
+                  hadTab: hadTab,
+                  untabbed: hadTab && !(args[1] && args[1].tab),
+                };
+                sendPost('runtime-event-onMessageExternal', { extId: extId, info: info });
+                var respond = args[2];
+                if (typeof respond === 'function') {
+                  args[2] = function (response) {
+                    try {
+                      sendPost('runtime-external-response', {
+                        extId: extId,
+                        info: {
+                          msg: info.msg,
+                          ms: Date.now() - started,
+                          keys: response && typeof response === 'object' ? Object.keys(response) : typeof response,
+                        },
+                      });
+                    } catch (e) { swLog('runtime-external-response', e); }
+                    return respond.apply(this, arguments);
+                  };
+                }
+              } catch (e) { swLog('runtime-event-external-log', e); }
+            }
             return cb.apply(this, args);
           };
           // Tag so removeListener can find the spy if extension uses

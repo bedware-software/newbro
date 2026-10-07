@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil, Copy, Check, Eye, EyeOff, ChevronDown, UserRound } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, Bell, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil, Copy, Check, Eye, EyeOff, ChevronDown, UserRound } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo, PasswordEntryInfo, PasswordImportResult, EdgePasswordSourceInfo, EdgePasswordImportResult } from '../App'
 import { DetachedWindow } from './DetachedWindow'
@@ -560,6 +560,25 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     const cleanup = api.onUpdaterStatus?.((s: UpdateStatus) => setUpdateStatus(s))
     return cleanup
   }, [open])
+
+  const [testNotice, setTestNotice] = useState<{ ok: boolean; text: string } | null>(null)
+  const handleTestNotification = useCallback(async () => {
+    setTestNotice({ ok: true, text: 'Sending…' })
+    const api = (window as any).electronAPI
+    const result = (await api?.sendTestNotification?.()) as
+      | { shown: boolean; error?: string; unconfirmed?: boolean }
+      | undefined
+    if (!result) setTestNotice({ ok: false, text: 'Not available in this build.' })
+    else if (!result.shown) setTestNotice({ ok: false, text: `Windows didn't show it: ${result.error ?? 'unknown error'}` })
+    else {
+      setTestNotice({
+        ok: true,
+        text: result.unconfirmed
+          ? 'Sent. If nothing appeared, check Focus assist / Do not disturb and that Newbro is allowed in Windows notification settings.'
+          : 'Shown — look at the corner of the screen or the notification center.',
+      })
+    }
+  }, [])
 
   const handleCheckForUpdates = useCallback(async () => {
     const api = (window as any).electronAPI
@@ -2228,6 +2247,29 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     </button>
                   )}
                 </div>
+              </div>
+
+              {/* Notifications — checks that the OS shows Newbro's toasts, the
+                  kind extensions (Claude's "needs your attention") send. */}
+              <div className="flex items-start gap-4">
+                <div className="flex-1 min-w-0">
+                  <label className="block text-sm font-medium text-foreground">Notifications</label>
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    Send a test notification — the same kind extensions such as Claude use to ask for your attention.
+                  </p>
+                  {testNotice && (
+                    <p className={`text-[11px] mt-1 ${testNotice.ok ? 'text-foreground' : 'text-destructive'}`}>
+                      {testNotice.text}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={handleTestNotification}
+                  className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium border bg-secondary text-secondary-foreground border-input hover:bg-accent"
+                >
+                  <Bell size={12} />
+                  Send test notification
+                </button>
               </div>
 
               {/* Danger Zone */}

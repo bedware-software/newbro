@@ -256,6 +256,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('sidepanel:bounds', bounds)
   },
   closeSidePanel: (): Promise<void> => ipcRenderer.invoke('sidepanel:close'),
+  sendTestNotification: (): Promise<{ shown: boolean; error?: string; unconfirmed?: boolean }> =>
+    ipcRenderer.invoke('notifications:test'),
   // Chrome tab-group API bridge (renderer/src/lib/extension-tab-groups.ts).
   sendTabGroupsSnapshot: (groups: unknown): void => {
     ipcRenderer.send('tabgroups:snapshot', groups)

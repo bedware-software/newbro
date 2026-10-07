@@ -26,7 +26,7 @@ import { BrowserWindow, Menu, WebContentsView, ipcMain, session } from 'electron
 import { join } from 'node:path'
 import { log } from '../log'
 import { registerExtensionApiHandler } from './api-ipc'
-import { registerSwInvokeHandler, sendToExtensionWorkers } from './sw-bridge'
+import { sendToExtensionWorkers, setHelloExtras } from './sw-bridge'
 import { ensureExtensionInSession, getSidePanelDefaultPath } from './manager'
 import { setupPartitionSession, shouldDropExtConsoleMessage } from '../index'
 import {
@@ -441,9 +441,9 @@ export function registerSidePanelIpc(): void {
   registerExtensionApiHandler('sidepanel', (caller, payload) =>
     handleCall(caller.partition, caller.extensionId, payload),
   )
-  // A worker (re)starting asks for the current list once; later changes
-  // are pushed.
-  registerSwInvokeHandler('non-tab-views', () => ({ ids: panelWebContentsIds() }))
+  // A (re)starting worker gets the current list with its hello reply;
+  // later changes are pushed.
+  setHelloExtras(() => ({ nonTabViewIds: panelWebContentsIds() }))
 
   ipcMain.on('sidepanel:bounds', (e, bounds: Rect) => {
     const win = BrowserWindow.fromWebContents(e.sender)
