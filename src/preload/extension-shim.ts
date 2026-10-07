@@ -68,11 +68,15 @@ if (IS_SW_REALM) {
   // match — that guard silently disabling this file in SW realms is
   // exactly what the old "SW preload doesn't fire in Electron 41" bug
   // actually was. Realm detection must use process.type.
-  installMainWorldApis((channel, payload) => ipcRenderer.invoke('newbro-sw', channel, payload))
-  initSwRealm()
+  const onSwEvent = createEventHub('newbro-sw-event')
+  installMainWorldApis((channel, payload) => ipcRenderer.invoke('newbro-sw', channel, payload), onSwEvent)
+  initSwRealm(onSwEvent)
 } else if (proto === 'chrome-extension:') {
   reportLoaded('preload-start')
-  installMainWorldApis((channel, payload) => ipcRenderer.invoke('newbro-ext-frame', channel, payload))
+  installMainWorldApis(
+    (channel, payload) => ipcRenderer.invoke('newbro-ext-frame', channel, payload),
+    createEventHub('newbro-ext-frame-event'),
+  )
   // Wrap install() in try-catch — a thrown error in our shim would
   // bubble up out of the preload and have prevented the page's own
   // scripts from running. Better to skip the polyfill than to break
@@ -106,13 +110,67 @@ if (IS_SW_REALM) {
 // its own chrome.* namespaces. `invoke` reaches main over the realm's
 // transport (ServiceWorkerMain.ipc or ipcMain) and resolves to
 // { ok, data } | { ok: false, error }.
-function installMainWorldApis(invoke: (channel: string, payload: unknown) => Promise<unknown>): void {
+type EventSubscribe = (channel: string, cb: (payload: unknown) => void) => void
+
+/** Main → realm event fan-out for one ipcRenderer channel carrying
+ *  (channel, payload). Pushes that arrive before anyone subscribed to
+ *  their channel are buffered (bounded) and replayed to the first
+ *  subscriber. Subscribers are contextBridge-proxied main-world
+ *  callbacks. */
+function createEventHub(ipcChannel: string): EventSubscribe {
+  const listeners = new Map<string, Array<(payload: unknown) => void>>()
+  const MAX_BUFFERED = 200
+  const buffered = new Map<string, unknown[]>()
+  ipcRenderer.on(ipcChannel, (_event, channel: unknown, payload: unknown) => {
+    const ch = String(channel)
+    const cbs = listeners.get(ch)
+    if (!cbs || cbs.length === 0) {
+      const buf = buffered.get(ch) ?? []
+      if (buf.length >= MAX_BUFFERED) {
+        console.error('[newbro-ext-shim] event buffer overflow, dropping oldest:', ch)
+        buf.shift()
+      }
+      buf.push(payload)
+      buffered.set(ch, buf)
+      return
+    }
+    for (const cb of cbs) {
+      try {
+        cb(payload)
+      } catch (err) {
+        console.error('[newbro-ext-shim] event listener threw:', ch, err)
+      }
+    }
+  })
+  return (channel, cb) => {
+    const ch = String(channel)
+    const list = listeners.get(ch) ?? []
+    list.push(cb)
+    listeners.set(ch, list)
+    const buf = buffered.get(ch)
+    if (buf && buf.length > 0) {
+      buffered.delete(ch)
+      for (const payload of buf) {
+        try {
+          cb(payload)
+        } catch (err) {
+          console.error('[newbro-ext-shim] buffered event replay threw:', ch, err)
+        }
+      }
+    }
+  }
+}
+
+function installMainWorldApis(
+  invoke: (channel: string, payload: unknown) => Promise<unknown>,
+  subscribe: EventSubscribe,
+): void {
   const cb = contextBridge as unknown as {
     executeInMainWorld?: (spec: { func: (...a: never[]) => void; args?: unknown[] }) => void
   }
   if (typeof cb.executeInMainWorld !== 'function') return
   try {
-    cb.executeInMainWorld({ func: mainWorldApis as (...a: never[]) => void, args: [invoke] })
+    cb.executeInMainWorld({ func: mainWorldApis as (...a: never[]) => void, args: [invoke, subscribe] })
   } catch (err) {
     try { console.error('[newbro-ext-shim] main-world API install failed:', err) }
     catch { /* console torn down */ }
@@ -121,7 +179,10 @@ function installMainWorldApis(invoke: (channel: string, payload: unknown) => Pro
 
 // SERIALIZED into the main world — must stay self-contained (no
 // references to anything outside its own body).
-function mainWorldApis(invoke: (channel: string, payload: unknown) => Promise<unknown>): void {
+function mainWorldApis(
+  invoke: (channel: string, payload: unknown) => Promise<unknown>,
+  subscribe: (channel: string, cb: (payload: unknown) => void) => void,
+): void {
   type Listener = (...args: unknown[]) => void
   type Callback = ((value?: unknown) => void) | undefined
   const g = globalThis as unknown as {
@@ -151,23 +212,63 @@ function mainWorldApis(invoke: (channel: string, payload: unknown) => Promise<un
     /* no manifest access — treat as no permissions */
   }
 
-  const makeEvent = (): Record<string, unknown> => {
+  // An event object plus the means to fire it.
+  const makeEmitter = (): { event: Record<string, unknown>; fire: (...args: unknown[]) => void } => {
     const listeners: Listener[] = []
     return {
-      addListener: (fn: Listener) => { if (typeof fn === 'function' && !listeners.includes(fn)) listeners.push(fn) },
-      removeListener: (fn: Listener) => {
-        const i = listeners.indexOf(fn)
-        if (i !== -1) listeners.splice(i, 1)
+      event: {
+        addListener: (fn: Listener) => { if (typeof fn === 'function' && !listeners.includes(fn)) listeners.push(fn) },
+        removeListener: (fn: Listener) => {
+          const i = listeners.indexOf(fn)
+          if (i !== -1) listeners.splice(i, 1)
+        },
+        hasListener: (fn: Listener) => listeners.includes(fn),
+        hasListeners: () => listeners.length > 0,
       },
-      hasListener: (fn: Listener) => listeners.includes(fn),
-      hasListeners: () => listeners.length > 0,
+      fire: (...args: unknown[]) => {
+        for (const fn of listeners.slice()) {
+          try {
+            fn(...args)
+          } catch (err) {
+            console.error(err)
+          }
+        }
+      },
     }
   }
-  // Chrome APIs return a Promise unless a trailing callback is passed.
+  const makeEvent = (): Record<string, unknown> => makeEmitter().event
+  // Chrome APIs return a Promise unless a trailing callback is passed; a
+  // callback learns of failure through chrome.runtime.lastError, set only
+  // for the duration of the call (what Claude's debugger code checks).
+  const runtime = chrome.runtime as Record<string, unknown> | undefined
+  const callWithLastError = (done: (value?: unknown) => void, err: unknown): void => {
+    let set = false
+    try {
+      Object.defineProperty(runtime, 'lastError', {
+        value: { message: err instanceof Error ? err.message : String(err) },
+        configurable: true,
+        enumerable: true,
+      })
+      set = true
+    } catch {
+      /* lastError pinned — the callback just sees undefined */
+    }
+    try {
+      done(undefined)
+    } finally {
+      if (set) {
+        try { delete (runtime as Record<string, unknown>).lastError } catch { /* ignore */ }
+      }
+    }
+  }
   const settle = (p: Promise<unknown>, done: Callback): Promise<unknown> | undefined => {
     if (typeof done !== 'function') return p
-    p.then((v) => done(v), () => done(undefined))
+    p.then((v) => done(v), (err) => callWithLastError(done, err))
     return undefined
+  }
+  const trailingCallback = (args: unknown[]): Callback => {
+    const last = args[args.length - 1]
+    return typeof last === 'function' ? (last as Callback) : undefined
   }
   const define = (name: string, value: unknown): void => {
     if (chrome[name] !== undefined) return
@@ -211,53 +312,70 @@ function mainWorldApis(invoke: (channel: string, payload: unknown) => Promise<un
         `https://${extensionId}.chromiumapp.org/${String(path ?? '').replace(/^\/+/, '')}`,
       launchWebAuthFlow: (details: unknown, done?: Callback) =>
         settle(callMain('identity', 'launchWebAuthFlow', details), done),
-      getAuthToken: (...args: unknown[]) => {
-        const last = args[args.length - 1]
-        return settle(
-          Promise.reject(new Error('OAuth2 not granted or revoked.')),
-          typeof last === 'function' ? (last as Callback) : undefined,
-        )
-      },
+      getAuthToken: (...args: unknown[]) =>
+        settle(Promise.reject(new Error('OAuth2 not granted or revoked.')), trailingCallback(args)),
       removeCachedAuthToken: (_details: unknown, done?: Callback) => settle(Promise.resolve(), done),
       clearAllCachedAuthTokens: (done?: Callback) => settle(Promise.resolve(), done),
-      getProfileUserInfo: (...args: unknown[]) => {
-        const last = args[args.length - 1]
-        return settle(
-          Promise.resolve({ email: '', id: '' }),
-          typeof last === 'function' ? (last as Callback) : undefined,
-        )
-      },
+      getProfileUserInfo: (...args: unknown[]) =>
+        settle(Promise.resolve({ email: '', id: '' }), trailingCallback(args)),
       onSignInChanged: makeEvent(),
     })
   }
 
-  // No chrome.debugger yet. Claude wires chrome.debugger.onEvent at module
-  // load; give it the namespace and fail the calls that would need a
-  // real CDP session. Callback position varies (sendCommand's params are
-  // optional), so take the trailing function, if any.
+  // chrome.debugger over the tab's webContents.debugger (main/extensions/
+  // debugger.ts): attach / sendCommand / detach by tabId, CDP events
+  // pushed back. Claude drives its screenshots, clicks and typing this way.
   if (permissions.includes('debugger')) {
-    const unsupported = (args: unknown[]): Promise<unknown> | undefined => {
-      const last = args[args.length - 1]
-      return settle(
-        Promise.reject(new Error('chrome.debugger is not available in Newbro.')),
-        typeof last === 'function' ? (last as Callback) : undefined,
-      )
-    }
+    const onEvent = makeEmitter()
+    const onDetach = makeEmitter()
+    subscribe('debugger-event', (payload) => {
+      const p = payload as { source?: unknown; method?: unknown; params?: unknown }
+      onEvent.fire(p.source, p.method, p.params)
+    })
+    subscribe('debugger-detach', (payload) => {
+      const p = payload as { source?: unknown; reason?: unknown }
+      onDetach.fire(p.source, p.reason)
+    })
     define('debugger', {
-      attach: (...args: unknown[]) => unsupported(args),
-      detach: (...args: unknown[]) => unsupported(args),
-      sendCommand: (...args: unknown[]) => unsupported(args),
-      getTargets: (done?: Callback) => settle(Promise.resolve([]), done),
-      onEvent: makeEvent(),
-      onDetach: makeEvent(),
+      attach: (target: unknown, requiredVersion: unknown, done?: Callback) =>
+        settle(callMain('debugger', 'attach', { target, requiredVersion }), done),
+      detach: (target: unknown, done?: Callback) => settle(callMain('debugger', 'detach', { target }), done),
+      // commandParams is optional, so the callback may come third.
+      sendCommand: (target: unknown, method: unknown, ...rest: unknown[]) => {
+        const done = trailingCallback(rest)
+        const params = typeof rest[0] === 'function' ? undefined : rest[0]
+        return settle(callMain('debugger', 'sendCommand', { target, method, params }), done)
+      },
+      getTargets: (done?: Callback) => settle(callMain('debugger', 'getTargets', null), done),
+      onEvent: onEvent.event,
+      onDetach: onDetach.event,
     })
   }
 
-  // Newbro has no tab groups: report none, refuse to edit any. Enough
-  // for extensions that only decorate their own groups.
+  // Tab groups are Newbro's sidebar groups (main/extensions/tab-groups.ts).
+  // chrome.tabs.group / ungroup belong to chrome.tabs and need no
+  // permission; added onto whichever tabs object is there — the library's
+  // own tabs namespace spreads it along if it lands after us.
+  const tabs = chrome.tabs as Record<string, unknown> | undefined
+  if (tabs && typeof tabs.group !== 'function') {
+    try {
+      tabs.group = (options: unknown, done?: Callback) => settle(callMain('tabgroups', 'group', options), done)
+      tabs.ungroup = (tabIds: unknown, done?: Callback) => settle(callMain('tabgroups', 'ungroup', { tabIds }), done)
+    } catch {
+      /* tabs object frozen — nothing we can add */
+    }
+  }
   if (permissions.includes('tabGroups')) {
-    const noGroup = (groupId: unknown): Promise<unknown> =>
-      Promise.reject(new Error(`No group with id: ${String(groupId)}.`))
+    const emitters = {
+      created: makeEmitter(),
+      updated: makeEmitter(),
+      removed: makeEmitter(),
+      moved: makeEmitter(),
+    }
+    subscribe('tabgroups-event', (payload) => {
+      const p = payload as { type?: keyof typeof emitters; group?: unknown }
+      if (p.type && emitters[p.type]) emitters[p.type].fire(p.group)
+    })
     define('tabGroups', {
       TAB_GROUP_ID_NONE: -1,
       Color: Object.freeze({
@@ -271,14 +389,16 @@ function mainWorldApis(invoke: (channel: string, payload: unknown) => Promise<un
         CYAN: 'cyan',
         ORANGE: 'orange',
       }),
-      get: (groupId: unknown, done?: Callback) => settle(noGroup(groupId), done),
-      query: (_info: unknown, done?: Callback) => settle(Promise.resolve([]), done),
-      update: (groupId: unknown, _props: unknown, done?: Callback) => settle(noGroup(groupId), done),
-      move: (groupId: unknown, _props: unknown, done?: Callback) => settle(noGroup(groupId), done),
-      onCreated: makeEvent(),
-      onUpdated: makeEvent(),
-      onRemoved: makeEvent(),
-      onMoved: makeEvent(),
+      get: (groupId: unknown, done?: Callback) => settle(callMain('tabgroups', 'get', { groupId }), done),
+      query: (info: unknown, done?: Callback) => settle(callMain('tabgroups', 'query', info ?? {}), done),
+      update: (groupId: unknown, props: unknown, done?: Callback) =>
+        settle(callMain('tabgroups', 'update', { groupId, props }), done),
+      move: (groupId: unknown, props: unknown, done?: Callback) =>
+        settle(callMain('tabgroups', 'move', { groupId, props }), done),
+      onCreated: emitters.created.event,
+      onUpdated: emitters.updated.event,
+      onRemoved: emitters.removed.event,
+      onMoved: emitters.moved.event,
     })
   }
 }
@@ -292,66 +412,19 @@ function mainWorldApis(invoke: (channel: string, payload: unknown) => Promise<un
 // The polyfill shim (sw-shim.ts) prefers this facade over the legacy
 // loopback-HTTP transport when present.
 //
-// Order matters: the event listener + buffers are registered BEFORE
-// 'hello' is invoked, because main flips the worker to push-ready on
+// Order matters: the event hub (listener + buffers, createEventHub) is
+// registered BEFORE 'hello' is invoked, because main flips the worker to push-ready on
 // hello — any push arriving before the shim's __newbroIpc.on()
 // subscription lands in the per-channel buffer and is flushed to the
 // first subscriber.
-function initSwRealm(): void {
-  // Preload-side registry of main-world event callbacks. Callbacks are
-  // contextBridge-proxied functions; calling them crosses back into the
-  // SW main world.
-  const eventListeners = new Map<string, Array<(payload: unknown) => void>>()
-  // Pushes that arrived before the SW shim subscribed. Bounded so a
-  // channel nobody ever subscribes to can't grow without limit.
-  const MAX_BUFFERED = 200
-  const bufferedEvents = new Map<string, unknown[]>()
-
-  ipcRenderer.on('newbro-sw-event', (_event, channel: unknown, payload: unknown) => {
-    const ch = String(channel)
-    const cbs = eventListeners.get(ch)
-    if (!cbs || cbs.length === 0) {
-      const buf = bufferedEvents.get(ch) ?? []
-      if (buf.length >= MAX_BUFFERED) {
-        console.error('[newbro-ext-shim] sw-event buffer overflow, dropping oldest:', ch)
-        buf.shift()
-      }
-      buf.push(payload)
-      bufferedEvents.set(ch, buf)
-      return
-    }
-    for (const cb of cbs) {
-      try {
-        cb(payload)
-      } catch (err) {
-        console.error('[newbro-ext-shim] sw-event listener threw:', ch, err)
-      }
-    }
-  })
-
+function initSwRealm(on: EventSubscribe): void {
   const facade = {
     invoke: (channel: string, payload: unknown): Promise<unknown> =>
       ipcRenderer.invoke('newbro-sw', String(channel), payload),
     notify: (channel: string, payload: unknown): void => {
       ipcRenderer.send('newbro-sw-notify', String(channel), payload)
     },
-    on: (channel: string, cb: (payload: unknown) => void): void => {
-      const ch = String(channel)
-      const list = eventListeners.get(ch) ?? []
-      list.push(cb)
-      eventListeners.set(ch, list)
-      const buf = bufferedEvents.get(ch)
-      if (buf && buf.length > 0) {
-        bufferedEvents.delete(ch)
-        for (const payload of buf) {
-          try {
-            cb(payload)
-          } catch (err) {
-            console.error('[newbro-ext-shim] sw-event buffered replay threw:', ch, err)
-          }
-        }
-      }
-    },
+    on,
   }
 
   // ipcRenderer here talks to ServiceWorkerMain.ipc (sw-bridge.ts),

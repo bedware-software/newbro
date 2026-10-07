@@ -1759,6 +1759,19 @@ export function getActionPopupPathForTab(extensionId: string, _tabId: string | n
   return null
 }
 
+/** Whether the installed extension's manifest declares `permission`. */
+export function extensionHasPermission(extensionId: string, permission: string): boolean {
+  const entry = store.get('extensions')[extensionId]
+  return Array.isArray(entry?.permissions) && entry.permissions.includes(permission)
+}
+
+/** Ids of installed, enabled extensions whose manifest declares `permission`. */
+export function extensionIdsWithPermission(permission: string): string[] {
+  return Object.values(store.get('extensions'))
+    .filter((e) => e.enabled !== false && Array.isArray(e.permissions) && e.permissions.includes(permission))
+    .map((e) => e.id)
+}
+
 /** manifest `side_panel.default_path` — the global chrome.sidePanel page
  *  until the extension calls setOptions. */
 export function getSidePanelDefaultPath(extensionId: string): string | null {

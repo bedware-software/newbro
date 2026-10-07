@@ -2260,6 +2260,24 @@ export function getActiveChromeTabIdForWindow(windowId: number): number | null {
   return tabId ? getChromeTabIdForTab(tabId) : null
 }
 
+/** Every live tab as Chrome sees it (id = webContents.id). */
+export function listChromeTabs(): Array<{ chromeTabId: number; url: string; title: string }> {
+  const out: Array<{ chromeTabId: number; url: string; title: string }> = []
+  for (const rec of tabs.values()) {
+    const wc = rec.view.webContents
+    if (wc.isDestroyed()) continue
+    out.push({ chromeTabId: wc.id, url: wc.getURL(), title: wc.getTitle() })
+  }
+  return out
+}
+
+/** Renderer tab id and window of the tab with this Chrome tab id. */
+export function getTabLocationForChromeTabId(chromeTabId: number): { tabId: string; windowId: number } | null {
+  const tabId = wcIdToTabId.get(chromeTabId)
+  const rec = tabId ? tabs.get(tabId) : undefined
+  return rec ? { tabId: rec.tabId, windowId: rec.windowId } : null
+}
+
 /** Window hosting the tab with this Chrome tab id, or null. */
 export function getWindowIdForChromeTabId(chromeTabId: number): number | null {
   const tabId = wcIdToTabId.get(chromeTabId)

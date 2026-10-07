@@ -20,6 +20,7 @@
 import { BrowserWindow, type Session, type WebContents, type BaseWindow } from 'electron'
 import { ElectronChromeExtensions } from 'electron-chrome-extensions'
 import { log } from './log'
+import { chromeGroupIdForTab } from './extensions/tab-groups'
 
 const instances = new Map<Session, ElectronChromeExtensions>()
 
@@ -98,6 +99,8 @@ export function getOrCreateExtensions(
       } catch (err) {
         log.warn('extensions: assignTabDetails getURL/getTitle threw', String(err))
       }
+      // Sidebar groups are Chrome tab groups (extensions/tab-groups.ts).
+      details.groupId = chromeGroupIdForTab(wc.id)
     },
   })
   instances.set(ses, ext)
@@ -326,4 +329,18 @@ export async function dispatchActionClicked(ses: Session, extensionId: string, c
   router.sendEvent(extensionId, 'browserAction.onClicked', details ?? { id: chromeTabId })
   log.info('extensions: action.onClicked dispatched', { extensionId, chromeTabId })
   return true
+}
+
+/** Re-derive a tab's chrome.tabs details and fire tabs.onUpdated for what
+ *  changed — the library's own path for navigation updates, used here
+ *  when a tab moves between groups (changeInfo.groupId). */
+export function notifyTabUpdated(wc: WebContents): void {
+  const internal = getExtensionsFor(wc.session) as unknown as {
+    api?: { tabs?: { onUpdated?: (tabId: number) => void } }
+  } | undefined
+  try {
+    internal?.api?.tabs?.onUpdated?.(wc.id)
+  } catch (err) {
+    log.warn('extensions: tabs.onUpdated refresh threw', { tabId: wc.id, err: String(err) })
+  }
 }

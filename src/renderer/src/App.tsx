@@ -13,6 +13,7 @@ import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDi
 import { CommandPalette } from './components/CommandPalette'
 import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
 import { SidePanel } from './components/SidePanel'
+import { startExtensionTabGroupsBridge } from './lib/extension-tab-groups'
 import { InputDialog } from './components/InputDialog'
 import { MoveTabDialog } from './components/MoveTabDialog'
 import { MoveGroupDialog } from './components/MoveGroupDialog'
@@ -244,6 +245,11 @@ declare global {
       onSidePanelState?: (callback: (state: { extensionId: string | null }) => void) => () => void
       sidePanelSetBounds?: (bounds: { x: number; y: number; width: number; height: number }) => void
       closeSidePanel?: () => Promise<void>
+      sendTabGroupsSnapshot?: (groups: unknown) => void
+      onTabGroupsRequest?: (
+        callback: (req: { id: number; op: string; args: Record<string, unknown> }) => void,
+      ) => () => void
+      respondTabGroupsRequest?: (id: number, response: { result?: unknown; error?: string }) => void
       tabNavigate?: (tabId: string, url: string) => Promise<void>
       tabGoBack?: (tabId: string) => Promise<void>
       tabGoForward?: (tabId: string) => Promise<void>
@@ -758,6 +764,12 @@ export default function App() {
     }
     load()
   }, [hydrate, windowProfileId, windowWorkspaceId, windowTabId, loadAndApplySettings])
+
+  // Extensions see this window's sidebar groups as Chrome tab groups.
+  useEffect(() => {
+    if (!ready) return
+    return startExtensionTabGroupsBridge()
+  }, [ready])
 
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const activeProfileId = useAppStore((s) => s.activeProfileId)

@@ -256,6 +256,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('sidepanel:bounds', bounds)
   },
   closeSidePanel: (): Promise<void> => ipcRenderer.invoke('sidepanel:close'),
+  // Chrome tab-group API bridge (renderer/src/lib/extension-tab-groups.ts).
+  sendTabGroupsSnapshot: (groups: unknown): void => {
+    ipcRenderer.send('tabgroups:snapshot', groups)
+  },
+  onTabGroupsRequest: (callback: (req: { id: number; op: string; args: Record<string, unknown> }) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, req: { id: number; op: string; args: Record<string, unknown> }) =>
+      callback(req)
+    ipcRenderer.on('tabgroups:request', handler)
+    return () => { ipcRenderer.removeListener('tabgroups:request', handler) }
+  },
+  respondTabGroupsRequest: (id: number, response: { result?: unknown; error?: string }): void => {
+    ipcRenderer.send('tabgroups:response', id, response)
+  },
   closeExtensionPopup: (): Promise<boolean> => ipcRenderer.invoke('extensions:close-popup'),
   moveExtensionPopup: (
     extensionId: string,

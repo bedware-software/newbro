@@ -6,13 +6,16 @@
 // Both resolve to { ok: true, data } | { ok: false, error }, and a handler
 // sees the same caller shape either way.
 
-import { ipcMain } from 'electron'
+import { ipcMain, type WebContents } from 'electron'
 import { registerSwInvokeHandler } from './sw-bridge'
 import { getPartitionForSession } from '../index'
 
 export interface ExtensionApiCaller {
   partition: string
   extensionId: string
+  /** The calling page; absent for service workers. Events for page
+   *  callers go to it as 'newbro-ext-frame-event' (channel, payload). */
+  frame?: WebContents
 }
 
 type Handler = (caller: ExtensionApiCaller, payload: unknown) => unknown | Promise<unknown>
@@ -41,7 +44,10 @@ export function registerExtensionFrameIpc(): void {
     const handler = frameHandlers.get(String(channel))
     if (!handler) return { ok: false, error: `no handler for '${String(channel)}'` }
     try {
-      const data = await handler({ partition: getPartitionForSession(e.sender.session), extensionId }, payload)
+      const data = await handler(
+        { partition: getPartitionForSession(e.sender.session), extensionId, frame: e.sender },
+        payload,
+      )
       return { ok: true, data }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }

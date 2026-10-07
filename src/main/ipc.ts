@@ -56,6 +56,8 @@ import {
 import { registerSidePanelIpc, sidePanelOpensOnActionClick, toggleSidePanelForActionClick } from './extensions/side-panel'
 import { registerExtensionFrameIpc } from './extensions/api-ipc'
 import { registerIdentityIpc } from './extensions/identity'
+import { registerDebuggerIpc } from './extensions/debugger'
+import { registerTabGroupsIpc } from './extensions/tab-groups'
 import { dispatchActionClicked } from './chrome-extensions-bridge'
 import {
   listExtensions,
@@ -1151,6 +1153,8 @@ function alive(p) {
   registerExtensionFrameIpc()
   registerSidePanelIpc()
   registerIdentityIpc()
+  registerDebuggerIpc()
+  registerTabGroupsIpc()
   registerHistoryIpc()
   registerOmniboxSuggestIpc()
   registerOmniboxPopupIpc()

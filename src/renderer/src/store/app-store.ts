@@ -570,6 +570,11 @@ export interface AppState {
   moveTabs: (tabIds: string[], targetGroupId: string | null, targetIndex: number) => void
   moveTabGroup: (groupId: string, targetIndex: number) => void
   moveTabsToNewGroup: (tabIds: string[], groupName: string) => void
+  /** chrome.tabs.group without a groupId: wrap tabs of one workspace in a
+   *  new group placed where the first of them sits, leaving the active tab
+   *  alone (unlike moveTabsToNewGroup). Returns the new group's id, or
+   *  null when none of the tabs exist. */
+  groupTabsInNewGroup: (tabIds: string[], groupName: string, color?: string) => string | null
 
   // Cross-workspace / cross-profile moves. The Move Tab and Move Group
   // dialogs route through these.
@@ -1768,6 +1773,37 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
   })),
+
+  groupTabsInNewGroup: (tabIds, groupName, color) => {
+    let groupId: string | null = null
+    set(produce((s: AppState) => {
+      for (const p of s.profiles) {
+        for (const w of p.workspaces) {
+          const order = ensureSidebarOrder(w)
+          // Where the first tab sits: its own slot when ungrouped, right
+          // after its group otherwise.
+          let anchor = -1
+          for (const id of tabIds) {
+            if (w.tabs?.some((t) => t.id === id)) anchor = order.indexOf(id)
+            else {
+              const g = w.tabGroups.find((g) => g.tabs.some((t) => t.id === id))
+              if (g) anchor = order.indexOf(g.id) + 1
+            }
+            if (anchor !== -1) break
+          }
+          if (anchor === -1) continue
+          const group = makeTabGroup(groupName, [])
+          if (color) group.color = color
+          w.tabGroups.push(group)
+          order.splice(anchor, 0, group.id)
+          groupId = group.id
+          return
+        }
+      }
+    }))
+    if (groupId) get().moveTabs(tabIds, groupId, 0)
+    return groupId
+  },
 
   moveTabsToNewGroup: (tabIds, groupName) => set(produce((s: AppState) => {
     const tabs: Tab[] = []
