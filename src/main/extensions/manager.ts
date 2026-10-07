@@ -54,8 +54,19 @@ export interface ExtensionInfo {
    *  still loaded and active. Mirrors Chrome's "Pin to toolbar" behavior. */
   pinned: boolean
   path: string
+  /** What the extension asks for, read from its own manifest (not the
+   *  copy Newbro patches): sites it wants to access (host permissions,
+   *  MV2 host patterns from `permissions`), API permissions, optional
+   *  ones it may request later, and the sites its content scripts run on. */
   hostPermissions: string[]
   permissions: string[]
+  optionalPermissions: string[]
+  contentScriptMatches: string[]
+  /** False when the extension's original manifest is unknown (installed
+   *  before Newbro kept it, and not yet re-fetched): the lists above then
+   *  come from the patched manifest, which also carries the <all_urls>
+   *  access Newbro grants every extension. */
+  permissionsFromOriginal: boolean
   hasOptionsPage: boolean
   /** When true, the renderer should render a toolbar action button for
    *  this extension. True iff the manifest declares `action` /
@@ -84,6 +95,9 @@ interface PersistedEntry {
   path: string
   hostPermissions: string[]
   permissions: string[]
+  optionalPermissions?: string[]
+  contentScriptMatches?: string[]
+  permissionsFromOriginal?: boolean
   hasOptionsPage: boolean
   hasAction: boolean
   actionDefaultTitle?: string
@@ -1295,6 +1309,70 @@ function resolveIcon(manifest: Record<string, unknown>, extDir: string): string 
   }
 }
 
+/** The extension's manifest as published, saved beside the patched one
+ *  at install (patchManifest rewrites permissions, e.g. grants every
+ *  extension <all_urls>), so Settings and the install prompt can show
+ *  what the extension itself asks for. */
+const ORIGINAL_MANIFEST_FILE = 'newbro-original-manifest.json'
+
+function readOriginalManifest(extDir: string): Record<string, unknown> | null {
+  const p = join(extDir, ORIGINAL_MANIFEST_FILE)
+  if (!existsSync(p)) return null
+  try {
+    return parseRelaxedJson(readFileSync(p, 'utf8')) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+function saveOriginalManifest(extDir: string): void {
+  const target = join(extDir, ORIGINAL_MANIFEST_FILE)
+  if (existsSync(target)) return
+  try {
+    cpSync(join(extDir, 'manifest.json'), target)
+  } catch (err) {
+    log.warn('extensions: original manifest copy failed', { extDir, err: String(err) })
+  }
+}
+
+const isHostPattern = (p: string): boolean => p === '<all_urls>' || p.includes('://')
+const stringList = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+
+/** What a manifest asks for, split the way Chrome presents it. MV2 lists
+ *  host patterns among `permissions`; content scripts' `matches` are site
+ *  access too. Newbro's own bootstrap content scripts are left out. */
+function summarizePermissions(manifest: Record<string, unknown>): {
+  permissions: string[]
+  hostPermissions: string[]
+  optionalPermissions: string[]
+  contentScriptMatches: string[]
+} {
+  const declared = stringList(manifest.permissions)
+  const scripts = Array.isArray(manifest.content_scripts)
+    ? (manifest.content_scripts as Array<Record<string, unknown>>).filter((c) => c && !c[NEWBRO_BOOTSTRAP_MARKER])
+    : []
+  return {
+    permissions: declared.filter((p) => !isHostPattern(p)),
+    hostPermissions: [...new Set([...stringList(manifest.host_permissions), ...declared.filter(isHostPattern)])],
+    optionalPermissions: [
+      ...new Set([...stringList(manifest.optional_permissions), ...stringList(manifest.optional_host_permissions)]),
+    ],
+    contentScriptMatches: [...new Set(scripts.flatMap((c) => stringList(c.matches)))],
+  }
+}
+
+/** `__MSG_*__` resolver for one installed extension's strings (command
+ *  descriptions and the like). */
+export function extensionLocalizer(extDir: string): (s: string) => string {
+  try {
+    const [primary, fallback] = loadLocaleCatalogs(extDir, readManifest(extDir))
+    return (s) => localizeString(s, primary, fallback)
+  } catch {
+    return (s) => s
+  }
+}
+
 function derivePersistedEntry(
   id: string,
   extDir: string,
@@ -1317,10 +1395,8 @@ function derivePersistedEntry(
   const version = typeof manifest.version === 'string' ? (manifest.version as string) : '0.0.0'
   const description =
     typeof manifest.description === 'string' ? localize(manifest.description as string) : undefined
-  const permissions = Array.isArray(manifest.permissions) ? (manifest.permissions as string[]) : []
-  const hostPermissions = Array.isArray(manifest.host_permissions)
-    ? (manifest.host_permissions as string[])
-    : []
+  const original = readOriginalManifest(extDir)
+  const requested = summarizePermissions(original ?? manifest)
   const optionsPage =
     typeof manifest.options_page === 'string'
       ? (manifest.options_page as string)
@@ -1341,8 +1417,8 @@ function derivePersistedEntry(
     enabled,
     pinned,
     path: extDir,
-    hostPermissions,
-    permissions,
+    ...requested,
+    permissionsFromOriginal: original !== null,
     hasOptionsPage: typeof optionsPage === 'string' && optionsPage.length > 0,
     hasAction,
     actionDefaultTitle,
@@ -1640,6 +1716,9 @@ function normalizeEntry(raw: Partial<PersistedEntry> & { id: string }): Extensio
     path: raw.path ?? '',
     hostPermissions: raw.hostPermissions ?? [],
     permissions: raw.permissions ?? [],
+    optionalPermissions: raw.optionalPermissions ?? [],
+    contentScriptMatches: raw.contentScriptMatches ?? [],
+    permissionsFromOriginal: raw.permissionsFromOriginal ?? false,
     hasOptionsPage: raw.hasOptionsPage ?? false,
     hasAction: raw.hasAction ?? false,
     actionDefaultTitle: raw.actionDefaultTitle,
@@ -1811,12 +1890,13 @@ export async function setExtensionPinned(extensionId: string, pinned: boolean): 
  *  auth) exactly like the store page was. Callers without a window
  *  context (cloud-sync reconcile) fall back to any live profile session,
  *  then the default session, which still carries Settings → Proxy. */
-export async function installExtensionById(
-  extensionId: string,
-  downloadSession?: Session,
-): Promise<ExtensionInfo> {
-  log.info('extensions: installing', extensionId)
-  const ses = downloadSession ?? getAllSessions()[0] ?? session.defaultSession
+interface StagedCrx {
+  dir: string
+  publicKey: Buffer
+}
+
+/** Download an extension's CRX and unpack it, unpatched, into a temp dir. */
+async function downloadToStaging(extensionId: string, ses: Session): Promise<StagedCrx> {
   const crx = await fetchCrx(extensionId, ses)
   // Pick the proof whose key hashes to the requested id (a CWS CRX3 also
   // carries Google's enrollment key). No match means the store served a
@@ -1825,24 +1905,136 @@ export async function installExtensionById(
   if (!publicKey) {
     throw new Error(`Downloaded CRX does not match extension ID ${extensionId}`)
   }
-  const root = extensionsRoot()
-  mkdirSync(root, { recursive: true })
-  const stagingDir = join(root, `.cws-staging-${Date.now()}`)
+  const dir = join(app.getPath('temp'), `newbro-extension-${extensionId}-${Date.now()}`)
+  unzipTo(parseCrx(crx), dir)
+  return { dir, publicKey }
+}
+
+function removeStaging(staged: StagedCrx): void {
   try {
-    unzipTo(parseCrx(crx), stagingDir)
+    rmSync(staged.dir, { recursive: true, force: true })
+  } catch (err) {
+    log.warn('extensions: staging cleanup failed', { dir: staged.dir, err: String(err) })
+  }
+}
+
+/** What the install prompt shows: the extension as downloaded, before any
+ *  Newbro patching. */
+export interface ExtensionInstallPreview {
+  id: string
+  name: string
+  version: string
+  description?: string
+  iconUrl: string | null
+  permissions: string[]
+  hostPermissions: string[]
+  optionalPermissions: string[]
+  contentScriptMatches: string[]
+  /** Version already installed, or null. */
+  installedVersion: string | null
+}
+
+/** Downloads kept between the install prompt and the user's answer, so
+ *  confirming doesn't download again. */
+const previews = new Map<string, StagedCrx & { createdAt: number }>()
+const PREVIEW_TTL_MS = 15 * 60 * 1000
+
+/** Download an extension and describe it for the install prompt, like
+ *  Chrome's "Add <name>?" dialog. installExtensionById then installs this
+ *  very download; discardExtensionPreview drops it on cancel. */
+export async function inspectExtension(
+  extensionId: string,
+  downloadSession?: Session,
+): Promise<ExtensionInstallPreview> {
+  discardExtensionPreview(extensionId)
+  const ses = downloadSession ?? getAllSessions()[0] ?? session.defaultSession
+  const staged = await downloadToStaging(extensionId, ses)
+  const preview = { ...staged, createdAt: Date.now() }
+  previews.set(extensionId, preview)
+  setTimeout(() => {
+    if (previews.get(extensionId) === preview) discardExtensionPreview(extensionId)
+  }, PREVIEW_TTL_MS).unref?.()
+  const entry = derivePersistedEntry(extensionId, staged.dir, true, Date.now())
+  return {
+    id: extensionId,
+    name: entry.name,
+    version: entry.version,
+    description: entry.description,
+    iconUrl: entry.iconUrl ?? null,
+    permissions: entry.permissions,
+    hostPermissions: entry.hostPermissions,
+    optionalPermissions: entry.optionalPermissions ?? [],
+    contentScriptMatches: entry.contentScriptMatches ?? [],
+    installedVersion: store.get('extensions')[extensionId]?.version ?? null,
+  }
+}
+
+export function discardExtensionPreview(extensionId: string): void {
+  const preview = previews.get(extensionId)
+  if (!preview) return
+  previews.delete(extensionId)
+  removeStaging(preview)
+}
+
+export async function installExtensionById(
+  extensionId: string,
+  downloadSession?: Session,
+): Promise<ExtensionInfo> {
+  log.info('extensions: installing', extensionId)
+  // Install what the user just reviewed, if they reviewed it.
+  const preview = previews.get(extensionId)
+  previews.delete(extensionId)
+  const staged =
+    preview && Date.now() - preview.createdAt < PREVIEW_TTL_MS && existsSync(preview.dir)
+      ? preview
+      : await downloadToStaging(extensionId, downloadSession ?? getAllSessions()[0] ?? session.defaultSession)
+  try {
     // Overwrite any `key` the publisher left in manifest.json with the
     // CRX key so Electron derives the same id Chrome Web Store assigned.
-    const manifest = readManifest(stagingDir)
-    manifest.key = publicKey.toString('base64')
-    writeFileSync(join(stagingDir, 'manifest.json'), JSON.stringify(manifest, null, 2))
-    return await adoptUnpackedExtension(extensionId, stagingDir)
+    const manifest = readManifest(staged.dir)
+    manifest.key = staged.publicKey.toString('base64')
+    writeFileSync(join(staged.dir, 'manifest.json'), JSON.stringify(manifest, null, 2))
+    return await adoptUnpackedExtension(extensionId, staged.dir)
   } finally {
+    removeStaging(staged)
+  }
+}
+
+/** Extensions installed before Newbro kept original manifests show
+ *  permissions from the patched one. Download each such extension's CRX
+ *  once, in the background and one at a time, and keep its manifest as
+ *  the original. The store may serve a newer version; its permissions are
+ *  still a far better answer than the patched copy's. Failures (offline,
+ *  not from a store) retry on the next launch. */
+export async function backfillOriginalManifests(): Promise<void> {
+  let changed = false
+  for (const [id, entry] of Object.entries(store.get('extensions'))) {
+    if (!entry?.path || !existsSync(join(entry.path, 'manifest.json')) || readOriginalManifest(entry.path)) continue
+    let staged: StagedCrx | null = null
     try {
-      rmSync(stagingDir, { recursive: true, force: true })
+      staged = await downloadToStaging(id, getAllSessions()[0] ?? session.defaultSession)
+      const fetched = readManifest(staged.dir)
+      writeFileSync(join(entry.path, ORIGINAL_MANIFEST_FILE), JSON.stringify(fetched, null, 2))
+      const current = store.get('extensions')[id]
+      if (current) {
+        const fresh = derivePersistedEntry(
+          id,
+          current.path,
+          current.enabled ?? true,
+          current.installedAt ?? Date.now(),
+          current.pinned ?? true,
+        )
+        store.set('extensions', { ...store.get('extensions'), [id]: fresh })
+        changed = true
+      }
+      log.info('extensions: original manifest recovered', { id, installed: entry.version, fetched: fetched.version })
     } catch (err) {
-      log.warn('extensions: staging cleanup failed', { extensionId, err: String(err) })
+      log.info('extensions: original manifest not recovered', { id, err: String(err) })
+    } finally {
+      if (staged) removeStaging(staged)
     }
   }
+  if (changed) broadcastExtensionsChanged()
 }
 
 /** Take an unpacked (not yet Newbro-patched) extension directory, apply
@@ -1863,6 +2055,7 @@ export async function adoptUnpackedExtension(
   const tmpDir = join(root, `${extensionId}.tmp-${Date.now()}`)
   try {
     cpSync(unpackedPath, tmpDir, { recursive: true })
+    saveOriginalManifest(tmpDir)
     // publicKey=null: the unpacked manifest already carries `key`
     // (installExtensionById writes it during unpack), so patch 1
     // keeps it as-is.

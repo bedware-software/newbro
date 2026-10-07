@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, Bell, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil, Copy, Check, Eye, EyeOff, ChevronDown, UserRound } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, Bell, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil, Copy, Check, Eye, EyeOff, ChevronDown, ChevronRight, UserRound } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo, PasswordEntryInfo, PasswordImportResult, EdgePasswordSourceInfo, EdgePasswordImportResult } from '../App'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
+import { ExtensionPermissionList } from './ExtensionPermissionList'
+import { requestExtensionInstall } from '../lib/extension-install'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
 import { useAppStore } from '../store/app-store'
 import {
@@ -373,11 +375,22 @@ interface ExtensionInfo {
   path: string
   hostPermissions: string[]
   permissions: string[]
+  optionalPermissions?: string[]
+  contentScriptMatches?: string[]
+  permissionsFromOriginal?: boolean
   hasOptionsPage: boolean
   hasAction: boolean
   actionDefaultTitle?: string
   iconUrl?: string | null
   installedAt: number
+}
+
+/** One manifest `commands` entry and its current binding ('' = none). */
+interface ExtensionCommand {
+  name: string
+  description: string
+  shortcut: string
+  suggested: string
 }
 
 function normalizeKeybindingValue(raw: string): string {
@@ -528,6 +541,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' })
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([])
   const [extInput, setExtInput] = useState('')
+  // Rows showing their permissions & shortcuts.
+  const [expandedExtensions, setExpandedExtensions] = useState<Set<string>>(new Set())
+  const [extCommands, setExtCommands] = useState<Record<string, ExtensionCommand[]>>({})
+  const [recordingCommand, setRecordingCommand] = useState<{ extensionId: string; command: string } | null>(null)
+  const [commandError, setCommandError] = useState<{ extensionId: string; message: string } | null>(null)
   const [extInstalling, setExtInstalling] = useState(false)
   const [extError, setExtError] = useState<string | null>(null)
   const [defaultBrowserStatus, setDefaultBrowserStatus] = useState<DefaultBrowserStatus | null>(null)
@@ -664,10 +682,81 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     if (!open) return
     const api = (window as any).electronAPI
     if (!api?.listExtensions) return
+    const loadCommands = (): void => {
+      api.listExtensionCommands?.().then((list: Array<{ extensionId: string; commands: ExtensionCommand[] }>) =>
+        setExtCommands(Object.fromEntries((list || []).map((e) => [e.extensionId, e.commands]))),
+      )
+    }
     api.listExtensions().then((list: ExtensionInfo[]) => setExtensions(list || []))
-    const cleanup = api.onExtensionsChanged?.((list: ExtensionInfo[]) => setExtensions(list || []))
+    loadCommands()
+    const cleanup = api.onExtensionsChanged?.((list: ExtensionInfo[]) => {
+      setExtensions(list || [])
+      loadCommands()
+    })
     return cleanup
   }, [open])
+
+  const toggleExtensionDetails = useCallback((id: string) => {
+    setExpandedExtensions((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const applyExtensionCommand = useCallback((extensionId: string, command: string, accelerator: string) => {
+    const api = (window as any).electronAPI
+    api.setExtensionCommand?.(extensionId, command, accelerator).then(
+      (list: Array<{ extensionId: string; commands: ExtensionCommand[] }>) =>
+        setExtCommands(Object.fromEntries((list || []).map((e) => [e.extensionId, e.commands]))),
+    )
+  }, [])
+
+  // Record an extension shortcut: the next key combination (Escape
+  // cancels). Like Chrome, it must use Ctrl or Alt, and may not take a
+  // combination Newbro or another extension already uses.
+  useEffect(() => {
+    if (!recordingCommand || !hostWindow) return
+    const { extensionId, command } = recordingCommand
+    const onKeyDown = (e: KeyboardEvent): void => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.key === 'Escape') {
+        setRecordingCommand(null)
+        return
+      }
+      const accel = eventToAccelerator(e)
+      if (!accel) return // a bare modifier — wait for the key
+      const fail = (message: string): void => {
+        setCommandError({ extensionId, message })
+        setRecordingCommand(null)
+      }
+      if (!/(^|\+)(CmdOrCtrl|Alt)\+/.test(accel)) {
+        fail('Extension shortcuts need Ctrl or Alt.')
+        return
+      }
+      const pretty = accel.replace(/CmdOrCtrl/g, navigator.platform.includes('Mac') ? '⌘' : 'Ctrl')
+      const appAction = Object.entries(keybindings).find(([, list]) => list.includes(accel))?.[0]
+      if (appAction) {
+        fail(`${pretty} is already used by Newbro (“${ACTION_LABELS[appAction] ?? appAction}”).`)
+        return
+      }
+      for (const [otherId, commands] of Object.entries(extCommands)) {
+        const taken = commands.find((c) => c.shortcut === accel && !(otherId === extensionId && c.name === command))
+        if (taken) {
+          const owner = extensions.find((x) => x.id === otherId)?.name ?? otherId
+          fail(`${pretty} is already used by ${owner} (“${taken.description}”).`)
+          return
+        }
+      }
+      setCommandError(null)
+      setRecordingCommand(null)
+      applyExtensionCommand(extensionId, command, accel)
+    }
+    hostWindow.addEventListener('keydown', onKeyDown, true)
+    return () => hostWindow.removeEventListener('keydown', onKeyDown, true)
+  }, [recordingCommand, hostWindow, keybindings, extCommands, extensions, applyExtensionCommand])
 
   const handleInstallExtension = useCallback(async () => {
     const trimmed = extInput.trim()
@@ -675,9 +764,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     setExtError(null)
     setExtInstalling(true)
     try {
-      const api = (window as any).electronAPI
-      await api.installExtension(trimmed)
-      setExtInput('')
+      if ((await requestExtensionInstall(trimmed)) === 'installed') setExtInput('')
     } catch (err: unknown) {
       setExtError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -2572,12 +2659,96 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                             {ext.description}
                           </div>
                         )}
-                        {(ext.hostPermissions.length > 0 || ext.permissions.length > 0) && (
-                          <div className="text-[10px] text-muted-foreground mt-1 font-mono line-clamp-1" title={[...ext.hostPermissions, ...ext.permissions].join(', ')}>
-                            {[...ext.hostPermissions, ...ext.permissions].slice(0, 4).join(', ')}
-                            {[...ext.hostPermissions, ...ext.permissions].length > 4 ? ' …' : ''}
-                          </div>
-                        )}
+                        {(() => {
+                          const commands = extCommands[ext.id] ?? []
+                          const expanded = expandedExtensions.has(ext.id)
+                          const permissionCount = new Set([
+                            ...ext.hostPermissions,
+                            ...ext.permissions,
+                            ...(ext.optionalPermissions ?? []),
+                            ...(ext.contentScriptMatches ?? []),
+                          ]).size
+                          return (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => toggleExtensionDetails(ext.id)}
+                                className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                              >
+                                {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                                {permissionCount} permission{permissionCount === 1 ? '' : 's'}
+                                {commands.length > 0 &&
+                                  ` · ${commands.length} keyboard shortcut${commands.length === 1 ? '' : 's'}`}
+                              </button>
+                              {expanded && (
+                                <div className="mt-2 flex flex-col gap-3 rounded-md border border-border p-3">
+                                  {!ext.permissionsFromOriginal && (
+                                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                                      Read from Newbro's adjusted manifest, which also grants access to all
+                                      sites. The extension's own list appears once Newbro re-downloads it.
+                                    </p>
+                                  )}
+                                  <ExtensionPermissionList
+                                    permissions={ext.permissions}
+                                    hostPermissions={ext.hostPermissions}
+                                    optionalPermissions={ext.optionalPermissions}
+                                    contentScriptMatches={ext.contentScriptMatches}
+                                  />
+                                  {commands.length > 0 && (
+                                    <div>
+                                      <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        Keyboard shortcuts
+                                      </div>
+                                      <div className="flex flex-col gap-1">
+                                        {commands.map((c) => {
+                                          const recording =
+                                            recordingCommand?.extensionId === ext.id && recordingCommand.command === c.name
+                                          return (
+                                            <div key={c.name} className="flex items-center justify-between gap-3">
+                                              <span className="min-w-0 truncate text-xs text-foreground" title={c.description}>
+                                                {c.description}
+                                              </span>
+                                              <div className="flex shrink-0 items-center gap-1">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    setCommandError(null)
+                                                    setRecordingCommand(recording ? null : { extensionId: ext.id, command: c.name })
+                                                  }}
+                                                  title="Click, then press the new shortcut (Escape cancels)"
+                                                  className={`h-6 min-w-[96px] rounded border px-2 text-[11px] ${
+                                                    recording
+                                                      ? 'border-primary text-primary'
+                                                      : 'border-input text-foreground hover:bg-muted'
+                                                  }`}
+                                                >
+                                                  {recording ? 'Press keys…' : c.shortcut ? formatAccelerator(c.shortcut) : 'Not set'}
+                                                </button>
+                                                {c.shortcut && !recording && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => applyExtensionCommand(ext.id, c.name, '')}
+                                                    title="Remove shortcut"
+                                                    className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                                                  >
+                                                    <X size={11} />
+                                                  </button>
+                                                )}
+                                              </div>
+                                            </div>
+                                          )
+                                        })}
+                                      </div>
+                                      {commandError?.extensionId === ext.id && (
+                                        <p className="mt-1 text-[11px] text-destructive">{commandError.message}</p>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </>
+                          )
+                        })()}
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         {ext.hasAction && (

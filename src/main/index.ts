@@ -46,17 +46,21 @@ import {
   getWebContentsByChromeTabId,
   findTabByWebContents,
   getWindowForTabWebContents,
+  getActiveChromeTabIdForWindow,
+  pickPartitionForWindow,
 } from './tab-views'
+import { ACTION_COMMANDS, activeExtensionCommandBindings } from './extensions/commands'
 import { getGrant, setGrant, type PermissionKind } from './permissions-store'
 import {
   getOrCreateExtensions,
   isLibrarySelectTabSuppressed,
   subscribeBrowserActionUpdates,
   getBrowserActionStateForSession,
+  dispatchExtensionCommand,
   type BrowserActionState,
 } from './chrome-extensions-bridge'
 import { ElectronChromeExtensions } from 'electron-chrome-extensions'
-import { loadEnabledExtensionsInto, readBgSourceWindow, rehydrateExtensionsOnStartup, getExtensionEntry, onExtensionDeactivated } from './extensions/manager'
+import { backfillOriginalManifests, loadEnabledExtensionsInto, readBgSourceWindow, rehydrateExtensionsOnStartup, getExtensionEntry, onExtensionDeactivated } from './extensions/manager'
 import { startSwCdpInspector, setSwCdpAuthHandler, CDP_PORT, type SwCdpAuthResponse } from './extensions/sw-cdp-inspector'
 import { startSwRpcServer, getSwRpcServerInfo, type SwRpcRoutes } from './extensions/sw-rpc-server'
 import {
@@ -1114,9 +1118,30 @@ function normalizeShortcutKeyToken(raw: string): string {
       return 'enter'
     case 'space':
       return ' '
+    // Recorded bindings name arrows the Electron way (Up); a keypress
+    // reports the DOM name (ArrowUp).
+    case 'up':
+    case 'down':
+    case 'left':
+    case 'right':
+      return `arrow${key}`
     default:
       return key
   }
+}
+
+/** Run an extension's keyboard command in a window: activate its toolbar
+ *  action (the toolbar opens the popup at the icon, as a click would), or
+ *  fire chrome.commands.onCommand with the active tab. */
+function runExtensionCommand(win: BrowserWindow, extensionId: string, command: string): void {
+  if (win.isDestroyed()) return
+  log.info('extensions: keyboard command', { extensionId, command })
+  if (ACTION_COMMANDS.has(command)) {
+    win.webContents.send('extensions:command-action', extensionId)
+    return
+  }
+  const partition = partitionForBrowserWindow(win) ?? pickPartitionForWindow(win.id)
+  void dispatchExtensionCommand(session.fromPartition(partition), extensionId, command, getActiveChromeTabIdForWindow(win.id))
 }
 
 function keyTokenFromInput(input: Electron.Input): string {
@@ -1324,6 +1349,15 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
           return
         }
       }
+    }
+
+    // Extension shortcuts (manifest `commands`, Settings → Extensions),
+    // after the app's own bindings so those always win.
+    for (const b of activeExtensionCommandBindings()) {
+      if (!matchesAccelerator(input, parseAcceleratorShortcut(b.accelerator))) continue
+      event.preventDefault()
+      runExtensionCommand(targetWindow, b.extensionId, b.command)
+      return
     }
   })
 
@@ -3923,6 +3957,13 @@ app.whenReady().then(async () => {
   rehydrateExtensionsOnStartup().catch((err) => {
     log.warn('extensions: rehydrate failed', String(err))
   })
+  // Once things have settled, recover the original manifests of
+  // extensions installed before Newbro kept them (one download each).
+  setTimeout(() => {
+    backfillOriginalManifests().catch((err) => {
+      log.warn('extensions: original manifest backfill failed', String(err))
+    })
+  }, 30_000)
 
   // Wire CDP auth-challenge router BEFORE startSwCdpInspector so any
   // SW that comes up immediately has its Fetch.authRequired events

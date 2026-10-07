@@ -62,6 +62,8 @@ import { dispatchActionClicked } from './chrome-extensions-bridge'
 import {
   listExtensions,
   installExtensionById,
+  inspectExtension,
+  discardExtensionPreview,
   uninstallExtension,
   setExtensionEnabled,
   setExtensionPinned,
@@ -71,6 +73,7 @@ import {
   exportExtensionManifest,
   applyExtensionManifest,
 } from './extensions/manager'
+import { listExtensionCommands, setExtensionCommandShortcut } from './extensions/commands'
 import { registerDropdownIpc } from './dropdown-window'
 import { registerUpdateToastIpc } from './update-toast-window'
 import { registerDefaultBrowserIpc } from './default-browser'
@@ -392,6 +395,33 @@ export function registerIpcHandlers(): void {
   // ── Extensions ──
   ipcMain.handle('extensions:list', () => {
     return listExtensions()
+  })
+
+  // Install prompt: download the extension and describe it (name, icon,
+  // permissions) for the renderer to confirm. 'extensions:install' then
+  // installs that same download; 'extensions:discard-preview' drops it.
+  ipcMain.handle('extensions:inspect', async (e, idOrUrl: string) => {
+    const id = extractExtensionIdFromUrl(idOrUrl)
+    if (!id) throw new Error('Could not parse extension ID from input')
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const partition = win ? partitionForBrowserWindow(win) : null
+    try {
+      return await inspectExtension(id, partition ? session.fromPartition(partition) : undefined)
+    } catch (err) {
+      log.error('extensions: inspect failed', { id, err: String(err) })
+      throw err
+    }
+  })
+
+  ipcMain.handle('extensions:discard-preview', (_e, extensionId: string) => {
+    discardExtensionPreview(extensionId)
+  })
+
+  // Extension keyboard shortcuts (manifest `commands`).
+  ipcMain.handle('extensions:commands', () => listExtensionCommands())
+  ipcMain.handle('extensions:set-command', (_e, extensionId: string, command: string, accelerator: string) => {
+    setExtensionCommandShortcut(extensionId, command, typeof accelerator === 'string' ? accelerator : '')
+    return listExtensionCommands()
   })
 
   ipcMain.handle('extensions:install', async (e, idOrUrl: string) => {

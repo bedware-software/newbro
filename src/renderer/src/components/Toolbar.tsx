@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import type { DownloadEntry } from '../App'
 import { DOWNLOADS_URL, internalPageOf } from '../lib/internal-pages'
+import { requestExtensionInstall } from '../lib/extension-install'
 
 // Trigger-side icon registry. Only the icons used on dropdown trigger
 // buttons appear here — row icons are resolved inside the popup window
@@ -243,8 +244,10 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
     if (state === 'installing') return
     setState('installing')
     try {
-      const api = (window as any).electronAPI
-      await api.installExtension(extensionId)
+      if ((await requestExtensionInstall(extensionId)) === 'cancelled') {
+        setState('idle')
+        return
+      }
       setState('ok')
       setTimeout(() => setState('idle'), 3500)
     } catch (err: unknown) {
@@ -328,6 +331,7 @@ function ExtensionActions({
   const [openPopupId, setOpenPopupId] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const buttonRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+  const manageRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     const api = (window as any).electronAPI
@@ -390,7 +394,8 @@ function ExtensionActions({
   const visible = extensions.filter((e) => e.enabled && e.hasAction && (e.pinned ?? true))
 
   const buttonAnchor = (id: string): { x: number; y: number; width: number; height: number } => {
-    const btn = buttonRefs.current.get(id)
+    // An unpinned extension's popup hangs off the extensions button.
+    const btn = buttonRefs.current.get(id) ?? manageRef.current
     if (!btn) return { x: 0, y: 0, width: 0, height: 0 }
     const r = btn.getBoundingClientRect()
     return { x: r.left, y: r.top, width: r.width, height: r.height }
@@ -407,6 +412,18 @@ function ExtensionActions({
       }
     })
   }
+
+  // A keyboard shortcut bound to the extension's action (Settings →
+  // Extensions) works like clicking its icon.
+  const commandActionRef = useRef<(id: string) => void>(() => {})
+  commandActionRef.current = (id) => {
+    const ext = extensions.find((e) => e.id === id && e.enabled)
+    if (ext) handleClick(ext)
+  }
+  useEffect(() => {
+    const api = (window as any).electronAPI
+    return api?.onExtensionCommandAction?.((id: string) => commandActionRef.current(id))
+  }, [])
 
   const handleContextMenu = async (ext: ExtensionInfo, e: React.MouseEvent): Promise<void> => {
     e.preventDefault()
@@ -467,6 +484,7 @@ function ExtensionActions({
           Always shown (even with no pinned extensions) so it stays a
           reliable entry point, mirroring Chrome's puzzle-piece menu. */}
       <button
+        ref={manageRef}
         onClick={onManageExtensions}
         title="Manage extensions"
         className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground transition-colors"

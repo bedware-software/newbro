@@ -231,6 +231,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Extensions
   listExtensions: (): Promise<unknown[]> => ipcRenderer.invoke('extensions:list'),
   installExtension: (idOrUrl: string): Promise<unknown> => ipcRenderer.invoke('extensions:install', idOrUrl),
+  inspectExtension: (idOrUrl: string): Promise<unknown> => ipcRenderer.invoke('extensions:inspect', idOrUrl),
+  discardExtensionPreview: (extensionId: string): Promise<void> =>
+    ipcRenderer.invoke('extensions:discard-preview', extensionId),
+  listExtensionCommands: (): Promise<unknown[]> => ipcRenderer.invoke('extensions:commands'),
+  setExtensionCommand: (extensionId: string, command: string, accelerator: string): Promise<unknown[]> =>
+    ipcRenderer.invoke('extensions:set-command', extensionId, command, accelerator),
+  /** A keyboard shortcut asked to activate an extension's toolbar action. */
+  onExtensionCommandAction: (callback: (extensionId: string) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, extensionId: string) => callback(extensionId)
+    ipcRenderer.on('extensions:command-action', handler)
+    return () => { ipcRenderer.removeListener('extensions:command-action', handler) }
+  },
   uninstallExtension: (extensionId: string): Promise<unknown[]> => ipcRenderer.invoke('extensions:uninstall', extensionId),
   setExtensionEnabled: (extensionId: string, enabled: boolean): Promise<unknown[]> =>
     ipcRenderer.invoke('extensions:set-enabled', extensionId, enabled),

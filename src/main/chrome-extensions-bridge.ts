@@ -21,6 +21,7 @@ import { BrowserWindow, type Session, type WebContents, type BaseWindow } from '
 import { ElectronChromeExtensions } from 'electron-chrome-extensions'
 import { log } from './log'
 import { chromeGroupIdForTab } from './extensions/tab-groups'
+import { chromeCommandsFor } from './extensions/commands'
 
 const instances = new Map<Session, ElectronChromeExtensions>()
 
@@ -189,6 +190,12 @@ function patchLibraryHandlers(ext: ElectronChromeExtensions): void {
         : a,
     ),
   )
+  // The library reports every command unbound; answer with the bindings
+  // Newbro actually applies (Settings → Extensions).
+  const getAll = handlers.get('commands.getAll')
+  if (getAll) {
+    getAll.callback = (event) => (event.extension ? chromeCommandsFor(event.extension.id) : [])
+  }
 }
 
 export function getExtensionsFor(ses: Session): ElectronChromeExtensions | undefined {
@@ -362,6 +369,29 @@ export function subscribeBrowserActionUpdates(
  *  the extension registers no onClicked listener — the click would do
  *  nothing, so the caller can fall back to something visible. */
 export async function dispatchActionClicked(ses: Session, extensionId: string, chromeTabId: number): Promise<boolean> {
+  return dispatchToListener(ses, extensionId, 'browserAction.onClicked', chromeTabId, (tab) => [tab])
+}
+
+/** Fire chrome.commands.onCommand(command, tab) for a keyboard shortcut. */
+export async function dispatchExtensionCommand(
+  ses: Session,
+  extensionId: string,
+  command: string,
+  chromeTabId: number | null,
+): Promise<boolean> {
+  return dispatchToListener(ses, extensionId, 'commands.onCommand', chromeTabId, (tab) => [command, tab])
+}
+
+/** Send an extension event the way Chrome would: only if the extension
+ *  listens for it, waking its worker first when needed. `args` builds the
+ *  event arguments from the active tab's chrome.tabs details. */
+async function dispatchToListener(
+  ses: Session,
+  extensionId: string,
+  eventName: string,
+  chromeTabId: number | null,
+  args: (tab: unknown) => unknown[],
+): Promise<boolean> {
   const internal = getExtensionsFor(ses) as unknown as {
     ctx?: {
       router?: {
@@ -375,7 +405,7 @@ export async function dispatchActionClicked(ses: Session, extensionId: string, c
   const router = internal?.ctx?.router
   if (typeof router?.sendEvent !== 'function') return false
   const hasListener = (): boolean =>
-    !!router.listeners?.get('browserAction.onClicked')?.some((l) => l.extensionId === extensionId)
+    !!router.listeners?.get(eventName)?.some((l) => l.extensionId === extensionId)
   if (!hasListener()) {
     // The router only learns listeners when the worker runs its top-level
     // code, and after an app restart the worker may still be idle (Chrome
@@ -393,14 +423,14 @@ export async function dispatchActionClicked(ses: Session, extensionId: string, c
       for (const [name, list] of router.listeners ?? []) {
         if (list.some((l) => l.extensionId === extensionId)) events.push(name)
       }
-      log.info('extensions: no action.onClicked listener', { extensionId, events })
+      log.info('extensions: no listener', { extensionId, eventName, events })
       return false
     }
   }
-  const tab = internal?.ctx?.store?.getTabById?.(chromeTabId)
+  const tab = chromeTabId === null ? undefined : internal?.ctx?.store?.getTabById?.(chromeTabId)
   const details = tab ? internal?.api?.tabs?.getTabDetails?.(tab) : undefined
-  router.sendEvent(extensionId, 'browserAction.onClicked', details ?? { id: chromeTabId })
-  log.info('extensions: action.onClicked dispatched', { extensionId, chromeTabId })
+  router.sendEvent(extensionId, eventName, ...args(details ?? (chromeTabId === null ? undefined : { id: chromeTabId })))
+  log.info('extensions: event dispatched', { extensionId, eventName, chromeTabId })
   return true
 }
 

@@ -14,6 +14,8 @@ import { CommandPalette } from './components/CommandPalette'
 import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
 import { SidePanel } from './components/SidePanel'
 import { startExtensionTabGroupsBridge } from './lib/extension-tab-groups'
+import { setExtensionInstallHandler, type InstallOutcome } from './lib/extension-install'
+import { ExtensionInstallDialog, type ExtensionInstallPreview } from './components/ExtensionInstallDialog'
 import { InputDialog } from './components/InputDialog'
 import { MoveTabDialog } from './components/MoveTabDialog'
 import { MoveGroupDialog } from './components/MoveGroupDialog'
@@ -273,6 +275,11 @@ declare global {
       // Extensions
       listExtensions?: () => Promise<unknown[]>
       installExtension?: (idOrUrl: string) => Promise<unknown>
+      inspectExtension?: (idOrUrl: string) => Promise<unknown>
+      discardExtensionPreview?: (extensionId: string) => Promise<void>
+      listExtensionCommands?: () => Promise<unknown[]>
+      setExtensionCommand?: (extensionId: string, command: string, accelerator: string) => Promise<unknown[]>
+      onExtensionCommandAction?: (callback: (extensionId: string) => void) => () => void
       uninstallExtension?: (extensionId: string) => Promise<unknown[]>
       setExtensionEnabled?: (extensionId: string, enabled: boolean) => Promise<unknown[]>
       openExtensionOptions?: (extensionId: string) => Promise<string | null>
@@ -770,6 +777,25 @@ export default function App() {
     if (!ready) return
     return startExtensionTabGroupsBridge()
   }, [ready])
+
+  // Install prompt: every user-initiated install (Settings, the store
+  // page's install button) shows what the extension can do first.
+  const [installPrompt, setInstallPrompt] = useState<{
+    preview: ExtensionInstallPreview
+    installing: boolean
+    error: string | null
+    settle: (outcome: InstallOutcome) => void
+  } | null>(null)
+  useEffect(() => {
+    setExtensionInstallHandler(async (idOrUrl) => {
+      const preview = (await window.electronAPI.inspectExtension?.(idOrUrl)) as ExtensionInstallPreview | undefined
+      if (!preview) throw new Error('Could not read the extension.')
+      return new Promise<InstallOutcome>((resolve) => {
+        setInstallPrompt({ preview, installing: false, error: null, settle: resolve })
+      })
+    })
+    return () => setExtensionInstallHandler(null)
+  }, [])
 
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
@@ -1338,6 +1364,31 @@ export default function App() {
         />
       </div>
       <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} windowWorkspaceId={windowWorkspaceId} />
+      <ExtensionInstallDialog
+        preview={installPrompt?.preview ?? null}
+        installing={installPrompt?.installing ?? false}
+        error={installPrompt?.error ?? null}
+        onCancel={() => {
+          if (!installPrompt) return
+          void window.electronAPI.discardExtensionPreview?.(installPrompt.preview.id)
+          installPrompt.settle('cancelled')
+          setInstallPrompt(null)
+        }}
+        onConfirm={() => {
+          const prompt = installPrompt
+          if (!prompt || prompt.installing) return
+          setInstallPrompt({ ...prompt, installing: true, error: null })
+          window.electronAPI
+            .installExtension?.(prompt.preview.id)
+            .then(() => {
+              prompt.settle('installed')
+              setInstallPrompt(null)
+            })
+            .catch((err: unknown) => {
+              setInstallPrompt({ ...prompt, installing: false, error: err instanceof Error ? err.message : String(err) })
+            })
+        }}
+      />
       <SettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
