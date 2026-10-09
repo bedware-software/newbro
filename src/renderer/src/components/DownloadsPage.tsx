@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import type { DownloadEntry } from '../App'
 import { useAppStore } from '../store/app-store'
-import { isVimNavActive } from '../lib/vim-nav'
+import { isCommandMode } from '../lib/vim-mode'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 
 type SortKey = 'date' | 'size' | 'name'
@@ -30,7 +30,7 @@ const SORT_LABELS: Record<SortKey, string> = { date: 'Date', size: 'Size', name:
 const DEFAULT_DIR: Record<SortKey, SortDir> = { date: 'desc', size: 'desc', name: 'asc' }
 const SORT_STORAGE_KEY = 'newbro-downloads-sort'
 
-// How long the second `g` of `gg` may trail the first (same as vim-nav).
+// How long the second `g` of `gg` may trail the first (same as Vim mode's).
 const GG_TIMEOUT_MS = 1000
 
 /** Events other parts of the app send the page: App routes find-in-page and
@@ -174,7 +174,7 @@ function isEditable(target: EventTarget | null): boolean {
 
 /** Win keyboard focus back for the renderer after a popup (the actions menu)
  *  closes: the OS may hand it to the hidden tab view first. Same retry the
- *  vim-mode panels use. */
+ *  Vim mode uses. */
 function reclaimRendererFocus(): void {
   window.electronAPI?.reclaimWindowRendererFocus?.()
   for (const delay of [60, 180]) {
@@ -297,10 +297,10 @@ export function DownloadsPage() {
       ?.scrollIntoView({ block: 'nearest' })
   }, [selected?.id])
 
-  // Take the keyboard when the page opens — unless a panel in vim mode is
+  // Take the keyboard when the page opens — unless Vim's COMMAND mode is
   // stepping through tabs, or the user is typing somewhere (the URL bar).
   useEffect(() => {
-    if (isVimNavActive()) return
+    if (isCommandMode()) return
     if (isEditable(document.activeElement)) return
     rootRef.current?.focus({ preventScroll: true })
   }, [])
@@ -579,6 +579,8 @@ export function DownloadsPage() {
     <div
       ref={rootRef}
       tabIndex={-1}
+      // To Vim mode this is a page: keys here are INSERT, its own j/k & co.
+      data-vim-page=""
       className="absolute inset-0 z-50 flex flex-col bg-background text-foreground outline-none"
       role="region"
       aria-label="Downloads"

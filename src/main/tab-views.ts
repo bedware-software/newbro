@@ -80,6 +80,12 @@ export type TabEvent =
   // black ("cinema mode") until the page leaves fullscreen.
   | { type: 'enter-html-full-screen'; tabId: string }
   | { type: 'leave-html-full-screen'; tabId: string }
+  // The page took OS keyboard focus — Vim mode's INSERT (renderer
+  // lib/vim-mode.ts).
+  | { type: 'focus'; tabId: string }
+  // Esc went through the page without any of its handlers taking it
+  // (webview-stealth.ts) — Vim mode's way back to COMMAND.
+  | { type: 'unhandled-escape'; tabId: string }
 
 interface TabRecord {
   tabId: string
@@ -721,6 +727,7 @@ function wireEvents(rec: TabRecord): void {
   // dom-ready is the first point the isolated-world preload has registered
   // its 'newbro-gesture-bounds' listener, so (re)push the current bounds.
   wc.on('dom-ready', () => { emitNavState(); emit({ type: 'dom-ready', tabId: rec.tabId, url: wc.getURL() }) })
+  wc.on('focus', () => emit({ type: 'focus', tabId: rec.tabId }))
   wc.on('did-finish-load', () =>
     emit({ type: 'did-finish-load', tabId: rec.tabId, url: wc.getURL() })
   )
@@ -2369,6 +2376,17 @@ export function installTabPreloadListeners(): void {
     if (!tabId) return
     if (direction === 'back') tabGoBack(tabId)
     else if (direction === 'forward') tabGoForward(tabId)
+  })
+
+  ipcMain.on('newbro-unhandled-escape', (event) => {
+    const tabId = wcIdToTabId.get(event.sender.id)
+    if (!tabId) return
+    const rec = tabs.get(tabId)
+    if (!rec) return
+    // Esc that ends a fullscreen video is the fullscreen's, not a mode switch.
+    if (htmlFullscreenByWindow.get(rec.windowId) === tabId) return
+    const evt: TabEvent = { type: 'unhandled-escape', tabId }
+    sendToWindowRenderer(rec.windowId, 'tab-event', evt)
   })
 
   ipcMain.on('newbro-pseudo-fullscreen', (event, active: unknown) => {

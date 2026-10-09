@@ -1,9 +1,10 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getVisibleTabOrder, getTabCycleOrder, type NewTabFocus } from './store/app-store'
 import { normalizeURL, setSearchEngine } from './lib/url'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
-import { setVimNavActive } from './lib/vim-nav'
+import { useVimMode, dispatchPanelCommand, claimRendererFocus, isCommandMode, type VimPanel } from './lib/vim-mode'
+import { parseVimKeymap, DEFAULT_VIM_KEYMAP, isPanelCommand } from './lib/vim-keymap'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
@@ -39,8 +40,10 @@ interface Settings {
   density: Density
   newTabFocus: NewTabFocus
   showTabNumbers: boolean
-  /** Panel hotkeys cycle open → vim mode → closed instead of open/close. */
-  vimNavigation: boolean
+  /** Vim mode: COMMAND / INSERT modes, see lib/vim-mode.ts. */
+  vimMode: boolean
+  /** COMMAND-mode keymap text; null = DEFAULT_VIM_KEYMAP. */
+  vimKeymap: string | null
   defaultPageUrl: string
   searchEngine: string
   searchSuggestions: boolean
@@ -482,8 +485,9 @@ function applyTheme(theme: ThemeChoice, lightVariant: string, darkVariant: strin
 }
 
 const SIDEBAR_VISIBLE_KEY = 'newbro-sidebar-visible'
-
-type VimPanel = 'sidebar' | 'bookshelf'
+// How long after a video leaves fullscreen an Esc from the page still
+// belongs to the fullscreen rather than switching Vim to COMMAND.
+const FULLSCREEN_ESCAPE_GRACE_MS = 500
 
 export default function App() {
   const [ready, setReady] = useState(false)
@@ -571,29 +575,11 @@ export default function App() {
     })
   }, [])
 
-  // Which panel (if any) is in vim mode. Only one at a time: its keys would
-  // otherwise drive both. The module flag is set in the same call so a tab
-  // activation rendered alongside the change already knows whether to leave
-  // keyboard focus on the renderer (see lib/vim-nav.ts).
-  const [vimPanel, setVimPanelState] = useState<VimPanel | null>(null)
-  const vimPanelRef = useRef<VimPanel | null>(null)
-  const setVimPanel = useCallback((panel: VimPanel | null) => {
-    vimPanelRef.current = panel
-    setVimNavActive(panel !== null)
-    setVimPanelState(panel)
-  }, [])
-  // Esc / Enter leave vim mode and give the keyboard back to the page; losing
-  // focus to the page on its own just leaves.
-  const exitVim = useCallback((focusPage: boolean) => {
-    setVimPanel(null)
-    if (!focusPage) return
-    const { activeTabId } = useAppStore.getState()
-    if (activeTabId) window.electronAPI.tabFocus?.(activeTabId)
-  }, [setVimPanel])
-
-  // Latest visibility for the shortcut handler, which is registered once.
-  const panelOpenRef = useRef<Record<VimPanel, boolean>>({ sidebar: false, bookshelf: false })
-  const vimEnabledRef = useRef(false)
+  // Vim mode: which panel has the COMMAND-mode cursor. `b` moves it to the
+  // Bookshelf, `s` back; it falls back to the Sidebar when the shelf closes.
+  const [vimFocusedPanel, setVimFocusedPanel] = useState<VimPanel>('sidebar')
+  // The Vim mode API for the shortcut handler, which is registered once.
+  const vimRef = useRef<ReturnType<typeof useVimMode> | null>(null)
 
   // Page-fullscreen "cinema mode". A video going fullscreen fills only the
   // tab's view rect, so the window chrome stays on screen. We lean into
@@ -603,11 +589,13 @@ export default function App() {
   const [pageFullscreen, setPageFullscreen] = useState(false)
   const fullscreenTabRef = useRef<string | null>(null)
   const sidebarBeforeFullscreenRef = useRef<boolean | null>(null)
+  const fullscreenLeftAtRef = useRef(0)
 
   useEffect(() => {
     const exitCinema = (): void => {
       if (fullscreenTabRef.current === null) return
       fullscreenTabRef.current = null
+      fullscreenLeftAtRef.current = Date.now()
       setPageFullscreen(false)
       const saved = sidebarBeforeFullscreenRef.current
       sidebarBeforeFullscreenRef.current = null
@@ -847,18 +835,6 @@ export default function App() {
       else state.setActiveTab(nextId)
     }
 
-    // With vim navigation on, a panel's hotkey cycles open → vim mode → closed
-    // instead of toggling. Closing from vim mode hands the keyboard back to
-    // the page, since the renderer had taken it.
-    const cyclePanel = (panel: VimPanel, toggle: () => void) => {
-      if (vimEnabledRef.current && panelOpenRef.current[panel] && vimPanelRef.current !== panel) {
-        setVimPanel(panel)
-        return
-      }
-      if (vimPanelRef.current === panel) exitVim(true)
-      toggle()
-    }
-
     const handleAction = (action: string) => {
       const s = useAppStore.getState()
       // tab-1..tab-9 quick-jump: parse the digit and index into the visible
@@ -898,7 +874,7 @@ export default function App() {
           break
         }
         case 'toggle-bookshelf':
-          cyclePanel('bookshelf', () => setBookshelfOpen((v) => !v))
+          setBookshelfOpen((v) => !v)
           break
         case 'duplicate-tab':
           if (s.activeTabId) s.duplicateTab(s.activeTabId)
@@ -942,7 +918,10 @@ export default function App() {
           s.showInternalPage(DOWNLOADS_URL)
           break
         case 'toggle-sidebar':
-          cyclePanel('sidebar', toggleSidebar)
+          toggleSidebar()
+          break
+        case 'command-mode':
+          vimRef.current?.enterCommand(true)
           break
         case 'back': {
           if (s.activeTabId) window.electronAPI.tabGoBack?.(s.activeTabId)
@@ -1258,7 +1237,7 @@ export default function App() {
       window.removeEventListener('newbro:open-move-tab', handleOpenMoveTab)
       window.removeEventListener('newbro:open-move-group', handleOpenMoveGroup)
     }
-  }, [hydrate, windowWorkspaceId, toggleSidebar, setVimPanel, exitVim])
+  }, [hydrate, windowWorkspaceId, toggleSidebar])
 
   // When the user has the theme set to "system", follow the OS when it
   // flips between light and dark by re-resolving which variant to apply.
@@ -1290,6 +1269,8 @@ export default function App() {
       // already owns keystrokes.
       if (!active || active === document.body) return
       active.blur?.()
+      // In Vim mode leaving a field is COMMAND mode, which keeps the keyboard.
+      if (vimRef.current?.mode) return
       // Hand OS keyboard focus to the active tab's page so keystrokes go to
       // the site. tabActivate only focuses on a *new* activation (it no-ops
       // for the already-active tab, which is exactly this case), so use the
@@ -1318,28 +1299,84 @@ export default function App() {
   }
 
   const bookshelfVisible = bookshelfOpen && !pageFullscreen
-  panelOpenRef.current = { sidebar: sidebarVisible, bookshelf: bookshelfVisible }
-  vimEnabledRef.current = settings?.vimNavigation === true
 
-  // Vim mode ends with its panel: closed by mouse, hidden by cinema mode, or
-  // the setting switched off.
+  // ── Vim mode ──
+  const vimEnabled = settings?.vimMode === true
+  const vimKeymap = useMemo(
+    () => parseVimKeymap(settings?.vimKeymap ?? DEFAULT_VIM_KEYMAP),
+    [settings?.vimKeymap],
+  )
+  const vimPanel: VimPanel = vimFocusedPanel === 'bookshelf' && bookshelfVisible ? 'bookshelf' : 'sidebar'
+  const runVimCommand = (command: string): void => {
+    switch (command) {
+      case 'insert-mode':
+        vimRef.current?.enterInsert()
+        return
+      case 'focus-sidebar':
+        if (!sidebarVisible) toggleSidebar()
+        setVimFocusedPanel('sidebar')
+        return
+      case 'focus-bookshelf':
+        setBookshelfOpen(true)
+        setVimFocusedPanel('bookshelf')
+        return
+    }
+    if (isPanelCommand(command)) {
+      if (dispatchPanelCommand(vimPanel, command)) return
+      // Sidebar hidden: still step through the tabs.
+      if (command === 'cursor-down') shortcutHandlerRef.current?.('next-tab')
+      else if (command === 'cursor-up') shortcutHandlerRef.current?.('prev-tab')
+      return
+    }
+    shortcutHandlerRef.current?.(command)
+  }
+  const vim = useVimMode({
+    enabled: vimEnabled,
+    keymap: vimKeymap.main,
+    onCommand: runVimCommand,
+    focusPage: () => {
+      const s = useAppStore.getState()
+      if (!s.activeTabId) return false
+      // Internal pages are drawn by this renderer (data-vim-page).
+      if (isInternalUrl(s.getActiveTab()?.url)) {
+        const page = document.querySelector<HTMLElement>('[data-vim-page]')
+        page?.focus({ preventScroll: true })
+        return !!page
+      }
+      window.electronAPI.tabFocus?.(s.activeTabId)
+      return true
+    },
+    ignorePageEscape: () =>
+      fullscreenTabRef.current !== null || Date.now() - fullscreenLeftAtRef.current < FULLSCREEN_ESCAPE_GRACE_MS,
+  })
+  vimRef.current = vim
+
+  // The cursor goes home to the Sidebar when the Bookshelf closes.
   useEffect(() => {
-    if (vimPanel === null) return
-    const open = vimPanel === 'sidebar' ? sidebarVisible : bookshelfVisible
-    if (!open || settings?.vimNavigation !== true) setVimPanel(null)
-  }, [vimPanel, sidebarVisible, bookshelfVisible, settings?.vimNavigation, setVimPanel])
+    if (!bookshelfVisible) setVimFocusedPanel('sidebar')
+  }, [bookshelfVisible])
+
+  // A popup window (Search, Command Palette, Settings) closing hands focus
+  // back to this window — sometimes to the page view. In COMMAND mode the
+  // chrome keeps it.
+  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen
+  const popupWasOpenRef = useRef(popupOpen)
+  useEffect(() => {
+    if (popupWasOpenRef.current && !popupOpen && isCommandMode()) claimRendererFocus(false)
+    popupWasOpenRef.current = popupOpen
+  }, [popupOpen])
 
   if (!ready) return null
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} pageFullscreen={pageFullscreen} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           visible={sidebarVisible}
           showTabNumbers={settings?.showTabNumbers ?? true}
-          vimActive={vimPanel === 'sidebar'}
-          onVimExit={exitVim}
+          vimActive={vim.mode === 'command' && vimPanel === 'sidebar'}
+          onVimInsert={vim.enterInsert}
         />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
           <FindBar
@@ -1359,11 +1396,16 @@ export default function App() {
           open={bookshelfVisible}
           profileId={windowProfileId ?? activeProfileId}
           onClose={() => setBookshelfOpen(false)}
-          vimActive={vimPanel === 'bookshelf'}
-          onVimExit={exitVim}
+          vimActive={vim.mode === 'command' && vimPanel === 'bookshelf'}
+          onVimInsert={vim.enterInsert}
         />
       </div>
-      <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} windowWorkspaceId={windowWorkspaceId} />
+      <SearchDialog
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        windowWorkspaceId={windowWorkspaceId}
+        vimKeymap={vimEnabled ? vimKeymap.search : null}
+      />
       <ExtensionInstallDialog
         preview={installPrompt?.preview ?? null}
         installing={installPrompt?.installing ?? false}

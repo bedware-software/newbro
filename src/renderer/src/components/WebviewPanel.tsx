@@ -3,7 +3,7 @@ import { useAppStore, consumeNewTabUrlFocus, consumeEagerLoad } from '../store/a
 import type { TabGroup } from '../store/types'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
-import { isVimNavActive } from '../lib/vim-nav'
+import { isCommandMode } from '../lib/vim-mode'
 import { internalPageOf, isInternalUrl } from '../lib/internal-pages'
 import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, Mic, Camera, MapPin, Bell, Clipboard, Music, X, CircleAlert, type LucideIcon } from 'lucide-react'
 import { describePermissionKinds, type PermissionKind } from '../lib/permissions'
@@ -263,8 +263,8 @@ export function WebviewPanel() {
         const wantsUrlFocus = isActiveNow && consumeNewTabUrlFocus(tab.id)
         if (wantsUrlFocus) focusUrlBarForNewTab = true
         window.electronAPI.setupSession?.(tab.partition)
-        // A panel in vim mode keeps the keyboard too (lib/vim-nav.ts).
-        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad, wantsUrlFocus || isVimNavActive())
+        // Vim's COMMAND mode keeps the keyboard too (lib/vim-mode.ts).
+        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad, wantsUrlFocus || isCommandMode())
         createdTabsRef.current.add(tab.id)
         if (isActiveNow) activatedTabsRef.current.add(tab.id)
       }
@@ -279,8 +279,9 @@ export function WebviewPanel() {
     } else if (activeTabId && createdTabsRef.current.has(activeTabId)) {
       const tab = currentTabs.find((t) => t.id === activeTabId)
       const url = tab?.url || 'about:blank'
-      // In vim mode j/k switch tabs live while the panel keeps the keyboard.
-      window.electronAPI.tabActivate?.(activeTabId, url, !isVimNavActive())
+      // In Vim's COMMAND mode j/k switch tabs live while the chrome keeps
+      // the keyboard.
+      window.electronAPI.tabActivate?.(activeTabId, url, !isCommandMode())
       activatedTabsRef.current.add(activeTabId)
       // Focus the URL bar immediately for a brand-new "focus URL" tab,
       // rather than waiting for did-finish-load. Because we asked main to

@@ -7,7 +7,8 @@ import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
 import { ChevronRight, ChevronDown, Plus, X } from 'lucide-react'
 import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
-import { useVimNav, type VimCommand } from '../lib/vim-nav'
+import { useVimPanel } from '../lib/vim-mode'
+import type { PanelCommand } from '../lib/vim-keymap'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
@@ -107,13 +108,14 @@ interface Props {
    *  the CmdOrCtrl+N quick-jump. Visible state is owned by App.tsx because
    *  it lives in the settings store. */
   showTabNumbers: boolean
-  /** Vim mode: a block cursor on the active row, driven by hjkl & co. */
+  /** Vim's COMMAND mode with the cursor in this panel: a block cursor on
+   *  the active row, driven by the keymap's cursor commands. */
   vimActive: boolean
-  /** Leave vim mode; `focusPage` hands the keyboard back to the page. */
-  onVimExit: (focusPage: boolean) => void
+  /** Switch to INSERT mode: hand the keyboard to the active tab's page. */
+  onVimInsert: () => void
 }
 
-export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props) {
+export function Sidebar({ visible, showTabNumbers, vimActive, onVimInsert }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -477,11 +479,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props
   const vimCursorId = vimCursorOverride !== null && visibleRowIds.includes(vimCursorOverride)
     ? vimCursorOverride
     : activeRowId
-  const { runMenu } = useVimNav(
-    visible && vimActive,
-    (cmd) => handleVimCommand(cmd),
-    () => onVimExit(false),
-  )
+  const { runMenu } = useVimPanel('sidebar', visible && vimActive, (cmd) => handleVimCommand(cmd))
   const findVimRow = (id: string): Element | null =>
     sidebarRef.current?.querySelector(`[data-vim-row="${CSS.escape(id)}"]`) ?? null
   useEffect(() => {
@@ -596,7 +594,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props
     setSelectedIds(new Set(duplicateItems(ids)))
   }
 
-  /** Opens a sidebar menu. One opened from vim mode (m) takes the keyboard:
+  /** Opens a sidebar menu. One opened from COMMAND mode (m) takes the keyboard:
    *  its first action starts highlighted and hjkl move around it. */
   const showMenu = (spec: Omit<DropdownSpec, 'openerId'>, keyboard: boolean) =>
     keyboard
@@ -823,7 +821,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props
     return ordered.length > 0 ? ordered : ids
   }
 
-  const handleVimCommand = (cmd: VimCommand): void => {
+  const handleVimCommand = (cmd: PanelCommand): void => {
     if (!workspace) return
     const groupById = (id: string | null) => (id ? workspace.tabGroups.find((g) => g.id === id) : undefined)
     const at = vimCursorId ? visibleRowIds.indexOf(vimCursorId) : -1
@@ -867,13 +865,13 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props
       requestAnimationFrame(() => findVimRow(id)?.scrollIntoView({ block: 'nearest' }))
     }
     switch (cmd) {
-      case 'down': moveTo(at === -1 ? 0 : at + 1); break
-      case 'up': moveTo(at === -1 ? 0 : at - 1); break
-      case 'move-down': moveRow(1); break
-      case 'move-up': moveRow(-1); break
-      case 'top': moveTo(0); break
-      case 'bottom': moveTo(visibleRowIds.length - 1); break
-      case 'collapse': {
+      case 'cursor-down': moveTo(at === -1 ? 0 : at + 1); break
+      case 'cursor-up': moveTo(at === -1 ? 0 : at - 1); break
+      case 'row-move-down': moveRow(1); break
+      case 'row-move-up': moveRow(-1); break
+      case 'cursor-first': moveTo(0); break
+      case 'cursor-last': moveTo(visibleRowIds.length - 1); break
+      case 'row-collapse': {
         if (!vimCursorId) break
         // On a tab inside a group, h climbs to the group's header and folds it.
         const group = groupById(vimCursorId) ?? groupById(findTabGroup(vimCursorId))
@@ -882,19 +880,19 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props
         setVimCursorOverride(group.id)
         break
       }
-      case 'expand': {
+      case 'row-expand': {
         const group = groupById(vimCursorId)
         if (!group?.isCollapsed) break
         toggleTabGroupCollapse(group.id)
         setVimCursorOverride(group.id)
         break
       }
-      case 'close':
+      case 'row-close':
         if (!vimCursorId) break
         if (groupById(vimCursorId)) closeGroup(vimCursorId)
         else closeTab(vimCursorId)
         break
-      case 'menu': {
+      case 'row-menu': {
         if (!vimCursorId) break
         const row = findVimRow(vimCursorId)
         if (!row) break
@@ -905,10 +903,18 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimExit }: Props
         else void openTabMenu(vimCursorId, point, true)
         break
       }
-      case 'enter':
-      case 'escape':
-        onVimExit(true)
+      case 'row-open': {
+        // A tab is already open — the cursor switches tabs as it moves — so
+        // opening it means going into its page. A group header folds.
+        const group = groupById(vimCursorId)
+        if (group) {
+          toggleTabGroupCollapse(group.id)
+          setVimCursorOverride(group.id)
+        } else {
+          onVimInsert()
+        }
         break
+      }
     }
   }
 

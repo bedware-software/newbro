@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, Bell, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil, Copy, Check, Eye, EyeOff, ChevronDown, ChevronRight, UserRound } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo, PasswordEntryInfo, PasswordImportResult, EdgePasswordSourceInfo, EdgePasswordImportResult } from '../App'
@@ -8,6 +8,7 @@ import { ExtensionPermissionList } from './ExtensionPermissionList'
 import { requestExtensionInstall } from '../lib/extension-install'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
 import { useAppStore } from '../store/app-store'
+import { DEFAULT_VIM_KEYMAP, parseVimKeymap } from '../lib/vim-keymap'
 import {
   PERMISSION_KINDS,
   PERMISSION_LABEL,
@@ -29,7 +30,9 @@ interface Settings {
   density: Density
   newTabFocus: 'site' | 'url'
   showTabNumbers: boolean
-  vimNavigation: boolean
+  vimMode: boolean
+  /** Null = the built-in default keymap. */
+  vimKeymap: string | null
   defaultPageUrl: string
   searchEngine: string
   searchSuggestions: boolean
@@ -132,6 +135,7 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'add-to-bookshelf': [],
   'toggle-bookshelf': ['CmdOrCtrl+Shift+B'],
   'open-downloads': ['CmdOrCtrl+J'],
+  'command-mode': [],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -190,6 +194,7 @@ const ACTION_LABELS: Record<string, string> = {
   'add-to-bookshelf': 'Add to Bookshelf',
   'toggle-bookshelf': 'Toggle Bookshelf',
   'open-downloads': 'Open Downloads',
+  'command-mode': 'Vim: Switch to COMMAND Mode',
 }
 
 interface Props {
@@ -472,7 +477,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [density, setDensity] = useState<Density>(DEFAULT_DENSITY)
   const [newTabFocus, setNewTabFocus] = useState<'site' | 'url'>('site')
   const [showTabNumbers, setShowTabNumbers] = useState(true)
-  const [vimNavigation, setVimNavigation] = useState(false)
+  const [vimMode, setVimMode] = useState(false)
+  const [vimKeymapText, setVimKeymapText] = useState(DEFAULT_VIM_KEYMAP)
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
   const [searchSuggestions, setSearchSuggestions] = useState(true)
@@ -818,7 +824,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setDensity(dens)
       setNewTabFocus(settings.newTabFocus === 'url' ? 'url' : 'site')
       setShowTabNumbers(settings.showTabNumbers !== false)
-      setVimNavigation(settings.vimNavigation === true)
+      setVimMode(settings.vimMode === true)
+      setVimKeymapText(settings.vimKeymap ?? DEFAULT_VIM_KEYMAP)
       originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens }
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
@@ -1130,6 +1137,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     setPasswordNotice('All saved passwords were removed from this profile.')
   }, [passwordPartition])
 
+  const vimKeymapErrors = useMemo(
+    () => (vimMode ? parseVimKeymap(vimKeymapText).errors : []),
+    [vimMode, vimKeymapText],
+  )
+
   const filteredShortcutActions = Object.keys(ACTION_LABELS).filter((action) => {
     const query = shortcutFilter.trim().toLowerCase()
     if (!query) return true
@@ -1292,7 +1304,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       density,
       newTabFocus,
       showTabNumbers,
-      vimNavigation,
+      vimMode,
+      // Left at the default it stays null, so later default bindings reach it.
+      vimKeymap: vimKeymapText === DEFAULT_VIM_KEYMAP ? null : vimKeymapText,
       defaultPageUrl: defaultUrl,
       searchEngine,
       searchSuggestions,
@@ -2797,23 +2811,79 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
           {activeTab === 'shortcuts' && (
             <div>
-              <label className="flex items-start justify-between gap-4 mb-4 px-4 py-3 border border-input rounded-md bg-card cursor-pointer">
-                <span>
-                  <span className="block text-sm text-foreground">Vim navigation in Sidebar and Bookshelf</span>
-                  <span className="block text-[11px] text-muted-foreground mt-0.5">
-                    Pressing Toggle Sidebar or Toggle Bookshelf again while the panel is open enters vim mode; a third press closes it.
-                    In vim mode: j/k move, Shift+J/K move the tab, group or reading itself down/up, h/l collapse/expand groups, gg/G jump to first/last, m opens the context menu (j/k, h/l for colors, Enter),
-                    x closes, Enter/Esc leave.
-                  </span>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={vimNavigation}
-                  onChange={(event) => setVimNavigation(event.target.checked)}
-                  className="h-4 w-4 mt-0.5 accent-primary shrink-0"
-                />
-              </label>
+              <div className="mb-8">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-lg font-semibold text-foreground">Vim Mode</h3>
+                    <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                      Windows switch between COMMAND mode, where plain keys run the commands below, and
+                      INSERT mode, where keys go to the page or the field you're typing in. Esc on a page
+                      that doesn't use it, or a click on the browser chrome, switches to COMMAND; i, a click
+                      on the page or on a text field switches to INSERT. The current mode shows next to the
+                      workspace picker.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={vimMode}
+                    aria-label="Vim Mode"
+                    onClick={() => setVimMode((on) => !on)}
+                    className={`relative mt-1 inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors ${
+                      vimMode ? 'bg-primary' : 'bg-muted-foreground/30'
+                    }`}
+                  >
+                    <span
+                      className={`h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
+                        vimMode ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
 
+                {vimMode && (
+                  <div className="mt-4">
+                    <div className="flex items-center justify-between gap-4 mb-2">
+                      <p className="text-sm text-muted-foreground">
+                        COMMAND-mode keys: one <code className="font-mono text-xs">command keys…</code> per line.
+                        App commands use the same ids as the shortcuts below.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setVimKeymapText(DEFAULT_VIM_KEYMAP)}
+                        disabled={vimKeymapText === DEFAULT_VIM_KEYMAP}
+                        className="shrink-0 flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:pointer-events-none"
+                      >
+                        <RotateCcw size={12} />
+                        Reset to Defaults
+                      </button>
+                    </div>
+                    <textarea
+                      value={vimKeymapText}
+                      onChange={(event) => setVimKeymapText(event.target.value)}
+                      // Recording captures every keydown on the host window,
+                      // so typing here would be swallowed — stop recording.
+                      onFocus={() => setRecordingTarget(null)}
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      wrap="off"
+                      rows={24}
+                      className="w-full px-3 py-2 rounded-md bg-secondary border border-input font-mono text-xs leading-relaxed text-foreground outline-none resize-y focus:border-ring focus:bg-background"
+                    />
+                    {vimKeymapErrors.length > 0 && (
+                      <div className="mt-2 px-3 py-2 rounded-md border border-destructive/40 bg-destructive/10 text-xs text-destructive space-y-0.5">
+                        <div className="font-medium">These lines are ignored:</div>
+                        {vimKeymapErrors.map((error) => (
+                          <div key={error} className="font-mono">{error}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <h3 className="text-sm font-semibold text-foreground mb-1">Shortcuts</h3>
               <div className="flex items-center justify-between gap-4 mb-4">
                 <p className="text-sm text-muted-foreground">
                   Click on a shortcut to reassign it. Each command supports up

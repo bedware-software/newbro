@@ -3,7 +3,8 @@ import { useAppStore } from '../store/app-store'
 import { TabFavicon } from './TabFavicon'
 import { InlineRenameInput } from './InlineRenameInput'
 import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
-import { useVimNav, type VimCommand } from '../lib/vim-nav'
+import { useVimPanel } from '../lib/vim-mode'
+import type { PanelCommand } from '../lib/vim-keymap'
 import { MoveBookshelfDialog, type BookshelfMoveTarget } from './MoveBookshelfDialog'
 import {
   BookOpen, ChevronRight, ChevronDown, Download, Loader2, WifiOff,
@@ -96,10 +97,11 @@ interface Props {
   /** The profile this window belongs to — its shelf is the one we show. */
   profileId: string | null
   onClose: () => void
-  /** Vim mode: a block cursor on one row, driven by hjkl & co. */
+  /** Vim's COMMAND mode with the cursor in this panel: a block cursor on
+   *  one row, driven by the keymap's cursor commands. */
   vimActive: boolean
-  /** Leave vim mode; `focusPage` hands the keyboard back to the page. */
-  onVimExit: (focusPage: boolean) => void
+  /** Switch to INSERT mode: hand the keyboard to the active tab's page. */
+  onVimInsert: () => void
 }
 
 const MIN_WIDTH = 180
@@ -113,7 +115,7 @@ function loadWidth(): number {
   return Number.isFinite(parsed) ? Math.max(MIN_WIDTH, parsed) : DEFAULT_WIDTH
 }
 
-export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Props) {
+export function Bookshelf({ open, profileId, onClose, vimActive, onVimInsert }: Props) {
   const [readings, setReadings] = useState<Reading[]>([])
   const [groups, setGroups] = useState<ReadingGroup[]>([])
   const [archiveCollapsed, setArchiveCollapsed] = useState(true)
@@ -347,11 +349,7 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
   }
   const vimRows = listVimRows()
   const vimCursor = vimRows.find((row) => row.id === vimCursorId) ?? vimRows[0] ?? null
-  const { runMenu } = useVimNav(
-    open && vimActive,
-    (cmd) => handleVimCommand(cmd),
-    () => onVimExit(false),
-  )
+  const { runMenu } = useVimPanel('bookshelf', open && vimActive, (cmd) => handleVimCommand(cmd))
   const findVimRow = (id: string): Element | null =>
     listRef.current?.querySelector(`[data-vim-row="${CSS.escape(id)}"]`) ?? null
   // Also on shelf changes, so a row J/K carried out of view is followed.
@@ -360,7 +358,7 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
     findVimRow(vimCursor.id)?.scrollIntoView({ block: 'nearest' })
   }, [open, vimActive, vimCursor?.id, readings, groups])
 
-  /** Opens a shelf menu. One opened from vim mode (m) takes the keyboard:
+  /** Opens a shelf menu. One opened from COMMAND mode (m) takes the keyboard:
    *  its first action starts highlighted and hjkl move around it. */
   const showMenu = useCallback((spec: Omit<DropdownSpec, 'openerId'>, keyboard: boolean) =>
     keyboard
@@ -471,7 +469,7 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
     }
   }, [profileId, selectedIds, showMenu, openReading, saveOffline, duplicate, setStatus, remove, groupReadings])
 
-  const handleVimCommand = (cmd: VimCommand): void => {
+  const handleVimCommand = (cmd: PanelCommand): void => {
     const at = vimCursor ? vimRows.indexOf(vimCursor) : -1
     const moveTo = (index: number): void => {
       const row = vimRows[Math.max(0, Math.min(vimRows.length - 1, index))]
@@ -525,13 +523,13 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
       window.electronAPI.bookshelfPlaceReadings?.(profileId, [r.id], placeTarget(target), beforeId).then(applyShelf)
     }
     switch (cmd) {
-      case 'down': moveTo(at + 1); break
-      case 'up': moveTo(at - 1); break
-      case 'move-down': moveRow(1); break
-      case 'move-up': moveRow(-1); break
-      case 'top': moveTo(0); break
-      case 'bottom': moveTo(vimRows.length - 1); break
-      case 'collapse': {
+      case 'cursor-down': moveTo(at + 1); break
+      case 'cursor-up': moveTo(at - 1); break
+      case 'row-move-down': moveRow(1); break
+      case 'row-move-up': moveRow(-1); break
+      case 'cursor-first': moveTo(0); break
+      case 'cursor-last': moveTo(vimRows.length - 1); break
+      case 'row-collapse': {
         if (!vimCursor) break
         // On a reading inside a group (or the archive), h climbs to the header and folds it.
         const header = vimCursor.kind === 'reading' ? headerOf(vimCursor.reading) : vimCursor
@@ -540,10 +538,10 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
         setVimCursorId(header.id)
         break
       }
-      case 'expand':
+      case 'row-expand':
         if (vimCursor && vimCursor.kind !== 'reading') setHeaderCollapsed(vimCursor, false)
         break
-      case 'close':
+      case 'row-close':
         if (!vimCursor) break
         if (vimCursor.kind === 'reading') {
           // The cursor takes the next row, as vim's x leaves it on what follows.
@@ -555,7 +553,7 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
           ungroup(vimCursor.id)
         }
         break
-      case 'menu': {
+      case 'row-menu': {
         if (!vimCursor || vimCursor.kind === 'archive') break
         const row = findVimRow(vimCursor.id)
         if (!row) break
@@ -566,19 +564,17 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimExit }: Pr
         else void openReadingMenu(vimCursor.reading, point, true)
         break
       }
-      case 'enter':
+      case 'row-open':
         if (!vimCursor) break
         if (vimCursor.kind === 'reading') {
-          // Leave vim mode first so the new tab takes the keyboard.
-          onVimExit(false)
+          // Into the new tab's page: it's the active tab by now, and with
+          // INSERT set before it's created, it takes the keyboard.
           openReading(vimCursor.reading, false)
+          onVimInsert()
         } else {
           // Same as clicking a header: fold or unfold it.
           setHeaderCollapsed(vimCursor, vimCursor.kind === 'group' ? !vimCursor.group.isCollapsed : !archiveCollapsed)
         }
-        break
-      case 'escape':
-        onVimExit(true)
         break
     }
   }

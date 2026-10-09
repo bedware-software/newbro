@@ -635,6 +635,29 @@ if (STEALTH_ENABLED) {
   }
 }
 
+// ── Unhandled Esc → host (Vim mode) ───────────────────────────────────────
+// Vim mode goes from INSERT back to COMMAND on Esc — but only an Esc the page
+// had no use for. One a site or Vimium acted on (closing a dialog, leaving a
+// field) is marked with preventDefault, and stays the page's. We listen in
+// the capture phase, before any page handler can stop the event — site
+// hotkey libraries stopPropagation() every key they see, used or not (habr)
+// — and read defaultPrevented once dispatch is over. The renderer ignores
+// the message unless Vim mode is on.
+if (STEALTH_ENABLED) {
+  try {
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || e.repeat || e.isComposing) return
+      if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return
+      setTimeout(() => {
+        if (!e.defaultPrevented) ipcRenderer.send('newbro-unhandled-escape')
+      }, 0)
+    }, true)
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.log('[newbro-stealth] escape relay wiring failed:', err)
+  }
+}
+
 // ── Middle-click on <a> → open in new tab ─────────────────────────────────
 // Chromium's native middle-click-opens-link behaviour fires `window.open()`,
 // which main's setWindowOpenHandler already redirects to the renderer as a

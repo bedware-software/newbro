@@ -17,6 +17,8 @@ import {
   RefreshCw, ArrowDown,
 } from 'lucide-react'
 import type { DownloadEntry } from '../App'
+import type { VimMode } from '../lib/vim-mode'
+import { VimModeBadge } from './VimModeBadge'
 import { DOWNLOADS_URL, internalPageOf } from '../lib/internal-pages'
 import { requestExtensionInstall } from '../lib/extension-install'
 
@@ -51,6 +53,11 @@ interface Props {
   /** Active tab's page is in HTML fullscreen (video playback) — the bar
    *  stays visible but re-themes to pure black via [data-cinema]. */
   pageFullscreen?: boolean
+  /** Vim mode's current mode, shown after the workspace picker; null while
+   *  Vim mode is off. */
+  vimMode?: VimMode | null
+  /** Unfinished key sequence typed in COMMAND mode. */
+  vimPending?: string
   onToggleSidebar: () => void
   onOpenSettings: () => void
   onOpenAbout: () => void
@@ -757,7 +764,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   )
 }
 
-export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions }: Props) {
+export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vimMode, vimPending, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions }: Props) {
   const isMac = navigator.platform.includes('Mac')
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
@@ -1340,6 +1347,13 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, onT
         />
 
         <div className="w-px h-5 bg-border shrink-0" />
+
+        {vimMode && (
+          <>
+            <VimModeBadge mode={vimMode} pending={vimPending} />
+            <div className="w-px h-5 bg-border shrink-0" />
+          </>
+        )}
 
         {/* Downloads — opens the Downloads page (newbro://downloads) in a tab,
             or switches to it. The badge has three resting states: a blue

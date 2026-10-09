@@ -16,11 +16,15 @@ export interface Settings {
    *  CmdOrCtrl+N quick-jump shortcut. Always-visible (not hover-gated)
    *  because their job is to advertise the shortcut at a glance. */
   showTabNumbers: boolean
-  /** Vim-style keyboard navigation for the Sidebar and Bookshelf. When on, a
-   *  panel's toggle hotkey cycles open → vim mode → closed (instead of
-   *  open → closed); vim mode puts a block cursor on a row driven by
-   *  j/k/h/l, gg/G, m (context menu), x, Enter and Esc. */
-  vimNavigation: boolean
+  /** Vim mode: windows switch between COMMAND mode, where plain keys run
+   *  the commands in {@link vimKeymap}, and INSERT mode, where keys go to
+   *  the page or the field being typed in (renderer lib/vim-mode.ts). */
+  vimMode: boolean
+  /** COMMAND-mode keymap as the user wrote it in Settings — plain text, one
+   *  `<command> <keys>` binding per line, parsed by the renderer
+   *  (lib/vim-keymap.ts). Null means the built-in default, so users who never
+   *  edited it pick up new default bindings. */
+  vimKeymap: string | null
   defaultPageUrl: string
   searchEngine: string
   /** Fetch search suggestions from the default engine while typing in the
@@ -77,6 +81,21 @@ const KNOWN_NEW_TAB_FOCUS = new Set(['site', 'url'])
 const KNOWN_DOH_MODES = new Set(['off', 'automatic', 'secure'])
 const KNOWN_PASSWORD_AUTOFILL = new Set(['automatic', 'on-focus', 'off'])
 const KNOWN_PERMISSION_POLICIES = new Set<PermissionPolicy>(['ask', 'allow', 'block'])
+// Generous cap on the Vim keymap text; the default is ~3 KB.
+const MAX_VIM_KEYMAP_LENGTH = 64 * 1024
+
+function normalizeVimKeymap(raw: unknown): string | null {
+  return typeof raw === 'string' ? raw.slice(0, MAX_VIM_KEYMAP_LENGTH) : null
+}
+
+/** Settings keys that are no longer used — dropped on load and save so they
+ *  don't linger in the store (and in Cloud Sync) forever. */
+function withoutRetiredKeys<T extends object>(settings: T): T {
+  const copy = { ...settings } as Record<string, unknown>
+  // Superseded by vimMode: panel-only vim navigation.
+  delete copy.vimNavigation
+  return copy as T
+}
 
 function buildDefaultPermissionDefaults(): Record<PermissionKind, PermissionPolicy> {
   const out = {} as Record<PermissionKind, PermissionPolicy>
@@ -173,6 +192,10 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   // newbro://downloads tab. New keys fall back to their default on existing
   // installs through the loadSettings merge, so no seeding migration.
   'open-downloads': ['CmdOrCtrl+J'],
+  // Vim mode: back to COMMAND mode from anywhere, including a page that keeps
+  // Esc to itself. Unbound by default — Esc on a page that doesn't use it
+  // already switches.
+  'command-mode': [],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -190,7 +213,8 @@ export const DEFAULT_SETTINGS: Settings = {
   density: 'normal',
   newTabFocus: 'site',
   showTabNumbers: true,
-  vimNavigation: false,
+  vimMode: false,
+  vimKeymap: null,
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
   searchSuggestions: true,
@@ -386,7 +410,7 @@ export function loadSettings(): Settings {
   // Merge with defaults so new keys are always present
   return {
     ...DEFAULT_SETTINGS,
-    ...saved,
+    ...withoutRetiredKeys(saved ?? DEFAULT_SETTINGS),
     lightVariant: KNOWN_LIGHT_VARIANTS.has(saved?.lightVariant as string)
       ? (saved!.lightVariant as string)
       : DEFAULT_SETTINGS.lightVariant,
@@ -399,7 +423,8 @@ export function loadSettings(): Settings {
     newTabFocus: KNOWN_NEW_TAB_FOCUS.has(saved?.newTabFocus as string)
       ? (saved!.newTabFocus as 'site' | 'url')
       : DEFAULT_SETTINGS.newTabFocus,
-    vimNavigation: saved?.vimNavigation === true,
+    vimMode: saved?.vimMode === true,
+    vimKeymap: normalizeVimKeymap(saved?.vimKeymap),
     searchSuggestions: saved?.searchSuggestions !== false,
     dohMode: KNOWN_DOH_MODES.has(saved?.dohMode as string)
       ? (saved!.dohMode as 'off' | 'automatic' | 'secure')
@@ -429,7 +454,7 @@ export function loadSettings(): Settings {
 export function saveSettings(settings: Settings): void {
   const normalizedSettings: Settings = {
     ...DEFAULT_SETTINGS,
-    ...settings,
+    ...withoutRetiredKeys(settings),
     lightVariant: KNOWN_LIGHT_VARIANTS.has(settings.lightVariant)
       ? settings.lightVariant
       : DEFAULT_SETTINGS.lightVariant,
@@ -442,7 +467,8 @@ export function saveSettings(settings: Settings): void {
     newTabFocus: KNOWN_NEW_TAB_FOCUS.has(settings.newTabFocus)
       ? settings.newTabFocus
       : DEFAULT_SETTINGS.newTabFocus,
-    vimNavigation: settings.vimNavigation === true,
+    vimMode: settings.vimMode === true,
+    vimKeymap: normalizeVimKeymap(settings.vimKeymap),
     searchSuggestions: settings.searchSuggestions !== false,
     dohMode: KNOWN_DOH_MODES.has(settings.dohMode as string)
       ? settings.dohMode
