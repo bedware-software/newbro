@@ -16,8 +16,9 @@ interface Props {
 
 const SECTIONS: Array<{ context: VimContext; title: string; mode: VimMode | null; note: string }> = [
   { context: 'command', title: 'COMMAND', mode: 'command', note: 'The browser: tabs, panels, app commands.' },
-  { context: 'web', title: 'WEB', mode: 'web', note: 'The page. Keys not listed here reach the page.' },
-  { context: 'search', title: 'Search Everything', mode: null, note: 'The search window, before i drops into the search box.' },
+  { context: 'browse', title: 'BROWSE', mode: 'browse', note: 'The page. Keys not listed here reach the page.' },
+  { context: 'search', title: 'Search Everything · Command Palette', mode: null, note: 'Their COMMAND mode, out of the box (Esc); i types again.' },
+  { context: 'find', title: 'Find in Page', mode: null, note: 'Its COMMAND mode, out of the box (Esc); i types again.' },
 ]
 
 interface Row {
@@ -58,7 +59,7 @@ export function VimHelpDialog({ open, keymap, fromMode, onClose }: Props) {
 
   if (!open) return null
 
-  const maps: Record<VimContext, ParsedVimKeymap['main']> = { command: keymap.main, web: keymap.web, search: keymap.search }
+  const maps: Record<VimContext, ParsedVimKeymap['main']> = { command: keymap.main, browse: keymap.browse, search: keymap.search, find: keymap.find }
   const commands = vimCommandsInOrder()
   const ordered = [...SECTIONS].sort((a, b) => Number(b.mode === fromMode) - Number(a.mode === fromMode))
   const sections = ordered.map((section) => {
@@ -130,7 +131,7 @@ export function VimHelpDialog({ open, keymap, fromMode, onClose }: Props) {
           data-detached-drag-handle
           className="h-10 px-4 flex items-center justify-between border-t border-border bg-toolbar text-[11px] font-medium text-muted-foreground shrink-0"
         >
-          <span>Esc climbs INSERT → WEB → COMMAND · Ctrl+[ jumps to COMMAND · edit in Settings → Keyboard Shortcuts</span>
+          <span>Esc climbs INSERT → BROWSE → COMMAND · Ctrl+[ jumps to COMMAND · edit in Settings → Keyboard Shortcuts</span>
           <span className="flex items-center gap-1 shrink-0">{query ? 'Clear' : 'Close'} <kbd>Esc</kbd></span>
         </div>
       </div>

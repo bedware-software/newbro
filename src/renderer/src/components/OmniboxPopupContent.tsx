@@ -73,7 +73,9 @@ export function OmniboxPopupContent({
   return (
     <div
       ref={listRef}
-      className="max-h-[calc(100vh-24px)] overflow-y-auto rounded-lg border border-border bg-popover py-1 text-popover-foreground shadow-xl"
+      // No padding: the first row starts right at the top edge. The shadow
+      // stays inside the window's transparent margin (omnibox.html).
+      className="max-h-[calc(100vh-32px)] overflow-y-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-[0_8px_16px_-4px_rgb(0_0_0/0.35),0_2px_6px_-2px_rgb(0_0_0/0.25)]"
       role="listbox"
     >
       {spec.rows.map((row, index) => {

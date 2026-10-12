@@ -16,6 +16,7 @@ import type { DownloadEntry } from '../App'
 import { useAppStore } from '../store/app-store'
 import { isCommandMode } from '../lib/vim-mode'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
+import { Hint, HintBar, KeyCap } from './KeyHints'
 
 type SortKey = 'date' | 'size' | 'name'
 type SortDir = 'asc' | 'desc'
@@ -584,19 +585,19 @@ export function DownloadsPage() {
       aria-label="Downloads"
     >
       {/* Hint bar: the common keys, or a short confirmation after an action. */}
-      <div className="flex h-10 shrink-0 items-center justify-center gap-3 border-b border-border bg-toolbar px-4 text-[11px] font-medium text-muted-foreground">
+      <HintBar>
         {flash ? (
           <span className="text-foreground">{flash}</span>
         ) : (
           <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
-            <span className="flex items-center gap-1">Navigate <kbd>j</kbd><kbd>k</kbd></span>
-            <span className="flex items-center gap-1">Open <kbd>Enter</kbd></span>
-            <span className="flex items-center gap-1">Folder <kbd>f</kbd></span>
-            <span className="flex items-center gap-1">Copy link <kbd>c</kbd></span>
-            <span className="flex items-center gap-1">Remove <kbd>x</kbd></span>
-            <span className="flex items-center gap-1">Sort <kbd>s</kbd></span>
-            <span className="flex items-center gap-1">Search <kbd>/</kbd></span>
-            <span className="flex items-center gap-1">Actions <kbd>m</kbd></span>
+            <Hint label="Navigate" keys={['j', 'k']} />
+            <Hint label="Open" keys={['Enter']} />
+            <Hint label="Folder" keys={['f']} />
+            <Hint label="Copy link" keys={['c']} />
+            <Hint label="Remove" keys={['x']} />
+            <Hint label="Sort" keys={['s']} />
+            <Hint label="Search" keys={['/']} />
+            <Hint label="Actions" keys={['m']} />
           </div>
         )}
         <button
@@ -608,7 +609,7 @@ export function DownloadsPage() {
           <Keyboard size={13} />
           <kbd>?</kbd>
         </button>
-      </div>
+      </HintBar>
 
       {/* Header: title + global actions, then search and sort. */}
       <div className="shrink-0 border-b border-border">
@@ -624,7 +625,7 @@ export function DownloadsPage() {
             >
               <FolderOpen size={14} />
               Open folder
-              <kbd>o</kbd>
+              <KeyCap>o</KeyCap>
             </button>
             <button
               onClick={clearFinished}
@@ -634,7 +635,7 @@ export function DownloadsPage() {
             >
               <Trash2 size={14} />
               Clear all
-              <kbd>l</kbd>
+              <KeyCap>l</KeyCap>
             </button>
           </div>
         </div>
@@ -661,11 +662,13 @@ export function DownloadsPage() {
                 <X size={13} />
               </button>
             ) : (
-              <kbd className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2">/</kbd>
+              <span className="pointer-events-none absolute right-2.5 top-1/2 flex -translate-y-1/2">
+                <KeyCap onField>/</KeyCap>
+              </span>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">Sort by <kbd>s</kbd></span>
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">Sort by <KeyCap>s</KeyCap></span>
             <div className="flex h-9 items-center rounded-md bg-secondary p-0.5" role="radiogroup" aria-label="Sort downloads">
               {SORT_KEYS.map((key) => {
                 const active = sort.key === key

@@ -54,8 +54,8 @@ interface Props {
   /** Active tab's page is in HTML fullscreen (video playback) — the bar
    *  stays visible but re-themes to pure black via [data-cinema]. */
   pageFullscreen?: boolean
-  /** Vim mode's current mode, shown after the workspace picker; null while
-   *  Vim mode is off. */
+  /** Vim mode's current mode, shown in the address bar; null while Vim
+   *  mode is off. */
   vimMode?: VimMode | null
   /** Unfinished key sequence typed in COMMAND mode. */
   vimPending?: string
@@ -1351,13 +1351,6 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
 
         <div className="w-px h-5 bg-border shrink-0" />
 
-        {vimMode && (
-          <>
-            <VimModeBadge mode={vimMode} pending={vimPending} size="md" />
-            <div className="w-px h-5 bg-border shrink-0" />
-          </>
-        )}
-
         {/* Downloads — opens the Downloads page (newbro://downloads) in a tab,
             or switches to it. The badge has three resting states: a blue
             count while downloads are in flight, a green ✓ once they finish
@@ -1472,6 +1465,15 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
             </button>
             <div className="w-px h-full ml-1.5 bg-card" />
           </>)}
+          {/* Vim's mode, a segment of the bar between the padlock and the
+              address, a hairline on either side. With no padlock (an
+              internal page) it starts the bar and takes its left corners. */}
+          {vimMode && (
+            <>
+              <VimModeBadge mode={vimMode} pending={vimPending} size="bar" className={security === 'internal' ? 'rounded-l-md' : ''} />
+              <div className="w-px h-full bg-card shrink-0" />
+            </>
+          )}
           <Omnibox tabId={activeTabId} tabUrl={activeTab?.url || ''} anchorRef={urlBarRef} />
         </div>
 

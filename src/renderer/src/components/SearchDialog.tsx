@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useAppStore, saveStateNow } from '../store/app-store'
 import { log } from '../lib/log'
 import { fuzzyFilter } from '../lib/fuzzy'
-import { Search, User, Layout, Layers, Globe, ArrowUpDown, CornerDownLeft, Asterisk } from 'lucide-react'
+import { Search, User, Layout, Layers, Globe, Asterisk } from 'lucide-react'
 import type { SearchableItem } from '../store/types'
 import { DetachedWindow } from './DetachedWindow'
 import { TabFavicon } from './TabFavicon'
@@ -10,8 +10,9 @@ import { CommentChip } from './CommentChip'
 import { GroupPill } from './GroupPill'
 import { ScopeSwitch } from './ScopeSwitch'
 import { VimModeBadge } from './VimModeBadge'
-import { useKeySequence, type VimMode } from '../lib/vim-mode'
-import { keysFor, type VimKeymap } from '../lib/vim-keymap'
+import { Hint, HintBar, vimKeyCaps } from './KeyHints'
+import { usePopupVimMode, type VimMode } from '../lib/vim-mode'
+import { displayKeySequence, keysFor, type VimKeymap } from '../lib/vim-keymap'
 
 interface Props {
   open: boolean
@@ -20,8 +21,6 @@ interface Props {
   /** Vim mode's keymap for this window; null while Vim mode is off. */
   vimKeymap: VimKeymap | null
 }
-
-const NO_KEYMAP: VimKeymap = new Map()
 
 /** Search commands from the Vim keymap → the filter they pick. */
 const VIM_FILTER_COMMANDS: Record<string, FilterSelection> = {
@@ -131,13 +130,12 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
   const [scope, setScope] = useState<SearchScope>(loadScope)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  // Vim mode: the window opens in COMMAND mode, where plain keys pick
-  // filters and rows; INSERT is typing in the search box. Follows the box's
-  // focus. Null while Vim mode is off.
-  const [vimMode, setVimMode] = useState<VimMode | null>(null)
-  const vimModeRef = useRef<VimMode | null>(null)
-  vimModeRef.current = vimMode
   const [popupWindow, setPopupWindow] = useState<Window | null>(null)
+  // Vim mode (null while off): the window opens in COMMAND mode, where plain
+  // keys pick filters and rows; INSERT is typing in the search box. Follows
+  // the box's focus. Set up further down, once its commands exist; the
+  // handlers above only need to know which mode it's in.
+  const vimModeRef = useRef<VimMode | null>(null)
 
   const getAllSearchableItems = useAppStore((s) => s.getAllSearchableItems)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
@@ -216,7 +214,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
     if (open) {
       setQuery('')
       setSelectedIndex(0)
-      setVimMode(vimKeymap ? 'command' : null)
       if (!vimKeymap) setTimeout(() => inputRef.current?.focus(), 50)
     }
     // Only on opening: the mode is the user's from then on.
@@ -411,29 +408,21 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
       case 'row-open': if (flatResults[selectedIndex]) handleSelect(flatResults[selectedIndex]); break
     }
   }
-  const vimKeys = useKeySequence(vimKeymap ?? NO_KEYMAP, runVimCommand)
-  const { feed: feedVimKey, reset: resetVimKeys } = vimKeys
+  const vim = usePopupVimMode({
+    keymap: vimKeymap,
+    popup: popupWindow,
+    box: inputRef,
+    initial: 'command',
+    open,
+    onCommand: runVimCommand,
+    onEscape: () => onOpenChange(false),
+  })
+  vimModeRef.current = vim.mode
+  const vimMode = vim.mode
 
-  // The box isn't focused in COMMAND mode, so keys land on the popup's body
-  // — outside React's tree — and are read off its window.
-  useEffect(() => {
-    if (!popupWindow || !vimMode) return
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (vimModeRef.current !== 'command' || e.target === inputRef.current) return
-      if (handleFilterChord(e)) return
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      e.preventDefault()
-      e.stopPropagation()
-      if (feedVimKey(e)) return
-      if (e.key === 'Escape') onOpenChange(false)
-    }
-    popupWindow.addEventListener('keydown', onKeyDown, true)
-    return () => popupWindow.removeEventListener('keydown', onKeyDown, true)
-  }, [popupWindow, vimMode, feedVimKey, handleFilterChord, onOpenChange])
-
-  /** How a command is bound, for hints: "a", "j/k". */
+  /** How a command is bound, for the filter chips: "a", "j/k". */
   const vimHint = (...commands: string[]): string =>
-    vimKeymap ? commands.map((c) => keysFor(vimKeymap, c)[0]).filter(Boolean).join('/') : ''
+    vimKeymap ? commands.map((c) => keysFor(vimKeymap, c)[0]).filter(Boolean).map(displayKeySequence).join('/') : ''
 
   if (!open) return null
 
@@ -453,6 +442,38 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
       onWindowChange={setPopupWindow}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
+        {/* Keys first, above the box — the Downloads page's hint bar. */}
+        <div data-detached-drag-handle>
+          <HintBar>
+            {vimMode === 'command' ? (
+              <>
+                <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
+                <Hint label="Open" keys={vimKeyCaps(vimKeymap, 'row-open')} />
+                <Hint label="Open row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${VIM_NUMBERED_ROWS}`)[0] ?? '9'}`]} />
+                <Hint label="Filter" keys={vimKeyCaps(vimKeymap, 'search-all', 'search-profiles', 'search-workspaces', 'search-groups', 'search-tabs')} />
+                {scopeApplies && <Hint label="Scope" keys={vimKeyCaps(vimKeymap, 'search-scope')} />}
+                <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
+                <Hint label="Close" keys={['Esc']} />
+              </>
+            ) : (
+              <>
+                <Hint label="Navigate" keys={['↓', '↑']} />
+                <Hint label="Open" keys={['Enter']} />
+                {/* The filter chords are regular shortcuts — off in Vim mode,
+                    where COMMAND mode's letters pick filters instead. */}
+                {!vimMode && (
+                  <>
+                    <Hint label="Filter" keys={[isMac ? '⌘' : 'Ctrl', '1…4']} />
+                    <Hint label="or" keys={[isMac ? '⌘' : 'Ctrl', FILTER_TYPES.map((type) => FILTER_LETTERS[type]).join(' ')]} />
+                    <Hint label="All" keys={[isMac ? '⌘' : 'Ctrl', 'R']} />
+                  </>
+                )}
+                {scopeApplies && <Hint label="Scope" keys={['Tab']} />}
+                <Hint label={vimMode === 'insert' ? 'Command mode' : 'Close'} keys={['Esc']} />
+              </>
+            )}
+          </HintBar>
+        </div>
         <div
           data-detached-drag-handle
           className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0"
@@ -467,8 +488,8 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            onFocus={() => { if (vimModeRef.current) { resetVimKeys(); setVimMode('insert') } }}
-            onBlur={() => { if (vimModeRef.current) setVimMode('command') }}
+            onFocus={vim.onBoxFocus}
+            onBlur={vim.onBoxBlur}
             placeholder={vimMode === 'command' && vimHint('insert-mode')
               ? `Search everything... (${vimHint('insert-mode')} to type)`
               : 'Search everything...'}
@@ -476,7 +497,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
           />
           {/* At the end of the row, clear of the query: the box stops short
               of it rather than running under it. */}
-          {vimMode && <VimModeBadge mode={vimMode} pending={vimKeys.pending} />}
+          {vimMode && <VimModeBadge mode={vimMode} pending={vim.pending} />}
         </div>
 
         <div className="flex items-center gap-1 px-4 py-2 border-b border-border shrink-0">
@@ -635,44 +656,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
               )
             })
           )}
-        </div>
-
-        <div
-          data-detached-drag-handle
-          className="h-10 px-4 flex items-center justify-between border-t border-border bg-toolbar text-[11px] font-medium text-muted-foreground shrink-0"
-        >
-          {vimMode === 'command' ? (
-            <div className="flex items-center gap-3">
-              <span className="flex items-center gap-1">Navigate <kbd>{vimHint('cursor-down', 'cursor-up')}</kbd></span>
-              <span className="flex items-center gap-1">Open <kbd>{vimHint('row-open')}</kbd> <kbd>{vimHint('search-row-1')}…{vimHint(`search-row-${VIM_NUMBERED_ROWS}`)}</kbd></span>
-              <span className="flex items-center gap-1">
-                Filter <kbd>{vimHint('search-all', 'search-profiles', 'search-workspaces', 'search-groups', 'search-tabs')}</kbd>
-              </span>
-              {scopeApplies && <span className="flex items-center gap-1">Scope <kbd>{vimHint('search-scope')}</kbd></span>}
-              <span className="flex items-center gap-1">Type <kbd>{vimHint('insert-mode')}</kbd></span>
-            </div>
-          ) : (
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
-            <span className="flex items-center gap-1">Open <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
-            {/* The filter chords are regular shortcuts — off in Vim mode, where
-                COMMAND mode's letters pick filters instead. */}
-            {!vimMode && (
-              <>
-                <span className="flex items-center gap-1">
-                  Filter <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>1…4</kbd>
-                  {' / '}
-                  <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>{FILTER_TYPES.map((type) => FILTER_LETTERS[type]).join(' ')}</kbd>
-                </span>
-                <span className="flex items-center gap-1">All <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>R</kbd></span>
-              </>
-            )}
-            {scopeApplies && (
-              <span className="flex items-center gap-1">Scope <kbd>Tab</kbd></span>
-            )}
-          </div>
-          )}
-          <span className="flex items-center gap-1">{vimMode === 'insert' ? 'Command mode' : 'Close'} <kbd>Esc</kbd></span>
         </div>
       </div>
     </DetachedWindow>

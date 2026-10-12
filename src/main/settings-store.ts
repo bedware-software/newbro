@@ -1,4 +1,5 @@
 import Store from 'electron-store'
+import { migrateVimKeymapV1 } from '../shared/vim-default-keymap'
 import { PERMISSION_KINDS, type PermissionKind, type PermissionPolicy } from './permissions-store'
 
 export interface Settings {
@@ -17,8 +18,8 @@ export interface Settings {
    *  because their job is to advertise the shortcut at a glance. */
   showTabNumbers: boolean
   /** Vim mode: windows switch between COMMAND mode (plain keys run the
-   *  commands in {@link vimKeymap}), WEB mode (the page, driven by its
-   *  web-* keys) and INSERT mode (keys go to the page or the field being
+   *  commands in {@link vimKeymap}), BROWSE mode (the page, driven by its
+   *  browse-* keys) and INSERT mode (keys go to the page or the field being
    *  typed in) — renderer lib/vim-mode.ts. Turns the regular
    *  {@link keybindings} off, menu accelerators included. */
   vimMode: boolean
@@ -388,8 +389,30 @@ function migrateNewKeybindingDefaults(): void {
   raw.set('seededKeybindingDefaults', [...seeded])
 }
 
+/**
+ * Vim mode's keymap v2 (WEB mode became BROWSE, some COMMAND keys moved —
+ * see src/shared/vim-default-keymap.ts): a keymap saved under v1 keeps what
+ * its owner changed and takes the new defaults for everything else. Once.
+ */
+function migrateVimKeymap(): void {
+  const raw = store as unknown as { get(key: string): unknown; set(key: string, value: unknown): void }
+  const marker = 'vim-keymap-v2'
+  const migratedList = raw.get('migratedKeybindingDefaults')
+  const migrated = new Set(Array.isArray(migratedList) ? (migratedList as string[]) : [])
+  if (migrated.has(marker)) return
+
+  const saved = store.get('settings')
+  if (saved && typeof saved.vimKeymap === 'string') {
+    store.set('settings', { ...saved, vimKeymap: migrateVimKeymapV1(saved.vimKeymap) })
+  }
+
+  migrated.add(marker)
+  raw.set('migratedKeybindingDefaults', [...migrated])
+}
+
 migrateChangedKeybindingDefaults()
 migrateNewKeybindingDefaults()
+migrateVimKeymap()
 
 export function loadSettings(): Settings {
   const saved = store.get('settings')

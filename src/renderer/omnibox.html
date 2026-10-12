@@ -7,12 +7,12 @@
   <style>
     /* `html body` / `html #root` outrank globals.css (imported later by the
        bundle). The padding is where the list's CSS shadow paints; main sizes
-       the window to the list plus this margin (SHADOW_PADDING in
-       src/main/omnibox-popup.ts). */
+       the window to the list plus this margin (SHADOW_TOP / _SIDE / _BOTTOM
+       in src/main/omnibox-popup.ts). */
     html body {
       background: transparent;
       margin: 0;
-      padding: 12px;
+      padding: 8px 16px 24px;
       box-sizing: border-box;
       overflow: hidden;
       height: 100vh;

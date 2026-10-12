@@ -11,6 +11,15 @@ const RUNWA_PALETTE_FEATURE = 'newbro-runwa-palette'
 /** Features-string token carrying the popup's native background color as
  *  RRGGBB. Mirrored in src/main/index.ts (setWindowOpenHandler). */
 const BACKGROUND_FEATURE = 'newbro-bg'
+/** Features-string token naming a pinned popup, so main can place it.
+ *  Mirrored in src/main/index.ts (setWindowOpenHandler). */
+const POPUP_ID_FEATURE = 'newbro-popup-id'
+
+/** A spot in the opener window's content area, in CSS pixels. */
+export interface PopupPlacement {
+  left: number
+  top: number
+}
 
 interface Props {
   open: boolean
@@ -35,6 +44,12 @@ interface Props {
    *  and position of Runwa's search window, overriding `width` / `height`
    *  and the centered placement. Without Runwa nothing changes. */
   matchRunwaPalette?: boolean
+  /** Pinned popup: sits at this spot of the opener window (its top-left
+   *  corner) and moves along with the window — Find in Page at the page's
+   *  top-right corner. A new spot moves it there. */
+  placement?: PopupPlacement
+  /** Bumped to give the keyboard back to a pinned popup that's open. */
+  focusTick?: number
   onClose: () => void
   onWindowChange?: (popup: Window | null) => void
   children: ReactNode
@@ -145,11 +160,17 @@ export function DetachedWindow({
   alwaysOnTop = false,
   persistKey,
   matchRunwaPalette = false,
+  placement,
+  focusTick,
   onClose,
   onWindowChange,
   children,
 }: Props) {
   const popupRef = useRef<Window | null>(null)
+  // A pinned popup's id while it's open; its spot as of now, for opening.
+  const popupIdRef = useRef<string | null>(null)
+  const placementRef = useRef(placement)
+  placementRef.current = placement
   const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null)
   const suppressBeforeUnloadRef = useRef(false)
   const onCloseRef = useRef(onClose)
@@ -172,8 +193,15 @@ export function DetachedWindow({
     const saved = persistKey ? readSavedBounds(persistKey) : null
     const finalWidth = saved?.width ?? width
     const finalHeight = saved?.height ?? height
-    const left = saved?.left ?? Math.max(0, window.screenX + Math.round((window.outerWidth - finalWidth) / 2))
-    const top = saved?.top ?? Math.max(0, window.screenY + Math.round((window.outerHeight - finalHeight) / 2))
+    const spot = placementRef.current
+    const popupId = spot ? `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}` : null
+    // A pinned popup opens about where main is going to put it.
+    const left = spot
+      ? window.screenX + Math.round(spot.left)
+      : saved?.left ?? Math.max(0, window.screenX + Math.round((window.outerWidth - finalWidth) / 2))
+    const top = spot
+      ? window.screenY + Math.round(spot.top)
+      : saved?.top ?? Math.max(0, window.screenY + Math.round((window.outerHeight - finalHeight) / 2))
     const background = pageBackgroundHex()
 
     const popup = window.open(
@@ -193,6 +221,7 @@ export function DetachedWindow({
         'menubar=no',
         ...(matchRunwaPalette ? [`${RUNWA_PALETTE_FEATURE}=yes`] : []),
         ...(background ? [`${BACKGROUND_FEATURE}=${background}`] : []),
+        ...(popupId ? [`${POPUP_ID_FEATURE}=${popupId}`] : []),
       ].join(','),
     )
 
@@ -208,6 +237,10 @@ export function DetachedWindow({
 
     popupRef.current = popup
     onWindowChangeRef.current?.(popup)
+    if (popupId && spot) {
+      popupIdRef.current = popupId
+      window.electronAPI.detachedWindowPlace?.(popupId, spot.left, spot.top)
+    }
 
     popup.document.title = title
     popup.document.body.innerHTML = ''
@@ -361,6 +394,7 @@ export function DetachedWindow({
       onWindowChangeRef.current?.(null)
       setContainerEl(null)
       popupRef.current = null
+      popupIdRef.current = null
       if (!popup.closed) {
         suppressBeforeUnloadRef.current = true
         popup.close()
@@ -399,6 +433,20 @@ export function DetachedWindow({
     if (!popup || popup.closed) return
     popup.document.title = title
   }, [title])
+
+  // A pinned popup follows its spot.
+  const placementLeft = placement?.left
+  const placementTop = placement?.top
+  useEffect(() => {
+    const popupId = popupIdRef.current
+    if (!popupId || placementLeft === undefined || placementTop === undefined) return
+    window.electronAPI.detachedWindowPlace?.(popupId, placementLeft, placementTop)
+  }, [placementLeft, placementTop, containerEl])
+
+  useEffect(() => {
+    const popupId = popupIdRef.current
+    if (popupId && focusTick) window.electronAPI.detachedWindowFocus?.(popupId)
+  }, [focusTick])
 
   if (!open || !containerEl) return null
 

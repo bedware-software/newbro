@@ -2776,12 +2776,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <div>
                     <h3 className="text-lg font-semibold text-foreground">Vim Mode</h3>
                     <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
-                      Three modes, shown next to the workspace picker. COMMAND: plain keys drive the
-                      browser — tabs, panels, app commands. WEB: the page, driven the way Vimium does —
+                      Three modes, shown in the address bar. COMMAND: plain keys drive the browser —
+                      tabs, panels, app commands. BROWSE: the page, driven the way Vimium does —
                       scrolling, history, picking a text field. INSERT: keys go to the page or the field
-                      you're typing in. Enter on a tab goes into its page, i on to INSERT; Esc climbs back
-                      up, Ctrl+[ jumps straight to COMMAND. Clicking the page is WEB, clicking the browser
-                      around it COMMAND. Replaces the regular shortcuts and the Vimium extension.
+                      you're typing in. w (or Enter on a tab) goes into the page, i on to INSERT; Esc
+                      climbs back up, Ctrl+[ jumps straight to COMMAND. Clicking the page is BROWSE,
+                      clicking the browser around it COMMAND. Replaces the regular shortcuts and the
+                      Vimium extension.
                     </p>
                   </div>
                   <button
@@ -2807,8 +2808,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     <div className="flex items-center justify-between gap-4 mb-2">
                       <p className="text-sm text-muted-foreground">
                         One <code className="font-mono text-xs">command keys…</code> per line;
-                        the <code className="font-mono text-xs">web-</code> and <code className="font-mono text-xs">search-</code> prefixes
-                        say where a command works.
+                        the <code className="font-mono text-xs">browse-</code>, <code className="font-mono text-xs">search-</code> and{' '}
+                        <code className="font-mono text-xs">find-</code> prefixes say where a command works.
                       </p>
                       <button
                         type="button"

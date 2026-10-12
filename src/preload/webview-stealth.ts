@@ -10,7 +10,7 @@
 // app may not be secure."
 
 import { webFrame, ipcRenderer } from 'electron'
-import { KeySequencer, keyTokenFromEvent, type VimKeymap } from '../shared/vim-keys'
+import { KeySequencer, isCtrlToken, keyTokenFromEvent, type VimKeymap } from '../shared/vim-keys'
 
 // Diagnostic marker so we can confirm in the webview's DevTools console that
 // this preload is actually being loaded. If you see "[newbro-stealth] preload
@@ -636,13 +636,15 @@ if (STEALTH_ENABLED) {
   }
 }
 
-// ── Vim mode: WEB and INSERT in the page ──────────────────────────────────
+// ── Vim mode: BROWSE and INSERT in the page ───────────────────────────────
 // With Vim mode on (Settings → Keyboard Shortcuts) the window's renderer
 // holds the mode (renderer lib/vim-mode.ts) and main passes it on to the
-// pages. In WEB mode this page runs the web-* keys the way Vimium did —
-// scrolling, history, picking a text field — and lets every other key
-// through. INSERT passes everything through; Esc leaves it for WEB (and a
-// focused field loses focus), like Vimium's insert mode. In WEB, an Esc the
+// pages. In BROWSE mode this page runs the browse-* keys the way Vimium did
+// — scrolling, history, picking a text field — and lets every other key
+// through; the ones that act on the browser (close the tab, copy the
+// address) go to the renderer. INSERT passes everything through; Esc leaves
+// it for BROWSE (and a focused field loses focus), like Vimium's insert
+// mode. In BROWSE, an Esc the
 // page has no use for climbs on to COMMAND: one a site acted on (closing a
 // dialog) is marked with preventDefault and stays the page's. Changes made
 // here (i, a field focused or left, Esc) are reported back to the renderer.
@@ -653,25 +655,25 @@ if (STEALTH_ENABLED) {
 // key (habr) can't hide an unhandled Esc. Only trusted (real) keys count.
 if (STEALTH_ENABLED) {
   try {
-    installVimWeb()
+    installVimBrowse()
   } catch (err) {
     // eslint-disable-next-line no-console
     console.log('[newbro-vim] wiring failed:', err)
   }
 }
 
-function installVimWeb(): void {
+function installVimBrowse(): void {
   // The stealth preload can run twice in a page (session preload and the
   // view's own); one set of listeners is enough.
-  const flag = '__newbroVimWeb'
+  const flag = '__newbroVimBrowse'
   const scope = globalThis as unknown as Record<string, boolean>
   if (scope[flag]) return
   scope[flag] = true
 
-  type Mode = 'command' | 'web' | 'insert' | null
+  type Mode = 'command' | 'browse' | 'insert' | null
   let mode: Mode = null
   let keymap: VimKeymap = new Map()
-  // INSERT because a field took focus (leaving it is WEB again), not by i.
+  // INSERT because a field took focus (leaving it is BROWSE again), not by i.
   let insertFromField = false
   let hints: InputHints | null = null
   // The last thing clicked: scrolling starts from its scrollable ancestor.
@@ -684,9 +686,9 @@ function installVimWeb(): void {
     },
   )
 
-  const report = (next: 'web' | 'insert', why: string): void => {
+  const report = (next: 'browse' | 'insert', why: string): void => {
     mode = next
-    if (next === 'web') insertFromField = false
+    if (next === 'browse') insertFromField = false
     sequencer.reset()
     ipcRenderer.send('newbro-vim-page', { mode: next, why })
   }
@@ -700,16 +702,16 @@ function installVimWeb(): void {
 
   let pushed = false
   const applyState = (raw: unknown): void => {
-    const state = raw as { mode?: Mode; webKeymap?: Array<[string, string]> } | null
-    keymap = new Map(Array.isArray(state?.webKeymap) ? state.webKeymap : [])
+    const state = raw as { mode?: Mode; browseKeymap?: Array<[string, string]> } | null
+    keymap = new Map(Array.isArray(state?.browseKeymap) ? state.browseKeymap : [])
     const previous = mode
     mode = state?.mode ?? null
-    if (mode !== 'web') {
+    if (mode !== 'browse') {
       sequencer.reset()
       hints?.close()
     }
-    // Arriving in WEB with a field focused (the click landed in one) is INSERT.
-    if (mode === 'web' && document.hasFocus() && keysBelongToElement(deepActiveElement())) enterInsertForField()
+    // Arriving in BROWSE with a field focused (the click landed in one) is INSERT.
+    if (mode === 'browse' && document.hasFocus() && keysBelongToElement(deepActiveElement())) enterInsertForField()
     else if (mode === 'insert' && previous !== 'insert') insertFromField = keysBelongToElement(deepActiveElement())
   }
   ipcRenderer.on('newbro-vim-state', (_e, state: unknown) => {
@@ -737,10 +739,10 @@ function installVimWeb(): void {
       consume(e)
       const focused = deepActiveElement()
       if (focused instanceof HTMLElement && focused !== document.body) focused.blur()
-      report('web', 'esc')
+      report('browse', 'esc')
       return
     }
-    if (mode !== 'web') return
+    if (mode !== 'browse') return
     if (hints) {
       hints.onKey(e)
       return
@@ -750,7 +752,12 @@ function installVimWeb(): void {
       enterInsertForField()
       return
     }
-    if (modified) return
+    // Ctrl with a letter can be a Vim key (<C-l>); other chords are the page's.
+    if (e.metaKey || e.altKey) return
+    if (e.ctrlKey) {
+      const token = keyTokenFromEvent(e)
+      if (!token || !isCtrlToken(token)) return
+    }
     if (sequencer.feed(e)) {
       consume(e)
       return
@@ -765,13 +772,13 @@ function installVimWeb(): void {
 
   document.addEventListener('focusin', (e) => {
     const target = e.composedPath()[0]
-    if (mode === 'web' && !hints && target instanceof Element && keysBelongToElement(target)) enterInsertForField()
+    if (mode === 'browse' && !hints && target instanceof Element && keysBelongToElement(target)) enterInsertForField()
   }, true)
   document.addEventListener('focusout', () => {
     if (mode !== 'insert' || !insertFromField) return
     setTimeout(() => {
       if (mode === 'insert' && insertFromField && document.hasFocus() && !keysBelongToElement(deepActiveElement())) {
-        report('web', 'field left')
+        report('browse', 'field left')
       }
     }, 0)
   }, true)
@@ -782,23 +789,31 @@ function installVimWeb(): void {
 
   function runCommand(command: string): void {
     switch (command) {
-      case 'web-scroll-down': glideBy(() => VIM_SCROLL_STEP); break
-      case 'web-scroll-up': glideBy(() => -VIM_SCROLL_STEP); break
-      case 'web-half-page-down': glideBy((el) => el.clientHeight / 2); break
-      case 'web-half-page-up': glideBy((el) => -el.clientHeight / 2); break
-      case 'web-top': jumpTo('top'); break
-      case 'web-bottom': jumpTo('bottom'); break
-      case 'web-back': ipcRenderer.send('newbro-nav', 'back'); break
-      case 'web-forward': ipcRenderer.send('newbro-nav', 'forward'); break
-      case 'web-insert':
+      case 'browse-scroll-down': glideBy(() => VIM_SCROLL_STEP); break
+      case 'browse-scroll-up': glideBy(() => -VIM_SCROLL_STEP); break
+      case 'browse-half-page-down': glideBy((el) => el.clientHeight / 2); break
+      case 'browse-half-page-up': glideBy((el) => -el.clientHeight / 2); break
+      case 'browse-top': jumpTo('top'); break
+      case 'browse-bottom': jumpTo('bottom'); break
+      case 'browse-back': ipcRenderer.send('newbro-nav', 'back'); break
+      case 'browse-forward': ipcRenderer.send('newbro-nav', 'forward'); break
+      case 'browse-insert':
         insertFromField = false
         report('insert', 'i')
         break
-      case 'web-focus-input':
+      case 'browse-focus-input':
         hints = openInputHints(() => { hints = null })
         break
-      case 'web-help':
+      case 'browse-help':
         ipcRenderer.send('newbro-vim-page', { help: true })
+        break
+      // The browser's own commands: the renderer runs them.
+      case 'browse-close-tab':
+      case 'browse-copy-url':
+      case 'browse-paste-url':
+      case 'browse-paste-url-new-tab':
+      case 'browse-focus-url':
+        ipcRenderer.send('newbro-vim-page', { command: command.slice('browse-'.length) })
         break
     }
   }
@@ -885,8 +900,8 @@ const VIM_SCROLL_STEP = 60
 // How quickly a glide catches up with its goal: the time constant (ms) of
 // the exponential approach — about 95% of the way after three of these.
 const VIM_GLIDE_MS = 70
-// WEB commands that keep going while their key is held.
-const VIM_REPEATABLE = new Set(['web-scroll-down', 'web-scroll-up', 'web-half-page-down', 'web-half-page-up'])
+// BROWSE commands that keep going while their key is held.
+const VIM_REPEATABLE = new Set(['browse-scroll-down', 'browse-scroll-up', 'browse-half-page-down', 'browse-half-page-up'])
 
 // Input types that take typing; the rest (checkbox, button, …) don't hold
 // the keys.

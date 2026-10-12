@@ -1,5 +1,5 @@
-// Key handling Vim mode shares between the window renderer (COMMAND mode,
-// Search Everything) and tab pages (WEB mode, src/preload/webview-stealth.ts):
+// Key handling Vim mode shares between the window renderer (COMMAND mode, its
+// popups) and tab pages (BROWSE mode, src/preload/webview-stealth.ts):
 // turning a keydown into a key token and resolving token sequences against a
 // keymap. Pure — no DOM beyond the KeyboardEvent fields it reads.
 
@@ -31,9 +31,16 @@ const US_LAYOUT: Record<string, [string, string]> = {
 type KeyEventLike = Pick<KeyboardEvent, 'key' | 'code' | 'shiftKey' | 'metaKey' | 'ctrlKey' | 'altKey' | 'isComposing'>
 
 /** The key token a keydown stands for, or null for a bare modifier, a dead
- *  key or a key with Ctrl/Alt/Cmd held (those are never Vim keys). */
+ *  key or a key with Alt/Cmd held (those are never Vim keys). Ctrl counts
+ *  only with a letter: `<C-l>`, `<C-S-l>` with Shift. */
 export function keyTokenFromEvent(e: KeyEventLike): string | null {
-  if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return null
+  if (e.metaKey || e.altKey || e.isComposing) return null
+  if (e.ctrlKey) {
+    // By physical key, like the letters below. Ctrl+[ never gets here: main
+    // turns it into COMMAND mode first.
+    const letter = /^Key([A-Z])$/.exec(e.code)
+    return letter ? `<C-${e.shiftKey ? 'S-' : ''}${letter[1].toLowerCase()}>` : null
+  }
   if (e.key === 'Tab') return e.shiftKey ? '<S-Tab>' : '<Tab>'
   const named = NAMED_EVENT_KEYS[e.key]
   if (named) return named
@@ -46,6 +53,11 @@ export function keyTokenFromEvent(e: KeyEventLike): string | null {
   const other = US_LAYOUT[e.code]
   if (other) return e.shiftKey ? other[1] : other[0]
   return e.key
+}
+
+/** A Ctrl chord's token (`<C-l>`). */
+export function isCtrlToken(token: string): boolean {
+  return token.startsWith('<C-')
 }
 
 export type KeymapMatch =
@@ -100,9 +112,10 @@ export class KeySequencer {
     }
     if (this.resolve([...this.tokens, token], e)) return true
     // Not a continuation: drop what was pending and try the key on its own.
+    // A Ctrl chord nothing binds (Ctrl+C) still reaches whoever has the keys.
     const hadPending = this.tokens.length > 0
     this.reset()
-    return this.resolve([token], e) || hadPending
+    return this.resolve([token], e) || (hadPending && !isCtrlToken(token))
   }
 
   private resolve(tokens: string[], e: KeyEventLike & { repeat: boolean }): boolean {

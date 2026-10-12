@@ -4,11 +4,11 @@ import { normalizeURL, setSearchEngine } from './lib/url'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
 import { useVimMode, dispatchPanelCommand, claimRendererFocus, isCommandMode, type VimPanel, type VimMode } from './lib/vim-mode'
-import { parseVimKeymap, DEFAULT_VIM_KEYMAP, isPanelCommand } from './lib/vim-keymap'
+import { parseVimKeymap, paletteKeymap, DEFAULT_VIM_KEYMAP, isPanelCommand } from './lib/vim-keymap'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
-import { FindBar } from './components/FindBar'
+import { FindPopup } from './components/FindPopup'
 import { SearchDialog } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
@@ -165,8 +165,8 @@ declare global {
       toggleFocusedDevTools?: () => Promise<void>
       closeWindow: () => Promise<void>
       focusWindowRenderer: () => void
-      /** Vim mode's mode and WEB keys, for this window's pages. */
-      vimSetState?: (state: { mode: 'command' | 'web' | 'insert' | null; webKeymap: Array<[string, string]> }) => void
+      /** Vim mode's mode and BROWSE keys, for this window's pages. */
+      vimSetState?: (state: { mode: 'command' | 'browse' | 'insert' | null; browseKeymap: Array<[string, string]> }) => void
       reclaimWindowRendererFocus?: () => void
       minimizeWindow: () => Promise<void>
       maximizeWindow: () => Promise<void>
@@ -174,12 +174,15 @@ declare global {
       detachedWindowDragStart: () => Promise<boolean>
       detachedWindowDragUpdate: () => void
       detachedWindowDragEnd: () => void
+      detachedWindowPlace?: (popupId: string, left: number, top: number) => void
+      detachedWindowFocus?: (popupId: string) => void
       closeWorkspaceWindows: (workspaceIds: string[]) => Promise<void>
       quit: () => void
       getCertInfo: (url: string) => Promise<unknown>
       bypassCertForUrl: (url: string) => Promise<void>
       logWrite: (level: string, msg: string) => void
       clipboardWriteText: (text: string) => void
+      clipboardReadText?: () => Promise<string>
       loadSettings: () => Promise<Settings>
       saveSettings: (settings: Settings) => Promise<void>
       cloudSyncGetInfo: () => Promise<CloudSyncInfo>
@@ -534,8 +537,8 @@ export default function App() {
   }, [])
   const [findBarOpen, setFindBarOpen] = useState(false)
   // Counter that ticks on every find-in-page shortcut so a second Cmd+F
-  // while the bar is already open re-focuses + selects the input (matches
-  // Chrome / Firefox). The FindBar runs a focus effect on every increment.
+  // while the popup is already open re-focuses + selects the input (matches
+  // Chrome / Firefox). The FindPopup runs a focus effect on every increment.
   const [findBarFocusTick, setFindBarFocusTick] = useState(0)
   const [commentDialogOpen, setCommentDialogOpen] = useState(false)
   const [commentDefault, setCommentDefault] = useState('')
@@ -841,6 +844,27 @@ export default function App() {
       else state.setActiveTab(nextId)
     }
 
+    // Vim mode's p / P: the clipboard's text opens like an address typed
+    // into the bar — a URL, or a search for anything else.
+    const openPastedAddress = (text: string, inNewTab: boolean): void => {
+      const url = normalizeURL(text.split(/\r?\n/)[0] ?? '')
+      if (!url) return
+      const s = useAppStore.getState()
+      const tab = s.getActiveTab()
+      log.action('paste-url', { inNewTab, hasTab: !!tab })
+      // Parked on a tab group there's no page to replace: open a tab instead.
+      if (inNewTab || !tab) {
+        if (s.activeWorkspaceId && !isInternalUrl(url)) s.addTabNearActive(s.activeWorkspaceId, url, true)
+        return
+      }
+      if (isInternalUrl(url) || isInternalUrl(tab.url)) {
+        s.retargetTab(tab.id, url)
+        return
+      }
+      window.electronAPI.tabNavigate?.(tab.id, url)
+      s.updateTabUrl(tab.id, url)
+    }
+
     const handleAction = (action: string) => {
       const s = useAppStore.getState()
       // tab-1..tab-9 quick-jump: parse the digit and index into the visible
@@ -884,6 +908,15 @@ export default function App() {
           break
         case 'duplicate-tab':
           if (s.activeTabId) s.duplicateTab(s.activeTabId)
+          break
+        case 'copy-url': {
+          const url = s.getActiveTab()?.url
+          if (url) window.electronAPI.clipboardWriteText(url)
+          break
+        }
+        case 'paste-url':
+        case 'paste-url-new-tab':
+          void window.electronAPI.clipboardReadText?.().then((text) => openPastedAddress(text, action === 'paste-url-new-tab'))
           break
         case 'focus-url': {
           // The shared helper also asks main to pull OS keyboard focus back
@@ -1306,6 +1339,19 @@ export default function App() {
 
   const bookshelfVisible = bookshelfOpen && !pageFullscreen
 
+  // Find closing gives the keyboard back to the page — in Vim mode only when
+  // that's where it was (BROWSE / INSERT); COMMAND takes it back itself.
+  const closeFind = useCallback(() => {
+    setFindBarOpen(false)
+    const mode = vimRef.current?.mode
+    if (mode === 'browse' || mode === 'insert') {
+      vimRef.current?.returnToPage()
+    } else if (!mode) {
+      const s = useAppStore.getState()
+      if (s.activeTabId && !isInternalUrl(s.getActiveTab()?.url)) window.electronAPI.tabFocus?.(s.activeTabId)
+    }
+  }, [])
+
   // ── Vim mode ──
   const vimEnabled = settings?.vimMode === true
   const vimKeymap = useMemo(
@@ -1317,6 +1363,9 @@ export default function App() {
     switch (command) {
       case 'insert-mode':
         vimRef.current?.enterInsert()
+        return
+      case 'browse-mode':
+        vimRef.current?.enterBrowse()
         return
       case 'focus-sidebar':
         if (!sidebarVisible) toggleSidebar()
@@ -1333,7 +1382,7 @@ export default function App() {
     if (isPanelCommand(command)) {
       if (dispatchPanelCommand(vimPanel, command)) return
       // Sidebar hidden: no cursor to move, but Enter still goes into the page.
-      if (command === 'row-open') vimRef.current?.enterWeb()
+      if (command === 'row-open') vimRef.current?.enterBrowse()
       return
     }
     shortcutHandlerRef.current?.(command)
@@ -1341,10 +1390,10 @@ export default function App() {
   const vim = useVimMode({
     enabled: vimEnabled,
     keymap: vimKeymap.main,
-    webKeymap: vimKeymap.web,
+    browseKeymap: vimKeymap.browse,
     onCommand: runVimCommand,
     isActiveTab: (tabId) => useAppStore.getState().activeTabId === tabId,
-    onHelp: () => setVimHelpFrom(vimRef.current?.mode ?? 'web'),
+    onHelp: () => setVimHelpFrom(vimRef.current?.mode ?? 'browse'),
     focusPage: () => {
       const s = useAppStore.getState()
       if (!s.activeTabId) return false
@@ -1370,7 +1419,7 @@ export default function App() {
   // A popup window (Search, Command Palette, Settings) closing hands focus
   // back to this window — sometimes to the page view. In COMMAND mode the
   // chrome keeps it.
-  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || vimHelpFrom !== null
+  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || findBarOpen || vimHelpFrom !== null
   const popupWasOpenRef = useRef(popupOpen)
   useEffect(() => {
     if (popupWasOpenRef.current && !popupOpen && isCommandMode()) claimRendererFocus(false)
@@ -1387,13 +1436,16 @@ export default function App() {
           visible={sidebarVisible}
           showTabNumbers={settings?.showTabNumbers ?? true}
           vimActive={vim.mode === 'command' && vimPanel === 'sidebar'}
-          onVimEnterPage={vim.enterWeb}
+          vimKeymap={vimEnabled ? vimKeymap.main : null}
+          onVimEnterPage={vim.enterBrowse}
         />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-          <FindBar
+          <FindPopup
             open={findBarOpen}
             focusTick={findBarFocusTick}
-            onClose={() => setFindBarOpen(false)}
+            onClose={closeFind}
+            anchorRef={webviewColumnRef}
+            vimKeymap={vimEnabled ? vimKeymap.find : null}
           />
           <WebviewPanel />
         </div>
@@ -1408,7 +1460,8 @@ export default function App() {
           profileId={windowProfileId ?? activeProfileId}
           onClose={() => setBookshelfOpen(false)}
           vimActive={vim.mode === 'command' && vimPanel === 'bookshelf'}
-          onVimEnterPage={vim.enterWeb}
+          vimKeymap={vimEnabled ? vimKeymap.main : null}
+          onVimEnterPage={vim.enterBrowse}
         />
       </div>
       <SearchDialog
@@ -1425,7 +1478,7 @@ export default function App() {
           const from = vimHelpFrom
           setVimHelpFrom(null)
           // Back to the page it was opened from.
-          if (from === 'web' || from === 'insert') vimRef.current?.returnToPage()
+          if (from === 'browse' || from === 'insert') vimRef.current?.returnToPage()
         }}
       />
       <ExtensionInstallDialog
@@ -1464,6 +1517,7 @@ export default function App() {
       <CommandPalette
         open={commandPaletteOpen}
         onOpenChange={setCommandPaletteOpen}
+        vimKeymap={vimEnabled ? paletteKeymap(vimKeymap.search) : null}
         onAction={(action) => {
           setCommandPaletteOpen(false)
           // Dispatch the action through the same shortcut handler

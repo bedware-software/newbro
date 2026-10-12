@@ -1,4 +1,4 @@
-import { DEFAULT_VIM_KEYMAP, keysFor, parseVimKeymap, type VimKeymap } from './vim-keymap'
+import { DEFAULT_VIM_KEYMAP, displayKeySequence, keysFor, parseVimKeymap, type VimKeymap } from './vim-keymap'
 
 // The key UI advertises next to an app action (menu rows, the command
 // palette, the sidebar's New Tab): in Vim mode the action's COMMAND-mode key —
@@ -27,7 +27,7 @@ function vimCommandKeymap(text: string): VimKeymap {
 export function actionHint(settings: HintSettings | null | undefined, action: string, fallbackAccelerator?: string): ActionHint {
   if (settings?.vimMode) {
     const keys = keysFor(vimCommandKeymap(settings.vimKeymap ?? DEFAULT_VIM_KEYMAP), action)[0]
-    return keys ? { kind: 'vim', keys } : null
+    return keys ? { kind: 'vim', keys: displayKeySequence(keys) } : null
   }
   const bound = settings?.keybindings?.[action]
   if (bound === undefined) return fallbackAccelerator ? { kind: 'accelerator', accelerator: fallbackAccelerator } : null

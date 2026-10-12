@@ -34,15 +34,18 @@ interface PopupRecord {
 // Keyed by the parent's webContents id — one popup per workspace window.
 const popups = new Map<number, PopupRecord>()
 
-// Transparent margin around the list where its CSS shadow paints; must match
-// the body padding in omnibox.html.
-const SHADOW_PADDING = 12
+// Transparent margin around the list where its CSS shadow paints — deepest
+// below, where the shadow falls; must match the body padding in
+// omnibox.html.
+const SHADOW_TOP = 8
+const SHADOW_SIDE = 16
+const SHADOW_BOTTOM = 24
 // Gap between the URL bar and the list.
 const ANCHOR_GAP = 4
 // Height guess until the popup has measured itself: rows are ~40px plus the
 // list's padding.
-const ROW_HEIGHT_ESTIMATE = 40
-const LIST_PADDING_ESTIMATE = 8
+const ROW_HEIGHT_ESTIMATE = 36
+const LIST_PADDING_ESTIMATE = 2
 const EDGE_MARGIN = 6
 
 function popupHtml(): { url?: string; file?: string } {
@@ -123,10 +126,10 @@ function position(record: PopupRecord): void {
   const maxHeight = Math.max(80, content.y + content.height - EDGE_MARGIN - y)
   const height = Math.min(listHeight, maxHeight)
   record.win.setBounds({
-    x: Math.round(x - SHADOW_PADDING),
-    y: Math.round(y - SHADOW_PADDING),
-    width: Math.round(spec.anchor.width + SHADOW_PADDING * 2),
-    height: Math.round(height + SHADOW_PADDING * 2),
+    x: Math.round(x - SHADOW_SIDE),
+    y: Math.round(y - SHADOW_TOP),
+    width: Math.round(spec.anchor.width + SHADOW_SIDE * 2),
+    height: Math.round(height + SHADOW_TOP + SHADOW_BOTTOM),
   })
 }
 

@@ -24,7 +24,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // renderer-side input so typed characters actually land there.
   focusWindowRenderer: (): void => { ipcRenderer.send('window:focus-renderer') },
   reclaimWindowRendererFocus: (): void => { ipcRenderer.send('window:reclaim-renderer-focus') },
-  // Vim mode's current mode and WEB keys, passed on to this window's pages.
+  // Vim mode's current mode and BROWSE keys, passed on to this window's pages.
   vimSetState: (state: unknown): void => { ipcRenderer.send('vim:set-state', state) },
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),
@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   detachedWindowDragUpdate: (): void => { ipcRenderer.send('detached-window:drag-update') },
   detachedWindowDragEnd: (): void => { ipcRenderer.send('detached-window:drag-end') },
   detachedWindowShow: (alwaysOnTop?: boolean): void => { ipcRenderer.send('detached-window:show', { alwaysOnTop: !!alwaysOnTop }) },
+  // A pinned popup: its spot in this window's content area, and taking the
+  // keyboard back once it's open.
+  detachedWindowPlace: (popupId: string, left: number, top: number): void => { ipcRenderer.send('detached-window:place', popupId, { left, top }) },
+  detachedWindowFocus: (popupId: string): void => { ipcRenderer.send('detached-window:focus', popupId) },
   closeWorkspaceWindows: (workspaceIds: string[]): Promise<void> => ipcRenderer.invoke('workspace:close-windows', workspaceIds),
 
   // Logging — fire-and-forget (no await needed)
@@ -46,6 +50,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // navigator.clipboard fails because the parent renderer document isn't
   // focused. Fire-and-forget.
   clipboardWriteText: (text: string): void => { ipcRenderer.send('clipboard:write-text', text) },
+  clipboardReadText: (): Promise<string> => ipcRenderer.invoke('clipboard:read-text'),
 
   // Certificate info
   getCertInfo: (url: string): Promise<unknown> => ipcRenderer.invoke('cert:get-info', url),

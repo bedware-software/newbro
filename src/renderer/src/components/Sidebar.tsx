@@ -9,7 +9,8 @@ import { ChevronRight, ChevronDown, Plus, X } from 'lucide-react'
 import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
 import { useVimPanel } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
-import type { PanelCommand } from '../lib/vim-keymap'
+import type { PanelCommand, VimKeymap } from '../lib/vim-keymap'
+import { PanelHintBar } from './KeyHints'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
@@ -112,11 +113,13 @@ interface Props {
   /** Vim's COMMAND mode with the cursor in this panel: a block cursor on
    *  the active row, driven by the keymap's cursor commands. */
   vimActive: boolean
-  /** Go into the active tab's page (WEB mode). */
+  /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
+  vimKeymap: VimKeymap | null
+  /** Go into the active tab's page (BROWSE mode). */
   onVimEnterPage: () => void
 }
 
-export function Sidebar({ visible, showTabNumbers, vimActive, onVimEnterPage }: Props) {
+export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEnterPage }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -465,8 +468,9 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimEnterPage }: 
   // The block cursor starts on the active row — the active tab, the group
   // we're parked on, or the header of the collapsed group hiding the active
   // tab — and moves on its own from there: j/k only walk the tree, Enter
-  // opens the row under it. Activating something else (a click, 1-9, Search)
-  // brings it back to the active row.
+  // opens the row under it, o shows it and Ctrl+J/K walk and show as they
+  // go (both staying in COMMAND). Activating something else (a click, 1-9,
+  // Search) brings it back to the active row.
   const [vimCursorOverride, setVimCursorOverride] = useState<string | null>(null)
   useEffect(() => { setVimCursorOverride(null) }, [activeTabId, activeTabGroupId, vimActive])
   const activeRowId = activeTabId === null
@@ -856,9 +860,22 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimEnterPage }: 
       }
       requestAnimationFrame(() => findVimRow(id)?.scrollIntoView({ block: 'nearest' }))
     }
+    // Ctrl+J/K: on to the next tab row that way — group headers have no
+    // page to show — and show it. The cursor follows the active tab.
+    const showNextTab = (dir: 1 | -1): void => {
+      for (let i = (at === -1 ? (dir === 1 ? -1 : visibleRowIds.length) : at) + dir; i >= 0 && i < visibleRowIds.length; i += dir) {
+        const id = visibleRowIds[i]
+        if (groupById(id)) continue
+        setActiveTab(id)
+        setVimCursorOverride(id)
+        return
+      }
+    }
     switch (cmd) {
       case 'cursor-down': moveTo(at === -1 ? 0 : at + 1); break
       case 'cursor-up': moveTo(at === -1 ? 0 : at - 1); break
+      case 'cursor-down-show': showNextTab(1); break
+      case 'cursor-up-show': showNextTab(-1); break
       case 'row-move-down': moveRow(1); break
       case 'row-move-up': moveRow(-1); break
       case 'cursor-first': moveTo(0); break
@@ -899,9 +916,16 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimEnterPage }: 
         else void openTabMenu(vimCursorId, point, true)
         break
       }
+      case 'row-show':
+        // The row's tab (or group) shows; the keys stay here, in COMMAND.
+        if (!vimCursorId) break
+        if (groupById(vimCursorId)) setActiveGroup(vimCursorId)
+        else setActiveTab(vimCursorId)
+        break
       case 'row-open': {
-        // A tab becomes the active one and we go into its page (WEB); a group
-        // header parks on the group, which stays in COMMAND — there's no page.
+        // A tab becomes the active one and we go into its page (BROWSE); a
+        // group header parks on the group, which stays in COMMAND — there's
+        // no page.
         if (!vimCursorId) {
           onVimEnterPage()
           break
@@ -1266,6 +1290,8 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimEnterPage }: 
             </span>
           </button>
         </div>
+
+        {vimKeymap && <PanelHintBar panel="sidebar" keymap={vimKeymap} active={vimActive} />}
 
         <div
           className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"

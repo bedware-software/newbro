@@ -34,6 +34,11 @@
   --color-input: oklch(0.30 0 0);
   --color-ring: oklch(0.72 0.12 240);
   --color-toolbar: oklch(0.20 0 0);
+  /* Vim mode's colours — COMMAND blue, BROWSE yellow, INSERT green. The
+   * mode badge wears each as its text over a faint wash of itself. */
+  --color-vim-command: oklch(0.76 0.11 245);
+  --color-vim-browse: oklch(0.86 0.13 90);
+  --color-vim-insert: oklch(0.79 0.14 150);
   --radius: 0.375rem;
 }
 
@@ -59,6 +64,9 @@
   --color-input: oklch(0.92 0 0);
   --color-ring: oklch(0.55 0.18 260);
   --color-toolbar: oklch(0.976 0 0);
+  --color-vim-command: oklch(0.50 0.16 255);
+  --color-vim-browse: oklch(0.55 0.12 75);
+  --color-vim-insert: oklch(0.50 0.13 150);
 }
 
 /* ── System theme: auto-switch to light when OS prefers light ── */
@@ -84,6 +92,9 @@
     --color-input: oklch(0.92 0 0);
     --color-ring: oklch(0.55 0.18 260);
     --color-toolbar: oklch(0.976 0 0);
+    --color-vim-command: oklch(0.50 0.16 255);
+    --color-vim-browse: oklch(0.55 0.12 75);
+    --color-vim-insert: oklch(0.50 0.13 150);
   }
 }
 
@@ -375,6 +386,15 @@ kbd {
   border-radius: 6px;
   background: var(--color-secondary);
   box-shadow: none;
+}
+
+/* A cap sitting on a text field (Downloads' search box): the field's fill is
+ * the cap's own, so it takes a lighter one to read as a cap, as it does on
+ * the hint bar. The light themes' white caps already stand out — their
+ * rules below win. */
+kbd[data-on-field] {
+  background: var(--color-muted);
+  border-color: var(--color-muted);
 }
 
 [data-theme="light"] kbd {

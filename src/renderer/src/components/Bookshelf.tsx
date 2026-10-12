@@ -4,7 +4,8 @@ import { TabFavicon } from './TabFavicon'
 import { InlineRenameInput } from './InlineRenameInput'
 import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
 import { useVimPanel } from '../lib/vim-mode'
-import type { PanelCommand } from '../lib/vim-keymap'
+import type { PanelCommand, VimKeymap } from '../lib/vim-keymap'
+import { PanelHintBar } from './KeyHints'
 import { MoveBookshelfDialog, type BookshelfMoveTarget } from './MoveBookshelfDialog'
 import {
   BookOpen, ChevronRight, ChevronDown, Download, Loader2, WifiOff,
@@ -100,7 +101,9 @@ interface Props {
   /** Vim's COMMAND mode with the cursor in this panel: a block cursor on
    *  one row, driven by the keymap's cursor commands. */
   vimActive: boolean
-  /** Go into the active tab's page (WEB mode). */
+  /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
+  vimKeymap: VimKeymap | null
+  /** Go into the active tab's page (BROWSE mode). */
   onVimEnterPage: () => void
 }
 
@@ -115,7 +118,7 @@ function loadWidth(): number {
   return Number.isFinite(parsed) ? Math.max(MIN_WIDTH, parsed) : DEFAULT_WIDTH
 }
 
-export function Bookshelf({ open, profileId, onClose, vimActive, onVimEnterPage }: Props) {
+export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVimEnterPage }: Props) {
   const [readings, setReadings] = useState<Reading[]>([])
   const [groups, setGroups] = useState<ReadingGroup[]>([])
   const [archiveCollapsed, setArchiveCollapsed] = useState(true)
@@ -523,8 +526,12 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimEnterPage 
       window.electronAPI.bookshelfPlaceReadings?.(profileId, [r.id], placeTarget(target), beforeId).then(applyShelf)
     }
     switch (cmd) {
-      case 'cursor-down': moveTo(at + 1); break
-      case 'cursor-up': moveTo(at - 1); break
+      // Readings open as new tabs, so walking the shelf only moves the
+      // cursor — Ctrl+J/K included.
+      case 'cursor-down':
+      case 'cursor-down-show': moveTo(at + 1); break
+      case 'cursor-up':
+      case 'cursor-up-show': moveTo(at - 1); break
       case 'row-move-down': moveRow(1); break
       case 'row-move-up': moveRow(-1); break
       case 'cursor-first': moveTo(0); break
@@ -564,11 +571,15 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimEnterPage 
         else void openReadingMenu(vimCursor.reading, point, true)
         break
       }
+      case 'row-show':
+        // The reading opens in a tab that shows; the keys stay here.
+        if (vimCursor?.kind === 'reading') openReading(vimCursor.reading, false)
+        break
       case 'row-open':
         if (!vimCursor) break
         if (vimCursor.kind === 'reading') {
           // Into the new tab's page: it's the active tab by now, and with
-          // WEB set before it's created, it takes the keyboard.
+          // BROWSE set before it's created, it takes the keyboard.
           openReading(vimCursor.reading, false)
           onVimEnterPage()
         } else {
@@ -947,6 +958,8 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimEnterPage 
           </div>
         )}
       </div>
+
+      {vimKeymap && <PanelHintBar panel="bookshelf" keymap={vimKeymap} active={vimActive} />}
 
       <div
         className="absolute top-0 left-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"

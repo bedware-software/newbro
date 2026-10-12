@@ -1280,7 +1280,7 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
     const settings = loadSettings()
 
     // Vim mode replaces the regular shortcuts: its keys live in the window
-    // renderer (COMMAND) and the pages (WEB). Ctrl+[ — vim's other Esc —
+    // renderer (COMMAND) and the pages (BROWSE). Ctrl+[ — vim's other Esc —
     // jumps to COMMAND from anywhere, even a page that keeps Esc to itself.
     if (settings.vimMode) {
       if (input.control && !input.meta && !input.alt && !input.shift && input.code === 'BracketLeft') {
@@ -3326,8 +3326,11 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   // Bounds for the popup this handler is about to allow, picked up by
   // did-create-window below, which fires synchronously right after.
   let pendingPopupBounds: Electron.Rectangle | null = null
+  // The id a pinnable popup (DetachedWindow `placement`) goes by.
+  let pendingPopupId: string | null = null
   win.webContents.setWindowOpenHandler(({ url, features }) => {
     pendingPopupBounds = null
+    pendingPopupId = null
     // Accept both `'about:blank'` and the empty string. `window.open('')`
     // and `window.open(undefined)` can surface here as either, depending on
     // the Chromium / Electron version, and treating only the literal
@@ -3338,6 +3341,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
       // Palette-style popups open where Runwa's search window sits. Null
       // when Runwa isn't running: the renderer's own bounds stand.
       if (wantsRunwaPaletteGeometry(features)) pendingPopupBounds = runwaPaletteBounds()
+      pendingPopupId = /(?:^|,)\s*newbro-popup-id=([\w-]{1,64})\s*(?:,|$)/.exec(features)?.[1] ?? null
       // The renderer passes its themed page background (newbro-bg=RRGGBB in
       // DetachedWindow) so the native window never shows default white.
       const background = /(?:^|,)\s*newbro-bg=([0-9a-f]{6})\s*(?:,|$)/i.exec(features)?.[1]
@@ -3402,7 +3406,8 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   // renderer requests a move. The popup is created synchronously after the
   // setWindowOpenHandler callback returns `allow`, and this event fires.
   win.webContents.on('did-create-window', (childWindow) => {
-    registerDetachedPopup(childWindow)
+    registerDetachedPopup(childWindow, pendingPopupId)
+    pendingPopupId = null
     // setBounds rather than constructor bounds: a window.open popup built
     // at 882x820 on a 150% display comes out 884x824, while setBounds lands
     // on exactly the size Runwa's own window ends up at.

@@ -84,13 +84,15 @@ export type TabEvent =
   // its own (a reload, a load finishing). Vim mode (renderer
   // lib/vim-mode.ts) tells the two apart.
   | { type: 'focus'; tabId: string; byUser: boolean }
-  // Esc went through the page in Vim's WEB mode without any of its handlers
+  // Esc went through the page in Vim's BROWSE mode without any of its handlers
   // taking it (webview-stealth.ts) — the way back to COMMAND.
   | { type: 'unhandled-escape'; tabId: string }
-  // The page's Vim WEB mode moved itself along (i, a field focused or
-  // left, Esc out of INSERT), or asked for the help window.
-  | { type: 'vim'; tabId: string; mode: 'web' | 'insert'; why: string }
+  // The page's Vim BROWSE mode moved itself along (i, a field focused or
+  // left, Esc out of INSERT), asked for the help window, or for one of the
+  // browser's commands (x closes the tab).
+  | { type: 'vim'; tabId: string; mode: 'browse' | 'insert'; why: string }
   | { type: 'vim-help'; tabId: string }
+  | { type: 'vim-command'; tabId: string; command: string }
 
 interface TabRecord {
   tabId: string
@@ -2389,23 +2391,23 @@ let tabPreloadListenersInstalled = false
 const PAGE_CLICK_FOCUS_MS = 400
 const PAGE_CLICK_SETTLE_MS = 40
 
-/** Vim mode as a window's renderer last reported it, for its pages: WEB
+/** Vim mode as a window's renderer last reported it, for its pages: BROWSE
  *  mode runs in the page (webview-stealth.ts) with these keys. */
 interface VimState {
-  mode: 'command' | 'web' | 'insert' | null
-  webKeymap: Array<[string, string]>
+  mode: 'command' | 'browse' | 'insert' | null
+  browseKeymap: Array<[string, string]>
 }
 const vimStateByWindow = new Map<number, VimState>()
 
 function readVimState(raw: unknown): VimState | null {
   if (typeof raw !== 'object' || raw === null) return null
-  const r = raw as { mode?: unknown; webKeymap?: unknown }
-  const mode = r.mode === 'command' || r.mode === 'web' || r.mode === 'insert' ? r.mode : null
-  const webKeymap = Array.isArray(r.webKeymap)
-    ? r.webKeymap.filter((e): e is [string, string] =>
+  const r = raw as { mode?: unknown; browseKeymap?: unknown }
+  const mode = r.mode === 'command' || r.mode === 'browse' || r.mode === 'insert' ? r.mode : null
+  const browseKeymap = Array.isArray(r.browseKeymap)
+    ? r.browseKeymap.filter((e): e is [string, string] =>
       Array.isArray(e) && e.length === 2 && typeof e[0] === 'string' && typeof e[1] === 'string')
     : []
-  return { mode, webKeymap }
+  return { mode, browseKeymap }
 }
 
 export function installTabPreloadListeners(): void {
@@ -2443,10 +2445,11 @@ export function installTabPreloadListeners(): void {
     const tabId = wcIdToTabId.get(event.sender.id)
     const rec = tabId ? tabs.get(tabId) : undefined
     if (!tabId || !rec || typeof raw !== 'object' || raw === null) return
-    const r = raw as { mode?: unknown; why?: unknown; help?: unknown }
+    const r = raw as { mode?: unknown; why?: unknown; help?: unknown; command?: unknown }
     let evt: TabEvent | null = null
     if (r.help === true) evt = { type: 'vim-help', tabId }
-    else if (r.mode === 'web' || r.mode === 'insert') evt = { type: 'vim', tabId, mode: r.mode, why: typeof r.why === 'string' ? r.why : '' }
+    else if (typeof r.command === 'string') evt = { type: 'vim-command', tabId, command: r.command }
+    else if (r.mode === 'browse' || r.mode === 'insert') evt = { type: 'vim', tabId, mode: r.mode, why: typeof r.why === 'string' ? r.why : '' }
     if (evt) sendToWindowRenderer(rec.windowId, 'tab-event', evt)
   })
 

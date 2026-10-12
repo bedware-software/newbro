@@ -4,26 +4,41 @@ interface Props {
   mode: VimMode
   /** Keys typed so far of an unfinished sequence (vim's showcmd). */
   pending?: string
-  /** `md` matches the toolbar's controls; `sm` sits in a text row. */
-  size?: 'sm' | 'md'
+  /** `bar` fills the height of the address bar it sits in; `sm` sits in a
+   *  text row. */
+  size?: 'sm' | 'bar'
+  className?: string
 }
 
 const MODE_STYLE: Record<VimMode, { label: string; className: string; title: string }> = {
-  command: { label: 'COMMAND', className: 'bg-blue-600', title: 'Vim: COMMAND mode — the browser has the keys' },
-  web: { label: 'WEB', className: 'bg-purple-600', title: 'Vim: WEB mode — the page, driven by its Vim keys' },
-  insert: { label: 'INSERT', className: 'bg-green-600', title: 'Vim: INSERT mode — keys go where you type; Esc to leave' },
+  command: {
+    label: 'COMMAND',
+    className: 'bg-vim-command/15 text-vim-command',
+    title: 'Vim: COMMAND mode — the browser has the keys',
+  },
+  browse: {
+    label: 'BROWSE',
+    className: 'bg-vim-browse/15 text-vim-browse',
+    title: 'Vim: BROWSE mode — the page, driven by its Vim keys',
+  },
+  insert: {
+    label: 'INSERT',
+    className: 'bg-vim-insert/15 text-vim-insert',
+    title: 'Vim: INSERT mode — keys go where you type; Esc to leave',
+  },
 }
 
-/** Vim's mode block, as a statusline shows it: COMMAND on blue, WEB on
- *  purple, INSERT on green. Fixed width, so switching modes doesn't shift
- *  what follows. */
-export function VimModeBadge({ mode, pending, size = 'sm' }: Props) {
+/** Vim's mode block, as a statusline shows it: COMMAND in blue, BROWSE in
+ *  yellow, INSERT in green — each a faint wash of its colour under text in
+ *  it, so the block reads at a glance without shouting. Square, and fixed
+ *  width, so switching modes doesn't shift what follows. */
+export function VimModeBadge({ mode, pending, size = 'sm', className = '' }: Props) {
   const style = MODE_STYLE[mode]
   return (
     <span
-      className={`relative shrink-0 flex items-center justify-center font-mono font-bold tracking-wider text-white select-none ${style.className} ${
-        size === 'md' ? 'h-8 w-[84px] rounded-md text-xs' : 'h-6 w-[74px] rounded-sm text-[11px]'
-      }`}
+      className={`relative shrink-0 flex items-center justify-center font-mono font-bold select-none ${style.className} ${
+        size === 'bar' ? 'h-full w-[96px] text-sm tracking-wide' : 'h-6 w-[74px] text-[11px] tracking-wider'
+      } ${className}`}
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       title={style.title}
     >

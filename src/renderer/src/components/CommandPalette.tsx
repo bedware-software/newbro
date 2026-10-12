@@ -1,14 +1,24 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
-import { Command, ArrowUpDown, CornerDownLeft } from 'lucide-react'
+import { Command } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
+import { VimModeBadge } from './VimModeBadge'
+import { Hint, HintBar, vimKeyCaps } from './KeyHints'
 import { useAppStore } from '../store/app-store'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
+import { usePopupVimMode } from '../lib/vim-mode'
+import type { VimKeymap } from '../lib/vim-keymap'
 
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   onAction: (action: string) => void
+  /** The palette's COMMAND keys (Search Everything's, less its filters);
+   *  null while Vim mode is off. */
+  vimKeymap: VimKeymap | null
 }
+
+// Rows numbered for search-row-1…9 in COMMAND mode.
+const VIM_NUMBERED_ROWS = 9
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
 
@@ -129,11 +139,12 @@ function formatKeybinding(binding: string): React.ReactNode {
   )
 }
 
-export function CommandPalette({ open, onOpenChange, onAction }: Props) {
+export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [hintSettings, setHintSettings] = useState<HintSettings | null>(null)
   const [appVersion, setAppVersion] = useState('')
+  const [popupWindow, setPopupWindow] = useState<Window | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const activeTab = useAppStore((s) => s.getActiveTab())
@@ -206,6 +217,10 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
     }
     return groups
   }, [filtered])
+  // The commands in the order they're shown — grouping pulls a category's
+  // later commands up to its first, so this isn't `filtered`'s order. The
+  // selection and the row numbers count in it.
+  const rows = useMemo(() => grouped.flatMap((g) => g.items), [grouped])
 
   useEffect(() => {
     setSelectedIndex(0)
@@ -221,20 +236,54 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
     onAction(cmd.id)
   }, [onAction])
 
+  // Vim mode: the palette opens in INSERT — typing filters, like vim's `:`
+  // command line. Esc goes to COMMAND, where j/k walk the list and 1–9 run
+  // a numbered row; i types again, Esc closes.
+  const vim = usePopupVimMode({
+    keymap: vimKeymap,
+    popup: popupWindow,
+    box: inputRef,
+    initial: 'insert',
+    open,
+    onCommand: (command) => {
+      const row = /^search-row-(\d)$/.exec(command)
+      if (row) {
+        const cmd = rows[Number(row[1]) - 1]
+        if (cmd) handleSelect(cmd)
+        return
+      }
+      switch (command) {
+        case 'insert-mode': inputRef.current?.focus(); break
+        case 'cursor-down': setSelectedIndex((i) => Math.min(i + 1, rows.length - 1)); break
+        case 'cursor-up': setSelectedIndex((i) => Math.max(i - 1, 0)); break
+        case 'cursor-first': setSelectedIndex(0); break
+        case 'cursor-last': setSelectedIndex(Math.max(rows.length - 1, 0)); break
+        case 'row-open': if (rows[selectedIndex]) handleSelect(rows[selectedIndex]); break
+      }
+    },
+    onEscape: () => onOpenChange(false),
+  })
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1))
+      setSelectedIndex((i) => Math.min(i + 1, rows.length - 1))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setSelectedIndex((i) => Math.max(i - 1, 0))
     } else if (e.key === 'Enter') {
       e.preventDefault()
-      if (filtered[selectedIndex]) handleSelect(filtered[selectedIndex])
+      if (rows[selectedIndex]) handleSelect(rows[selectedIndex])
     } else if (e.key === 'Escape') {
-      onOpenChange(false)
+      // Vim: Esc leaves the box for COMMAND mode; Esc there closes.
+      if (vim.modeRef.current) {
+        e.preventDefault()
+        inputRef.current?.blur()
+      } else {
+        onOpenChange(false)
+      }
     }
-  }, [filtered, selectedIndex, handleSelect, onOpenChange])
+  }, [rows, selectedIndex, handleSelect, onOpenChange, vim.modeRef])
 
   if (!open) return null
 
@@ -248,9 +297,33 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
       height={640}
       closeOnBlur
       matchRunwaPalette
+      // In Vim mode Esc first leaves the box; the palette handles it.
+      closeOnEscape={!vimKeymap}
       onClose={() => onOpenChange(false)}
+      onWindowChange={setPopupWindow}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
+        {/* Keys first, above the box — the Downloads page's hint bar. */}
+        <div data-detached-drag-handle>
+          <HintBar>
+            {vim.mode === 'command' ? (
+              <>
+                <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
+                <Hint label="Run" keys={vimKeyCaps(vimKeymap, 'row-open')} />
+                <Hint label="Run row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${VIM_NUMBERED_ROWS}`)[0] ?? '9'}`]} />
+                <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
+                <Hint label="Close" keys={['Esc']} />
+              </>
+            ) : (
+              <>
+                <Hint label="Navigate" keys={['↓', '↑']} />
+                <Hint label="Run" keys={['Enter']} />
+                <Hint label={vim.mode ? 'Command mode' : 'Close'} keys={['Esc']} />
+              </>
+            )}
+            {appVersion && <span className="text-muted-foreground/60 tabular-nums">v{appVersion}</span>}
+          </HintBar>
+        </div>
         <div
           data-detached-drag-handle
           className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0"
@@ -263,9 +336,14 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a command..."
-            className="flex-1 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
+            onFocus={vim.onBoxFocus}
+            onBlur={vim.onBoxBlur}
+            placeholder={vim.mode === 'command' && vimKeyCaps(vimKeymap, 'insert-mode')[0]
+              ? `Type a command... (${vimKeyCaps(vimKeymap, 'insert-mode')[0]} to type)`
+              : 'Type a command...'}
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
           />
+          {vim.mode && <VimModeBadge mode={vim.mode} pending={vim.pending} />}
         </div>
 
         <div ref={listRef} className="flex-1 overflow-y-auto py-1">
@@ -277,6 +355,7 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
               {group.items.map((cmd) => {
                 const idx = flatIdx++
                 const isSelected = idx === selectedIndex
+                const numberHint = vim.mode === 'command' && idx < VIM_NUMBERED_ROWS ? idx + 1 : undefined
                 // The palette has room for one shortcut hint per row, so we
                 // surface only the first binding. The second binding still
                 // works — it just doesn't get advertised here. An explicit
@@ -288,11 +367,22 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
                   <div
                     key={cmd.id}
                     data-selected={isSelected}
-                    className={`flex items-center justify-between px-4 py-1.5 cursor-pointer text-sm ${
+                    className={`relative flex items-center justify-between px-4 py-1.5 cursor-pointer text-sm ${
                       isSelected ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-accent/50'
                     }`}
                     onClick={() => handleSelect(cmd)}
                   >
+                    {numberHint !== undefined && (
+                      // COMMAND mode's row number (search-row-N), the way
+                      // Search Everything shows it: a keycap in the row's
+                      // left padding, so the label never moves.
+                      <span
+                        aria-hidden="true"
+                        className="absolute left-0 top-1/2 -translate-y-1/2 z-10 inline-flex items-center justify-center h-[18px] w-4 rounded-md border border-border bg-popover text-foreground font-mono font-medium text-[10px] leading-none shadow-[0_0_2px_rgb(0_0_0/0.1)] select-none pointer-events-none"
+                      >
+                        {numberHint}
+                      </span>
+                    )}
                     <span>{cmd.label}</span>
                     {hint && (
                       <span className="text-xs text-muted-foreground ml-4 shrink-0 flex items-center">
@@ -311,21 +401,6 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
           )}
         </div>
 
-        <div
-          data-detached-drag-handle
-          className="h-10 px-3 flex items-center justify-between border-t border-border bg-toolbar text-[11px] font-medium text-muted-foreground shrink-0"
-        >
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
-            <span className="flex items-center gap-1">Run <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>
-            {appVersion && (
-              <span className="text-muted-foreground/60 tabular-nums">v{appVersion}</span>
-            )}
-          </div>
-        </div>
       </div>
     </DetachedWindow>
   )

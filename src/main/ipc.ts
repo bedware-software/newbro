@@ -176,10 +176,62 @@ function getCertificate(hostname: string, port = 443): Promise<CertInfo | null> 
 // CommandPalette). We track them so the drag IPC handlers below can safely
 // identify which window the renderer is trying to move.
 const detachedPopups = new Set<BrowserWindow>()
+// Popups the renderer pins to a spot in its window (Find in Page sits at the
+// page's top-right corner), by the id DetachedWindow gave them.
+const pinnablePopups = new Map<string, BrowserWindow>()
 
-export function registerDetachedPopup(popup: BrowserWindow): void {
+export function registerDetachedPopup(popup: BrowserWindow, popupId: string | null = null): void {
   detachedPopups.add(popup)
   popup.once('closed', () => detachedPopups.delete(popup))
+  if (popupId) {
+    pinnablePopups.set(popupId, popup)
+    popup.once('closed', () => {
+      if (pinnablePopups.get(popupId) === popup) pinnablePopups.delete(popupId)
+    })
+  }
+}
+
+interface PinnedSpot {
+  left: number
+  top: number
+  /** Taken once: re-reading it on a scaled display grows the window. */
+  width: number
+  height: number
+}
+const pinnedSpots = new WeakMap<BrowserWindow, PinnedSpot>()
+
+/** Puts `popup` at (left, top) of `parent`'s content area and keeps it
+ *  there: it moves and resizes along with the window, and as an owned
+ *  window it stays above it and minimizes with it. */
+function pinPopup(popup: BrowserWindow, parent: BrowserWindow, left: number, top: number): void {
+  const existing = pinnedSpots.get(popup)
+  const apply = (): void => {
+    const spot = pinnedSpots.get(popup)
+    if (!spot || popup.isDestroyed() || parent.isDestroyed()) return
+    const content = parent.getContentBounds()
+    popup.setBounds({
+      x: Math.round(content.x + spot.left),
+      y: Math.round(content.y + spot.top),
+      width: spot.width,
+      height: spot.height,
+    })
+  }
+  if (existing) {
+    existing.left = left
+    existing.top = top
+  } else {
+    const { width, height } = popup.getBounds()
+    pinnedSpots.set(popup, { left, top, width, height })
+    popup.setParentWindow(parent)
+    parent.on('move', apply)
+    parent.on('resize', apply)
+    popup.once('closed', () => {
+      if (parent.isDestroyed()) return
+      parent.off('move', apply)
+      parent.off('resize', apply)
+    })
+  }
+  apply()
 }
 
 /**
@@ -720,6 +772,26 @@ export function registerIpcHandlers(): void {
     detachedDragSession = null
   })
 
+  // A pinned popup (DetachedWindow's `placement`): where it sits in its
+  // opener's content area, in CSS pixels. Sent again whenever the spot moves
+  // (the page area changed size); the window's own moves main follows.
+  ipcMain.on('detached-window:place', (event, popupId: unknown, spot: unknown) => {
+    const popup = typeof popupId === 'string' ? pinnablePopups.get(popupId) : undefined
+    const parent = BrowserWindow.fromWebContents(event.sender)
+    const s = spot as { left?: unknown; top?: unknown } | null
+    if (!popup || popup.isDestroyed() || !parent || parent.isDestroyed()) return
+    if (typeof s?.left !== 'number' || typeof s.top !== 'number' || !Number.isFinite(s.left) || !Number.isFinite(s.top)) return
+    pinPopup(popup, parent, s.left, s.top)
+  })
+
+  // Hand the keyboard back to a popup that's already open (Find in Page
+  // asked for again while the page has the keys).
+  ipcMain.on('detached-window:focus', (_e, popupId: unknown) => {
+    const popup = typeof popupId === 'string' ? pinnablePopups.get(popupId) : undefined
+    if (!popup || popup.isDestroyed()) return
+    popup.focus()
+  })
+
   // Reveal a detached popup once the renderer has finished rendering content.
   // Popups start at opacity 0 (set in did-create-window) so they are physically
   // invisible at the OS compositor level while React paints.  Setting opacity
@@ -1206,6 +1278,14 @@ function alive(p) {
   ipcMain.on('clipboard:write-text', (_e, text: string) => {
     try { clipboard.writeText(text) }
     catch (err) { log.warn('clipboard:write-text failed', String(err)) }
+  })
+  // Vim mode's p / P open the address on the clipboard.
+  ipcMain.handle('clipboard:read-text', () => {
+    try { return clipboard.readText() }
+    catch (err) {
+      log.warn('clipboard:read-text failed', String(err))
+      return ''
+    }
   })
 
   registerDropdownIpc()
