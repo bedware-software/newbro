@@ -4,7 +4,7 @@
 //
 // The list itself lives in main (src/main/downloads.ts); we mirror its
 // broadcasts and sort / filter locally. Every action is on the keyboard — see
-// KEY_HELP (shown with `?`); the footer advertises the common keys.
+// KEY_HELP (shown with `?`); the hint bar on top advertises the common keys.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -42,17 +42,16 @@ const KEY_HELP: Array<[string, string]> = [
   ['j / k, ↓ / ↑', 'Move through the list'],
   ['gg / G, Home / End', 'First / last download'],
   ['Enter', 'Main action: open, resume or retry'],
-  ['o', 'Open file'],
   ['f', 'Show in folder'],
   ['c', 'Copy download link'],
   ['Space', 'Pause or resume'],
   ['r', 'Retry a failed download'],
   ['x, Delete', 'Cancel, or remove from list'],
-  ['X', 'Clear all finished downloads'],
+  ['l', 'Clear all finished downloads'],
   ['s / S', 'Next sort / reverse order'],
   ['/', 'Search downloads'],
   ['m', 'All actions for the selected download'],
-  ['O', 'Open the downloads folder'],
+  ['o', 'Open the downloads folder'],
   ['?', 'Show or hide this help'],
 ]
 
@@ -414,7 +413,7 @@ export function DownloadsPage() {
 
   const openMenu = async (e: DownloadEntry, at: { x: number; y: number }, keyboard: boolean): Promise<void> => {
     const actions: DropdownAction[] = []
-    if (canOpen(e)) actions.push({ id: 'open', label: 'Open', iconName: 'FolderOpen', shortcut: ['o'] })
+    if (canOpen(e)) actions.push({ id: 'open', label: 'Open', iconName: 'FolderOpen', shortcut: ['Enter'] })
     if (canShow(e)) actions.push({ id: 'show', label: 'Show in Folder', iconName: 'Folder', shortcut: ['f'] })
     actions.push({ id: 'copy', label: 'Copy Download Link', iconName: 'Link', shortcut: ['c'] })
     if (e.state === 'progressing') actions.push({ id: 'pause', label: 'Pause', iconName: 'Pause', shortcut: ['Space'], divider: 'before' })
@@ -422,8 +421,8 @@ export function DownloadsPage() {
     if (isLive(e)) actions.push({ id: 'cancel', label: 'Cancel Download', iconName: 'X', shortcut: ['x'] })
     if (canRetry(e)) actions.push({ id: 'retry', label: 'Retry', iconName: 'RotateCw', shortcut: ['r'], divider: 'before' })
     if (!isLive(e)) actions.push({ id: 'remove', label: 'Remove from List', iconName: 'Trash2', shortcut: ['x'], destructive: true, divider: canRetry(e) ? undefined : 'before' })
-    actions.push({ id: 'clear', label: 'Clear All Finished', iconName: 'ListX', shortcut: ['Shift', 'X'], divider: 'before', disabled: !entries.some((x) => !isLive(x)) })
-    actions.push({ id: 'folder', label: 'Open Downloads Folder', iconName: 'FolderOpen', shortcut: ['Shift', 'O'] })
+    actions.push({ id: 'clear', label: 'Clear All Finished', iconName: 'ListX', shortcut: ['l'], divider: 'before', disabled: !entries.some((x) => !isLive(x)) })
+    actions.push({ id: 'folder', label: 'Open Downloads Folder', iconName: 'FolderOpen', shortcut: ['o'] })
 
     const result = await openDropdownAsync({
       kind: 'menu',
@@ -514,8 +513,8 @@ export function DownloadsPage() {
       case 's': cycleSort(); break
       case 'S': reverseSort(); break
       case '?': setHelpOpen((v) => !v); break
-      case 'O': openFolder(); break
-      case 'X': clearFinished(); break
+      case 'o': openFolder(); break
+      case 'l': clearFinished(); break
       case 'ContextMenu': openMenuForSelected(); break
       case 'F10':
         if (e.shiftKey) openMenuForSelected()
@@ -528,7 +527,6 @@ export function DownloadsPage() {
       handled = true
       switch (e.key) {
         case 'Enter': primary(selected); break
-        case 'o': open(selected); break
         case 'f': showInFolder(selected); break
         case 'c':
         case 'y': copyLink(selected); break
@@ -585,6 +583,33 @@ export function DownloadsPage() {
       role="region"
       aria-label="Downloads"
     >
+      {/* Hint bar: the common keys, or a short confirmation after an action. */}
+      <div className="flex h-10 shrink-0 items-center justify-center gap-3 border-b border-border bg-toolbar px-4 text-[11px] font-medium text-muted-foreground">
+        {flash ? (
+          <span className="text-foreground">{flash}</span>
+        ) : (
+          <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
+            <span className="flex items-center gap-1">Navigate <kbd>j</kbd><kbd>k</kbd></span>
+            <span className="flex items-center gap-1">Open <kbd>Enter</kbd></span>
+            <span className="flex items-center gap-1">Folder <kbd>f</kbd></span>
+            <span className="flex items-center gap-1">Copy link <kbd>c</kbd></span>
+            <span className="flex items-center gap-1">Remove <kbd>x</kbd></span>
+            <span className="flex items-center gap-1">Sort <kbd>s</kbd></span>
+            <span className="flex items-center gap-1">Search <kbd>/</kbd></span>
+            <span className="flex items-center gap-1">Actions <kbd>m</kbd></span>
+          </div>
+        )}
+        <button
+          onClick={() => setHelpOpen((v) => !v)}
+          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-secondary hover:text-foreground"
+          title="Keyboard shortcuts (?)"
+          tabIndex={-1}
+        >
+          <Keyboard size={13} />
+          <kbd>?</kbd>
+        </button>
+      </div>
+
       {/* Header: title + global actions, then search and sort. */}
       <div className="shrink-0 border-b border-border">
         <div className="mx-auto flex max-w-4xl items-center gap-3 px-6 pt-5 pb-3">
@@ -595,19 +620,21 @@ export function DownloadsPage() {
             <button
               onClick={openFolder}
               className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
-              title="Open the downloads folder (O)"
+              title="Open the downloads folder (o)"
             >
               <FolderOpen size={14} />
               Open folder
+              <kbd>o</kbd>
             </button>
             <button
               onClick={clearFinished}
               disabled={!hasFinished}
               className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-              title="Remove every finished download from the list (Shift+X). Files stay on disk."
+              title="Remove every finished download from the list (l). Files stay on disk."
             >
               <Trash2 size={14} />
               Clear all
+              <kbd>l</kbd>
             </button>
           </div>
         </div>
@@ -638,7 +665,7 @@ export function DownloadsPage() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">Sort by</span>
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">Sort by <kbd>s</kbd></span>
             <div className="flex h-9 items-center rounded-md bg-secondary p-0.5" role="radiogroup" aria-label="Sort downloads">
               {SORT_KEYS.map((key) => {
                 const active = sort.key === key
@@ -713,33 +740,6 @@ export function DownloadsPage() {
             ),
           )}
         </div>
-      </div>
-
-      {/* Footer: the common keys, or a short confirmation after an action. */}
-      <div className="flex h-10 shrink-0 items-center justify-between gap-4 border-t border-border bg-toolbar px-4 text-[11px] font-medium text-muted-foreground">
-        {flash ? (
-          <span className="text-foreground">{flash}</span>
-        ) : (
-          <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
-            <span className="flex items-center gap-1">Navigate <kbd>j</kbd><kbd>k</kbd></span>
-            <span className="flex items-center gap-1">Open <kbd>Enter</kbd></span>
-            <span className="flex items-center gap-1">Folder <kbd>f</kbd></span>
-            <span className="flex items-center gap-1">Copy link <kbd>c</kbd></span>
-            <span className="flex items-center gap-1">Remove <kbd>x</kbd></span>
-            <span className="flex items-center gap-1">Sort <kbd>s</kbd></span>
-            <span className="flex items-center gap-1">Search <kbd>/</kbd></span>
-            <span className="flex items-center gap-1">Actions <kbd>m</kbd></span>
-          </div>
-        )}
-        <button
-          onClick={() => setHelpOpen((v) => !v)}
-          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-secondary hover:text-foreground"
-          title="Keyboard shortcuts (?)"
-          tabIndex={-1}
-        >
-          <Keyboard size={13} />
-          <kbd>?</kbd>
-        </button>
       </div>
 
       {helpOpen && (
@@ -895,7 +895,7 @@ function DownloadRow({
           </button>
         )}
         {openable && (
-          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onOpen() }} className={iconButton} title="Open (O)">
+          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onOpen() }} className={iconButton} title="Open (Enter)">
             <FolderOpen size={14} />
           </button>
         )}

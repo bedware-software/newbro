@@ -306,6 +306,12 @@ function closePopup(record: PopupRecord, fromBlur: boolean): void {
   if (record.win.isDestroyed()) return
   const closingOpenerId = record.currentOpenerId
   record.closingProgrammatically = true
+  // Closed from inside the popup (Esc, a pick): hand the keyboard back to the
+  // parent. On Windows a hidden window keeps activation, so keys would go on
+  // reaching the invisible menu and the parent's focus reclaim (which only
+  // acts while its own window is focused) would give up. After a blur the
+  // user has already put focus elsewhere — leave it there.
+  if (record.win.isFocused() && !record.parent.isDestroyed()) record.parent.focus()
   record.win.hide()
   // If close originated from blur, tell the parent so it can update its
   // own state. Programmatic close from a popup-event already triggered a

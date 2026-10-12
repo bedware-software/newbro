@@ -782,12 +782,12 @@ function installVimWeb(): void {
 
   function runCommand(command: string): void {
     switch (command) {
-      case 'web-scroll-down': scrollPage(VIM_SCROLL_STEP, 'auto'); break
-      case 'web-scroll-up': scrollPage(-VIM_SCROLL_STEP, 'auto'); break
-      case 'web-half-page-down': scrollPage(scrollTarget().clientHeight / 2, 'smooth'); break
-      case 'web-half-page-up': scrollPage(-scrollTarget().clientHeight / 2, 'smooth'); break
-      case 'web-top': scrollPage(-Infinity, 'auto'); break
-      case 'web-bottom': scrollPage(Infinity, 'auto'); break
+      case 'web-scroll-down': glideBy(() => VIM_SCROLL_STEP); break
+      case 'web-scroll-up': glideBy(() => -VIM_SCROLL_STEP); break
+      case 'web-half-page-down': glideBy((el) => el.clientHeight / 2); break
+      case 'web-half-page-up': glideBy((el) => -el.clientHeight / 2); break
+      case 'web-top': jumpTo('top'); break
+      case 'web-bottom': jumpTo('bottom'); break
       case 'web-back': ipcRenderer.send('newbro-nav', 'back'); break
       case 'web-forward': ipcRenderer.send('newbro-nav', 'forward'); break
       case 'web-insert':
@@ -823,15 +823,68 @@ function installVimWeb(): void {
       ?? page
   }
 
-  function scrollPage(dy: number, behavior: ScrollBehavior): void {
+  // j/k/d/u glide rather than jump, the same on every platform. Not the
+  // browser's own smooth scroll: Chromium turns it off on Windows when the
+  // system's animation effects are off, and restarting it on every key
+  // repeat from a mid-animation scrollTop makes a held key crawl (macOS).
+  // Here each press moves the goal on from the previous goal, so a held key
+  // goes as fast as the keyboard repeats, and every frame closes part of the
+  // gap to it.
+  let glide: { el: Element; pos: number; goal: number; last: number } | null = null
+  let glideFrame = 0
+
+  function stopGlide(): void {
+    if (glideFrame) cancelAnimationFrame(glideFrame)
+    glideFrame = 0
+    glide = null
+  }
+
+  function glideBy(delta: (el: Element) => number): void {
+    const el = scrollTarget()
+    if (glide?.el !== el || Math.abs(el.scrollTop - glide.pos) > 2) {
+      stopGlide()
+      glide = { el, pos: el.scrollTop, goal: el.scrollTop, last: 0 }
+    }
+    const max = el.scrollHeight - el.clientHeight
+    glide.goal = Math.max(0, Math.min(max, glide.goal + delta(el)))
+    if (!glideFrame) glideFrame = requestAnimationFrame(stepGlide)
+  }
+
+  function stepGlide(now: number): void {
+    glideFrame = 0
+    const g = glide
+    // Gone, or scrolled by something else since the last frame (a page
+    // script, an anchor, find-in-page): that position stands.
+    if (!g || !g.el.isConnected || (g.last && Math.abs(g.el.scrollTop - g.pos) > 2)) {
+      glide = null
+      return
+    }
+    const dt = g.last ? now - g.last : 16
+    g.last = now
+    g.pos += (g.goal - g.pos) * (1 - Math.exp(-dt / VIM_GLIDE_MS))
+    if (Math.abs(g.goal - g.pos) < 0.5) g.pos = g.goal
+    // 'instant': a page's own `scroll-behavior: smooth` would animate each frame again.
+    g.el.scrollTo({ top: g.pos, behavior: 'instant' })
+    if (g.pos === g.goal) glide = null
+    else glideFrame = requestAnimationFrame(stepGlide)
+  }
+
+  // The wheel, a scrollbar drag or a click takes over from a glide.
+  window.addEventListener('wheel', stopGlide, { capture: true, passive: true })
+  window.addEventListener('mousedown', stopGlide, true)
+
+  function jumpTo(edge: 'top' | 'bottom'): void {
+    stopGlide()
     const target = scrollTarget()
-    const top = dy === Infinity ? target.scrollHeight : dy === -Infinity ? 0 : target.scrollTop + dy
-    target.scrollTo({ top, behavior })
+    target.scrollTo({ top: edge === 'top' ? 0 : target.scrollHeight, behavior: 'auto' })
   }
 }
 
 // How far j/k scroll — Vimium's default step.
 const VIM_SCROLL_STEP = 60
+// How quickly a glide catches up with its goal: the time constant (ms) of
+// the exponential approach — about 95% of the way after three of these.
+const VIM_GLIDE_MS = 70
 // WEB commands that keep going while their key is held.
 const VIM_REPEATABLE = new Set(['web-scroll-down', 'web-scroll-up', 'web-half-page-down', 'web-half-page-up'])
 
