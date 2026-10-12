@@ -460,7 +460,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
           <span className="w-6 shrink-0 flex items-center">
             <Search size={16} className="text-muted-foreground" />
           </span>
-          {vimMode && <VimModeBadge mode={vimMode} pending={vimKeys.pending} />}
           <input
             data-detached-drag-handle
             ref={inputRef}
@@ -473,8 +472,11 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
             placeholder={vimMode === 'command' && vimHint('insert-mode')
               ? `Search everything... (${vimHint('insert-mode')} to type)`
               : 'Search everything...'}
-            className="flex-1 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
           />
+          {/* At the end of the row, clear of the query: the box stops short
+              of it rather than running under it. */}
+          {vimMode && <VimModeBadge mode={vimMode} pending={vimKeys.pending} />}
         </div>
 
         <div className="flex items-center gap-1 px-4 py-2 border-b border-border shrink-0">
@@ -653,12 +655,18 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
             <span className="flex items-center gap-1">Open <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
-            <span className="flex items-center gap-1">
-              Filter <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>1…4</kbd>
-              {' / '}
-              <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>{FILTER_TYPES.map((type) => FILTER_LETTERS[type]).join(' ')}</kbd>
-            </span>
-            <span className="flex items-center gap-1">All <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>R</kbd></span>
+            {/* The filter chords are regular shortcuts — off in Vim mode, where
+                COMMAND mode's letters pick filters instead. */}
+            {!vimMode && (
+              <>
+                <span className="flex items-center gap-1">
+                  Filter <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>1…4</kbd>
+                  {' / '}
+                  <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>{FILTER_TYPES.map((type) => FILTER_LETTERS[type]).join(' ')}</kbd>
+                </span>
+                <span className="flex items-center gap-1">All <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd><kbd>R</kbd></span>
+              </>
+            )}
             {scopeApplies && (
               <span className="flex items-center gap-1">Scope <kbd>Tab</kbd></span>
             )}
