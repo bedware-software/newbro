@@ -80,12 +80,17 @@ export type TabEvent =
   // black ("cinema mode") until the page leaves fullscreen.
   | { type: 'enter-html-full-screen'; tabId: string }
   | { type: 'leave-html-full-screen'; tabId: string }
-  // The page took OS keyboard focus — Vim mode's INSERT (renderer
-  // lib/vim-mode.ts).
-  | { type: 'focus'; tabId: string }
-  // Esc went through the page without any of its handlers taking it
-  // (webview-stealth.ts) — Vim mode's way back to COMMAND.
+  // The page took OS keyboard focus — by a click into it (byUser), or on
+  // its own (a reload, a load finishing). Vim mode (renderer
+  // lib/vim-mode.ts) tells the two apart.
+  | { type: 'focus'; tabId: string; byUser: boolean }
+  // Esc went through the page in Vim's WEB mode without any of its handlers
+  // taking it (webview-stealth.ts) — the way back to COMMAND.
   | { type: 'unhandled-escape'; tabId: string }
+  // The page's Vim WEB mode moved itself along (i, a field focused or
+  // left, Esc out of INSERT), or asked for the help window.
+  | { type: 'vim'; tabId: string; mode: 'web' | 'insert'; why: string }
+  | { type: 'vim-help'; tabId: string }
 
 interface TabRecord {
   tabId: string
@@ -727,7 +732,19 @@ function wireEvents(rec: TabRecord): void {
   // dom-ready is the first point the isolated-world preload has registered
   // its 'newbro-gesture-bounds' listener, so (re)push the current bounds.
   wc.on('dom-ready', () => { emitNavState(); emit({ type: 'dom-ready', tabId: rec.tabId, url: wc.getURL() }) })
-  wc.on('focus', () => emit({ type: 'focus', tabId: rec.tabId }))
+  // A focus within a beat of a mouse press is the user clicking into the
+  // page; the press and the focus arrive in either order, hence the wait.
+  let lastMouseDown = 0
+  wc.on('before-mouse-event', (_e, mouse) => {
+    if (mouse.type === 'mouseDown') lastMouseDown = Date.now()
+  })
+  wc.on('focus', () => {
+    const at = Date.now()
+    setTimeout(() => {
+      if (wc.isDestroyed()) return
+      emit({ type: 'focus', tabId: rec.tabId, byUser: Math.abs(lastMouseDown - at) < PAGE_CLICK_FOCUS_MS })
+    }, PAGE_CLICK_SETTLE_MS)
+  })
   wc.on('did-finish-load', () =>
     emit({ type: 'did-finish-load', tabId: rec.tabId, url: wc.getURL() })
   )
@@ -2367,6 +2384,30 @@ export function registerWorkspaceWindowForTabs(
  *  message from the main renderer itself is ignored. */
 let tabPreloadListenersInstalled = false
 
+// A page focus counts as a click into the page when a mouse press lands
+// within this long of it; we wait this long for the press to show up.
+const PAGE_CLICK_FOCUS_MS = 400
+const PAGE_CLICK_SETTLE_MS = 40
+
+/** Vim mode as a window's renderer last reported it, for its pages: WEB
+ *  mode runs in the page (webview-stealth.ts) with these keys. */
+interface VimState {
+  mode: 'command' | 'web' | 'insert' | null
+  webKeymap: Array<[string, string]>
+}
+const vimStateByWindow = new Map<number, VimState>()
+
+function readVimState(raw: unknown): VimState | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as { mode?: unknown; webKeymap?: unknown }
+  const mode = r.mode === 'command' || r.mode === 'web' || r.mode === 'insert' ? r.mode : null
+  const webKeymap = Array.isArray(r.webKeymap)
+    ? r.webKeymap.filter((e): e is [string, string] =>
+      Array.isArray(e) && e.length === 2 && typeof e[0] === 'string' && typeof e[1] === 'string')
+    : []
+  return { mode, webKeymap }
+}
+
 export function installTabPreloadListeners(): void {
   if (tabPreloadListenersInstalled) return
   tabPreloadListenersInstalled = true
@@ -2376,6 +2417,37 @@ export function installTabPreloadListeners(): void {
     if (!tabId) return
     if (direction === 'back') tabGoBack(tabId)
     else if (direction === 'forward') tabGoForward(tabId)
+  })
+
+  // Vim mode: the window renderer reports its mode; every page of the window
+  // gets it (only the focused one acts on it). A page asks once when it
+  // loads, then follows the pushes.
+  ipcMain.on('vim:set-state', (event, raw: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const state = readVimState(raw)
+    if (!win || win.isDestroyed() || !state) return
+    if (!vimStateByWindow.has(win.id)) win.once('closed', () => vimStateByWindow.delete(win.id))
+    vimStateByWindow.set(win.id, state)
+    for (const rec of tabs.values()) {
+      if (rec.windowId !== win.id) continue
+      const wc = rec.view.webContents
+      if (!wc.isDestroyed()) wc.send('newbro-vim-state', state)
+    }
+  })
+  ipcMain.handle('newbro-vim-state', (event) => {
+    const tabId = wcIdToTabId.get(event.sender.id)
+    const rec = tabId ? tabs.get(tabId) : undefined
+    return rec ? vimStateByWindow.get(rec.windowId) ?? null : null
+  })
+  ipcMain.on('newbro-vim-page', (event, raw: unknown) => {
+    const tabId = wcIdToTabId.get(event.sender.id)
+    const rec = tabId ? tabs.get(tabId) : undefined
+    if (!tabId || !rec || typeof raw !== 'object' || raw === null) return
+    const r = raw as { mode?: unknown; why?: unknown; help?: unknown }
+    let evt: TabEvent | null = null
+    if (r.help === true) evt = { type: 'vim-help', tabId }
+    else if (r.mode === 'web' || r.mode === 'insert') evt = { type: 'vim', tabId, mode: r.mode, why: typeof r.why === 'string' ? r.why : '' }
+    if (evt) sendToWindowRenderer(rec.windowId, 'tab-event', evt)
   })
 
   ipcMain.on('newbro-unhandled-escape', (event) => {

@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // renderer-side input so typed characters actually land there.
   focusWindowRenderer: (): void => { ipcRenderer.send('window:focus-renderer') },
   reclaimWindowRendererFocus: (): void => { ipcRenderer.send('window:reclaim-renderer-focus') },
+  // Vim mode's current mode and WEB keys, passed on to this window's pages.
+  vimSetState: (state: unknown): void => { ipcRenderer.send('vim:set-state', state) },
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),
   restoreWindow: (): Promise<void> => ipcRenderer.invoke('window:restore'),

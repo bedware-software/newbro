@@ -100,8 +100,8 @@ interface Props {
   /** Vim's COMMAND mode with the cursor in this panel: a block cursor on
    *  one row, driven by the keymap's cursor commands. */
   vimActive: boolean
-  /** Switch to INSERT mode: hand the keyboard to the active tab's page. */
-  onVimInsert: () => void
+  /** Go into the active tab's page (WEB mode). */
+  onVimEnterPage: () => void
 }
 
 const MIN_WIDTH = 180
@@ -115,7 +115,7 @@ function loadWidth(): number {
   return Number.isFinite(parsed) ? Math.max(MIN_WIDTH, parsed) : DEFAULT_WIDTH
 }
 
-export function Bookshelf({ open, profileId, onClose, vimActive, onVimInsert }: Props) {
+export function Bookshelf({ open, profileId, onClose, vimActive, onVimEnterPage }: Props) {
   const [readings, setReadings] = useState<Reading[]>([])
   const [groups, setGroups] = useState<ReadingGroup[]>([])
   const [archiveCollapsed, setArchiveCollapsed] = useState(true)
@@ -568,9 +568,9 @@ export function Bookshelf({ open, profileId, onClose, vimActive, onVimInsert }: 
         if (!vimCursor) break
         if (vimCursor.kind === 'reading') {
           // Into the new tab's page: it's the active tab by now, and with
-          // INSERT set before it's created, it takes the keyboard.
+          // WEB set before it's created, it takes the keyboard.
           openReading(vimCursor.reading, false)
-          onVimInsert()
+          onVimEnterPage()
         } else {
           // Same as clicking a header: fold or unfold it.
           setHeaderCollapsed(vimCursor, vimCursor.kind === 'group' ? !vimCursor.group.isCollapsed : !archiveCollapsed)

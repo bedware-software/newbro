@@ -1239,6 +1239,17 @@ function matchesAccelerator(input: Electron.Input, shortcut: ParsedAccelerator |
   return true
 }
 
+/** Runs the extension command (manifest `commands`) bound to this key, if
+ *  any. True when one ran. */
+function runMatchingExtensionCommand(input: Electron.Input, targetWindow: BrowserWindow): boolean {
+  for (const b of activeExtensionCommandBindings()) {
+    if (!matchesAccelerator(input, parseAcceleratorShortcut(b.accelerator))) continue
+    runExtensionCommand(targetWindow, b.extensionId, b.command)
+    return true
+  }
+  return false
+}
+
 function installShortcutInterceptor(source: Electron.WebContents, targetWindow: BrowserWindow): void {
   let tabDown = false
   let tabResetTimer: NodeJS.Timeout | null = null
@@ -1267,6 +1278,20 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
     const noOtherModifiers = !input.alt && !input.control && !input.meta && !input.shift
 
     const settings = loadSettings()
+
+    // Vim mode replaces the regular shortcuts: its keys live in the window
+    // renderer (COMMAND) and the pages (WEB). Ctrl+[ — vim's other Esc —
+    // jumps to COMMAND from anywhere, even a page that keeps Esc to itself.
+    if (settings.vimMode) {
+      if (input.control && !input.meta && !input.alt && !input.shift && input.code === 'BracketLeft') {
+        event.preventDefault()
+        if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', 'command-mode')
+        return
+      }
+      if (runMatchingExtensionCommand(input, targetWindow)) event.preventDefault()
+      return
+    }
+
     const keybindings = { ...DEFAULT_KEYBINDINGS, ...settings.keybindings }
 
     // Tab-leader chord support (e.g. "Tab+J" for next-tab): resolved separately
@@ -1353,12 +1378,7 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
 
     // Extension shortcuts (manifest `commands`, Settings → Extensions),
     // after the app's own bindings so those always win.
-    for (const b of activeExtensionCommandBindings()) {
-      if (!matchesAccelerator(input, parseAcceleratorShortcut(b.accelerator))) continue
-      event.preventDefault()
-      runExtensionCommand(targetWindow, b.extensionId, b.command)
-      return
-    }
+    if (runMatchingExtensionCommand(input, targetWindow)) event.preventDefault()
   })
 
   source.once('destroyed', clearTabState)
@@ -3451,10 +3471,11 @@ function buildMenu(): void {
   // bindings per action we surface the FIRST one in the menu UI. The
   // second binding still fires via the before-input-event interceptor —
   // the menu just doesn't have a second column to advertise it.
+  // Vim mode turns the regular shortcuts off, the menu's included.
   const kb: Record<string, string | undefined> = {}
   for (const key of Object.keys(merged)) {
     const list = merged[key]
-    kb[key] = Array.isArray(list) && list.length > 0 ? list[0] : undefined
+    kb[key] = !settings.vimMode && Array.isArray(list) && list.length > 0 ? list[0] : undefined
   }
 
   const template: Electron.MenuItemConstructorOptions[] = [

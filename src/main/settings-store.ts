@@ -16,9 +16,11 @@ export interface Settings {
    *  CmdOrCtrl+N quick-jump shortcut. Always-visible (not hover-gated)
    *  because their job is to advertise the shortcut at a glance. */
   showTabNumbers: boolean
-  /** Vim mode: windows switch between COMMAND mode, where plain keys run
-   *  the commands in {@link vimKeymap}, and INSERT mode, where keys go to
-   *  the page or the field being typed in (renderer lib/vim-mode.ts). */
+  /** Vim mode: windows switch between COMMAND mode (plain keys run the
+   *  commands in {@link vimKeymap}), WEB mode (the page, driven by its
+   *  web-* keys) and INSERT mode (keys go to the page or the field being
+   *  typed in) — renderer lib/vim-mode.ts. Turns the regular
+   *  {@link keybindings} off, menu accelerators included. */
   vimMode: boolean
   /** COMMAND-mode keymap as the user wrote it in Settings — plain text, one
    *  `<command> <keys>` binding per line, parsed by the renderer
@@ -192,10 +194,6 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   // newbro://downloads tab. New keys fall back to their default on existing
   // installs through the loadSettings merge, so no seeding migration.
   'open-downloads': ['CmdOrCtrl+J'],
-  // Vim mode: back to COMMAND mode from anywhere, including a page that keeps
-  // Esc to itself. Unbound by default — Esc on a page that doesn't use it
-  // already switches.
-  'command-mode': [],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {

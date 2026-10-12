@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Command, ArrowUpDown, CornerDownLeft } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { useAppStore } from '../store/app-store'
+import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 
 interface Props {
   open: boolean
@@ -131,7 +132,7 @@ function formatKeybinding(binding: string): React.ReactNode {
 export function CommandPalette({ open, onOpenChange, onAction }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const [keybindings, setKeybindings] = useState<Record<string, string[]>>({})
+  const [hintSettings, setHintSettings] = useState<HintSettings | null>(null)
   const [appVersion, setAppVersion] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -171,8 +172,8 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
         inputRef.current?.focus()
         inputRef.current?.select()
       }, 50)
-      ;(window as any).electronAPI.loadSettings().then((s: any) => {
-        if (s?.keybindings) setKeybindings(s.keybindings)
+      ;(window as any).electronAPI.loadSettings().then((s: HintSettings | null) => {
+        if (s) setHintSettings(s)
       })
     }
   }, [open])
@@ -280,11 +281,9 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
                 // surface only the first binding. The second binding still
                 // works — it just doesn't get advertised here. An explicit
                 // empty array (user cleared every binding) suppresses the
-                // hint so we don't lie about a shortcut that won't fire.
-                const userBindings = keybindings[cmd.id]
-                const binding = userBindings === undefined
-                  ? getDefaultBinding(cmd.id)
-                  : (userBindings.length > 0 ? userBindings[0] : undefined)
+                // hint so we don't lie about a shortcut that won't fire. In
+                // Vim mode the hint is the command's COMMAND-mode key.
+                const hint = actionHint(hintSettings, cmd.id, getDefaultBinding(cmd.id))
                 return (
                   <div
                     key={cmd.id}
@@ -295,9 +294,9 @@ export function CommandPalette({ open, onOpenChange, onAction }: Props) {
                     onClick={() => handleSelect(cmd)}
                   >
                     <span>{cmd.label}</span>
-                    {binding && (
+                    {hint && (
                       <span className="text-xs text-muted-foreground ml-4 shrink-0 flex items-center">
-                        {formatKeybinding(binding)}
+                        {hint.kind === 'vim' ? <kbd className="font-mono">{hint.keys}</kbd> : formatKeybinding(hint.accelerator)}
                       </span>
                     )}
                   </div>

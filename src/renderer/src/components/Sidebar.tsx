@@ -8,6 +8,7 @@ import { CommentChip } from './CommentChip'
 import { ChevronRight, ChevronDown, Plus, X } from 'lucide-react'
 import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
 import { useVimPanel } from '../lib/vim-mode'
+import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import type { PanelCommand } from '../lib/vim-keymap'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
@@ -111,11 +112,11 @@ interface Props {
   /** Vim's COMMAND mode with the cursor in this panel: a block cursor on
    *  the active row, driven by the keymap's cursor commands. */
   vimActive: boolean
-  /** Switch to INSERT mode: hand the keyboard to the active tab's page. */
-  onVimInsert: () => void
+  /** Go into the active tab's page (WEB mode). */
+  onVimEnterPage: () => void
 }
 
-export function Sidebar({ visible, showTabNumbers, vimActive, onVimInsert }: Props) {
+export function Sidebar({ visible, showTabNumbers, vimActive, onVimEnterPage }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -141,28 +142,23 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimInsert }: Pro
   const convertTabToGroup = useAppStore((s) => s.convertTabToGroup)
   const setTabComment = useAppStore((s) => s.setTabComment)
 
-  // Current "new tab" keybinding, mirrored from main so the bottom-pinned
-  // affordance can show the accelerator the user actually has bound. Each
-  // action carries up to two bindings — the affordance has room for one
-  // hint, so we surface the first slot.
-  const [newTabAccel, setNewTabAccel] = useState<string>('CmdOrCtrl+T')
+  // Current "new tab" key, mirrored from main so the bottom-pinned affordance
+  // can show the shortcut the user actually has bound (in Vim mode, its
+  // COMMAND key). Each action carries up to two bindings — the affordance
+  // has room for one hint, so we surface the first slot.
+  const [newTabHint, setNewTabHint] = useState<string>(() => formatAccel('CmdOrCtrl+T'))
   useEffect(() => {
     let cancelled = false
     const api = (window as any).electronAPI
-    const pickFirst = (raw: unknown): string | null => {
-      if (typeof raw === 'string' && raw) return raw
-      if (Array.isArray(raw) && typeof raw[0] === 'string' && raw[0]) return raw[0]
-      return null
+    // The regular shortcut, or in Vim mode the COMMAND key.
+    const apply = (s: HintSettings | null): void => {
+      const hint = actionHint(s, 'new-tab')
+      setNewTabHint(hint === null ? '' : hint.kind === 'vim' ? hint.keys : formatAccel(hint.accelerator))
     }
-    void api?.loadSettings?.().then((s: any) => {
-      if (cancelled) return
-      const k = pickFirst(s?.keybindings?.['new-tab'])
-      if (k) setNewTabAccel(k)
+    void api?.loadSettings?.().then((s: HintSettings | null) => {
+      if (!cancelled) apply(s)
     })
-    const cleanup = api?.onSettingsUpdated?.((s: any) => {
-      const k = pickFirst(s?.keybindings?.['new-tab'])
-      if (k) setNewTabAccel(k)
-    })
+    const cleanup = api?.onSettingsUpdated?.((s: HintSettings) => apply(s))
     return () => { cancelled = true; cleanup?.() }
   }, [])
 
@@ -466,11 +462,11 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimInsert }: Pro
   }
 
   // ── Vim mode ──
-  // The block cursor follows the active row: the active tab, the group we're
-  // parked on, or the header of the collapsed group hiding the active tab.
-  // The override pins it to a group header after h/l, so expanding a group
-  // that holds the active tab leaves the cursor on the header rather than
-  // jumping to the tab that just came into view.
+  // The block cursor starts on the active row — the active tab, the group
+  // we're parked on, or the header of the collapsed group hiding the active
+  // tab — and moves on its own from there: j/k only walk the tree, Enter
+  // opens the row under it. Activating something else (a click, 1-9, Search)
+  // brings it back to the active row.
   const [vimCursorOverride, setVimCursorOverride] = useState<string | null>(null)
   useEffect(() => { setVimCursorOverride(null) }, [activeTabId, activeTabGroupId, vimActive])
   const activeRowId = activeTabId === null
@@ -825,20 +821,16 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimInsert }: Pro
     if (!workspace) return
     const groupById = (id: string | null) => (id ? workspace.tabGroups.find((g) => g.id === id) : undefined)
     const at = vimCursorId ? visibleRowIds.indexOf(vimCursorId) : -1
-    // Moving switches live, the way Ctrl+Tab does: a tab row activates the
-    // tab, a group header parks on the group.
+    // Moving only moves the cursor; the page stays as it is until Enter.
     const moveTo = (index: number): void => {
       const id = visibleRowIds[Math.max(0, Math.min(visibleRowIds.length - 1, index))]
-      if (!id) return
-      setVimCursorOverride(null)
-      if (groupById(id)) setActiveGroup(id)
-      else setActiveTab(id)
+      if (id) setVimCursorOverride(id)
     }
     // J/K carry the row under the cursor one visible row down/up. A group
     // swaps places with its neighbour. A tab steps into an expanded group it
     // runs into, out of its own group at either end, and over a collapsed
-    // group as if it were one row. The cursor follows the active row, so it
-    // stays on what moved.
+    // group as if it were one row. The cursor keeps the row's id, so it stays
+    // on what moved.
     const moveRow = (dir: 1 | -1): void => {
       if (!vimCursorId) return
       const id = vimCursorId
@@ -887,11 +879,15 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimInsert }: Pro
         setVimCursorOverride(group.id)
         break
       }
-      case 'row-close':
+      case 'row-close': {
         if (!vimCursorId) break
+        // The cursor takes the next row, as vim's x leaves it on what follows.
+        const next = visibleRowIds[at + 1] ?? visibleRowIds[at - 1] ?? null
         if (groupById(vimCursorId)) closeGroup(vimCursorId)
         else closeTab(vimCursorId)
+        setVimCursorOverride(next)
         break
+      }
       case 'row-menu': {
         if (!vimCursorId) break
         const row = findVimRow(vimCursorId)
@@ -904,15 +900,19 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimInsert }: Pro
         break
       }
       case 'row-open': {
-        // A tab is already open — the cursor switches tabs as it moves — so
-        // opening it means going into its page. A group header folds.
-        const group = groupById(vimCursorId)
-        if (group) {
-          toggleTabGroupCollapse(group.id)
-          setVimCursorOverride(group.id)
-        } else {
-          onVimInsert()
+        // A tab becomes the active one and we go into its page (WEB); a group
+        // header parks on the group, which stays in COMMAND — there's no page.
+        if (!vimCursorId) {
+          onVimEnterPage()
+          break
         }
+        if (groupById(vimCursorId)) {
+          setActiveGroup(vimCursorId)
+          break
+        }
+        // Active first: going into the page focuses whatever tab is active.
+        setActiveTab(vimCursorId)
+        onVimEnterPage()
         break
       }
     }
@@ -1256,13 +1256,13 @@ export function Sidebar({ visible, showTabNumbers, vimActive, onVimInsert }: Pro
             type="button"
             data-sidebar-row=""
             onClick={handleNewTab}
-            title={`New Tab (${formatAccel(newTabAccel)})`}
+            title={newTabHint ? `New Tab (${newTabHint})` : 'New Tab'}
             className="w-full flex items-center gap-1 px-1 py-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             <Plus size={16} className="shrink-0" />
             <span className="flex-1 text-left text-xs truncate">New Tab</span>
             <span className="text-[10px] text-muted-foreground/70 font-mono shrink-0 pr-1">
-              {formatAccel(newTabAccel)}
+              {newTabHint}
             </span>
           </button>
         </div>

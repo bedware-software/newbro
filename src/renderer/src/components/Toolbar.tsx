@@ -19,6 +19,7 @@ import {
 import type { DownloadEntry } from '../App'
 import type { VimMode } from '../lib/vim-mode'
 import { VimModeBadge } from './VimModeBadge'
+import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { DOWNLOADS_URL, internalPageOf } from '../lib/internal-pages'
 import { requestExtensionInstall } from '../lib/extension-install'
 
@@ -582,10 +583,10 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   // the old floating toast): 'checking' → spinner, an update in flight
   // ('available' / 'downloading' / 'downloaded') → down-arrow, else nothing.
   const [updatePhase, setUpdatePhase] = useState<string>('idle')
-  // Live keybindings so the menu's shortcut hints reflect the user's actual
-  // bindings rather than hardcoded defaults. Loaded on mount and refreshed
-  // whenever settings are saved from anywhere.
-  const [keybindings, setKeybindings] = useState<Record<string, string[]>>({})
+  // Live settings so the menu's shortcut hints reflect the user's actual
+  // bindings (or Vim keys) rather than hardcoded defaults. Loaded on mount
+  // and refreshed whenever settings are saved from anywhere.
+  const [hintSettings, setHintSettings] = useState<HintSettings | null>(null)
   const triggerRef = useRef<HTMLDivElement>(null)
   // See Dropdown's pressedOpenRef: captures the open-state on mousedown so the
   // toggle isn't fooled by the blur-driven 'cancel' that races the click.
@@ -609,11 +610,11 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   useEffect(() => {
     const api = (window as any).electronAPI
     if (!api?.loadSettings) return
-    api.loadSettings().then((s: { keybindings?: Record<string, string[]> } | null) => {
-      if (s?.keybindings) setKeybindings(s.keybindings)
+    api.loadSettings().then((s: HintSettings | null) => {
+      if (s) setHintSettings(s)
     })
-    const cleanup = api.onSettingsUpdated?.((s: { keybindings?: Record<string, string[]> }) => {
-      if (s?.keybindings) setKeybindings(s.keybindings)
+    const cleanup = api.onSettingsUpdated?.((s: HintSettings) => {
+      if (s) setHintSettings(s)
     })
     return cleanup
   }, [])
@@ -652,11 +653,13 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   })
 
   const buildActions = (): DropdownAction[] => {
-    // Hint the user's actual first binding for each action; omit the chip
-    // entirely if they've cleared it, so we never advertise a dead shortcut.
+    // Hint the user's actual first binding (in Vim mode, its COMMAND key) for
+    // each action; omit the chip entirely if there's none, so we never
+    // advertise a dead shortcut.
     const shortcutFor = (action: string): string[] | undefined => {
-      const accel = keybindings[action]?.[0]
-      return accel ? acceleratorToSegments(accel) : undefined
+      const hint = actionHint(hintSettings, action)
+      if (!hint) return undefined
+      return hint.kind === 'vim' ? [hint.keys] : acceleratorToSegments(hint.accelerator)
     }
     return [
       {
@@ -1350,7 +1353,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
 
         {vimMode && (
           <>
-            <VimModeBadge mode={vimMode} pending={vimPending} />
+            <VimModeBadge mode={vimMode} pending={vimPending} size="md" />
             <div className="w-px h-5 bg-border shrink-0" />
           </>
         )}

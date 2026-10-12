@@ -10,6 +10,7 @@
 // app may not be secure."
 
 import { webFrame, ipcRenderer } from 'electron'
+import { KeySequencer, keyTokenFromEvent, type VimKeymap } from '../shared/vim-keys'
 
 // Diagnostic marker so we can confirm in the webview's DevTools console that
 // this preload is actually being loaded. If you see "[newbro-stealth] preload
@@ -635,27 +636,391 @@ if (STEALTH_ENABLED) {
   }
 }
 
-// ── Unhandled Esc → host (Vim mode) ───────────────────────────────────────
-// Vim mode goes from INSERT back to COMMAND on Esc — but only an Esc the page
-// had no use for. One a site or Vimium acted on (closing a dialog, leaving a
-// field) is marked with preventDefault, and stays the page's. We listen in
-// the capture phase, before any page handler can stop the event — site
-// hotkey libraries stopPropagation() every key they see, used or not (habr)
-// — and read defaultPrevented once dispatch is over. The renderer ignores
-// the message unless Vim mode is on.
+// ── Vim mode: WEB and INSERT in the page ──────────────────────────────────
+// With Vim mode on (Settings → Keyboard Shortcuts) the window's renderer
+// holds the mode (renderer lib/vim-mode.ts) and main passes it on to the
+// pages. In WEB mode this page runs the web-* keys the way Vimium did —
+// scrolling, history, picking a text field — and lets every other key
+// through. INSERT passes everything through; Esc leaves it for WEB (and a
+// focused field loses focus), like Vimium's insert mode. In WEB, an Esc the
+// page has no use for climbs on to COMMAND: one a site acted on (closing a
+// dialog) is marked with preventDefault and stays the page's. Changes made
+// here (i, a field focused or left, Esc) are reported back to the renderer.
+//
+// The keydown listener sits in the capture phase on window, registered
+// before any page script, so it sees keys first: a consumed key never
+// reaches the page, and site hotkey libraries that stopPropagation() every
+// key (habr) can't hide an unhandled Esc. Only trusted (real) keys count.
 if (STEALTH_ENABLED) {
   try {
-    window.addEventListener('keydown', (e) => {
-      if (e.key !== 'Escape' || e.repeat || e.isComposing) return
-      if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return
+    installVimWeb()
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.log('[newbro-vim] wiring failed:', err)
+  }
+}
+
+function installVimWeb(): void {
+  // The stealth preload can run twice in a page (session preload and the
+  // view's own); one set of listeners is enough.
+  const flag = '__newbroVimWeb'
+  const scope = globalThis as unknown as Record<string, boolean>
+  if (scope[flag]) return
+  scope[flag] = true
+
+  type Mode = 'command' | 'web' | 'insert' | null
+  let mode: Mode = null
+  let keymap: VimKeymap = new Map()
+  // INSERT because a field took focus (leaving it is WEB again), not by i.
+  let insertFromField = false
+  let hints: InputHints | null = null
+  // The last thing clicked: scrolling starts from its scrollable ancestor.
+  let lastClicked: Element | null = null
+
+  const sequencer = new KeySequencer(
+    () => keymap,
+    (command, e) => {
+      if (!e.repeat || VIM_REPEATABLE.has(command)) runCommand(command)
+    },
+  )
+
+  const report = (next: 'web' | 'insert', why: string): void => {
+    mode = next
+    if (next === 'web') insertFromField = false
+    sequencer.reset()
+    ipcRenderer.send('newbro-vim-page', { mode: next, why })
+  }
+
+  // Keys go to a field when one has focus: a click or a page script put it
+  // there, or gi picked it.
+  const enterInsertForField = (): void => {
+    insertFromField = true
+    report('insert', 'field focus')
+  }
+
+  let pushed = false
+  const applyState = (raw: unknown): void => {
+    const state = raw as { mode?: Mode; webKeymap?: Array<[string, string]> } | null
+    keymap = new Map(Array.isArray(state?.webKeymap) ? state.webKeymap : [])
+    const previous = mode
+    mode = state?.mode ?? null
+    if (mode !== 'web') {
+      sequencer.reset()
+      hints?.close()
+    }
+    // Arriving in WEB with a field focused (the click landed in one) is INSERT.
+    if (mode === 'web' && document.hasFocus() && keysBelongToElement(deepActiveElement())) enterInsertForField()
+    else if (mode === 'insert' && previous !== 'insert') insertFromField = keysBelongToElement(deepActiveElement())
+  }
+  ipcRenderer.on('newbro-vim-state', (_e, state: unknown) => {
+    pushed = true
+    applyState(state)
+  })
+  ipcRenderer.invoke('newbro-vim-state').then((state: unknown) => {
+    // A push that beat the answer is newer.
+    if (!pushed) applyState(state)
+  }).catch((err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.log('[newbro-vim] state fetch failed:', err)
+  })
+
+  const consume = (e: KeyboardEvent): void => {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (!e.isTrusted || e.isComposing) return
+    const modified = e.metaKey || e.ctrlKey || e.altKey
+    if (mode === 'insert') {
+      if (e.key !== 'Escape' || modified || e.shiftKey) return
+      consume(e)
+      const focused = deepActiveElement()
+      if (focused instanceof HTMLElement && focused !== document.body) focused.blur()
+      report('web', 'esc')
+      return
+    }
+    if (mode !== 'web') return
+    if (hints) {
+      hints.onKey(e)
+      return
+    }
+    // A field has the keys (focus moved there without a focus event we saw).
+    if (keysBelongToElement(deepActiveElement())) {
+      enterInsertForField()
+      return
+    }
+    if (modified) return
+    if (sequencer.feed(e)) {
+      consume(e)
+      return
+    }
+    if (e.key === 'Escape' && !e.shiftKey && !e.repeat) {
+      // Read once dispatch is over, so page listeners after ours count too.
       setTimeout(() => {
         if (!e.defaultPrevented) ipcRenderer.send('newbro-unhandled-escape')
       }, 0)
-    }, true)
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.log('[newbro-stealth] escape relay wiring failed:', err)
+    }
+  }, true)
+
+  document.addEventListener('focusin', (e) => {
+    const target = e.composedPath()[0]
+    if (mode === 'web' && !hints && target instanceof Element && keysBelongToElement(target)) enterInsertForField()
+  }, true)
+  document.addEventListener('focusout', () => {
+    if (mode !== 'insert' || !insertFromField) return
+    setTimeout(() => {
+      if (mode === 'insert' && insertFromField && document.hasFocus() && !keysBelongToElement(deepActiveElement())) {
+        report('web', 'field left')
+      }
+    }, 0)
+  }, true)
+  window.addEventListener('mousedown', (e) => {
+    const target = e.composedPath()[0]
+    if (target instanceof Element) lastClicked = target
+  }, true)
+
+  function runCommand(command: string): void {
+    switch (command) {
+      case 'web-scroll-down': scrollPage(VIM_SCROLL_STEP, 'auto'); break
+      case 'web-scroll-up': scrollPage(-VIM_SCROLL_STEP, 'auto'); break
+      case 'web-half-page-down': scrollPage(scrollTarget().clientHeight / 2, 'smooth'); break
+      case 'web-half-page-up': scrollPage(-scrollTarget().clientHeight / 2, 'smooth'); break
+      case 'web-top': scrollPage(-Infinity, 'auto'); break
+      case 'web-bottom': scrollPage(Infinity, 'auto'); break
+      case 'web-back': ipcRenderer.send('newbro-nav', 'back'); break
+      case 'web-forward': ipcRenderer.send('newbro-nav', 'forward'); break
+      case 'web-insert':
+        insertFromField = false
+        report('insert', 'i')
+        break
+      case 'web-focus-input':
+        hints = openInputHints(() => { hints = null })
+        break
+      case 'web-help':
+        ipcRenderer.send('newbro-vim-page', { help: true })
+        break
+    }
   }
+
+  /** What j/k/d/u move: the scrollable ancestor of what was last clicked or
+   *  focused, else of whatever sits in the middle of the viewport (Gmail's
+   *  message list), else the document. */
+  function scrollTarget(): Element {
+    const page = document.scrollingElement ?? document.documentElement
+    const fromChain = (start: Element | null): Element | null => {
+      for (let el = start; el; el = parentAcrossShadow(el)) {
+        if (el === document.body || el === document.documentElement) break
+        if (canScrollY(el)) return el
+      }
+      return null
+    }
+    const focused = deepActiveElement()
+    return fromChain(lastClicked?.isConnected ? lastClicked : null)
+      ?? fromChain(focused !== document.body ? focused : null)
+      ?? (page.scrollHeight > page.clientHeight + 1 ? page : null)
+      ?? fromChain(document.elementFromPoint(innerWidth / 2, innerHeight / 2))
+      ?? page
+  }
+
+  function scrollPage(dy: number, behavior: ScrollBehavior): void {
+    const target = scrollTarget()
+    const top = dy === Infinity ? target.scrollHeight : dy === -Infinity ? 0 : target.scrollTop + dy
+    target.scrollTo({ top, behavior })
+  }
+}
+
+// How far j/k scroll — Vimium's default step.
+const VIM_SCROLL_STEP = 60
+// WEB commands that keep going while their key is held.
+const VIM_REPEATABLE = new Set(['web-scroll-down', 'web-scroll-up', 'web-half-page-down', 'web-half-page-up'])
+
+// Input types that take typing; the rest (checkbox, button, …) don't hold
+// the keys.
+const TEXT_INPUT_TYPES = new Set([
+  '', 'text', 'search', 'email', 'url', 'tel', 'password', 'number',
+  'date', 'datetime-local', 'month', 'time', 'week',
+])
+
+function isTextField(el: Element): boolean {
+  if (el instanceof HTMLInputElement) return TEXT_INPUT_TYPES.has(el.type.toLowerCase())
+  if (el instanceof HTMLTextAreaElement) return true
+  return el instanceof HTMLElement && (el.isContentEditable || el.getAttribute('role') === 'textbox')
+}
+
+/** Whether keys typed with `el` focused belong to it rather than to Vim: a
+ *  text field, a select, or a frame (its document gets the keys, and this
+ *  preload doesn't run there). */
+function keysBelongToElement(el: Element | null): boolean {
+  if (!el) return false
+  if (el instanceof HTMLSelectElement || el instanceof HTMLIFrameElement) return true
+  return isTextField(el)
+}
+
+/** The focused element, looking into open shadow roots. */
+function deepActiveElement(): Element | null {
+  let el: Element | null = document.activeElement
+  while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement
+  return el
+}
+
+function parentAcrossShadow(el: Element): Element | null {
+  if (el.parentElement) return el.parentElement
+  const root = el.getRootNode()
+  return root instanceof ShadowRoot ? root.host : null
+}
+
+function canScrollY(el: Element): boolean {
+  if (el.scrollHeight <= el.clientHeight + 1) return false
+  const overflowY = getComputedStyle(el).overflowY
+  return overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay'
+}
+
+// ── gi: pick a text field ──────────────────────────────────────────────────
+
+interface InputHints {
+  onKey: (e: KeyboardEvent) => void
+  close: () => void
+}
+
+/** The page's visible text fields, in document order. */
+function collectTextFields(): HTMLElement[] {
+  const out: HTMLElement[] = []
+  const candidates = document.querySelectorAll<HTMLElement>(
+    'input, textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]',
+  )
+  for (const el of candidates) {
+    if (!isTextField(el)) continue
+    if ((el as HTMLInputElement).disabled || (el as HTMLInputElement).readOnly) continue
+    // An editable region inside another one is part of it.
+    if (el.parentElement?.closest('[contenteditable]:not([contenteditable="false"])')) continue
+    const rect = el.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2) continue
+    const style = getComputedStyle(el)
+    if (style.visibility === 'hidden' || style.display === 'none') continue
+    out.push(el)
+  }
+  return out
+}
+
+const HINT_COLOR = '#f97316'
+// Input types setSelectionRange works on.
+const CARET_INPUT_TYPES = new Set(['', 'text', 'search', 'url', 'tel', 'password'])
+
+/**
+ * Outlines every text field; h/j/k/l move the pick to the nearest field in
+ * that direction (Tab / Shift+Tab step through them in page order), Enter
+ * focuses the pick — the page's focusin turns that into INSERT — and Esc
+ * gives up. Drawn with DOM and CSSOM calls only: pages with Trusted Types
+ * or a strict style-src CSP reject markup strings and <style> text.
+ */
+function openInputHints(onClosed: () => void): InputHints | null {
+  const fields = collectTextFields()
+  if (fields.length === 0) return null
+  const inView = fields.findIndex((el) => {
+    const r = el.getBoundingClientRect()
+    return r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth
+  })
+  let index = inView === -1 ? 0 : inView
+
+  const host = document.createElement('div')
+  const root = host.attachShadow({ mode: 'closed' })
+  Object.assign(host.style, { position: 'fixed', inset: '0', pointerEvents: 'none', zIndex: '2147483647' })
+  document.documentElement.appendChild(host)
+
+  const render = (): void => {
+    while (root.firstChild) root.removeChild(root.firstChild)
+    fields.forEach((el, i) => {
+      const r = el.getBoundingClientRect()
+      if (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) return
+      const box = document.createElement('div')
+      const picked = i === index
+      Object.assign(box.style, {
+        position: 'fixed',
+        left: `${r.left - 3}px`,
+        top: `${r.top - 3}px`,
+        width: `${r.width + 6}px`,
+        height: `${r.height + 6}px`,
+        boxSizing: 'border-box',
+        border: picked ? `3px solid ${HINT_COLOR}` : `2px dashed ${HINT_COLOR}`,
+        borderRadius: '4px',
+        background: picked ? 'rgba(249, 115, 22, 0.18)' : 'rgba(249, 115, 22, 0.06)',
+        boxShadow: picked ? '0 0 0 2px rgba(0, 0, 0, 0.35)' : 'none',
+      })
+      root.appendChild(box)
+    })
+  }
+
+  const pick = (next: number): void => {
+    index = (next + fields.length) % fields.length
+    fields[index].scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    render()
+  }
+
+  // The nearest field whose centre lies in the given direction, distance
+  // along it counting less than drift across it.
+  const pickToward = (dx: number, dy: number): void => {
+    const from = fields[index].getBoundingClientRect()
+    const cx = from.left + from.width / 2
+    const cy = from.top + from.height / 2
+    let best = -1
+    let bestScore = Infinity
+    fields.forEach((el, i) => {
+      if (i === index) return
+      const r = el.getBoundingClientRect()
+      const vx = r.left + r.width / 2 - cx
+      const vy = r.top + r.height / 2 - cy
+      const along = vx * dx + vy * dy
+      if (along <= 1) return
+      const across = Math.abs(vx * dy - vy * dx)
+      const score = along + across * 2
+      if (score < bestScore) {
+        bestScore = score
+        best = i
+      }
+    })
+    // Nothing that way: step through the page order instead.
+    pick(best !== -1 ? best : index + (dx + dy > 0 ? 1 : -1))
+  }
+
+  const onViewportChange = (): void => render()
+  const close = (): void => {
+    window.removeEventListener('scroll', onViewportChange, true)
+    window.removeEventListener('resize', onViewportChange)
+    host.remove()
+    onClosed()
+  }
+
+  const onKey = (e: KeyboardEvent): void => {
+    // The picker owns the keyboard until it's done.
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    switch (keyTokenFromEvent(e)) {
+      case 'h': case '<Left>': pickToward(-1, 0); break
+      case 'l': case '<Right>': pickToward(1, 0); break
+      case 'j': case '<Down>': pickToward(0, 1); break
+      case 'k': case '<Up>': pickToward(0, -1); break
+      case '<Tab>': pick(index + 1); break
+      case '<S-Tab>': pick(index - 1); break
+      case '<Esc>': close(); break
+      case '<CR>': {
+        const el = fields[index]
+        close()
+        el.focus()
+        // Type at the end of what's there (number, date & co. have no caret).
+        if (el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && CARET_INPUT_TYPES.has(el.type.toLowerCase()))) {
+          el.setSelectionRange(el.value.length, el.value.length)
+        }
+        break
+      }
+    }
+  }
+
+  window.addEventListener('scroll', onViewportChange, true)
+  window.addEventListener('resize', onViewportChange)
+  pick(index)
+  return { onKey, close }
 }
 
 // ── Middle-click on <a> → open in new tab ─────────────────────────────────

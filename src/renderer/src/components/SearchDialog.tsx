@@ -31,6 +31,12 @@ const VIM_FILTER_COMMANDS: Record<string, FilterSelection> = {
   'search-groups': 'tabGroup',
   'search-tabs': 'tab',
 }
+const VIM_FILTER_COMMAND_BY_TYPE: Record<FilterType, string> = {
+  profile: 'search-profiles',
+  workspace: 'search-workspaces',
+  tabGroup: 'search-groups',
+  tab: 'search-tabs',
+}
 // Results numbered for search-row-1…9.
 const VIM_NUMBERED_ROWS = 9
 
@@ -314,8 +320,10 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
     return m ? parseInt(m[1], 10) : null
   }
 
-  /** Filter hotkeys: ⌘ on Mac, Ctrl on Windows/Linux. True when handled. */
+  /** Filter hotkeys: ⌘ on Mac, Ctrl on Windows/Linux. True when handled.
+   *  Off in Vim mode, like every regular shortcut — its letters pick filters. */
   const handleFilterChord = useCallback((e: KeyboardEvent | React.KeyboardEvent): boolean => {
+    if (vimKeymap) return false
     // Excluding the other platform's modifier (incl. Alt on Windows) keeps
     // AltGr (Ctrl+Alt) out.
     const mod = isMac ? e.metaKey : e.ctrlKey
@@ -348,7 +356,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
       }
     }
     return false
-  }, [selectFilter])
+  }, [selectFilter, vimKeymap])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (handleFilterChord(e)) return
@@ -480,7 +488,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
           >
             <Asterisk size={10} />
             All
-            <span className="opacity-50 ml-0.5">{MOD}R</span>
+            <span className="opacity-50 ml-0.5">{vimKeymap ? vimHint('search-all') : `${MOD}R`}</span>
           </button>
           {FILTER_TYPES.map((type, i) => {
             const Icon = TYPE_ICONS[type]
@@ -500,7 +508,9 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
                 {/* The letter shares the digit's modifier. Spelling it out
                     ("Ctrl+1/Ctrl+P") overflows the row once the scope switch
                     shows, so the footer carries the explicit form. */}
-                <span className="opacity-50 ml-0.5">{MOD}{i + 1}/{FILTER_LETTERS[type]}</span>
+                <span className="opacity-50 ml-0.5">
+                  {vimKeymap ? vimHint(VIM_FILTER_COMMAND_BY_TYPE[type]) : `${MOD}${i + 1}/${FILTER_LETTERS[type]}`}
+                </span>
               </button>
             )
           })}

@@ -9,6 +9,7 @@ import { requestExtensionInstall } from '../lib/extension-install'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
 import { useAppStore } from '../store/app-store'
 import { DEFAULT_VIM_KEYMAP, parseVimKeymap } from '../lib/vim-keymap'
+import { ACTION_LABELS } from '../lib/action-labels'
 import {
   PERMISSION_KINDS,
   PERMISSION_LABEL,
@@ -135,7 +136,6 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'add-to-bookshelf': [],
   'toggle-bookshelf': ['CmdOrCtrl+Shift+B'],
   'open-downloads': ['CmdOrCtrl+J'],
-  'command-mode': [],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -155,46 +155,6 @@ function isCustomBinding(action: string, current: string[]): boolean {
     if (current[i] !== defaults[i]) return true
   }
   return false
-}
-
-const ACTION_LABELS: Record<string, string> = {
-  'new-tab': 'New Tab',
-  'close-tab': 'Close Tab',
-  'reopen-closed-tab': 'Reopen Closed Tab',
-  'close-window': 'Close Window',
-  'new-workspace': 'New Workspace',
-  'next-tab': 'Next Tab',
-  'prev-tab': 'Previous Tab',
-  'toggle-sidebar': 'Toggle Sidebar',
-  'focus-url': 'Focus Address Bar',
-  search: 'Search Everything',
-  'command-palette': 'Command Palette',
-  back: 'Navigate Back',
-  forward: 'Navigate Forward',
-  reload: 'Reload Page',
-  settings: 'Open Settings',
-  'page-devtools': 'Toggle Page Developer Tools',
-  'ui-devtools': 'Toggle UI Developer Tools',
-  'find-in-page': 'Find in Page',
-  'save-page': 'Save Page As',
-  'tab-1': 'Switch to Tab 1',
-  'tab-2': 'Switch to Tab 2',
-  'tab-3': 'Switch to Tab 3',
-  'tab-4': 'Switch to Tab 4',
-  'tab-5': 'Switch to Tab 5',
-  'tab-6': 'Switch to Tab 6',
-  'tab-7': 'Switch to Tab 7',
-  'tab-8': 'Switch to Tab 8',
-  'tab-9': 'Switch to Tab 9',
-  'duplicate-tab': 'Duplicate Tab',
-  'move-tab': 'Move Tab',
-  'rename-tab-group': 'Rename Group',
-  'move-group': 'Move Group',
-  'duplicate-group': 'Duplicate Group',
-  'add-to-bookshelf': 'Add to Bookshelf',
-  'toggle-bookshelf': 'Toggle Bookshelf',
-  'open-downloads': 'Open Downloads',
-  'command-mode': 'Vim: Switch to COMMAND Mode',
 }
 
 interface Props {
@@ -2816,11 +2776,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <div>
                     <h3 className="text-lg font-semibold text-foreground">Vim Mode</h3>
                     <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
-                      Windows switch between COMMAND mode, where plain keys run the commands below, and
-                      INSERT mode, where keys go to the page or the field you're typing in. Esc on a page
-                      that doesn't use it, or a click on the browser chrome, switches to COMMAND; i, a click
-                      on the page or on a text field switches to INSERT. The current mode shows next to the
-                      workspace picker.
+                      Three modes, shown next to the workspace picker. COMMAND: plain keys drive the
+                      browser — tabs, panels, app commands. WEB: the page, driven the way Vimium does —
+                      scrolling, history, picking a text field. INSERT: keys go to the page or the field
+                      you're typing in. Enter on a tab goes into its page, i on to INSERT; Esc climbs back
+                      up, Ctrl+[ jumps straight to COMMAND. Clicking the page is WEB, clicking the browser
+                      around it COMMAND. Replaces the regular shortcuts and the Vimium extension.
                     </p>
                   </div>
                   <button
@@ -2845,8 +2806,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <div className="mt-4">
                     <div className="flex items-center justify-between gap-4 mb-2">
                       <p className="text-sm text-muted-foreground">
-                        COMMAND-mode keys: one <code className="font-mono text-xs">command keys…</code> per line.
-                        App commands use the same ids as the shortcuts below.
+                        One <code className="font-mono text-xs">command keys…</code> per line;
+                        the <code className="font-mono text-xs">web-</code> and <code className="font-mono text-xs">search-</code> prefixes
+                        say where a command works.
                       </p>
                       <button
                         type="button"
@@ -2883,134 +2845,140 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 )}
               </div>
 
-              <h3 className="text-sm font-semibold text-foreground mb-1">Shortcuts</h3>
-              <div className="flex items-center justify-between gap-4 mb-4">
-                <p className="text-sm text-muted-foreground">
-                  Click on a shortcut to reassign it. Each command supports up
-                  to {MAX_BINDINGS_PER_ACTION} bindings. Press Escape to cancel.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleResetKeybindings}
-                  className="shrink-0 flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-                >
-                  <RotateCcw size={12} />
-                  Reset to Defaults
-                </button>
-              </div>
-
-              {conflictError && (
-                <div className="mb-3 px-3 py-2 rounded-md border border-destructive/40 bg-destructive/10 text-xs text-destructive">
-                  {conflictError}
-                </div>
-              )}
-
-              <div className="relative mb-3">
-                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-                <input
-                  type="text"
-                  value={shortcutFilter}
-                  onChange={(event) => setShortcutFilter(event.target.value)}
-                  onKeyDown={(event) => { if (event.key === 'Escape') setShortcutFilter('') }}
-                  // Recording captures every keydown on the host window, so
-                  // typing here would be swallowed — stop recording instead.
-                  onFocus={() => setRecordingTarget(null)}
-                  placeholder="Filter shortcuts by name"
-                  autoFocus
-                  className="w-full h-9 pl-9 pr-8 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
-                />
-                {shortcutFilter && (
+              {/* Vim mode turns the regular shortcuts off — its keymap above
+                  replaces them — so they aren't offered while it's on. */}
+              {!vimMode && (
+                <>
+                <h3 className="text-sm font-semibold text-foreground mb-1">Shortcuts</h3>
+                <div className="flex items-center justify-between gap-4 mb-4">
+                  <p className="text-sm text-muted-foreground">
+                    Click on a shortcut to reassign it. Each command supports up
+                    to {MAX_BINDINGS_PER_ACTION} bindings. Press Escape to cancel.
+                  </p>
                   <button
                     type="button"
-                    // Keep focus in the input so the user can keep typing.
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => setShortcutFilter('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
-                    title="Clear filter"
+                    onClick={handleResetKeybindings}
+                    className="shrink-0 flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                   >
-                    <X size={10} />
+                    <RotateCcw size={12} />
+                    Reset to Defaults
                   </button>
-                )}
-              </div>
-
-              {filteredShortcutActions.length === 0 ? (
-                <p className="py-8 text-center text-xs text-muted-foreground border border-input rounded-md">No shortcuts match your filter.</p>
-              ) : (
-                <div className="flex flex-col divide-y divide-border border border-input rounded-md bg-card overflow-hidden">
-                  {filteredShortcutActions.map((action) => {
-                    const bindings = keybindings[action] || []
-                    const isCustom = isCustomBinding(action, bindings)
-                    return (
-                      <div
-                        key={action}
-                        className="flex items-center justify-between gap-4 px-4 py-3"
-                      >
-                        <span className="text-sm text-foreground">{ACTION_LABELS[action]}</span>
-                        <div className="flex items-center gap-2">
-                          {isCustom && (
-                            <button
-                              onClick={() => {
-                                setKeybindings((prev) => ({
-                                  ...prev,
-                                  [action]: [...(DEFAULT_KEYBINDINGS[action] || [])],
-                                }))
-                                setConflictError(null)
-                              }}
-                              className="h-5 w-5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
-                              title="Reset to default"
-                            >
-                              <RotateCcw size={10} />
-                            </button>
-                          )}
-                          {Array.from({ length: MAX_BINDINGS_PER_ACTION }).map((_, slot) => {
-                            const isRecording =
-                              recordingTarget?.action === action && recordingTarget.slot === slot
-                            const binding = bindings[slot]
-                            // Don't let the user start in a slot that's "ahead"
-                            // of any empty slot to its left — keeps storage
-                            // compact (no holes) and matches what the user
-                            // sees: filling slot 1 only makes sense once
-                            // slot 0 has something.
-                            const disabled = !binding && !isRecording && slot > bindings.length
-                            return (
-                              <div key={slot} className="relative inline-flex items-center">
-                                <button
-                                  onClick={() => !disabled && startRecording(action, slot)}
-                                  disabled={disabled}
-                                  className={`min-w-[120px] h-8 px-3 ${binding && !isRecording ? 'pr-7' : ''} rounded-md text-xs flex items-center justify-center transition-colors ${
-                                    isRecording
-                                      ? 'bg-background border border-ring text-primary'
-                                      : binding
-                                        ? 'bg-card border border-input text-foreground hover:bg-accent/40'
-                                        : 'bg-card border border-dashed border-input text-muted-foreground/70 hover:bg-accent/30'
-                                  } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                >
-                                  {isRecording
-                                    ? 'Press keys...'
-                                    : binding
-                                      ? formatAccelerator(binding)
-                                      : 'Add shortcut'}
-                                </button>
-                                {binding && !isRecording && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      clearBindingSlot(action, slot)
-                                    }}
-                                    className="absolute right-1 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
-                                    title="Clear this shortcut"
-                                  >
-                                    <X size={10} />
-                                  </button>
-                                )}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    )
-                  })}
                 </div>
+
+                {conflictError && (
+                  <div className="mb-3 px-3 py-2 rounded-md border border-destructive/40 bg-destructive/10 text-xs text-destructive">
+                    {conflictError}
+                  </div>
+                )}
+
+                <div className="relative mb-3">
+                  <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                  <input
+                    type="text"
+                    value={shortcutFilter}
+                    onChange={(event) => setShortcutFilter(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === 'Escape') setShortcutFilter('') }}
+                    // Recording captures every keydown on the host window, so
+                    // typing here would be swallowed — stop recording instead.
+                    onFocus={() => setRecordingTarget(null)}
+                    placeholder="Filter shortcuts by name"
+                    autoFocus
+                    className="w-full h-9 pl-9 pr-8 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                  />
+                  {shortcutFilter && (
+                    <button
+                      type="button"
+                      // Keep focus in the input so the user can keep typing.
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => setShortcutFilter('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
+                      title="Clear filter"
+                    >
+                      <X size={10} />
+                    </button>
+                  )}
+                </div>
+
+                {filteredShortcutActions.length === 0 ? (
+                  <p className="py-8 text-center text-xs text-muted-foreground border border-input rounded-md">No shortcuts match your filter.</p>
+                ) : (
+                  <div className="flex flex-col divide-y divide-border border border-input rounded-md bg-card overflow-hidden">
+                    {filteredShortcutActions.map((action) => {
+                      const bindings = keybindings[action] || []
+                      const isCustom = isCustomBinding(action, bindings)
+                      return (
+                        <div
+                          key={action}
+                          className="flex items-center justify-between gap-4 px-4 py-3"
+                        >
+                          <span className="text-sm text-foreground">{ACTION_LABELS[action]}</span>
+                          <div className="flex items-center gap-2">
+                            {isCustom && (
+                              <button
+                                onClick={() => {
+                                  setKeybindings((prev) => ({
+                                    ...prev,
+                                    [action]: [...(DEFAULT_KEYBINDINGS[action] || [])],
+                                  }))
+                                  setConflictError(null)
+                                }}
+                                className="h-5 w-5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
+                                title="Reset to default"
+                              >
+                                <RotateCcw size={10} />
+                              </button>
+                            )}
+                            {Array.from({ length: MAX_BINDINGS_PER_ACTION }).map((_, slot) => {
+                              const isRecording =
+                                recordingTarget?.action === action && recordingTarget.slot === slot
+                              const binding = bindings[slot]
+                              // Don't let the user start in a slot that's "ahead"
+                              // of any empty slot to its left — keeps storage
+                              // compact (no holes) and matches what the user
+                              // sees: filling slot 1 only makes sense once
+                              // slot 0 has something.
+                              const disabled = !binding && !isRecording && slot > bindings.length
+                              return (
+                                <div key={slot} className="relative inline-flex items-center">
+                                  <button
+                                    onClick={() => !disabled && startRecording(action, slot)}
+                                    disabled={disabled}
+                                    className={`min-w-[120px] h-8 px-3 ${binding && !isRecording ? 'pr-7' : ''} rounded-md text-xs flex items-center justify-center transition-colors ${
+                                      isRecording
+                                        ? 'bg-background border border-ring text-primary'
+                                        : binding
+                                          ? 'bg-card border border-input text-foreground hover:bg-accent/40'
+                                          : 'bg-card border border-dashed border-input text-muted-foreground/70 hover:bg-accent/30'
+                                    } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                  >
+                                    {isRecording
+                                      ? 'Press keys...'
+                                      : binding
+                                        ? formatAccelerator(binding)
+                                        : 'Add shortcut'}
+                                  </button>
+                                  {binding && !isRecording && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        clearBindingSlot(action, slot)
+                                      }}
+                                      className="absolute right-1 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
+                                      title="Clear this shortcut"
+                                    >
+                                      <X size={10} />
+                                    </button>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+                </>
               )}
             </div>
           )}

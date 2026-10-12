@@ -3,7 +3,7 @@ import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getV
 import { normalizeURL, setSearchEngine } from './lib/url'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
-import { useVimMode, dispatchPanelCommand, claimRendererFocus, isCommandMode, type VimPanel } from './lib/vim-mode'
+import { useVimMode, dispatchPanelCommand, claimRendererFocus, isCommandMode, type VimPanel, type VimMode } from './lib/vim-mode'
 import { parseVimKeymap, DEFAULT_VIM_KEYMAP, isPanelCommand } from './lib/vim-keymap'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
@@ -13,6 +13,7 @@ import { SearchDialog } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
+import { VimHelpDialog } from './components/VimHelpDialog'
 import { SidePanel } from './components/SidePanel'
 import { startExtensionTabGroupsBridge } from './lib/extension-tab-groups'
 import { setExtensionInstallHandler, type InstallOutcome } from './lib/extension-install'
@@ -164,6 +165,8 @@ declare global {
       toggleFocusedDevTools?: () => Promise<void>
       closeWindow: () => Promise<void>
       focusWindowRenderer: () => void
+      /** Vim mode's mode and WEB keys, for this window's pages. */
+      vimSetState?: (state: { mode: 'command' | 'web' | 'insert' | null; webKeymap: Array<[string, string]> }) => void
       reclaimWindowRendererFocus?: () => void
       minimizeWindow: () => Promise<void>
       maximizeWindow: () => Promise<void>
@@ -578,6 +581,9 @@ export default function App() {
   // Vim mode: which panel has the COMMAND-mode cursor. `b` moves it to the
   // Bookshelf, `s` back; it falls back to the Sidebar when the shelf closes.
   const [vimFocusedPanel, setVimFocusedPanel] = useState<VimPanel>('sidebar')
+  // The help window (?), and the mode it was opened from — closing it goes
+  // back there.
+  const [vimHelpFrom, setVimHelpFrom] = useState<VimMode | null>(null)
   // The Vim mode API for the shortcut handler, which is registered once.
   const vimRef = useRef<ReturnType<typeof useVimMode> | null>(null)
 
@@ -1320,12 +1326,14 @@ export default function App() {
         setBookshelfOpen(true)
         setVimFocusedPanel('bookshelf')
         return
+      case 'help':
+        setVimHelpFrom('command')
+        return
     }
     if (isPanelCommand(command)) {
       if (dispatchPanelCommand(vimPanel, command)) return
-      // Sidebar hidden: still step through the tabs.
-      if (command === 'cursor-down') shortcutHandlerRef.current?.('next-tab')
-      else if (command === 'cursor-up') shortcutHandlerRef.current?.('prev-tab')
+      // Sidebar hidden: no cursor to move, but Enter still goes into the page.
+      if (command === 'row-open') vimRef.current?.enterWeb()
       return
     }
     shortcutHandlerRef.current?.(command)
@@ -1333,7 +1341,10 @@ export default function App() {
   const vim = useVimMode({
     enabled: vimEnabled,
     keymap: vimKeymap.main,
+    webKeymap: vimKeymap.web,
     onCommand: runVimCommand,
+    isActiveTab: (tabId) => useAppStore.getState().activeTabId === tabId,
+    onHelp: () => setVimHelpFrom(vimRef.current?.mode ?? 'web'),
     focusPage: () => {
       const s = useAppStore.getState()
       if (!s.activeTabId) return false
@@ -1359,7 +1370,7 @@ export default function App() {
   // A popup window (Search, Command Palette, Settings) closing hands focus
   // back to this window — sometimes to the page view. In COMMAND mode the
   // chrome keeps it.
-  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen
+  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || vimHelpFrom !== null
   const popupWasOpenRef = useRef(popupOpen)
   useEffect(() => {
     if (popupWasOpenRef.current && !popupOpen && isCommandMode()) claimRendererFocus(false)
@@ -1376,7 +1387,7 @@ export default function App() {
           visible={sidebarVisible}
           showTabNumbers={settings?.showTabNumbers ?? true}
           vimActive={vim.mode === 'command' && vimPanel === 'sidebar'}
-          onVimInsert={vim.enterInsert}
+          onVimEnterPage={vim.enterWeb}
         />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
           <FindBar
@@ -1397,7 +1408,7 @@ export default function App() {
           profileId={windowProfileId ?? activeProfileId}
           onClose={() => setBookshelfOpen(false)}
           vimActive={vim.mode === 'command' && vimPanel === 'bookshelf'}
-          onVimInsert={vim.enterInsert}
+          onVimEnterPage={vim.enterWeb}
         />
       </div>
       <SearchDialog
@@ -1405,6 +1416,17 @@ export default function App() {
         onOpenChange={setSearchOpen}
         windowWorkspaceId={windowWorkspaceId}
         vimKeymap={vimEnabled ? vimKeymap.search : null}
+      />
+      <VimHelpDialog
+        open={vimHelpFrom !== null}
+        keymap={vimKeymap}
+        fromMode={vimHelpFrom ?? 'command'}
+        onClose={() => {
+          const from = vimHelpFrom
+          setVimHelpFrom(null)
+          // Back to the page it was opened from.
+          if (from === 'web' || from === 'insert') vimRef.current?.returnToPage()
+        }}
       />
       <ExtensionInstallDialog
         preview={installPrompt?.preview ?? null}
