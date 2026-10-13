@@ -3,7 +3,7 @@ import { ChevronUp, ChevronDown, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { DetachedWindow, type PopupPlacement } from './DetachedWindow'
 import { VimModeBadge } from './VimModeBadge'
-import { Hint, HintBar, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, vimKeyCaps, vimKeyCapsAll } from './KeyHints'
 import { usePopupVimMode } from '../lib/vim-mode'
 import type { VimKeymap } from '../lib/vim-keymap'
 
@@ -207,8 +207,8 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
     : ''
   const shift = isMac ? '⇧' : 'Shift'
   // What steps through the matches, for the buttons' tooltips.
-  const nextKeys = vimKeymap ? vimKeyCaps(vimKeymap, 'find-next').join(' / ') : 'Enter'
-  const prevKeys = vimKeymap ? vimKeyCaps(vimKeymap, 'find-prev').join(' / ') : `${shift}+Enter`
+  const nextKeys = vimKeymap ? vimKeyCapsAll(vimKeymap, 'find-next').join(' / ') : 'Enter'
+  const prevKeys = vimKeymap ? vimKeyCapsAll(vimKeymap, 'find-prev').join(' / ') : `${shift}+Enter`
 
   return (
     <DetachedWindow
@@ -228,8 +228,8 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
         <HintBar>
           {vim.mode === 'command' ? (
             <>
-              <Hint label="Next" keys={vimKeyCaps(vimKeymap, 'find-next')} />
-              <Hint label="Previous" keys={vimKeyCaps(vimKeymap, 'find-prev')} />
+              <Hint label="Next" keys={vimKeyCapsAll(vimKeymap, 'find-next')} />
+              <Hint label="Previous" keys={vimKeyCapsAll(vimKeymap, 'find-prev')} />
               <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
               <Hint label="Close" keys={['Esc']} />
             </>

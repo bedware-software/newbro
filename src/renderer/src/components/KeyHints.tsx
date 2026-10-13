@@ -83,3 +83,9 @@ export function vimKeyCaps(map: VimKeymap | null, ...commands: string[]): string
   }
   return out
 }
+
+/** Every key `map` binds to `command`, as caps — for a command whose keys
+ *  are all worth knowing (Find's j / n). */
+export function vimKeyCapsAll(map: VimKeymap | null, command: string): string[] {
+  return map ? keysFor(map, command).map(displayKeySequence) : []
+}

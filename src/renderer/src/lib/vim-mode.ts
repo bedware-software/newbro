@@ -41,7 +41,10 @@ export function isCommandMode(): boolean {
 // is the focused one, so a dialog opened from a menu keeps its focus.
 const FOCUS_SETTLE_MS = 300
 // Commands that keep going while their key is held.
-const REPEATABLE = new Set(['cursor-down', 'cursor-up', 'cursor-down-show', 'cursor-up-show', 'row-move-down', 'row-move-up'])
+const REPEATABLE = new Set([
+  'cursor-down', 'cursor-up', 'cursor-down-show', 'cursor-up-show', 'row-move-down', 'row-move-up',
+  'find-next', 'find-prev',
+])
 
 // App commands a page's BROWSE keys may ask for (browse-close-tab & co.).
 const PAGE_COMMANDS = new Set(['close-tab', 'copy-url', 'paste-url', 'paste-url-new-tab', 'focus-url', 'split-focus'])
