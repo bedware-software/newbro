@@ -35,7 +35,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // — `send` avoids the ~60×/sec round-trip latency of `invoke`.
   detachedWindowDragStart: (): Promise<boolean> => ipcRenderer.invoke('detached-window:drag-start'),
   detachedWindowDragUpdate: (): void => { ipcRenderer.send('detached-window:drag-update') },
-  detachedWindowDragEnd: (): void => { ipcRenderer.send('detached-window:drag-end') },
+  detachedWindowDragEnd: (): Promise<{ left: number; top: number } | null> => ipcRenderer.invoke('detached-window:drag-end'),
   detachedWindowShow: (alwaysOnTop?: boolean): void => { ipcRenderer.send('detached-window:show', { alwaysOnTop: !!alwaysOnTop }) },
   // A pinned popup: its spot in this window's content area, and taking the
   // keyboard back once it's open.

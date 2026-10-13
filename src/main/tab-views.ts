@@ -107,6 +107,10 @@ interface TabRecord {
 
 const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
 
+// Tabs asked to reload whose page hasn't started navigating yet: a page that
+// holds on to unsaved work is asked "Reload site?" rather than "Leave site?".
+const reloadingTabs = new Set<string>()
+
 const HIDDEN_BOUNDS: TabBounds = { x: 0, y: 0, width: 0, height: 0 }
 
 // Tab views are normally transparent so the renderer shows through during
@@ -601,14 +605,33 @@ function wireEvents(rec: TabRecord): void {
       windowId: rec.windowId,
     })
   })
+  // A page holding unsaved work (its beforeunload — Confluence's comment
+  // editor) gets Chrome's question. Left alone, Electron cancels the reload
+  // or the navigation without a word.
   wc.on('will-prevent-unload', (event) => {
+    const reloading = reloadingTabs.delete(rec.tabId)
     log.info('tab will-prevent-unload', {
       tabId: rec.tabId,
+      reloading,
       url: (() => { try { return wc.getURL() } catch { return '' } })(),
     })
-    // Don't preventDefault — let the page's beforeunload prompt run if the
-    // user has unsaved input. This listener is purely for visibility.
-    void event
+    const question = reloading ? 'Reload site?' : 'Leave site?'
+    const options: Electron.MessageBoxSyncOptions = {
+      type: 'question',
+      title: question,
+      message: question,
+      detail: 'Changes that you made may not be saved.',
+      buttons: [reloading ? 'Reload' : 'Leave', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    }
+    const win = BrowserWindow.fromId(rec.windowId)
+    const choice = win && !win.isDestroyed() ? dialog.showMessageBoxSync(win, options) : dialog.showMessageBoxSync(options)
+    if (choice === 0) event.preventDefault()
+  })
+  wc.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) reloadingTabs.delete(rec.tabId)
   })
   wc.on('unresponsive', () => {
     log.warn('tab unresponsive', {
@@ -761,6 +784,16 @@ function wireEvents(rec: TabRecord): void {
   let lastMouseDown = 0
   wc.on('before-mouse-event', (_e, mouse) => {
     if (mouse.type === 'mouseDown') lastMouseDown = Date.now()
+  })
+  // Vim INSERT in a frame — an editor in an iframe, like Confluence's comment
+  // box. The page's Vim code runs in the top frame only and keys typed in a
+  // frame never reach it, so Esc out of INSERT is caught here and handed on.
+  wc.on('before-input-event', (event, input) => {
+    if (input.key !== 'Escape' || (input.type !== 'keyDown' && input.type !== 'rawKeyDown')) return
+    if (input.shift || input.control || input.alt || input.meta) return
+    if (vimStateByWindow.get(rec.windowId)?.mode !== 'insert' || !wc.focusedFrame?.parent) return
+    event.preventDefault()
+    wc.send('newbro-vim-leave-frame')
   })
   wc.on('focus', () => {
     const at = Date.now()
@@ -1445,6 +1478,7 @@ export async function tabSavePage(tabId: string): Promise<boolean> {
 export function tabReload(tabId: string, ignoreCache: boolean): void {
   const rec = tabs.get(tabId)
   if (!rec) return
+  reloadingTabs.add(tabId)
   if (ignoreCache) rec.view.webContents.reloadIgnoringCache()
   else rec.view.webContents.reload()
   // Match the pre-focusOnNavigation:false behaviour: a user-triggered reload

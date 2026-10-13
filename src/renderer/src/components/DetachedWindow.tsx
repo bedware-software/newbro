@@ -50,6 +50,9 @@ interface Props {
   placement?: PopupPlacement
   /** Bumped to give the keyboard back to a pinned popup that's open. */
   focusTick?: number
+  /** A pinned popup dragged by its handle stays where it's dropped: its new
+   *  spot, to keep as `placement`. */
+  onMoved?: (placement: PopupPlacement) => void
   onClose: () => void
   onWindowChange?: (popup: Window | null) => void
   children: ReactNode
@@ -162,6 +165,7 @@ export function DetachedWindow({
   matchRunwaPalette = false,
   placement,
   focusTick,
+  onMoved,
   onClose,
   onWindowChange,
   children,
@@ -175,6 +179,8 @@ export function DetachedWindow({
   const suppressBeforeUnloadRef = useRef(false)
   const onCloseRef = useRef(onClose)
   const onWindowChangeRef = useRef(onWindowChange)
+  const onMovedRef = useRef(onMoved)
+  onMovedRef.current = onMoved
 
   useEffect(() => {
     onCloseRef.current = onClose
@@ -307,7 +313,9 @@ export function DetachedWindow({
     const stopDragging = () => {
       const wasDragging = !!dragState && dragState.moved
       if (dragState) {
-        window.electronAPI.detachedWindowDragEnd()
+        void window.electronAPI.detachedWindowDragEnd().then((spot) => {
+          if (wasDragging && spot) onMovedRef.current?.(spot)
+        })
       }
       dragState = null
       rafPending = false

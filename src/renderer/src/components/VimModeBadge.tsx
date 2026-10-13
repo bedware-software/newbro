@@ -18,7 +18,7 @@ const MODE_STYLE: Record<VimMode, { label: string; className: string; title: str
   },
   browse: {
     label: 'BROWSE',
-    className: 'bg-vim-browse/15 text-vim-browse',
+    className: 'bg-vim-browse-wash text-vim-browse',
     title: 'Vim: BROWSE mode — the page, driven by its Vim keys',
   },
   insert: {
@@ -30,7 +30,8 @@ const MODE_STYLE: Record<VimMode, { label: string; className: string; title: str
 
 /** Vim's mode block, as a statusline shows it: COMMAND in blue, BROWSE in
  *  yellow, INSERT in green — each a faint wash of its colour under text in
- *  it, so the block reads at a glance without shouting. Square, and fixed
+ *  it (BROWSE's wash is its own token, see globals.css), so the block reads
+ *  at a glance without shouting. Square, and fixed
  *  width, so switching modes doesn't shift what follows. */
 export function VimModeBadge({ mode, pending, size = 'sm', className = '' }: Props) {
   const style = MODE_STYLE[mode]

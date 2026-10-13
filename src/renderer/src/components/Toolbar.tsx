@@ -1466,16 +1466,14 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
                 </div>
               )}
             </button>
-            <div className="w-px h-full ml-1.5 bg-card" />
+            {/* The hairline after the padlock; Vim's mode block takes its place. */}
+            <div className={vimMode ? 'w-1.5 shrink-0' : 'w-px h-full ml-1.5 bg-card'} />
           </>)}
-          {/* Vim's mode, a segment of the bar between the padlock and the
-              address, a hairline on either side. With no padlock (an
-              internal page) it starts the bar and takes its left corners. */}
+          {/* Vim's mode, a segment of the bar flush between the padlock and
+              the address. With no padlock (an internal page) it starts the
+              bar and takes its left corners. */}
           {vimMode && (
-            <>
-              <VimModeBadge mode={vimMode} pending={vimPending} size="bar" className={security === 'internal' ? 'rounded-l-md' : ''} />
-              <div className="w-px h-full bg-card shrink-0" />
-            </>
+            <VimModeBadge mode={vimMode} pending={vimPending} size="bar" className={security === 'internal' ? 'rounded-l-md' : ''} />
           )}
           {/* The address editor (e) has the address: the bar shows stats. */}
           {urlEditorOpen

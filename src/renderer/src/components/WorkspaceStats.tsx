@@ -1,6 +1,9 @@
 // What the address bar shows while the address editor has the address
 // (UrlEditor.tsx): how much is open — here, in this profile, everywhere.
+// Centred in the bar; each scope a group with its name and numbers in bold,
+// the groups set apart by dividers.
 
+import type { ReactNode } from 'react'
 import { Globe, Layout, User } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import type { Workspace } from '../store/types'
@@ -9,9 +12,27 @@ function tabCount(w: Workspace): number {
   return (w.tabs?.length ?? 0) + w.tabGroups.reduce((n, g) => n + g.tabs.length, 0)
 }
 
-function plural(n: number, one: string, many = `${one}s`): string {
-  return `${n} ${n === 1 ? one : many}`
+/** A number, standing out from the word after it. */
+function Count({ n, one, many = `${one}s` }: { n: number; one: string; many?: string }) {
+  return (
+    <span>
+      <span className="font-semibold text-foreground tabular-nums">{n}</span> {n === 1 ? one : many}
+    </span>
+  )
 }
+
+function Scope({ icon, name, title, children }: { icon: ReactNode; name: string; title: string; children: ReactNode }) {
+  return (
+    <span className="flex items-center gap-1.5 min-w-0" title={title}>
+      {icon}
+      <span className="font-semibold text-foreground truncate max-w-40">{name}</span>
+      <span className="flex items-center gap-1.5 shrink-0">{children}</span>
+    </span>
+  )
+}
+
+const Dot = () => <span className="text-muted-foreground/70">·</span>
+const Divider = () => <span className="w-px h-4 shrink-0 bg-muted-foreground/40" />
 
 export function WorkspaceStats() {
   const profiles = useAppStore((s) => s.profiles)
@@ -24,26 +45,34 @@ export function WorkspaceStats() {
   const allWorkspaces = profiles.reduce((n, p) => n + p.workspaces.length, 0)
 
   return (
-    <div className="flex-1 min-w-0 flex items-center gap-4 px-3 text-xs text-muted-foreground whitespace-nowrap overflow-hidden select-none">
-      <span className="text-foreground/80">Editing the address below</span>
+    <div className="flex-1 min-w-0 h-full flex items-center justify-center-safe gap-3.5 px-3 text-[13px] text-muted-foreground whitespace-nowrap overflow-hidden select-none">
       {workspace && (
-        <span className="flex items-center gap-1.5" title="This workspace">
-          <Layout size={13} />
-          <span className="text-foreground/80">{workspace.name}</span>
-          {plural(tabCount(workspace), 'tab')} · {plural(workspace.tabGroups.length, 'group')}
-        </span>
+        <>
+          <Scope icon={<Layout size={14} />} name={workspace.name} title="This workspace">
+            <Count n={tabCount(workspace)} one="tab" />
+            <Dot />
+            <Count n={workspace.tabGroups.length} one="group" />
+          </Scope>
+          <Divider />
+        </>
       )}
       {profile && (
-        <span className="flex items-center gap-1.5" title="This profile">
-          <User size={13} />
-          <span className="text-foreground/80">{profile.name}</span>
-          {plural(profile.workspaces.length, 'workspace')} · {plural(profileTabs, 'tab')}
-        </span>
+        <>
+          <Scope icon={<User size={14} />} name={profile.name} title="This profile">
+            <Count n={profile.workspaces.length} one="workspace" />
+            <Dot />
+            <Count n={profileTabs} one="tab" />
+          </Scope>
+          <Divider />
+        </>
       )}
-      <span className="flex items-center gap-1.5" title="Every profile">
-        <Globe size={13} />
-        {plural(profiles.length, 'profile')} · {plural(allWorkspaces, 'workspace')} · {plural(allTabs, 'tab')}
-      </span>
+      <Scope icon={<Globe size={14} />} name="All" title="Every profile">
+        <Count n={profiles.length} one="profile" />
+        <Dot />
+        <Count n={allWorkspaces} one="workspace" />
+        <Dot />
+        <Count n={allTabs} one="tab" />
+      </Scope>
     </div>
   )
 }

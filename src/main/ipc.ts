@@ -782,8 +782,19 @@ export function registerIpcHandlers(): void {
     })
   })
 
-  ipcMain.on('detached-window:drag-end', () => {
+  // A pinned popup stays where it was dropped: that's its spot from now on,
+  // handed back so the renderer can keep it.
+  ipcMain.handle('detached-window:drag-end', () => {
+    const s = detachedDragSession
     detachedDragSession = null
+    const spot = s && !s.popup.isDestroyed() ? pinnedSpots.get(s.popup) : undefined
+    const parent = spot ? s?.popup.getParentWindow() : null
+    if (!s || !spot || !parent || parent.isDestroyed()) return null
+    const bounds = s.popup.getBounds()
+    const content = parent.getContentBounds()
+    spot.left = bounds.x - content.x
+    spot.top = bounds.y - content.y
+    return { left: spot.left, top: spot.top }
   })
 
   // A pinned popup (DetachedWindow's `placement`): where it sits in its

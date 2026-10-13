@@ -644,10 +644,11 @@ if (STEALTH_ENABLED) {
 // through; the ones that act on the browser (close the tab, copy the
 // address) go to the renderer. INSERT passes everything through; Esc leaves
 // it for BROWSE (and a focused field loses focus), like Vimium's insert
-// mode. In BROWSE, an Esc the
-// page has no use for climbs on to COMMAND: one a site acted on (closing a
-// dialog) is marked with preventDefault and stays the page's. Changes made
-// here (i, a field focused or left, Esc) are reported back to the renderer.
+// mode; in a field inside a frame main catches that Esc for us. In BROWSE,
+// an Esc the page has no use for climbs on to COMMAND: one a site acted on
+// (closing a dialog) is marked with preventDefault and visibly changes the
+// page, and stays the page's. Changes made here (i, a field focused or
+// left, Esc) are reported back to the renderer.
 //
 // The keydown listener sits in the capture phase on window, registered
 // before any page script, so it sees keys first: a consumed key never
@@ -731,15 +732,25 @@ function installVimBrowse(): void {
     e.stopImmediatePropagation()
   }
 
+  // Esc out of INSERT: the field (or frame) with the keys lets them go.
+  const leaveInsert = (): void => {
+    const focused = deepActiveElement()
+    if (focused instanceof HTMLElement && focused !== document.body) focused.blur()
+    report('browse', 'esc')
+  }
+  // Keys typed in a frame (an editor in an iframe — Confluence's comment
+  // box) never reach this document; main sees that Esc and passes it here.
+  ipcRenderer.on('newbro-vim-leave-frame', () => {
+    if (mode === 'insert') leaveInsert()
+  })
+
   window.addEventListener('keydown', (e) => {
     if (!e.isTrusted || e.isComposing) return
     const modified = e.metaKey || e.ctrlKey || e.altKey
     if (mode === 'insert') {
       if (e.key !== 'Escape' || modified || e.shiftKey) return
       consume(e)
-      const focused = deepActiveElement()
-      if (focused instanceof HTMLElement && focused !== document.body) focused.blur()
-      report('browse', 'esc')
+      leaveInsert()
       return
     }
     if (mode !== 'browse') return
@@ -763,9 +774,14 @@ function installVimBrowse(): void {
       return
     }
     if (e.key === 'Escape' && !e.shiftKey && !e.repeat) {
-      // Read once dispatch is over, so page listeners after ours count too.
+      // An Esc the page marked used stays the page's — unless nothing came
+      // of it: Atlassian's AUI (Confluence, Jira) marks every Esc, with or
+      // without a dialog to close. Read once dispatch is over, so page
+      // listeners after ours count too.
+      const reacted = watchForReaction()
       setTimeout(() => {
-        if (!e.defaultPrevented) ipcRenderer.send('newbro-unhandled-escape')
+        const pageReacted = reacted()
+        if (!e.defaultPrevented || !pageReacted) ipcRenderer.send('newbro-unhandled-escape')
       }, 0)
     }
   }, true)
@@ -782,6 +798,17 @@ function installVimBrowse(): void {
       }
     }, 0)
   }, true)
+  // Focus moving into a frame and back out fires no focusin / focusout
+  // here: this window blurs, with the frame left as the active element,
+  // and is focused again.
+  window.addEventListener('blur', () => {
+    setTimeout(() => {
+      if (mode === 'browse' && !hints && document.hasFocus() && deepActiveElement() instanceof HTMLIFrameElement) enterInsertForField()
+    }, 0)
+  })
+  window.addEventListener('focus', () => {
+    if (mode === 'insert' && insertFromField && !keysBelongToElement(deepActiveElement())) report('browse', 'field left')
+  })
   window.addEventListener('mousedown', (e) => {
     const target = e.composedPath()[0]
     if (target instanceof Element) lastClicked = target
@@ -933,6 +960,55 @@ function deepActiveElement(): Element | null {
   return el
 }
 
+// Attributes that hide an element: one of them changing on an element that
+// is hidden now may be what hid it (a dialog closing).
+const HIDING_ATTRIBUTES = new Set(['class', 'style', 'hidden', 'aria-hidden', 'open'])
+// The page's layers — dialogs, menus, popups — whose visibility before a key
+// is noted, so a change to one that was hidden all along is told apart from
+// one closing.
+const LAYER_SELECTOR = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [role="tooltip"], ' +
+  '[aria-modal="true"], dialog, [popover], [open]'
+const VISIBILITY_CHECK = { visibilityProperty: true, opacityProperty: true }
+
+/** Starts watching for the page's visible answer to a key: elements added,
+ *  removed, restyled or hidden, or focus moving. The returned function stops
+ *  watching and says whether any of it happened. Bookkeeping doesn't count:
+ *  scratch work (jQuery tests a selector on a <fieldset> it adds and takes
+ *  away again), changes to elements that stay hidden (Atlassian's AUI marks
+ *  a hidden dialog it still keeps open on Esc), and attributes of <html> and
+ *  <body>, where input-modality trackers mark every key. */
+function watchForReaction(): () => boolean {
+  const focusedBefore = deepActiveElement()
+  const layerShown = new Map<Element, boolean>()
+  for (const layer of document.querySelectorAll(LAYER_SELECTOR)) layerShown.set(layer, layer.checkVisibility(VISIBILITY_CHECK))
+  const records: MutationRecord[] = []
+  const observer = new MutationObserver((list) => { records.push(...list) })
+  observer.observe(document, { subtree: true, childList: true, attributes: true })
+  return () => {
+    records.push(...observer.takeRecords())
+    observer.disconnect()
+    if (deepActiveElement() !== focusedBefore) return true
+    const added = new Set<Node>()
+    for (const r of records) r.addedNodes.forEach((node) => added.add(node))
+    // Made while the key was handled: the node or one of its ancestors.
+    const isNew = (node: Node): boolean => {
+      for (let n: Node | null = node; n; n = n.parentNode) if (added.has(n)) return true
+      return false
+    }
+    return records.some((r) => {
+      if (r.type === 'attributes') {
+        const el = r.target as Element
+        if (el === document.documentElement || el === document.body || !el.isConnected || isNew(el)) return false
+        if (el.checkVisibility(VISIBILITY_CHECK)) return true
+        // Hidden now: what hid it, unless it was hidden before too.
+        return layerShown.get(el) ?? HIDING_ATTRIBUTES.has(r.attributeName ?? '')
+      }
+      return Array.from(r.addedNodes).some((node) => node.isConnected) ||
+        Array.from(r.removedNodes).some((node) => !node.isConnected && !isNew(node) && layerShown.get(node as Element) !== false)
+    })
+  }
+}
+
 function parentAcrossShadow(el: Element): Element | null {
   if (el.parentElement) return el.parentElement
   const root = el.getRootNode()
@@ -952,14 +1028,52 @@ interface InputHints {
   close: () => void
 }
 
-/** The page's visible text fields, in document order. */
+/** A frame whose document is an editor (TinyMCE and CKEditor in their
+ *  iframe modes). Only a same-origin frame's document can be looked into. */
+function isEditableFrame(el: Element): el is HTMLIFrameElement {
+  if (!(el instanceof HTMLIFrameElement)) return false
+  try {
+    const doc = el.contentDocument
+    return !!doc && (doc.designMode === 'on' || !!doc.body?.isContentEditable)
+  } catch {
+    return false
+  }
+}
+
+// What a box standing in for an editor is called.
+const STAND_IN_NAME = /placeholder|prompt/i
+const STAND_IN_ELLIPSIS = /(\.\.\.|…)$/
+const INTERACTIVE = 'a[href], button, input, select, textarea, iframe, [role="button"], [tabindex]'
+
+/**
+ * A box that stands in for an editor until clicked, the editor loading in
+ * its place: "Write a comment..." in Confluence, "Add a comment…" on
+ * YouTube. A wide, clickable line of text with nothing clickable inside,
+ * named a placeholder — or reading like one, ending in an ellipsis, and
+ * named a prompt or showing a text cursor.
+ */
+function isEditorStandIn(el: HTMLElement): boolean {
+  if (isTextField(el)) return false
+  const name = `${el.id} ${el.getAttribute('class') ?? ''} ${el.getAttribute('data-testid') ?? ''}`
+  const text = (el.textContent ?? '').trim()
+  if (!text || text.length > 80) return false
+  const named = STAND_IN_NAME.exec(name)?.[0].toLowerCase()
+  const ellipsis = STAND_IN_ELLIPSIS.test(text)
+  if (named !== 'placeholder' && !ellipsis) return false
+  if (el.getBoundingClientRect().width < 120 || el.querySelector(INTERACTIVE)) return false
+  return named !== undefined || getComputedStyle(el).cursor === 'text'
+}
+
+/** The page's visible text fields, in document order: fields, editors in
+ *  frames, and boxes standing in for an editor. */
 function collectTextFields(): HTMLElement[] {
   const out: HTMLElement[] = []
   const candidates = document.querySelectorAll<HTMLElement>(
-    'input, textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]',
+    'input, textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"], iframe, ' +
+    'button, [role="button"], [tabindex]:not([tabindex="-1"])',
   )
   for (const el of candidates) {
-    if (!isTextField(el)) continue
+    if (!isTextField(el) && !isEditableFrame(el) && !isEditorStandIn(el)) continue
     if ((el as HTMLInputElement).disabled || (el as HTMLInputElement).readOnly) continue
     // An editable region inside another one is part of it.
     if (el.parentElement?.closest('[contenteditable]:not([contenteditable="false"])')) continue
@@ -972,6 +1086,19 @@ function collectTextFields(): HTMLElement[] {
   return out
 }
 
+/** Presses, releases and clicks the middle of `el`, as a mouse does — pages
+ *  open their editors on any of the three. */
+function clickLikeMouse(el: HTMLElement): void {
+  const r = el.getBoundingClientRect()
+  const init = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }
+  const pointer = { ...init, pointerId: 1, pointerType: 'mouse', isPrimary: true }
+  el.dispatchEvent(new PointerEvent('pointerdown', { ...pointer, buttons: 1 }))
+  el.dispatchEvent(new MouseEvent('mousedown', { ...init, buttons: 1 }))
+  el.dispatchEvent(new PointerEvent('pointerup', pointer))
+  el.dispatchEvent(new MouseEvent('mouseup', init))
+  el.click()
+}
+
 const HINT_COLOR = '#f97316'
 // Input types setSelectionRange works on.
 const CARET_INPUT_TYPES = new Set(['', 'text', 'search', 'url', 'tel', 'password'])
@@ -979,8 +1106,8 @@ const CARET_INPUT_TYPES = new Set(['', 'text', 'search', 'url', 'tel', 'password
 /**
  * Outlines every text field; h/j/k/l move the pick to the nearest field in
  * that direction (Tab / Shift+Tab step through them in page order), Enter
- * focuses the pick — the page's focusin turns that into INSERT — and Esc
- * gives up. Drawn with DOM and CSSOM calls only: pages with Trusted Types
+ * focuses the pick (clicks a stand-in, which brings its editor) — the
+ * page's focusin turns that into INSERT — and Esc gives up. Drawn with DOM and CSSOM calls only: pages with Trusted Types
  * or a strict style-src CSP reject markup strings and <style> text.
  */
 function openInputHints(onClosed: () => void): InputHints | null {
@@ -1076,10 +1203,19 @@ function openInputHints(onClosed: () => void): InputHints | null {
       case '<CR>': {
         const el = fields[index]
         close()
-        el.focus()
-        // Type at the end of what's there (number, date & co. have no caret).
-        if (el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && CARET_INPUT_TYPES.has(el.type.toLowerCase()))) {
-          el.setSelectionRange(el.value.length, el.value.length)
+        if (isEditableFrame(el)) {
+          el.contentDocument?.body?.focus()
+        } else if (!isTextField(el)) {
+          // A stand-in: click it as a mouse would; the page swaps its editor
+          // in and puts the cursor there.
+          el.focus({ preventScroll: true })
+          clickLikeMouse(el)
+        } else {
+          el.focus()
+          // Type at the end of what's there (number, date & co. have no caret).
+          if (el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && CARET_INPUT_TYPES.has(el.type.toLowerCase()))) {
+            el.setSelectionRange(el.value.length, el.value.length)
+          }
         }
         break
       }

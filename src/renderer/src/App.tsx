@@ -177,7 +177,7 @@ declare global {
       restoreWindow: () => Promise<void>
       detachedWindowDragStart: () => Promise<boolean>
       detachedWindowDragUpdate: () => void
-      detachedWindowDragEnd: () => void
+      detachedWindowDragEnd: () => Promise<{ left: number; top: number } | null>
       detachedWindowPlace?: (popupId: string, left: number, top: number) => void
       detachedWindowFocus?: (popupId: string) => void
       closeWorkspaceWindows: (workspaceIds: string[]) => Promise<void>

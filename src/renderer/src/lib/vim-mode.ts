@@ -76,7 +76,8 @@ export function claimRendererFocus(force: boolean): void {
   settleUntil = Date.now() + FOCUS_SETTLE_MS
   for (const delay of [60, 180]) {
     setTimeout(() => {
-      if (!document.hasFocus()) window.electronAPI?.reclaimWindowRendererFocus?.()
+      // Only for COMMAND: a w pressed meanwhile gave the keyboard to the page.
+      if (commandModeActive && !document.hasFocus()) window.electronAPI?.reclaimWindowRendererFocus?.()
     }, delay)
   }
 }

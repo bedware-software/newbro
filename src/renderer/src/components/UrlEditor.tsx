@@ -5,8 +5,9 @@
 // type over), r removes it, y copies it, p pastes over it; y and p alone
 // act on the whole address. u goes up a level, t keeps only the site,
 // n copies the page's title; i / A / I / C go to typing. Enter goes there.
-// A pinned popup over the top of the page area; while it's up the toolbar
-// shows workspace stats where the address bar was (Toolbar.tsx).
+// A pinned popup over the top of the page area, or wherever it was dragged
+// to; while it's up the toolbar shows workspace stats where the address bar
+// was (Toolbar.tsx).
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PencilLine } from 'lucide-react'
@@ -43,6 +44,34 @@ const FONT_PX = 28
 const MIN_FONT_PX = 14
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
+
+// Where the editor was dragged to: how far from its usual spot at the top
+// centre of the page area, so it moves along with the page area. Kept
+// across opens and restarts.
+const OFFSET_KEY = 'url-editor-offset'
+
+interface Offset {
+  x: number
+  y: number
+}
+
+function readOffset(): Offset {
+  try {
+    const v = JSON.parse(window.localStorage.getItem(OFFSET_KEY) ?? 'null') as Partial<Offset> | null
+    if (typeof v?.x === 'number' && typeof v.y === 'number' && Number.isFinite(v.x) && Number.isFinite(v.y)) return { x: v.x, y: v.y }
+  } catch {
+    /* corrupt entry — the usual spot */
+  }
+  return { x: 0, y: 0 }
+}
+
+function writeOffset(offset: Offset): void {
+  try {
+    window.localStorage.setItem(OFFSET_KEY, JSON.stringify(offset))
+  } catch (err) {
+    console.warn('UrlEditor: saving the position failed:', err)
+  }
+}
 
 /** First line, trimmed — what a paste means in a one-line box. */
 function oneLine(text: string): string {
@@ -81,6 +110,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   const lastSelRef = useRef<{ start: number; end: number } | null>(null)
   const [size, setSize] = useState<{ width: number } | null>(null)
   const [placement, setPlacement] = useState<PopupPlacement>()
+  // The usual spot as last measured, for telling a drop's offset from it.
+  const homeRef = useRef<PopupPlacement | null>(null)
   const [scrollLeft, setScrollLeft] = useState(0)
   const [marks, setMarks] = useState<Mark[]>([])
   const [inputWidth, setInputWidth] = useState(0)
@@ -135,7 +166,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   }, [open, target, activeTabId])
 
   // The top of the page area, as wide as fits (taken once: the popup's
-  // window keeps its size), following the page area around.
+  // window keeps its size) — or as far from there as it was dragged, kept
+  // inside the window — following the page area around.
   useEffect(() => {
     const el = anchorRef.current
     if (!open || !el) return
@@ -143,7 +175,13 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       const r = el.getBoundingClientRect()
       const width = size?.width ?? Math.round(Math.max(420, Math.min(MAX_WIDTH, r.width - 48)))
       if (!size) setSize({ width })
-      const next = { left: Math.round(r.left + (r.width - width) / 2), top: Math.round(r.top + INSET_TOP) }
+      const home = { left: r.left + (r.width - width) / 2, top: r.top + INSET_TOP }
+      homeRef.current = home
+      const offset = readOffset()
+      const next = {
+        left: Math.round(Math.max(0, Math.min(window.innerWidth - width, home.left + offset.x))),
+        top: Math.round(Math.max(0, Math.min(window.innerHeight - HEIGHT, home.top + offset.y))),
+      }
       setPlacement((prev) => (prev?.left === next.left && prev.top === next.top ? prev : next))
     }
     measure()
@@ -289,6 +327,13 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     }
   }, [setValue, showFlash, typeAt])
 
+  // Dropped somewhere new: it stays there, now and next time.
+  const onMoved = useCallback((spot: PopupPlacement) => {
+    const home = homeRef.current
+    if (home) writeOffset({ x: Math.round(spot.left - home.left), y: Math.round(spot.top - home.top) })
+    setPlacement(spot)
+  }, [])
+
   const go = useCallback((inNewTab: boolean) => {
     const text = valueRef.current.trim()
     const unchanged = target && text === target.url
@@ -405,14 +450,22 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       // In Vim mode Esc first leaves the box; the editor handles it.
       closeOnEscape={!vimKeymap}
       placement={placement}
+      onMoved={onMoved}
       onClose={closeUrlEditor}
       onWindowChange={setPopupWindow}
     >
-      <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
+      {/* Dragged by anything but the box and the block keys; a press there
+          keeps the box's focus and selection. */}
+      <div
+        data-detached-drag-handle=""
+        onMouseDown={(e) => { if (e.target !== inputRef.current) e.preventDefault() }}
+        className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col"
+      >
         <div className="flex items-center gap-3 px-4 pt-3 pb-1 shrink-0">
           <PencilLine size={18} className={`shrink-0 ${edited ? 'text-primary' : 'text-muted-foreground'}`} />
           <input
             ref={bindInput}
+            data-detached-no-drag=""
             type="text"
             value={value}
             onChange={(e) => setValue(e.target.value, false)}
@@ -451,6 +504,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
               <kbd
                 className={`mt-0.5 font-mono text-[11px] transition-opacity ${intent ? 'opacity-100' : 'opacity-45'}`}
                 data-on-field={intent ? '' : undefined}
+                data-detached-no-drag=""
                 onMouseDown={(e) => {
                   // A click on a block's key changes that block.
                   e.preventDefault()

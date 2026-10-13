@@ -35,9 +35,12 @@
   --color-ring: oklch(0.72 0.12 240);
   --color-toolbar: oklch(0.20 0 0);
   /* Vim mode's colours — COMMAND blue, BROWSE yellow, INSERT green. The
-   * mode badge wears each as its text over a faint wash of itself. */
+   * mode badge wears each as its text over a faint wash of itself; BROWSE
+   * names its wash, as on a light theme a wash of a yellow dark enough to
+   * read as text turns brown — there it is a pale yellow instead. */
   --color-vim-command: oklch(0.76 0.11 245);
   --color-vim-browse: oklch(0.86 0.13 90);
+  --color-vim-browse-wash: oklch(0.86 0.13 90 / 0.15);
   --color-vim-insert: oklch(0.79 0.14 150);
   --radius: 0.375rem;
 }
@@ -65,7 +68,8 @@
   --color-ring: oklch(0.55 0.18 260);
   --color-toolbar: oklch(0.976 0 0);
   --color-vim-command: oklch(0.50 0.16 255);
-  --color-vim-browse: oklch(0.55 0.12 75);
+  --color-vim-browse: oklch(0.52 0.12 85);
+  --color-vim-browse-wash: oklch(0.94 0.10 100);
   --color-vim-insert: oklch(0.50 0.13 150);
 }
 
@@ -93,7 +97,8 @@
     --color-ring: oklch(0.55 0.18 260);
     --color-toolbar: oklch(0.976 0 0);
     --color-vim-command: oklch(0.50 0.16 255);
-    --color-vim-browse: oklch(0.55 0.12 75);
+    --color-vim-browse: oklch(0.52 0.12 85);
+    --color-vim-browse-wash: oklch(0.94 0.10 100);
     --color-vim-insert: oklch(0.50 0.13 150);
   }
 }
