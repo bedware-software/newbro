@@ -1,23 +1,25 @@
-// The address editor (Vim's e): the active tab's address in a big box, cut
-// into blocks — protocol, domain, each path level, parameters, fragment —
-// labelled underneath with the key that names each one. In COMMAND mode an
-// intent and a block's key act on that block: c changes it (selects it to
-// type over), r removes it, y copies it, p pastes over it; y and p alone
-// act on the whole address. u goes up a level, t keeps only the site,
-// n copies the page's title; i / A / I / C go to typing. Enter goes there.
+// The address editor (Vim's e): the page's title, and under it the active
+// tab's address big in a field, cut into blocks — protocol, domain, port,
+// each path level, parameters, fragment — labelled underneath with the key
+// that names each one. In COMMAND mode an intent and a block's key act on
+// that block: c changes it (selects it to type over), r removes it, y
+// copies it, p pastes over it; the intent's key again (yy, cc, rr) acts on
+// the whole address, and P pastes over all of it. u goes up a level, t
+// keeps only the site, n copies the page's title; i / A / I / C go to
+// typing. Enter goes there.
 // A pinned popup over the top of the page area, or wherever it was dragged
 // to; while it's up the toolbar shows workspace stats where the address bar
 // was (Toolbar.tsx).
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { PencilLine } from 'lucide-react'
+import { Globe, PencilLine } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { DetachedWindow, type PopupPlacement } from './DetachedWindow'
 import { VimModeBadge } from './VimModeBadge'
 import { Hint, HintBar, vimKeyCaps } from './KeyHints'
 import { closeUrlEditor, useUrlEditorStore } from '../lib/url-editor'
 import { openAddress } from '../lib/open-address'
-import { blockByKey, removeBlock, replaceBlock, siteOnly, upOneLevel, urlBlocks, type UrlBlock } from '../lib/url-blocks'
+import { blockByKey, blockKeyLabel, isBlockKey, removeBlock, replaceBlock, siteOnly, startBlock, upOneLevel, urlBlocks, type UrlBlock } from '../lib/url-blocks'
 import { usePopupVimMode } from '../lib/vim-mode'
 import { keyTokenFromEvent, type VimKeymap } from '../lib/vim-keymap'
 
@@ -31,12 +33,12 @@ interface Props {
 type Intent = 'change' | 'remove' | 'copy' | 'paste'
 
 const INTENT_LABEL: Record<Intent, string> = { change: 'Change', remove: 'Remove', copy: 'Copy', paste: 'Paste over' }
+// The command that arms each intent: its key pressed again means the whole
+// address.
+const INTENT_COMMAND: Record<Intent, string> = { change: 'url-change', remove: 'url-remove', copy: 'url-copy', paste: 'url-paste' }
 const MAX_WIDTH = 1100
-const HEIGHT = 164
+const HEIGHT = 196
 const INSET_TOP = 20
-// How long y / p wait for a block key before acting on the whole address
-// (y copies it at once and only narrows down if a key follows).
-const INTENT_TIMEOUT_MS = 700
 const FLASH_MS = 1600
 // The address at twice the usual size, shrinking to fit a long one — down
 // to the usual size, past which the box scrolls.
@@ -98,10 +100,9 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   const [value, setValueState] = useState('')
   const valueRef = useRef('')
   // The tab being edited, and what it was showing.
-  const [target, setTarget] = useState<{ tabId: string; url: string; title: string } | null>(null)
+  const [target, setTarget] = useState<{ tabId: string; url: string; title: string; favicon: string } | null>(null)
   const [intent, setIntentState] = useState<Intent | null>(null)
   const intentRef = useRef<Intent | null>(null)
-  const intentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [flash, setFlash] = useState<string | null>(null)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Changes made in COMMAND mode, for U.
@@ -114,7 +115,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   const homeRef = useRef<PopupPlacement | null>(null)
   const [scrollLeft, setScrollLeft] = useState(0)
   const [marks, setMarks] = useState<Mark[]>([])
-  const [inputWidth, setInputWidth] = useState(0)
   const [fontPx, setFontPx] = useState(FONT_PX)
   // Bumped when the box changes size — it has none until the popup lays out.
   const [layoutTick, setLayoutTick] = useState(0)
@@ -151,7 +151,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       closeUrlEditor()
       return
     }
-    setTarget({ tabId: tab.id, url: tab.url, title: tab.title })
+    setTarget({ tabId: tab.id, url: tab.url, title: tab.title, favicon: tab.favicon })
     historyRef.current = []
     lastSelRef.current = null
     setValue(tab.url === 'about:blank' ? '' : tab.url, false)
@@ -195,7 +195,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   }, [open, anchorRef, size])
 
   // Where each block sits under the text: measured in the box's own font,
-  // less however far the box has scrolled sideways.
+  // past the margin that centres an address shorter than the box, less
+  // however far the box has scrolled sideways.
   const blocks = useMemo(() => urlBlocks(value), [value])
   useLayoutEffect(() => {
     const input = inputEl
@@ -203,7 +204,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       setMarks([])
       return
     }
-    setInputWidth(input.clientWidth)
     const style = input.ownerDocument.defaultView?.getComputedStyle(input)
     const ctx = document.createElement('canvas').getContext('2d')
     if (!style || !ctx) return
@@ -219,9 +219,11 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     }
     ctx.font = `${style.fontWeight} ${fit}px ${style.fontFamily}`
     const measure = (text: string): number => ctx.measureText(text).width
+    const content = input.clientWidth - padding - (parseFloat(style.paddingRight) || 0)
+    const centred = Math.max(0, (content - measure(value)) / 2)
     setMarks(blocks.map((block) => ({
       block,
-      left: padding + measure(value.slice(0, block.start)) - scrollLeft,
+      left: padding + centred + measure(value.slice(0, block.start)) - scrollLeft,
       width: Math.max(4, measure(value.slice(block.start, block.end))),
     })))
   }, [blocks, value, scrollLeft, inputEl, layoutTick, fontPx])
@@ -242,8 +244,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   }, [])
 
   const disarm = useCallback(() => {
-    if (intentTimerRef.current) clearTimeout(intentTimerRef.current)
-    intentTimerRef.current = null
     intentRef.current = null
     setIntentState(null)
   }, [])
@@ -260,6 +260,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     showFlash('Pasted over the address')
   }, [setValue, showFlash])
 
+  /** An intent waits for the key that says what it's on, however long. */
   const arm = useCallback((next: Intent) => {
     disarm()
     // The intent's prompt takes the hint bar from an old message.
@@ -267,19 +268,28 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     setFlash(null)
     intentRef.current = next
     setIntentState(next)
-    if (next === 'copy') {
-      // At once — a block key that follows narrows it to the block.
-      window.electronAPI.clipboardWriteText(valueRef.current)
-      showFlash('Copied the address')
+  }, [disarm])
+
+  /** The intent on the whole address. */
+  const applyWhole = useCallback((kind: Intent) => {
+    const text = valueRef.current
+    switch (kind) {
+      case 'change':
+        typeAt(0, text.length)
+        break
+      case 'remove':
+        setValue('', true)
+        showFlash('Removed the address')
+        break
+      case 'copy':
+        window.electronAPI.clipboardWriteText(text)
+        showFlash('Copied the address')
+        break
+      case 'paste':
+        void pasteWhole()
+        break
     }
-    if (next === 'copy' || next === 'paste') {
-      intentTimerRef.current = setTimeout(() => {
-        const was = intentRef.current
-        disarm()
-        if (was === 'paste') void pasteWhole()
-      }, INTENT_TIMEOUT_MS)
-    }
-  }, [disarm, pasteWhole, showFlash])
+  }, [pasteWhole, setValue, showFlash, typeAt])
 
   /** The intent on `block` — or, for a block the address lacks, what can be
    *  done about that. */
@@ -287,18 +297,14 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     const text = valueRef.current
     const block = blockByKey(text, key)
     if (!block) {
-      // Parameters and a fragment can be started from nothing.
-      if (kind === 'change' && (key === 's' || key === 'f')) {
-        const hash = text.indexOf('#')
-        const next = key === 's'
-          ? hash === -1 ? `${text}?` : `${text.slice(0, hash)}?${text.slice(hash)}`
-          : `${text}#`
-        setValue(next, true)
-        const at = key === 's' && hash !== -1 ? hash + 1 : next.length
-        requestAnimationFrame(() => typeAt(at))
+      // A port, parameters and a fragment can be started from nothing.
+      const started = kind === 'change' ? startBlock(text, key) : null
+      if (started) {
+        setValue(started.text, true)
+        requestAnimationFrame(() => typeAt(started.at))
         return
       }
-      showFlash(`No block ${key} in this address`)
+      showFlash(`No ${blockKeyLabel(key)} in this address`)
       return
     }
     const part = text.slice(block.start, block.end)
@@ -347,6 +353,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       case 'url-remove': arm('remove'); break
       case 'url-copy': arm('copy'); break
       case 'url-paste': arm('paste'); break
+      case 'url-paste-all': void pasteWhole(); break
       case 'url-up': setValue(upOneLevel(valueRef.current), true); break
       case 'url-site': setValue(siteOnly(valueRef.current), true); break
       case 'url-copy-title':
@@ -377,25 +384,25 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     }
   }
 
-  // After an intent, the next key names a block (or gives up on it).
+  // After an intent, the next key names a block — or, the intent's own key
+  // again, the whole address (vim's yy). A block key wins: p is the
+  // parameters', so pp pastes over them and P over the whole address.
   const intercept = (e: KeyboardEvent): boolean => {
     const kind = intentRef.current
     if (!kind) return false
     const token = keyTokenFromEvent(e)
     if (!token) return false
-    if (token === '<Esc>') {
-      disarm()
-      return true
-    }
-    if (/^[pdsf1-9]$/.test(token)) {
-      disarm()
+    disarm()
+    if (token === '<Esc>') return true
+    if (isBlockKey(token)) {
       void applyIntent(kind, token)
       return true
     }
-    // Anything else: a waiting paste goes over the whole address, and the
-    // key does what it does.
-    disarm()
-    if (kind === 'paste') void pasteWhole()
+    if (vimKeymap?.get(token) === INTENT_COMMAND[kind]) {
+      applyWhole(kind)
+      return true
+    }
+    // Anything else gives up on the intent and does what it does.
     return false
   }
 
@@ -418,7 +425,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   }, [popupWindow, vimKeymap, typeAt])
 
   useEffect(() => () => {
-    if (intentTimerRef.current) clearTimeout(intentTimerRef.current)
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
   }, [])
 
@@ -461,62 +467,88 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
         onMouseDown={(e) => { if (e.target !== inputRef.current) e.preventDefault() }}
         className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col"
       >
-        <div className="flex items-center gap-3 px-4 pt-3 pb-1 shrink-0">
-          <PencilLine size={18} className={`shrink-0 ${edited ? 'text-primary' : 'text-muted-foreground'}`} />
-          <input
-            ref={bindInput}
-            data-detached-no-drag=""
-            type="text"
-            value={value}
-            onChange={(e) => setValue(e.target.value, false)}
-            onKeyDown={onKeyDown}
-            onFocus={vim.onBoxFocus}
-            onBlur={(e) => {
-              lastSelRef.current = { start: e.currentTarget.selectionStart ?? 0, end: e.currentTarget.selectionEnd ?? 0 }
-              vim.onBoxBlur()
-            }}
-            onScroll={syncScroll}
-            onSelect={syncScroll}
-            spellCheck={false}
-            autoComplete="off"
-            placeholder="Address"
-            style={{ fontSize: fontPx }}
-            className="flex-1 min-w-0 h-11 bg-transparent border-none outline-none font-mono leading-none text-foreground placeholder:text-muted-foreground"
-          />
+        {/* The page's title — what n copies — and the mode. */}
+        <div className="flex items-center gap-2 px-4 pt-3 shrink-0 min-w-0">
+          {target.favicon
+            ? <img src={target.favicon} alt="" className="w-4 h-4 shrink-0" />
+            : <Globe size={16} className="shrink-0 text-muted-foreground" />}
+          <span className="flex-1 min-w-0 truncate text-sm font-medium text-foreground" title={target.title}>
+            {target.title || 'Untitled'}
+          </span>
           {vim.mode && <VimModeBadge mode={vim.mode} pending={vim.pending} />}
         </div>
 
-        {/* The blocks under the text, each with its quick-edit key — lit
-            while an intent waits for one. */}
-        <div className="relative ml-[46px] h-[54px] shrink-0 overflow-hidden select-none" style={{ width: inputWidth }}>
-          {marks.map(({ block, left, width }) => (
-            <div
-              key={`${block.kind}-${block.start}`}
-              className="absolute top-0 flex flex-col items-center"
-              style={{ left, width }}
-            >
-              <div className={`h-1.5 w-full rounded-b border-x border-b ${intent ? 'border-primary/70' : 'border-muted-foreground/40'}`} />
-              {/* A label wider than its block would run into the next one. */}
-              <span className={`mt-0.5 whitespace-nowrap text-[10px] uppercase tracking-wider text-muted-foreground ${width < block.label.length * 7 + 4 ? 'invisible' : ''}`}>
-                {block.label}
-              </span>
-              {block.key && (
-              <kbd
-                className={`mt-0.5 font-mono text-[11px] transition-opacity ${intent ? 'opacity-100' : 'opacity-45'}`}
-                data-on-field={intent ? '' : undefined}
-                data-detached-no-drag=""
-                onMouseDown={(e) => {
-                  // A click on a block's key changes that block.
-                  e.preventDefault()
-                  void applyIntent(intent ?? 'change', block.key)
-                  disarm()
-                }}
-              >
-                {block.key}
-              </kbd>
-              )}
+        <div className="px-4 pt-2 shrink-0">
+          {/* The address in a field, centred while it's shorter than the
+              field. A press anywhere in the field types there. */}
+          <div
+            data-detached-no-drag=""
+            onMouseDown={(e) => {
+              if (e.target === inputRef.current) return
+              e.preventDefault()
+              typeAt(valueRef.current.length)
+            }}
+            className="flex items-center gap-3 h-12 px-3 rounded-md border border-input bg-secondary cursor-text transition-colors focus-within:border-ring focus-within:bg-background"
+          >
+            <PencilLine size={18} className={`shrink-0 ${edited ? 'text-primary' : 'text-muted-foreground'}`} />
+            <input
+              ref={bindInput}
+              data-detached-no-drag=""
+              type="text"
+              value={value}
+              onChange={(e) => setValue(e.target.value, false)}
+              onKeyDown={onKeyDown}
+              onFocus={vim.onBoxFocus}
+              onBlur={(e) => {
+                lastSelRef.current = { start: e.currentTarget.selectionStart ?? 0, end: e.currentTarget.selectionEnd ?? 0 }
+                vim.onBoxBlur()
+              }}
+              onScroll={syncScroll}
+              onSelect={syncScroll}
+              spellCheck={false}
+              autoComplete="off"
+              placeholder="Address"
+              style={{ fontSize: fontPx }}
+              className="flex-1 min-w-0 h-full bg-transparent border-none outline-none font-mono leading-none text-center text-foreground placeholder:text-muted-foreground"
+            />
+          </div>
+
+          {/* The blocks under the text, each with its quick-edit key — lit
+              while an intent waits for one. Laid out as the field is
+              (border, padding, icon), so they line up with its text. */}
+          <div className="flex gap-3 mt-1 px-3 border-x border-transparent">
+            <div className="w-[18px] shrink-0" />
+            <div className="relative flex-1 min-w-0 h-[46px] overflow-hidden select-none">
+              {marks.map(({ block, left, width }) => (
+                <div
+                  key={`${block.kind}-${block.start}`}
+                  className="absolute top-0 flex flex-col items-center"
+                  style={{ left, width }}
+                >
+                  <div className={`h-1.5 w-full rounded-b border-x border-b ${intent ? 'border-primary/70' : 'border-muted-foreground/40'}`} />
+                  {/* A label wider than its block would run into the next one. */}
+                  <span className={`mt-0.5 whitespace-nowrap text-[10px] uppercase tracking-wider text-muted-foreground ${width < block.label.length * 7 + 4 ? 'invisible' : ''}`}>
+                    {block.label}
+                  </span>
+                  {block.key && (
+                  <kbd
+                    className={`mt-0.5 font-mono text-[11px] transition-opacity ${intent ? 'opacity-100' : 'opacity-45'}`}
+                    data-on-field={intent ? '' : undefined}
+                    data-detached-no-drag=""
+                    onMouseDown={(e) => {
+                      // A click on a block's key changes that block.
+                      e.preventDefault()
+                      void applyIntent(intent ?? 'change', block.key)
+                      disarm()
+                    }}
+                  >
+                    {block.key}
+                  </kbd>
+                  )}
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
         </div>
 
         <HintBar edge="bottom" wrap className="mt-auto">
@@ -524,7 +556,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
             <>
               {flash && <span>{flash} ·</span>}
               <span className="text-foreground">{INTENT_LABEL[intent]} — which block? Press its key above</span>
-              {(intent === 'copy' || intent === 'paste') && <span>(or wait: the whole address)</span>}
+              <Hint label="The whole address" keys={caps(intent === 'paste' ? 'url-paste-all' : INTENT_COMMAND[intent])} />
               <Hint label="Cancel" keys={['Esc']} />
             </>
           ) : flash ? (
@@ -535,6 +567,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
               <Hint label="Remove" keys={caps('url-remove')} />
               <Hint label="Copy" keys={caps('url-copy')} />
               <Hint label="Paste" keys={caps('url-paste')} />
+              <Hint label="Paste all" keys={caps('url-paste-all')} />
               <Hint label="Up" keys={caps('url-up')} />
               <Hint label="Site" keys={caps('url-site')} />
               <Hint label="Title" keys={caps('url-copy-title')} />

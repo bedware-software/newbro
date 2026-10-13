@@ -71,9 +71,10 @@ function usePagePlacement(open: boolean, anchorRef: React.RefObject<HTMLElement 
  * Find in page: a small popup pinned to the page's top-right corner, over
  * the page rather than pushing it down. Calls into webContents.findInPage /
  * stopFindInPage via IPC and listens for 'found-in-page' on the tab-event
- * stream. In Vim mode it opens in INSERT (typing what to find); Esc goes to
- * COMMAND, where j/k (n/N) step through the matches, i types again and Esc
- * closes.
+ * stream. In Vim mode it opens in INSERT, only for typing what to find (the
+ * first match lights up as you type); Enter or Esc goes to COMMAND, the one
+ * place j/k (n/N) step through the matches, i types again and Esc closes.
+ * Without Vim mode Enter / Shift+Enter step, as in any browser.
  */
 export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Props) {
   const [query, setQuery] = useState('')
@@ -193,7 +194,9 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
     }
     if (e.key === 'Enter') {
       e.preventDefault()
-      findNext(!e.shiftKey)
+      // Vim: Enter ends the typing, as / does — the stepping is COMMAND's.
+      if (vim.modeRef.current) inputRef.current?.blur()
+      else findNext(!e.shiftKey)
     }
   }
 
@@ -203,6 +206,9 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
       : 'No results'
     : ''
   const shift = isMac ? '⇧' : 'Shift'
+  // What steps through the matches, for the buttons' tooltips.
+  const nextKeys = vimKeymap ? vimKeyCaps(vimKeymap, 'find-next').join(' / ') : 'Enter'
+  const prevKeys = vimKeymap ? vimKeyCaps(vimKeymap, 'find-prev').join(' / ') : `${shift}+Enter`
 
   return (
     <DetachedWindow
@@ -227,11 +233,13 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
               <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
               <Hint label="Close" keys={['Esc']} />
             </>
+          ) : vim.mode ? (
+            <Hint label="Command mode" keys={['Enter', 'Esc']} />
           ) : (
             <>
               <Hint label="Next" keys={['Enter']} />
               <Hint label="Previous" keys={[shift, 'Enter']} />
-              <Hint label={vim.mode ? 'Command mode' : 'Close'} keys={['Esc']} />
+              <Hint label="Close" keys={['Esc']} />
             </>
           )}
         </HintBar>
@@ -256,7 +264,7 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
             type="button"
             onClick={() => findNext(false)}
             disabled={!query}
-            title={`Previous match (${shift}+Enter)`}
+            title={`Previous match (${prevKeys})`}
             className="p-1 rounded hover:bg-accent disabled:opacity-40 disabled:cursor-default"
           >
             <ChevronUp size={14} />
@@ -265,7 +273,7 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
             type="button"
             onClick={() => findNext(true)}
             disabled={!query}
-            title="Next match (Enter)"
+            title={`Next match (${nextKeys})`}
             className="p-1 rounded hover:bg-accent disabled:opacity-40 disabled:cursor-default"
           >
             <ChevronDown size={14} />

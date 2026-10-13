@@ -144,16 +144,18 @@ search-row-8        8
 search-row-9        9
 
 " ── Address editor (e) ───────────────────────────────────────────────
-" The page's address, big, cut into blocks with a key each: p protocol,
-" d domain, 1–9 the path's levels, s parameters, f fragment. An intent and
-" a block's key act on that block — c changes it (selects it to type
-" over), r removes it, y copies it, p pastes over it; y and p on their own
-" act on the whole address. <CR> goes there, Shift+<CR> in a new tab; Esc
-" leaves typing, then closes.
+" The page's title, and its address big, cut into blocks with a key each:
+" h protocol, d domain, n port, 1–9 the path's levels, p parameters,
+" f fragment. An intent and a block's key act on that block — c changes it
+" (selects it to type over), r removes it, y copies it, p pastes over it;
+" the intent's key again acts on the whole address (yy, cc, rr — pp is the
+" parameters), and P pastes over all of it. <CR> goes there, Shift+<CR> in
+" a new tab; Esc leaves typing, then closes.
 url-change          c
 url-remove          r
 url-copy            y
 url-paste           p
+url-paste-all       P
 url-up              u
 url-site            t
 url-copy-title      n
@@ -165,9 +167,9 @@ url-undo            U
 url-go              <CR>
 
 " ── Find in page ──────────────────────────────────────────────────────
-" Opens in INSERT, typing what to find; <CR> / Shift+<CR> step through the
-" matches. Esc goes to COMMAND, where these keys step; i types again and
-" Esc closes.
+" Opens in INSERT, only for typing what to find (the first match lights up
+" as you type). <CR> or Esc goes to COMMAND, where these keys step through
+" the matches; i types again and Esc closes.
 find-next           j n
 find-prev           k N
 `
@@ -216,6 +218,7 @@ const NEW_IN_V2 = new Set([
   'url-remove',
   'url-copy',
   'url-paste',
+  'url-paste-all',
   'url-up',
   'url-site',
   'url-copy-title',
