@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronUp, ChevronDown, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
-import { DetachedWindow, type PopupPlacement } from './DetachedWindow'
+import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
 import { Hint, HintBar, vimKeyCaps, vimKeyCapsAll } from './KeyHints'
 import { usePopupVimMode } from '../lib/vim-mode'
+import { usePagePlacement } from '../lib/page-placement'
 import type { VimKeymap } from '../lib/vim-keymap'
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
@@ -13,9 +14,6 @@ const WIDTH = 460
 // The search row (h-11, its field h-8), the hint bar under it (h-10) and the
 // border.
 const HEIGHT = 86
-// Inset from the page area's top-right corner.
-const INSET_TOP = 8
-const INSET_RIGHT = 16
 
 interface Props {
   open: boolean
@@ -44,30 +42,6 @@ interface MatchInfo {
   total: number
 }
 
-/** Where the popup goes: the page area's top-right corner, following it as
- *  the window and the panels around the page change size. */
-function usePagePlacement(open: boolean, anchorRef: React.RefObject<HTMLElement | null>): PopupPlacement | undefined {
-  const [placement, setPlacement] = useState<PopupPlacement>()
-  useEffect(() => {
-    const el = anchorRef.current
-    if (!open || !el) return
-    const measure = (): void => {
-      const r = el.getBoundingClientRect()
-      const next = { left: Math.round(Math.max(r.left, r.right - WIDTH - INSET_RIGHT)), top: Math.round(r.top + INSET_TOP) }
-      setPlacement((prev) => (prev?.left === next.left && prev.top === next.top ? prev : next))
-    }
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    window.addEventListener('resize', measure)
-    return () => {
-      ro.disconnect()
-      window.removeEventListener('resize', measure)
-    }
-  }, [open, anchorRef])
-  return open ? placement : undefined
-}
-
 /**
  * Find in page: a small popup pinned to the page's top-right corner, over
  * the page rather than pushing it down. Calls into webContents.findInPage /
@@ -87,7 +61,7 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
   // after activeTabId has already moved on.
   const lastSearchedTabIdRef = useRef<string | null>(null)
   const activeTabId = useAppStore((s) => s.activeTabId)
-  const placement = usePagePlacement(open, anchorRef)
+  const placement = usePagePlacement(open, anchorRef, 'right', WIDTH)
 
   const findNext = useCallback((forward: boolean): void => {
     if (!query || !activeTabId) return

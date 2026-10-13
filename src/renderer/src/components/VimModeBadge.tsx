@@ -1,4 +1,5 @@
 import type { VimMode } from '../lib/vim-mode'
+import { useVimIndicator, type VimIndicator } from '../lib/vim-indicator'
 
 interface Props {
   mode: VimMode
@@ -7,6 +8,9 @@ interface Props {
   /** `field` ends a text field — the address bar, InputField — clear of
    *  its edge; `sm` sits in a text row. */
   size?: 'sm' | 'field'
+  /** How it shows the mode's colour, when not the one chosen in Settings
+   *  (Settings' own previews of each). */
+  indicator?: VimIndicator
 }
 
 const MODE_STYLE: Record<VimMode, { label: string; title: string }> = {
@@ -15,17 +19,19 @@ const MODE_STYLE: Record<VimMode, { label: string; title: string }> = {
   insert: { label: 'INS', title: 'Vim: INSERT mode — keys go where you type; Esc to leave' },
 }
 
-/** Vim's mode as a key cap, the hint bars' kind: CMD, WEB or INS, its rim
- *  in the mode's colour (kbd.vim-mode in globals.css). The keys typed so
- *  far of an unfinished sequence show as a cap to its left. */
-export function VimModeBadge({ mode, pending, size = 'sm' }: Props) {
+/** Vim's mode as a key cap, the hint bars' kind: CMD, WEB or INS, in the
+ *  mode's colour the way Settings → Appearance says (kbd.vim-mode in
+ *  globals.css). The keys typed so far of an unfinished sequence show as a
+ *  cap to its left. */
+export function VimModeBadge({ mode, pending, size = 'sm', indicator }: Props) {
+  const chosen = useVimIndicator()
   const style = MODE_STYLE[mode]
   return (
     <span
       className={`relative shrink-0 flex items-center select-none ${size === 'field' ? 'mr-2' : ''}`}
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
-      <kbd className="vim-mode" data-mode={mode} title={style.title}>{style.label}</kbd>
+      <kbd className="vim-mode" data-mode={mode} data-indicator={indicator ?? chosen} title={style.title}>{style.label}</kbd>
       {pending && (
         <span className="absolute right-full mr-1.5 top-1/2 -translate-y-1/2 flex text-[11px] font-medium">
           <kbd>{pending}</kbd>

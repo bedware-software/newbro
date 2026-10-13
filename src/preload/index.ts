@@ -36,7 +36,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   detachedWindowDragStart: (): Promise<boolean> => ipcRenderer.invoke('detached-window:drag-start'),
   detachedWindowDragUpdate: (): void => { ipcRenderer.send('detached-window:drag-update') },
   detachedWindowDragEnd: (): Promise<{ left: number; top: number } | null> => ipcRenderer.invoke('detached-window:drag-end'),
-  detachedWindowShow: (alwaysOnTop?: boolean): void => { ipcRenderer.send('detached-window:show', { alwaysOnTop: !!alwaysOnTop }) },
+  detachedWindowShow: (alwaysOnTop?: boolean, activate = true): void => { ipcRenderer.send('detached-window:show', { alwaysOnTop: !!alwaysOnTop, activate }) },
   // A pinned popup: its spot in this window's content area, and taking the
   // keyboard back once it's open.
   detachedWindowPlace: (popupId: string, left: number, top: number): void => { ipcRenderer.send('detached-window:place', popupId, { left, top }) },

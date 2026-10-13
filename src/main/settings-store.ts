@@ -23,6 +23,10 @@ export interface Settings {
    *  typed in) — renderer lib/vim-mode.ts. Turns the regular
    *  {@link keybindings} off, menu accelerators included. */
   vimMode: boolean
+  /** How Vim's mode key cap shows the mode's colour (renderer
+   *  lib/vim-indicator.ts): 'rim-label', 'rim', 'label', 'tint', 'base',
+   *  'dot' or 'plain'. */
+  vimIndicator: string
   /** COMMAND-mode keymap as the user wrote it in Settings — plain text, one
    *  `<command> <keys>` binding per line, parsed by the renderer
    *  (lib/vim-keymap.ts). Null means the built-in default, so users who never
@@ -80,6 +84,7 @@ export const MAX_BINDINGS_PER_ACTION = 2
 const KNOWN_LIGHT_VARIANTS = new Set(['light-default', 'light-bright', 'light-soft'])
 const KNOWN_DARK_VARIANTS = new Set(['dark-default', 'dark-deep', 'dark-soft'])
 const KNOWN_DENSITIES = new Set(['compact', 'normal'])
+const KNOWN_VIM_INDICATORS = new Set(['rim-label', 'rim', 'label', 'tint', 'base', 'dot', 'plain'])
 const KNOWN_NEW_TAB_FOCUS = new Set(['site', 'url'])
 const KNOWN_DOH_MODES = new Set(['off', 'automatic', 'secure'])
 const KNOWN_PASSWORD_AUTOFILL = new Set(['automatic', 'on-focus', 'off'])
@@ -213,6 +218,7 @@ export const DEFAULT_SETTINGS: Settings = {
   newTabFocus: 'site',
   showTabNumbers: true,
   vimMode: false,
+  vimIndicator: 'rim-label',
   vimKeymap: null,
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
@@ -445,6 +451,9 @@ export function loadSettings(): Settings {
       ? (saved!.newTabFocus as 'site' | 'url')
       : DEFAULT_SETTINGS.newTabFocus,
     vimMode: saved?.vimMode === true,
+    vimIndicator: KNOWN_VIM_INDICATORS.has(saved?.vimIndicator as string)
+      ? (saved!.vimIndicator as string)
+      : DEFAULT_SETTINGS.vimIndicator,
     vimKeymap: normalizeVimKeymap(saved?.vimKeymap),
     searchSuggestions: saved?.searchSuggestions !== false,
     dohMode: KNOWN_DOH_MODES.has(saved?.dohMode as string)
@@ -489,6 +498,9 @@ export function saveSettings(settings: Settings): void {
       ? settings.newTabFocus
       : DEFAULT_SETTINGS.newTabFocus,
     vimMode: settings.vimMode === true,
+    vimIndicator: KNOWN_VIM_INDICATORS.has(settings.vimIndicator)
+      ? settings.vimIndicator
+      : DEFAULT_SETTINGS.vimIndicator,
     vimKeymap: normalizeVimKeymap(settings.vimKeymap),
     searchSuggestions: settings.searchSuggestions !== false,
     dohMode: KNOWN_DOH_MODES.has(settings.dohMode as string)

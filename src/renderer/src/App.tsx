@@ -31,6 +31,7 @@ import { HttpAuthDialog } from './components/HttpAuthDialog'
 import { DOWNLOADS_FIND_EVENT, DOWNLOADS_RELOAD_EVENT } from './components/DownloadsPage'
 import { DOWNLOADS_URL, internalPageOf, isInternalUrl } from './lib/internal-pages'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
+import { applyVimIndicator, normalizeVimIndicator, type VimIndicator } from './lib/vim-indicator'
 import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
 
 interface Settings {
@@ -47,6 +48,8 @@ interface Settings {
   showTabNumbers: boolean
   /** Vim mode: COMMAND / INSERT modes, see lib/vim-mode.ts. */
   vimMode: boolean
+  /** How the mode's key cap shows its colour, see lib/vim-indicator.ts. */
+  vimIndicator: VimIndicator
   /** COMMAND-mode keymap text; null = DEFAULT_VIM_KEYMAP. */
   vimKeymap: string | null
   defaultPageUrl: string
@@ -204,7 +207,7 @@ declare global {
       setAsDefaultBrowser: () => Promise<SetAsDefaultBrowserResult>
       openBookmarkFile: () => Promise<string | null>
       saveBookmarkFile: (html: string, suggestedName: string) => Promise<boolean>
-      detachedWindowShow: (alwaysOnTop?: boolean) => void
+      detachedWindowShow: (alwaysOnTop?: boolean, activate?: boolean) => void
       onShortcut: (callback: (action: string) => void) => () => void
       onStateUpdated: (callback: (state: unknown) => void) => () => void
       onOpenUrlAsTab: (callback: (url: string) => void) => () => void
@@ -684,11 +687,13 @@ export default function App() {
         lightVariant: normalizeLightVariant(s.lightVariant),
         darkVariant: normalizeDarkVariant(s.darkVariant),
         density: normalizeDensity(s.density),
+        vimIndicator: normalizeVimIndicator(s.vimIndicator),
         newTabFocus: normalizeNewTabFocus(s.newTabFocus),
       }
       setSettings(normalized)
       applyTheme(normalized.theme, normalized.lightVariant, normalized.darkVariant)
       applyDensity(normalized.density)
+      applyVimIndicator(normalized.vimIndicator)
       setDefaultNewTabUrl(normalized.defaultPageUrl)
       setNewTabFocusPref(normalized.newTabFocus)
       setSearchEngine(normalized.searchEngine)
@@ -1223,11 +1228,13 @@ export default function App() {
         lightVariant: normalizeLightVariant(raw.lightVariant),
         darkVariant: normalizeDarkVariant(raw.darkVariant),
         density: normalizeDensity(raw.density),
+        vimIndicator: normalizeVimIndicator(raw.vimIndicator),
         newTabFocus: normalizeNewTabFocus(raw.newTabFocus),
       }
       setSettings(s)
       applyTheme(s.theme, s.lightVariant, s.darkVariant)
       applyDensity(s.density)
+      applyVimIndicator(s.vimIndicator)
       setDefaultNewTabUrl(s.defaultPageUrl)
       setNewTabFocusPref(s.newTabFocus)
       setSearchEngine(s.searchEngine)
@@ -1330,11 +1337,13 @@ export default function App() {
       lightVariant: normalizeLightVariant(newSettings.lightVariant),
       darkVariant: normalizeDarkVariant(newSettings.darkVariant),
       density: normalizeDensity(newSettings.density),
+      vimIndicator: normalizeVimIndicator(newSettings.vimIndicator),
       newTabFocus: normalizeNewTabFocus(newSettings.newTabFocus),
     }
     setSettings(normalized)
     applyTheme(normalized.theme, normalized.lightVariant, normalized.darkVariant)
     applyDensity(normalized.density)
+    applyVimIndicator(normalized.vimIndicator)
     setDefaultNewTabUrl(normalized.defaultPageUrl)
     setNewTabFocusPref(normalized.newTabFocus)
     setSearchEngine(normalized.searchEngine)
@@ -1545,7 +1554,7 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         settings={settings}
         onSave={handleSaveSettings}
-        onAppearancePreview={(p) => { applyTheme(p.theme, p.lightVariant, p.darkVariant); applyDensity(p.density) }}
+        onAppearancePreview={(p) => { applyTheme(p.theme, p.lightVariant, p.darkVariant); applyDensity(p.density); applyVimIndicator(p.vimIndicator) }}
         tabRequest={settingsTabRequest}
       />
       <CommandPalette

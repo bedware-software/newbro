@@ -5,9 +5,10 @@ import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
 import { isCommandMode } from '../lib/vim-mode'
 import { internalPageOf, isInternalUrl } from '../lib/internal-pages'
-import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, Mic, Camera, MapPin, Bell, Clipboard, Music, X, CircleAlert, type LucideIcon } from 'lucide-react'
-import { describePermissionKinds, type PermissionKind } from '../lib/permissions'
+import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, CircleAlert, type LucideIcon } from 'lucide-react'
+import type { PermissionKind } from '../lib/permissions'
 import { DownloadsPage } from './DownloadsPage'
+import { OsBlockedPrompt, PermissionPrompt } from './PagePrompt'
 import { SplitFrames, insetForFrame, splitPaneRects } from './SplitPanes'
 import { SplitPicker } from './SplitPicker'
 import { isSplitShown, setSplitRatio, useSplitStore, workspaceTabs, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO } from '../lib/split-view'
@@ -40,8 +41,8 @@ interface CertError {
   description: string
 }
 
-/** A pending permission prompt routed from main. Shown as an infobar over the
- *  requesting tab; the user's click is reported back via respondPermission. */
+/** A pending permission prompt routed from main. Shown as a popup over the
+ *  requesting tab (PagePrompt); the user's click is reported back via respondPermission. */
 interface PermissionRequest {
   requestId: string
   origin: string
@@ -170,11 +171,11 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick }: Props)
   const containerRef = useRef<HTMLDivElement>(null)
   const [errors, setErrors] = useState<Map<string, LoadError>>(new Map())
   const [certErrors, setCertErrors] = useState<Map<string, CertError>>(new Map())
-  // Pending permission prompts (mic/camera/location/…). One infobar shows at
+  // Pending permission prompts (mic/camera/location/…). One prompt shows at
   // a time, for whichever pending request belongs to the active tab.
   const [permPrompts, setPermPrompts] = useState<PermissionRequest[]>([])
   // Set when the OS (macOS TCC) blocks media despite an in-app grant — shows a
-  // bar with an "Open System Settings" action.
+  // prompt with an "Open System Settings" action.
   const [osBlocked, setOsBlocked] = useState<{ tabId: string; kinds: PermissionKind[] } | null>(null)
   // Tabs we've already asked main to create, so we can diff against the store
   // and avoid duplicate create/destroy calls.
@@ -509,7 +510,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick }: Props)
   }, [])
 
   // Receive permission prompts from main. Queue them; the active-tab one is
-  // rendered as an infobar. De-dupe by requestId so a re-render can't stack
+  // shown as a prompt. De-dupe by requestId so a re-render can't stack
   // duplicates.
   useEffect(() => {
     const cleanup = window.electronAPI.onPermissionRequest?.((payload) => {
@@ -624,24 +625,23 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick }: Props)
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-      {/* Permission prompt sits ABOVE the tab-view placeholder in normal flow,
-          so it shrinks the placeholder's rect and the ResizeObserver pushes
-          the WebContentsView down — keeping the bar visible (the native view
-          composites over any renderer DOM that overlaps it). */}
-      {activePrompt && (
-        <PermissionInfobar
-          key={activePrompt.requestId}
-          request={activePrompt}
-          onDecide={(decision, remember) => handlePermissionDecision(activePrompt, decision, remember)}
-        />
-      )}
-      {activeOsBlocked && (
-        <OsBlockedInfobar
-          kinds={activeOsBlocked.kinds}
-          onOpenSettings={(kind) => { window.electronAPI.openOsPermissionSettings?.(kind) }}
-          onDismiss={() => setOsBlocked(null)}
-        />
-      )}
+      {/* What the page asks of the user: a popup in the page area's
+          top-left corner, over the page — nothing above the page area may
+          push it down. One at a time, the site's own request first. */}
+      <PermissionPrompt
+        open={!!activePrompt}
+        origin={activePrompt?.origin ?? ''}
+        kinds={activePrompt?.kinds ?? []}
+        anchorRef={containerRef}
+        onDecide={(decision, remember) => { if (activePrompt) handlePermissionDecision(activePrompt, decision, remember) }}
+      />
+      <OsBlockedPrompt
+        open={!activePrompt && !!activeOsBlocked}
+        kinds={activeOsBlocked?.kinds ?? []}
+        anchorRef={containerRef}
+        onOpenSettings={(kind) => { window.electronAPI.openOsPermissionSettings?.(kind) }}
+        onDismiss={() => setOsBlocked(null)}
+      />
       {/* Transparent placeholder whose rect defines where main paints the
           active tab's WebContentsView. Must remain empty — any child DOM
           here would overlap the tab view in unpredictable ways. */}
@@ -785,112 +785,6 @@ function CertWarningOverlay({
             Continue to {hostname} (unsafe)
           </button>
         </div>
-      </div>
-    </div>
-  )
-}
-
-const PERMISSION_ICON: Record<PermissionKind, LucideIcon> = {
-  microphone: Mic,
-  camera: Camera,
-  geolocation: MapPin,
-  notifications: Bell,
-  clipboard: Clipboard,
-  midi: Music,
-}
-
-/** Chrome-style permission prompt, rendered as a bar at the top of the page
- *  area. Allow / Block remember the choice for the site; the X dismisses it
- *  once (the site can ask again). */
-function PermissionInfobar({
-  request,
-  onDecide,
-}: {
-  request: PermissionRequest
-  onDecide: (decision: 'allow' | 'block', remember: boolean) => void
-}) {
-  let host = request.origin
-  try {
-    host = new URL(request.origin).hostname
-  } catch {
-    /* malformed origin — fall back to the raw string */
-  }
-  const Icon = PERMISSION_ICON[request.kinds[0]] ?? Mic
-  return (
-    <div className="flex items-center gap-3 border-b border-border bg-card px-4 py-2.5 text-foreground">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground">
-        <Icon size={16} strokeWidth={1.75} />
-      </div>
-      <p className="min-w-0 flex-1 truncate text-sm">
-        <span className="font-medium">{host}</span>{' '}
-        <span className="text-muted-foreground">wants to {describePermissionKinds(request.kinds)}</span>
-      </p>
-      <div className="flex shrink-0 items-center gap-2">
-        <button
-          onClick={() => onDecide('block', true)}
-          className="h-8 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
-        >
-          Block
-        </button>
-        <button
-          onClick={() => onDecide('allow', true)}
-          className="h-8 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          Allow
-        </button>
-        <button
-          aria-label="Dismiss"
-          onClick={() => onDecide('block', false)}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
-        >
-          <X size={16} />
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/** Shown when the OS (macOS Privacy/TCC) blocks media even though the site was
- *  allowed in-app. The app can't grant this itself — only System Settings can —
- *  so we point the user there. */
-function OsBlockedInfobar({
-  kinds,
-  onOpenSettings,
-  onDismiss,
-}: {
-  kinds: PermissionKind[]
-  onOpenSettings: (kind: 'microphone' | 'camera') => void
-  onDismiss: () => void
-}) {
-  const label = kinds
-    .map((k) => (k === 'camera' ? 'camera' : 'microphone'))
-    .join(' and ')
-  const primaryKind: 'microphone' | 'camera' = kinds.includes('camera') && !kinds.includes('microphone')
-    ? 'camera'
-    : 'microphone'
-  return (
-    <div className="flex items-center gap-3 border-b border-border bg-card px-4 py-2.5 text-foreground">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
-        <ShieldAlert size={16} strokeWidth={1.75} />
-      </div>
-      <p className="min-w-0 flex-1 text-sm text-muted-foreground">
-        Your system is blocking Newbro from using your{' '}
-        <span className="font-medium text-foreground">{label}</span>. Enable it in System Settings, then reload the page.
-      </p>
-      <div className="flex shrink-0 items-center gap-2">
-        <button
-          onClick={() => onOpenSettings(primaryKind)}
-          className="h-8 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          Open System Settings
-        </button>
-        <button
-          aria-label="Dismiss"
-          onClick={onDismiss}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
-        >
-          <X size={16} />
-        </button>
       </div>
     </div>
   )

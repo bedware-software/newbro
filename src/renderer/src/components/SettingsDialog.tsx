@@ -7,6 +7,8 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { ExtensionPermissionList } from './ExtensionPermissionList'
 import { requestExtensionInstall } from '../lib/extension-install'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
+import { VIM_INDICATORS, DEFAULT_VIM_INDICATOR, normalizeVimIndicator, type VimIndicator } from '../lib/vim-indicator'
+import { VimModeBadge } from './VimModeBadge'
 import { useAppStore } from '../store/app-store'
 import { DEFAULT_VIM_KEYMAP, parseVimKeymap } from '../lib/vim-keymap'
 import { ACTION_LABELS } from '../lib/action-labels'
@@ -32,6 +34,7 @@ interface Settings {
   newTabFocus: 'site' | 'url'
   showTabNumbers: boolean
   vimMode: boolean
+  vimIndicator: VimIndicator
   /** Null = the built-in default keymap. */
   vimKeymap: string | null
   defaultPageUrl: string
@@ -70,6 +73,7 @@ interface AppearancePreview {
   lightVariant: string
   darkVariant: string
   density: Density
+  vimIndicator: VimIndicator
 }
 
 type UpdateStatus =
@@ -438,6 +442,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [newTabFocus, setNewTabFocus] = useState<'site' | 'url'>('site')
   const [showTabNumbers, setShowTabNumbers] = useState(true)
   const [vimMode, setVimMode] = useState(false)
+  const [vimIndicator, setVimIndicator] = useState<VimIndicator>(DEFAULT_VIM_INDICATOR)
   const [vimKeymapText, setVimKeymapText] = useState(DEFAULT_VIM_KEYMAP)
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
@@ -529,6 +534,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     lightVariant: LIGHT_VARIANTS[0].id,
     darkVariant: DARK_VARIANTS[0].id,
     density: DEFAULT_DENSITY,
+    vimIndicator: DEFAULT_VIM_INDICATOR,
   })
   recordingRef.current = recordingTarget
 
@@ -778,6 +784,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       const lv = normalizeLightVariant(settings.lightVariant)
       const dv = normalizeDarkVariant(settings.darkVariant)
       const dens = normalizeDensity(settings.density)
+      const indicator = normalizeVimIndicator(settings.vimIndicator)
       setTheme(settings.theme)
       setLightVariant(lv)
       setDarkVariant(dv)
@@ -785,8 +792,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setNewTabFocus(settings.newTabFocus === 'url' ? 'url' : 'site')
       setShowTabNumbers(settings.showTabNumbers !== false)
       setVimMode(settings.vimMode === true)
+      setVimIndicator(indicator)
       setVimKeymapText(settings.vimKeymap ?? DEFAULT_VIM_KEYMAP)
-      originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens }
+      originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens, vimIndicator: indicator }
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
       setSearchSuggestions(settings.searchSuggestions !== false)
@@ -1265,6 +1273,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       newTabFocus,
       showTabNumbers,
       vimMode,
+      vimIndicator,
       // Left at the default it stays null, so later default bindings reach it.
       vimKeymap: vimKeymapText === DEFAULT_VIM_KEYMAP ? null : vimKeymapText,
       defaultPageUrl: defaultUrl,
@@ -1290,7 +1299,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   }
 
   const previewAppearance = (next: Partial<AppearancePreview>): void => {
-    onAppearancePreview?.({ theme, lightVariant, darkVariant, density, ...next })
+    onAppearancePreview?.({ theme, lightVariant, darkVariant, density, vimIndicator, ...next })
   }
 
   const handleResetKeybindings = () => {
@@ -1491,6 +1500,37 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   ))}
                 </div>
               </div>
+
+              {/* Vim mode's key cap — only while Vim mode is on. */}
+              {vimMode && (
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground mb-1">Vim mode indicator</h3>
+                  <p className="text-[11px] text-muted-foreground mb-3">
+                    How the mode's key cap — CMD, WEB, INS — shows the mode's colour.
+                  </p>
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
+                    {VIM_INDICATORS.map((v) => (
+                      <button
+                        key={v.id}
+                        onClick={() => { setVimIndicator(v.id); previewAppearance({ vimIndicator: v.id }) }}
+                        title={v.hint}
+                        className={`flex flex-col items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                          vimIndicator === v.id
+                            ? 'border-primary bg-primary/10'
+                            : 'border-border hover:bg-secondary'
+                        }`}
+                      >
+                        <span className="flex gap-1.5">
+                          <VimModeBadge mode="command" indicator={v.id} />
+                          <VimModeBadge mode="browse" indicator={v.id} />
+                          <VimModeBadge mode="insert" indicator={v.id} />
+                        </span>
+                        <span className="text-xs font-medium text-foreground">{v.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

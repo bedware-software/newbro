@@ -1,4 +1,4 @@
-// Shared permission vocabulary for the renderer (prompt infobar + settings).
+// Shared permission vocabulary for the renderer (page prompt + settings).
 // Mirrors the canonical types in src/main/permissions-store.ts; kept as a
 // separate renderer copy so we don't import across the main/renderer boundary.
 

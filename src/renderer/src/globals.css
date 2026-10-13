@@ -471,8 +471,9 @@ kbd[data-on-field] {
 
 /* Vim's mode, shown as a key cap (VimModeBadge): the caps above, a little
  * bigger, one width for CMD / WEB / INS so a switch doesn't shift what's
- * beside it, its rim and label in the mode's colours. After the theme
- * rules, which it overrides. */
+ * beside it, and the mode's colour shown as Settings → Appearance says
+ * (data-indicator, lib/vim-indicator.ts). After the theme rules, which it
+ * overrides. */
 kbd.vim-mode {
   width: 42px;
   padding: 4px 0;
@@ -480,9 +481,33 @@ kbd.vim-mode {
   font-weight: 600;
   letter-spacing: 0.04em;
 }
-kbd.vim-mode[data-mode="command"] { border-color: var(--color-vim-command); color: var(--color-vim-command-text); }
-kbd.vim-mode[data-mode="browse"] { border-color: var(--color-vim-browse); color: var(--color-vim-browse-text); }
-kbd.vim-mode[data-mode="insert"] { border-color: var(--color-vim-insert); color: var(--color-vim-insert-text); }
+kbd.vim-mode[data-mode="command"] { --vim-c: var(--color-vim-command); --vim-t: var(--color-vim-command-text); }
+kbd.vim-mode[data-mode="browse"] { --vim-c: var(--color-vim-browse); --vim-t: var(--color-vim-browse-text); }
+kbd.vim-mode[data-mode="insert"] { --vim-c: var(--color-vim-insert); --vim-t: var(--color-vim-insert-text); }
+kbd.vim-mode[data-indicator="rim-label"] { border-color: var(--vim-c); color: var(--vim-t); }
+kbd.vim-mode[data-indicator="rim"] { border-color: var(--vim-c); }
+kbd.vim-mode[data-indicator="label"] { color: var(--vim-t); }
+/* The wash is an image over the cap's own fill, whichever the theme gives. */
+kbd.vim-mode[data-indicator="tint"] {
+  border-color: var(--vim-c);
+  background-image: linear-gradient(color-mix(in oklab, var(--vim-c) 18%, transparent), color-mix(in oklab, var(--vim-c) 18%, transparent));
+}
+/* A thicker bottom edge, the padding giving back what it adds. */
+kbd.vim-mode[data-indicator="base"] {
+  border-bottom: 3px solid var(--vim-c);
+  padding-bottom: 2.5px;
+}
+kbd.vim-mode[data-indicator="dot"] {
+  width: 50px;
+  gap: 4px;
+}
+kbd.vim-mode[data-indicator="dot"]::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vim-c);
+}
 
 /* ── Custom scrollbars ── */
 ::-webkit-scrollbar {

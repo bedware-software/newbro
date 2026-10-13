@@ -41,6 +41,9 @@ interface Props {
   /** The window that opened it takes no clicks or focus while it's open
    *  (the address editor). Fixed for the popup's life. */
   modal?: boolean
+  /** Shown without taking the keyboard (a page's permission prompt, which
+   *  mustn't cut into typing on the page). Clicking it still focuses it. */
+  activate?: boolean
   /** When set, remember the popup's size + position across opens, keyed by
    *  this string. Saved to localStorage on resize, drag-end, and unmount.
    *  Saved bounds override the `width` / `height` props on subsequent
@@ -168,6 +171,7 @@ export function DetachedWindow({
   closeOnBlur = false,
   alwaysOnTop = false,
   modal = false,
+  activate = true,
   persistKey,
   matchRunwaPalette = false,
   placement,
@@ -431,7 +435,7 @@ export function DetachedWindow({
     const show = (): void => {
       if (shown) return
       shown = true
-      ;(window as any).electronAPI?.detachedWindowShow(alwaysOnTop)
+      ;(window as any).electronAPI?.detachedWindowShow(alwaysOnTop, activate)
     }
     let id = popup.requestAnimationFrame(() => {
       id = popup.requestAnimationFrame(show)
@@ -442,7 +446,7 @@ export function DetachedWindow({
       clearTimeout(fallback)
       if (!popup.closed) popup.cancelAnimationFrame(id)
     }
-  }, [containerEl, alwaysOnTop])
+  }, [containerEl, alwaysOnTop, activate])
 
   useEffect(() => {
     const popup = popupRef.current
