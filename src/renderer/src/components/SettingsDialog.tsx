@@ -2808,8 +2808,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     <div className="flex items-center justify-between gap-4 mb-2">
                       <p className="text-sm text-muted-foreground">
                         One <code className="font-mono text-xs">command keys…</code> per line;
-                        the <code className="font-mono text-xs">browse-</code>, <code className="font-mono text-xs">search-</code> and{' '}
-                        <code className="font-mono text-xs">find-</code> prefixes say where a command works.
+                        the <code className="font-mono text-xs">browse-</code>, <code className="font-mono text-xs">search-</code>,{' '}
+                        <code className="font-mono text-xs">find-</code> and <code className="font-mono text-xs">url-</code> prefixes say where a command works.
                       </p>
                       <button
                         type="button"

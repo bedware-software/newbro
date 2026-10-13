@@ -19,6 +19,7 @@ const SECTIONS: Array<{ context: VimContext; title: string; mode: VimMode | null
   { context: 'browse', title: 'BROWSE', mode: 'browse', note: 'The page. Keys not listed here reach the page.' },
   { context: 'search', title: 'Search Everything · Command Palette', mode: null, note: 'Their COMMAND mode, out of the box (Esc); i types again.' },
   { context: 'find', title: 'Find in Page', mode: null, note: 'Its COMMAND mode, out of the box (Esc); i types again.' },
+  { context: 'url', title: 'Address editor', mode: null, note: 'e in COMMAND. Blocks: p protocol, d domain, 1–9 path levels, s parameters, f fragment.' },
 ]
 
 interface Row {
@@ -59,7 +60,7 @@ export function VimHelpDialog({ open, keymap, fromMode, onClose }: Props) {
 
   if (!open) return null
 
-  const maps: Record<VimContext, ParsedVimKeymap['main']> = { command: keymap.main, browse: keymap.browse, search: keymap.search, find: keymap.find }
+  const maps: Record<VimContext, ParsedVimKeymap['main']> = { command: keymap.main, browse: keymap.browse, search: keymap.search, find: keymap.find, url: keymap.url }
   const commands = vimCommandsInOrder()
   const ordered = [...SECTIONS].sort((a, b) => Number(b.mode === fromMode) - Number(a.mode === fromMode))
   const sections = ordered.map((section) => {

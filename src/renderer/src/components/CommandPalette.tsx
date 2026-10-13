@@ -58,6 +58,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'expand-all-groups', label: 'Expand All Tab Groups', category: 'View' },
   { id: 'collapse-all-groups', label: 'Collapse All Tab Groups', category: 'View' },
   { id: 'focus-url', label: 'Focus Address Bar', category: 'Navigation' },
+  { id: 'edit-url', label: 'Edit Address…', category: 'Navigation' },
   { id: 'back', label: 'Navigate Back', category: 'Navigation' },
   { id: 'forward', label: 'Navigate Forward', category: 'Navigation' },
   { id: 'reload', label: 'Reload Page', category: 'Navigation' },

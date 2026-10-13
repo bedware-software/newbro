@@ -68,6 +68,7 @@ next-tab            gt
 prev-tab            gT
 toggle-sidebar      \\
 focus-url           <C-l>
+edit-url            e
 search              f
 command-palette     :
 copy-url            y
@@ -142,6 +143,27 @@ search-row-7        7
 search-row-8        8
 search-row-9        9
 
+" ── Address editor (e) ───────────────────────────────────────────────
+" The page's address, big, cut into blocks with a key each: p protocol,
+" d domain, 1–9 the path's levels, s parameters, f fragment. An intent and
+" a block's key act on that block — c changes it (selects it to type
+" over), r removes it, y copies it, p pastes over it; y and p on their own
+" act on the whole address. <CR> goes there, Shift+<CR> in a new tab; Esc
+" leaves typing, then closes.
+url-change          c
+url-remove          r
+url-copy            y
+url-paste           p
+url-up              u
+url-site            t
+url-copy-title      n
+url-clear           C
+url-append          A
+url-insert-start    I
+url-insert          i
+url-undo            U
+url-go              <CR>
+
 " ── Find in page ──────────────────────────────────────────────────────
 " Opens in INSERT, typing what to find; <CR> / Shift+<CR> step through the
 " matches. Esc goes to COMMAND, where these keys step; i types again and
@@ -189,6 +211,20 @@ const NEW_IN_V2 = new Set([
   'split-focus',
   'split-close',
   'browse-split-focus',
+  'edit-url',
+  'url-change',
+  'url-remove',
+  'url-copy',
+  'url-paste',
+  'url-up',
+  'url-site',
+  'url-copy-title',
+  'url-clear',
+  'url-append',
+  'url-insert-start',
+  'url-insert',
+  'url-undo',
+  'url-go',
 ])
 
 /** The v1 name of a command, read as v2's. */

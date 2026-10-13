@@ -19,6 +19,8 @@ import {
 import type { DownloadEntry } from '../App'
 import type { VimMode } from '../lib/vim-mode'
 import { VimModeBadge } from './VimModeBadge'
+import { WorkspaceStats } from './WorkspaceStats'
+import { useUrlEditorStore } from '../lib/url-editor'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { DOWNLOADS_URL, internalPageOf } from '../lib/internal-pages'
 import { requestExtensionInstall } from '../lib/extension-install'
@@ -769,6 +771,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
 
 export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vimMode, vimPending, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions }: Props) {
   const isMac = navigator.platform.includes('Mac')
+  const urlEditorOpen = useUrlEditorStore((s) => s.open)
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -1474,7 +1477,10 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
               <div className="w-px h-full bg-card shrink-0" />
             </>
           )}
-          <Omnibox tabId={activeTabId} tabUrl={activeTab?.url || ''} anchorRef={urlBarRef} />
+          {/* The address editor (e) has the address: the bar shows stats. */}
+          {urlEditorOpen
+            ? <WorkspaceStats />
+            : <Omnibox tabId={activeTabId} tabUrl={activeTab?.url || ''} anchorRef={urlBarRef} />}
         </div>
 
         {/* Extensions cluster sits at the far right of the toolbar so it

@@ -168,7 +168,7 @@ export function useKeySequence(
  * focus and blur to `onBoxFocus` / `onBoxBlur`; keys typed outside the box
  * arrive on the popup's window, which `popup` names.
  */
-export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, onEscape }: {
+export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, onEscape, intercept }: {
   /** Null while Vim mode is off. */
   keymap: VimKeymap | null
   popup: Window | null
@@ -178,6 +178,9 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
   onCommand: (command: string) => void
   /** Esc in COMMAND: usually closes the popup. */
   onEscape: () => void
+  /** Sees each COMMAND-mode key first; true when it took the key (the
+   *  address editor's block key after c / r / y / p). */
+  intercept?: (e: KeyboardEvent) => boolean
 }): {
   mode: VimMode | null
   modeRef: React.RefObject<VimMode | null>
@@ -191,6 +194,8 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
   const { pending, feed, reset } = useKeySequence(keymap ?? NO_KEYMAP, onCommand)
   const onEscapeRef = useRef(onEscape)
   onEscapeRef.current = onEscape
+  const interceptRef = useRef(intercept)
+  interceptRef.current = intercept
 
   useEffect(() => {
     if (!open) return
@@ -206,6 +211,11 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
     const onKeyDown = (e: KeyboardEvent): void => {
       if (modeRef.current !== 'command' || e.target === box.current) return
       if (e.metaKey || e.altKey) return
+      if (interceptRef.current?.(e)) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
       const token = keyTokenFromEvent(e)
       if (e.ctrlKey && !(token && isCtrlToken(token))) return
       if (feed(e)) {

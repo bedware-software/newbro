@@ -8,7 +8,8 @@
 // like `gg`, Ctrl with a letter (`<C-l>`), and named keys in angle brackets
 // (`<CR>`, `<Esc>`, `<Tab>`). The command's prefix says where it works:
 // `browse-` in BROWSE mode (the page), `search-` in Search Everything and
-// the Command Palette, `find-` in Find in Page, anything else in COMMAND mode.
+// the Command Palette, `find-` in Find in Page, `url-` in the address editor,
+// anything else in COMMAND mode.
 
 import { ACTION_LABELS } from './action-labels'
 import { SEQUENCE_JOIN, type VimKeymap } from '../../../shared/vim-keys'
@@ -46,6 +47,20 @@ const VIM_COMMAND_LABELS: Record<string, string> = {
   'split-down': 'Split: new pane below',
   'split-focus': 'Focus the other split pane',
   'split-close': 'End the split (keep this pane)',
+  'edit-url': 'Edit the address (block by block)',
+  'url-change': 'Change a block: c, then its key',
+  'url-remove': 'Remove a block: r, then its key',
+  'url-copy': 'Copy the address (y, then a key: a block)',
+  'url-paste': 'Paste over the address (p, then a key: a block)',
+  'url-up': 'Up a level (drop the last path level)',
+  'url-site': 'Only the site (protocol and domain)',
+  'url-copy-title': 'Copy the page title',
+  'url-clear': 'Clear and type',
+  'url-append': 'Type at the end',
+  'url-insert-start': 'Type at the start',
+  'url-insert': 'Type where you left off',
+  'url-undo': 'Undo the last change',
+  'url-go': 'Go to the address',
   'browse-scroll-down': 'Scroll down',
   'browse-scroll-up': 'Scroll up',
   'browse-half-page-down': 'Half a page down',
@@ -109,7 +124,7 @@ const SHARED_COMMANDS: Record<'search' | 'find', Set<string>> = {
   find: new Set(['insert-mode']),
 }
 
-export type VimContext = 'command' | 'browse' | 'search' | 'find'
+export type VimContext = 'command' | 'browse' | 'search' | 'find' | 'url'
 
 // COMMAND-mode commands whose names happen to start with another context's
 // prefix.
@@ -120,6 +135,7 @@ export function contextOf(command: string): VimContext {
   if (command.startsWith('browse-')) return 'browse'
   if (command.startsWith('search-')) return 'search'
   if (command.startsWith('find-')) return 'find'
+  if (command.startsWith('url-')) return 'url'
   return 'command'
 }
 
@@ -132,6 +148,8 @@ export interface ParsedVimKeymap {
   search: VimKeymap
   /** COMMAND mode of Find in Page. */
   find: VimKeymap
+  /** COMMAND mode of the address editor. */
+  url: VimKeymap
   errors: string[]
 }
 
@@ -251,7 +269,7 @@ function bind(map: VimKeymap, seq: string[], command: string): string | null {
 
 export function parseVimKeymap(text: string): ParsedVimKeymap {
   const known = getKnownCommands()
-  const maps: Record<VimContext, VimKeymap> = { command: new Map(), browse: new Map(), search: new Map(), find: new Map() }
+  const maps: Record<VimContext, VimKeymap> = { command: new Map(), browse: new Map(), search: new Map(), find: new Map(), url: new Map() }
   const shared: Array<{ seq: string[]; command: string }> = []
   const errors: string[] = []
 
@@ -290,7 +308,7 @@ export function parseVimKeymap(text: string): ParsedVimKeymap {
     return map
   }
 
-  return { main: maps.command, browse: maps.browse, search: withShared('search'), find: withShared('find'), errors }
+  return { main: maps.command, browse: maps.browse, search: withShared('search'), find: withShared('find'), url: maps.url, errors }
 }
 
 /** The Command Palette's COMMAND keys: Search Everything's, less its filters. */

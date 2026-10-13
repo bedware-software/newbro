@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getVisibleTabOrder, getTabCycleOrder, type NewTabFocus } from './store/app-store'
 import { normalizeURL, setSearchEngine } from './lib/url'
+import { openAddress } from './lib/open-address'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
 import { useVimMode, dispatchPanelCommand, claimRendererFocus, isCommandMode, type VimPanel, type VimMode } from './lib/vim-mode'
@@ -9,6 +10,8 @@ import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
 import { FindPopup } from './components/FindPopup'
+import { UrlEditor } from './components/UrlEditor'
+import { openUrlEditor, useUrlEditorStore } from './lib/url-editor'
 import { closeSplit, focusOtherPane, isSplitShown, otherPaneTab, startSplit, useSplitStore } from './lib/split-view'
 import { SearchDialog } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
@@ -849,27 +852,6 @@ export default function App() {
       else state.setActiveTab(nextId)
     }
 
-    // Vim mode's p / P: the clipboard's text opens like an address typed
-    // into the bar — a URL, or a search for anything else.
-    const openPastedAddress = (text: string, inNewTab: boolean): void => {
-      const url = normalizeURL(text.split(/\r?\n/)[0] ?? '')
-      if (!url) return
-      const s = useAppStore.getState()
-      const tab = s.getActiveTab()
-      log.action('paste-url', { inNewTab, hasTab: !!tab })
-      // Parked on a tab group there's no page to replace: open a tab instead.
-      if (inNewTab || !tab) {
-        if (s.activeWorkspaceId && !isInternalUrl(url)) s.addTabNearActive(s.activeWorkspaceId, url, true)
-        return
-      }
-      if (isInternalUrl(url) || isInternalUrl(tab.url)) {
-        s.retargetTab(tab.id, url)
-        return
-      }
-      window.electronAPI.tabNavigate?.(tab.id, url)
-      s.updateTabUrl(tab.id, url)
-    }
-
     const handleAction = (action: string) => {
       const s = useAppStore.getState()
       // tab-1..tab-9 quick-jump: parse the digit and index into the visible
@@ -921,7 +903,7 @@ export default function App() {
         }
         case 'paste-url':
         case 'paste-url-new-tab':
-          void window.electronAPI.clipboardReadText?.().then((text) => openPastedAddress(text, action === 'paste-url-new-tab'))
+          void window.electronAPI.clipboardReadText?.().then((text) => openAddress(text, action === 'paste-url-new-tab', action))
           break
         case 'focus-url': {
           // The shared helper also asks main to pull OS keyboard focus back
@@ -968,6 +950,9 @@ export default function App() {
           if (startSplit(action === 'split-right' ? 'right' : 'down') && picking) setSplitPickerFocusTick((t) => t + 1)
           break
         }
+        case 'edit-url':
+          openUrlEditor()
+          break
         case 'split-close':
           closeSplit()
           break
@@ -1448,7 +1433,23 @@ export default function App() {
     log.event('split: pane clicked')
     useAppStore.getState().setActiveTab(evt.tabId)
   }), [])
-  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || findBarOpen || splitPicking || vimHelpFrom !== null
+  const urlEditorOpen = useUrlEditorStore((st) => st.open)
+  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || findBarOpen || splitPicking || urlEditorOpen || vimHelpFrom !== null
+  // The address editor closing gives the keyboard back to the page when
+  // that's where it was; COMMAND takes it back itself (below).
+  const urlEditorWasOpenRef = useRef(urlEditorOpen)
+  useEffect(() => {
+    const closed = urlEditorWasOpenRef.current && !urlEditorOpen
+    urlEditorWasOpenRef.current = urlEditorOpen
+    if (!closed) return
+    const mode = vimRef.current?.mode
+    if (mode === 'browse' || mode === 'insert') {
+      vimRef.current?.returnToPage()
+    } else if (!mode) {
+      const s = useAppStore.getState()
+      if (s.activeTabId && !isInternalUrl(s.getActiveTab()?.url)) window.electronAPI.tabFocus?.(s.activeTabId)
+    }
+  }, [urlEditorOpen])
   const popupWasOpenRef = useRef(popupOpen)
   useEffect(() => {
     if (popupWasOpenRef.current && !popupOpen && isCommandMode()) claimRendererFocus(false)
@@ -1469,6 +1470,7 @@ export default function App() {
           onVimEnterPage={vim.enterBrowse}
         />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+          <UrlEditor anchorRef={webviewColumnRef} vimKeymap={vimEnabled ? vimKeymap.url : null} />
           <FindPopup
             open={findBarOpen}
             focusTick={findBarFocusTick}
