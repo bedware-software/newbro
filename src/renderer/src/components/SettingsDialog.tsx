@@ -1538,7 +1538,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       value={passwordAutofill}
                       disabled={!passwordManagerEnabled}
                       onChange={(event) => setPasswordAutofill(event.target.value as 'automatic' | 'on-focus' | 'off')}
-                      className="h-8 px-2.5 text-xs bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring shrink-0"
+                      className="h-8 px-2.5 text-xs field text-foreground rounded-lg outline-none shrink-0"
                     >
                       <option value="automatic">Fill automatically</option>
                       <option value="on-focus">Choose on field focus</option>
@@ -1557,7 +1557,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <select
                     value={passwordPartition}
                     onChange={(event) => handlePasswordProfileChange(event.target.value)}
-                    className="h-8 max-w-52 px-2.5 text-xs bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="h-8 max-w-52 px-2.5 text-xs field text-foreground rounded-lg outline-none"
                   >
                     {profiles.map((profile) => (
                       <option key={profile.id} value={profile.partition}>{profile.name}</option>
@@ -1739,7 +1739,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                           onChange={(event) => setPasswordEditor((current) => current ? { ...current, origin: event.target.value } : current)}
                           placeholder="https://example.com"
                           spellCheck={false}
-                          className="w-full h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                          className="w-full h-9 px-3 field rounded-xl text-sm text-foreground outline-none"
                         />
                       </label>
                       <label>
@@ -1749,7 +1749,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                           value={passwordEditor.username}
                           onChange={(event) => setPasswordEditor((current) => current ? { ...current, username: event.target.value } : current)}
                           autoComplete="off"
-                          className="w-full h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                          className="w-full h-9 px-3 field rounded-xl text-sm text-foreground outline-none"
                         />
                       </label>
                       <label>
@@ -1766,7 +1766,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                             autoComplete="new-password"
                             spellCheck={false}
                             placeholder={passwordEditor.id && passwordBusyId === passwordEditor.id ? 'Loading…' : undefined}
-                            className="w-full h-9 pl-3 pr-9 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                            className="w-full h-9 pl-3 pr-9 field rounded-xl text-sm text-foreground outline-none"
                           />
                           <button
                             type="button"
@@ -1807,7 +1807,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       value={passwordSearch}
                       onChange={(event) => setPasswordSearch(event.target.value)}
                       placeholder="Search websites and usernames"
-                      className="w-full h-9 pl-9 pr-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                      className="w-full h-9 pl-9 pr-3 field rounded-xl text-sm text-foreground outline-none"
                     />
                   </div>
                 )}
@@ -2113,7 +2113,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   value={defaultUrl}
                   onChange={(e) => setDefaultUrl(e.target.value)}
                   placeholder="about:blank (leave empty for blank page)"
-                  className="w-full h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                  className="w-full h-9 px-3 field rounded-xl text-sm text-foreground outline-none"
                 />
                 <p className="text-[11px] text-muted-foreground mt-1">
                   The URL to load when creating a new tab. Leave empty for a blank page.
@@ -2214,9 +2214,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         onChange={(e) => isCustom && setSearchEngine(e.target.value)}
                         readOnly={!isCustom}
                         placeholder="https://example.com/search?q=%s"
-                        className={`w-full h-9 px-3 mt-2 rounded-md border border-input text-sm outline-none font-mono ${
+                        className={`w-full h-9 px-3 mt-2 rounded-xl text-sm outline-none font-mono ${
                           isCustom
-                            ? 'bg-secondary text-foreground focus:border-ring focus:bg-background'
+                            ? 'field text-foreground'
                             : 'bg-secondary/50 text-muted-foreground cursor-default'
                         }`}
                         autoFocus={isCustom}
@@ -2406,14 +2406,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       value={proxy.proxyRules}
                       onChange={(e) => setProxy((prev) => ({ ...prev, proxyRules: e.target.value }))}
                       placeholder="http://127.0.0.1:8080 or socks5://127.0.0.1:1080"
-                      className="w-full h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                      className="w-full h-9 px-3 field rounded-xl text-sm text-foreground outline-none"
                     />
                     <input
                       type="text"
                       value={proxy.proxyBypassRules}
                       onChange={(e) => setProxy((prev) => ({ ...prev, proxyBypassRules: e.target.value }))}
                       placeholder="<-loopback>;localhost;*.internal"
-                      className="w-full h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                      className="w-full h-9 px-3 field rounded-xl text-sm text-foreground outline-none"
                     />
                     <p className="text-[11px] text-muted-foreground">
                       Server and bypass list are applied using Chromium proxy rules.
@@ -2436,7 +2436,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 <select
                   value={dohMode}
                   onChange={(e) => setDohMode(e.target.value as 'off' | 'automatic' | 'secure')}
-                  className="w-full px-3 py-2 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="w-full px-3 py-2 text-sm field text-foreground rounded-xl outline-none"
                 >
                   <option value="off">Off (use OS DNS only)</option>
                   <option value="automatic">Automatic (OS DNS first, DoH as fallback) — recommended</option>
@@ -2470,7 +2470,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   rows={2}
                   spellCheck={false}
                   placeholder="owa.example.com, *.corp.example.com"
-                  className="w-full px-3 py-2 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                  className="w-full px-3 py-2 text-sm field text-foreground rounded-xl outline-none font-mono"
                 />
                 <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
                   Hosts listed here sign in automatically with your <span className="text-foreground">Windows account</span> (NTLM / Kerberos),
@@ -2577,7 +2577,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   onChange={(e) => setExtInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !extInstalling) handleInstallExtension() }}
                   placeholder="https://chromewebstore.google.com/detail/…/<id> or <id>"
-                  className="flex-1 h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background font-mono"
+                  className="flex-1 h-9 px-3 field rounded-xl text-sm text-foreground outline-none font-mono"
                   disabled={extInstalling}
                 />
                 <button
@@ -2832,7 +2832,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       autoCorrect="off"
                       wrap="off"
                       rows={24}
-                      className="w-full px-3 py-2 rounded-md bg-secondary border border-input font-mono text-xs leading-relaxed text-foreground outline-none resize-y focus:border-ring focus:bg-background"
+                      className="w-full px-3 py-2 field rounded-xl font-mono text-xs leading-relaxed text-foreground outline-none resize-y"
                     />
                     {vimKeymapErrors.length > 0 && (
                       <div className="mt-2 px-3 py-2 rounded-md border border-destructive/40 bg-destructive/10 text-xs text-destructive space-y-0.5">
@@ -2884,7 +2884,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     onFocus={() => setRecordingTarget(null)}
                     placeholder="Filter shortcuts by name"
                     autoFocus
-                    className="w-full h-9 pl-9 pr-8 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                    className="w-full h-9 pl-9 pr-8 field rounded-xl text-sm text-foreground outline-none"
                   />
                   {shortcutFilter && (
                     <button
@@ -3006,7 +3006,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                             [kind]: e.target.value as PermissionPolicy,
                           }))
                         }
-                        className="w-32 px-2 py-1.5 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="w-32 px-2 py-1.5 text-sm field text-foreground rounded-xl outline-none"
                       >
                         {(['ask', 'allow', 'block'] as PermissionPolicy[]).map((p) => (
                           <option key={p} value={p}>{PERMISSION_POLICY_LABEL[p]}</option>
@@ -3045,7 +3045,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       <select
                         value={addSitePartition || profiles[0]?.partition || ''}
                         onChange={(e) => setAddSitePartition(e.target.value)}
-                        className="h-9 px-2 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-9 px-2 text-sm field text-foreground rounded-xl outline-none"
                         title="Profile"
                       >
                         {profiles.map((p) => (
@@ -3059,12 +3059,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       onChange={(e) => { setAddSiteOrigin(e.target.value); setAddSiteError(null) }}
                       onKeyDown={(e) => { if (e.key === 'Enter') handleAddSite() }}
                       placeholder="https://meet.google.com"
-                      className="flex-1 min-w-[180px] h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+                      className="flex-1 min-w-[180px] h-9 px-3 field rounded-xl text-sm text-foreground outline-none"
                     />
                     <select
                       value={addSiteKind}
                       onChange={(e) => setAddSiteKind(e.target.value as PermissionKind)}
-                      className="h-9 px-2 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 px-2 text-sm field text-foreground rounded-xl outline-none"
                     >
                       {PERMISSION_KINDS.map((k) => (
                         <option key={k} value={k}>{PERMISSION_LABEL[k]}</option>
@@ -3073,7 +3073,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     <select
                       value={addSiteDecision}
                       onChange={(e) => setAddSiteDecision(e.target.value as 'allow' | 'block')}
-                      className="h-9 px-2 text-sm bg-input text-foreground rounded-md border border-input focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="h-9 px-2 text-sm field text-foreground rounded-xl outline-none"
                     >
                       <option value="allow">Allow</option>
                       <option value="block">Block</option>

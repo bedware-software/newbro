@@ -9,7 +9,7 @@ import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
 import { GroupPill } from './GroupPill'
 import { ScopeSwitch } from './ScopeSwitch'
-import { VimModeBadge } from './VimModeBadge'
+import { InputField } from './InputField'
 import { Hint, HintBar, vimKeyCaps } from './KeyHints'
 import { usePopupVimMode, type VimMode } from '../lib/vim-mode'
 import { displayKeySequence, keysFor, type VimKeymap } from '../lib/vim-keymap'
@@ -442,62 +442,27 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
       onWindowChange={setPopupWindow}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
-        {/* Keys first, above the box — the Downloads page's hint bar. */}
-        <div data-detached-drag-handle>
-          <HintBar>
-            {vimMode === 'command' ? (
-              <>
-                <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
-                <Hint label="Open" keys={vimKeyCaps(vimKeymap, 'row-open')} />
-                <Hint label="Open row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${VIM_NUMBERED_ROWS}`)[0] ?? '9'}`]} />
-                <Hint label="Filter" keys={vimKeyCaps(vimKeymap, 'search-all', 'search-profiles', 'search-workspaces', 'search-groups', 'search-tabs')} />
-                {scopeApplies && <Hint label="Scope" keys={vimKeyCaps(vimKeymap, 'search-scope')} />}
-                <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
-                <Hint label="Close" keys={['Esc']} />
-              </>
-            ) : (
-              <>
-                <Hint label="Navigate" keys={['↓', '↑']} />
-                <Hint label="Open" keys={['Enter']} />
-                {/* The filter chords are regular shortcuts — off in Vim mode,
-                    where COMMAND mode's letters pick filters instead. */}
-                {!vimMode && (
-                  <>
-                    <Hint label="Filter" keys={[isMac ? '⌘' : 'Ctrl', '1…4']} />
-                    <Hint label="or" keys={[isMac ? '⌘' : 'Ctrl', FILTER_TYPES.map((type) => FILTER_LETTERS[type]).join(' ')]} />
-                    <Hint label="All" keys={[isMac ? '⌘' : 'Ctrl', 'R']} />
-                  </>
-                )}
-                {scopeApplies && <Hint label="Scope" keys={['Tab']} />}
-                <Hint label={vimMode === 'insert' ? 'Command mode' : 'Close'} keys={['Esc']} />
-              </>
-            )}
-          </HintBar>
-        </div>
         <div
           data-detached-drag-handle
-          className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0"
+          className="px-4 py-2.5 border-b border-border shrink-0"
         >
-          <span className="w-6 shrink-0 flex items-center">
-            <Search size={16} className="text-muted-foreground" />
-          </span>
-          <input
-            data-detached-drag-handle
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onFocus={vim.onBoxFocus}
-            onBlur={vim.onBoxBlur}
-            placeholder={vimMode === 'command' && vimHint('insert-mode')
-              ? `Search everything... (${vimHint('insert-mode')} to type)`
-              : 'Search everything...'}
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
-          />
-          {/* At the end of the row, clear of the query: the box stops short
-              of it rather than running under it. */}
-          {vimMode && <VimModeBadge mode={vimMode} pending={vim.pending} />}
+          <InputField inputRef={inputRef} mode={vimMode} pending={vim.pending} className="h-10">
+            <Search size={16} className="shrink-0 text-muted-foreground" />
+            <input
+              data-detached-drag-handle
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onFocus={vim.onBoxFocus}
+              onBlur={vim.onBoxBlur}
+              placeholder={vimMode === 'command' && vimHint('insert-mode')
+                ? `Search everything... (${vimHint('insert-mode')} to type)`
+                : 'Search everything...'}
+              className="flex-1 min-w-0 h-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
+            />
+          </InputField>
         </div>
 
         <div className="flex items-center gap-1 px-4 py-2 border-b border-border shrink-0">
@@ -656,6 +621,38 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
               )
             })
           )}
+        </div>
+        {/* The keys, along the bottom as everywhere. */}
+        <div data-detached-drag-handle>
+          <HintBar>
+            {vimMode === 'command' ? (
+              <>
+                <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
+                <Hint label="Open" keys={vimKeyCaps(vimKeymap, 'row-open')} />
+                <Hint label="Open row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${VIM_NUMBERED_ROWS}`)[0] ?? '9'}`]} />
+                <Hint label="Filter" keys={vimKeyCaps(vimKeymap, 'search-all', 'search-profiles', 'search-workspaces', 'search-groups', 'search-tabs')} />
+                {scopeApplies && <Hint label="Scope" keys={vimKeyCaps(vimKeymap, 'search-scope')} />}
+                <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
+                <Hint label="Close" keys={['Esc']} />
+              </>
+            ) : (
+              <>
+                <Hint label="Navigate" keys={['↓', '↑']} />
+                <Hint label="Open" keys={['Enter']} />
+                {/* The filter chords are regular shortcuts — off in Vim mode,
+                    where COMMAND mode's letters pick filters instead. */}
+                {!vimMode && (
+                  <>
+                    <Hint label="Filter" keys={[isMac ? '⌘' : 'Ctrl', '1…4']} />
+                    <Hint label="or" keys={[isMac ? '⌘' : 'Ctrl', FILTER_TYPES.map((type) => FILTER_LETTERS[type]).join(' ')]} />
+                    <Hint label="All" keys={[isMac ? '⌘' : 'Ctrl', 'R']} />
+                  </>
+                )}
+                {scopeApplies && <Hint label="Scope" keys={['Tab']} />}
+                <Hint label={vimMode === 'insert' ? 'Command mode' : 'Close'} keys={['Esc']} />
+              </>
+            )}
+          </HintBar>
         </div>
       </div>
     </DetachedWindow>

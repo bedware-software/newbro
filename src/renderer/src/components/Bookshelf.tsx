@@ -727,7 +727,7 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
             onChange={setEditValue}
             onCommit={() => commitRename(r.id)}
             onCancel={() => { setEditingId(null); setEditValue('') }}
-            className="flex-1 min-w-0 bg-input rounded px-1.5 py-0.5 text-xs text-foreground outline-none border border-primary/40"
+            className="flex-1 min-w-0 field rounded-md px-1.5 py-0.5 text-xs text-foreground outline-none"
           />
         </div>
       )

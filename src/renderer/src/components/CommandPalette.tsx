@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Command } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
-import { VimModeBadge } from './VimModeBadge'
+import { InputField } from './InputField'
 import { Hint, HintBar, vimKeyCaps } from './KeyHints'
 import { useAppStore } from '../store/app-store'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
@@ -311,47 +311,27 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
       onWindowChange={setPopupWindow}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
-        {/* Keys first, above the box — the Downloads page's hint bar. */}
-        <div data-detached-drag-handle>
-          <HintBar>
-            {vim.mode === 'command' ? (
-              <>
-                <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
-                <Hint label="Run" keys={vimKeyCaps(vimKeymap, 'row-open')} />
-                <Hint label="Run row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${VIM_NUMBERED_ROWS}`)[0] ?? '9'}`]} />
-                <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
-                <Hint label="Close" keys={['Esc']} />
-              </>
-            ) : (
-              <>
-                <Hint label="Navigate" keys={['↓', '↑']} />
-                <Hint label="Run" keys={['Enter']} />
-                <Hint label={vim.mode ? 'Command mode' : 'Close'} keys={['Esc']} />
-              </>
-            )}
-            {appVersion && <span className="text-muted-foreground/60 tabular-nums">v{appVersion}</span>}
-          </HintBar>
-        </div>
         <div
           data-detached-drag-handle
-          className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0"
+          className="px-4 py-2.5 border-b border-border shrink-0"
         >
-          <Command size={16} className="text-muted-foreground shrink-0" />
-          <input
-            data-detached-drag-handle
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onFocus={vim.onBoxFocus}
-            onBlur={vim.onBoxBlur}
-            placeholder={vim.mode === 'command' && vimKeyCaps(vimKeymap, 'insert-mode')[0]
-              ? `Type a command... (${vimKeyCaps(vimKeymap, 'insert-mode')[0]} to type)`
-              : 'Type a command...'}
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
-          />
-          {vim.mode && <VimModeBadge mode={vim.mode} pending={vim.pending} />}
+          <InputField inputRef={inputRef} mode={vim.mode} pending={vim.pending} className="h-10">
+            <Command size={16} className="text-muted-foreground shrink-0" />
+            <input
+              data-detached-drag-handle
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onFocus={vim.onBoxFocus}
+              onBlur={vim.onBoxBlur}
+              placeholder={vim.mode === 'command' && vimKeyCaps(vimKeymap, 'insert-mode')[0]
+                ? `Type a command... (${vimKeyCaps(vimKeymap, 'insert-mode')[0]} to type)`
+                : 'Type a command...'}
+              className="flex-1 min-w-0 h-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
+            />
+          </InputField>
         </div>
 
         <div ref={listRef} className="flex-1 overflow-y-auto py-1">
@@ -409,6 +389,27 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
           )}
         </div>
 
+        {/* The keys, along the bottom as everywhere. */}
+        <div data-detached-drag-handle>
+          <HintBar>
+            {vim.mode === 'command' ? (
+              <>
+                <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
+                <Hint label="Run" keys={vimKeyCaps(vimKeymap, 'row-open')} />
+                <Hint label="Run row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${VIM_NUMBERED_ROWS}`)[0] ?? '9'}`]} />
+                <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
+                <Hint label="Close" keys={['Esc']} />
+              </>
+            ) : (
+              <>
+                <Hint label="Navigate" keys={['↓', '↑']} />
+                <Hint label="Run" keys={['Enter']} />
+                <Hint label={vim.mode ? 'Command mode' : 'Close'} keys={['Esc']} />
+              </>
+            )}
+            {appVersion && <span className="text-muted-foreground/60 tabular-nums">v{appVersion}</span>}
+          </HintBar>
+        </div>
       </div>
     </DetachedWindow>
   )

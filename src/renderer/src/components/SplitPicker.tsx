@@ -9,7 +9,7 @@ import { useAppStore } from '../store/app-store'
 import { DetachedWindow, type PopupPlacement } from './DetachedWindow'
 import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
-import { VimModeBadge } from './VimModeBadge'
+import { InputField } from './InputField'
 import { Hint, HintBar, vimKeyCaps } from './KeyHints'
 import { SplitGlyph } from './SplitPanes'
 import { fuzzyFilter } from '../lib/fuzzy'
@@ -176,41 +176,25 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
       onWindowChange={setPopupWindow}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
-        <HintBar>
-          {vim.mode === 'command' ? (
-            <>
-              <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
-              <Hint label="Open here" keys={vimKeyCaps(vimKeymap, 'row-open')} />
-              <Hint label="Row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${NUMBERED_ROWS}`)[0] ?? '9'}`]} />
-              <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
-              <Hint label="Cancel split" keys={['Esc']} />
-            </>
-          ) : (
-            <>
-              <Hint label="Navigate" keys={['↓', '↑']} />
-              <Hint label="Open here" keys={['Enter']} />
-              <Hint label={vim.mode ? 'Command mode' : 'Cancel split'} keys={['Esc']} />
-            </>
-          )}
-        </HintBar>
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
-          <SplitGlyph direction={split.direction} pane="second" className="shrink-0 text-muted-foreground" />
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={onKeyDown}
-            onFocus={vim.onBoxFocus}
-            onBlur={vim.onBoxBlur}
-            placeholder={vim.mode === 'command' && vimKeyCaps(vimKeymap, 'insert-mode')[0]
-              ? `Tab for the ${split.direction === 'right' ? 'right' : 'bottom'} side… (${vimKeyCaps(vimKeymap, 'insert-mode')[0]} to type)`
-              : `Tab for the ${split.direction === 'right' ? 'right' : 'bottom'} side…`}
-            spellCheck={false}
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
-          />
-          <Search size={14} className="shrink-0 text-muted-foreground/60" />
-          {vim.mode && <VimModeBadge mode={vim.mode} pending={vim.pending} />}
+        <div className="px-4 py-2.5 border-b border-border shrink-0">
+          <InputField inputRef={inputRef} mode={vim.mode} pending={vim.pending} className="h-10">
+            <SplitGlyph direction={split.direction} pane="second" className="shrink-0 text-muted-foreground" />
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={onKeyDown}
+              onFocus={vim.onBoxFocus}
+              onBlur={vim.onBoxBlur}
+              placeholder={vim.mode === 'command' && vimKeyCaps(vimKeymap, 'insert-mode')[0]
+                ? `Tab for the ${split.direction === 'right' ? 'right' : 'bottom'} side… (${vimKeyCaps(vimKeymap, 'insert-mode')[0]} to type)`
+                : `Tab for the ${split.direction === 'right' ? 'right' : 'bottom'} side…`}
+              spellCheck={false}
+              className="flex-1 min-w-0 h-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
+            />
+            <Search size={14} className="shrink-0 text-muted-foreground/60" />
+          </InputField>
         </div>
         <div ref={listRef} className="flex-1 overflow-y-auto min-h-0 py-1">
           {rows.map((row, idx) => {
@@ -251,6 +235,23 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
             )
           })}
         </div>
+        <HintBar>
+          {vim.mode === 'command' ? (
+            <>
+              <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
+              <Hint label="Open here" keys={vimKeyCaps(vimKeymap, 'row-open')} />
+              <Hint label="Row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${NUMBERED_ROWS}`)[0] ?? '9'}`]} />
+              <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
+              <Hint label="Cancel split" keys={['Esc']} />
+            </>
+          ) : (
+            <>
+              <Hint label="Navigate" keys={['↓', '↑']} />
+              <Hint label="Open here" keys={['Enter']} />
+              <Hint label={vim.mode ? 'Command mode' : 'Cancel split'} keys={['Esc']} />
+            </>
+          )}
+        </HintBar>
       </div>
     </DetachedWindow>
   )

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Search } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
+import { InputField } from './InputField'
 import { VimModeBadge } from './VimModeBadge'
 import type { VimMode } from '../lib/vim-mode'
 import { fuzzyFilter } from '../lib/fuzzy'
@@ -92,19 +93,19 @@ export function VimHelpDialog({ open, keymap, fromMode, onClose }: Props) {
       onWindowChange={setPopup}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
-        <div data-detached-drag-handle className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
-          <span className="w-6 shrink-0 flex items-center">
-            <Search size={16} className="text-muted-foreground" />
-          </span>
-          <input
-            data-detached-drag-handle
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter Vim keys: what they do, the keys, the command…"
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
-          />
+        <div data-detached-drag-handle className="px-4 py-2.5 border-b border-border shrink-0">
+          <InputField inputRef={inputRef} mode={null} className="h-10">
+            <Search size={16} className="shrink-0 text-muted-foreground" />
+            <input
+              data-detached-drag-handle
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter Vim keys: what they do, the keys, the command…"
+              className="flex-1 min-w-0 h-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
+            />
+          </InputField>
         </div>
         <div className="flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-5">
           {sections.length === 0 ? (

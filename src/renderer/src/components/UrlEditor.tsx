@@ -8,14 +8,15 @@
 // keeps only the site, n copies the page's title; i / A / I / C go to
 // typing. Enter goes there.
 // A pinned popup over the top of the page area, or wherever it was dragged
-// to; while it's up the toolbar shows workspace stats where the address bar
-// was (Toolbar.tsx).
+// to, and modal: the window behind it takes no clicks or focus until it
+// closes. While it's up the toolbar shows workspace stats where the address
+// bar was (Toolbar.tsx).
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Globe, PencilLine } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
+import { TabFavicon } from './TabFavicon'
 import { DetachedWindow, type PopupPlacement } from './DetachedWindow'
-import { VimModeBadge } from './VimModeBadge'
+import { InputField } from './InputField'
 import { Hint, HintBar, vimKeyCaps } from './KeyHints'
 import { closeUrlEditor, useUrlEditorStore } from '../lib/url-editor'
 import { openAddress } from '../lib/open-address'
@@ -44,6 +45,7 @@ const FLASH_MS = 1600
 // to the usual size, past which the box scrolls.
 const FONT_PX = 28
 const MIN_FONT_PX = 14
+const PLACEHOLDER = 'Address'
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
 
@@ -116,6 +118,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   const [scrollLeft, setScrollLeft] = useState(0)
   const [marks, setMarks] = useState<Mark[]>([])
   const [fontPx, setFontPx] = useState(FONT_PX)
+  // How far in the address starts, centring it.
+  const [indent, setIndent] = useState(0)
   // Bumped when the box changes size — it has none until the popup lays out.
   const [layoutTick, setLayoutTick] = useState(0)
   useEffect(() => {
@@ -195,7 +199,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   }, [open, anchorRef, size])
 
   // Where each block sits under the text: measured in the box's own font,
-  // past the margin that centres an address shorter than the box, less
+  // past the indent that centres an address shorter than the box, less
   // however far the box has scrolled sideways.
   const blocks = useMemo(() => urlBlocks(value), [value])
   useLayoutEffect(() => {
@@ -207,8 +211,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     const style = input.ownerDocument.defaultView?.getComputedStyle(input)
     const ctx = document.createElement('canvas').getContext('2d')
     if (!style || !ctx) return
-    const padding = parseFloat(style.paddingLeft) || 0
-    const room = input.clientWidth - padding - (parseFloat(style.paddingRight) || 0) - 2
+    // Past the last character, room for the caret.
+    const room = input.clientWidth - 2
     // How big the whole address fits, from its width at full size.
     ctx.font = `${style.fontWeight} ${FONT_PX}px ${style.fontFamily}`
     const full = ctx.measureText(value).width
@@ -219,14 +223,24 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     }
     ctx.font = `${style.fontWeight} ${fit}px ${style.fontFamily}`
     const measure = (text: string): number => ctx.measureText(text).width
-    const content = input.clientWidth - padding - (parseFloat(style.paddingRight) || 0)
-    const centred = Math.max(0, (content - measure(value)) / 2)
+    // Centred on the field — under the title — rather than on the box,
+    // which the mode at the field's end makes shorter: as far as the box
+    // lets it, and from its start once it no longer fits.
+    const field = input.parentElement?.getBoundingClientRect()
+    const box = input.getBoundingClientRect()
+    const middle = field ? field.left + field.width / 2 - box.left : input.clientWidth / 2
+    const width = measure(value || PLACEHOLDER)
+    const nextIndent = Math.round(Math.max(0, Math.min(middle - width / 2, room - width)))
+    if (nextIndent !== indent) {
+      setIndent(nextIndent)
+      return
+    }
     setMarks(blocks.map((block) => ({
       block,
-      left: padding + centred + measure(value.slice(0, block.start)) - scrollLeft,
+      left: indent + measure(value.slice(0, block.start)) - scrollLeft,
       width: Math.max(4, measure(value.slice(block.start, block.end))),
     })))
-  }, [blocks, value, scrollLeft, inputEl, layoutTick, fontPx])
+  }, [blocks, value, scrollLeft, inputEl, layoutTick, fontPx, indent])
 
   const syncScroll = (): void => {
     const input = inputRef.current
@@ -444,7 +458,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
 
   const caps = (...commands: string[]): string[] => vimKeyCaps(vimKeymap, ...commands)
   const shift = isMac ? '⇧' : 'Shift'
-  const edited = value !== target.url
 
   return (
     <DetachedWindow
@@ -453,6 +466,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       width={size.width}
       height={HEIGHT}
       resizable={false}
+      modal
       // In Vim mode Esc first leaves the box; the editor handles it.
       closeOnEscape={!vimKeymap}
       placement={placement}
@@ -467,63 +481,59 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
         onMouseDown={(e) => { if (e.target !== inputRef.current) e.preventDefault() }}
         className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col"
       >
-        {/* The page's title — what n copies — and the mode. */}
-        <div className="flex items-center gap-2 px-4 pt-3 shrink-0 min-w-0">
-          {target.favicon
-            ? <img src={target.favicon} alt="" className="w-4 h-4 shrink-0" />
-            : <Globe size={16} className="shrink-0 text-muted-foreground" />}
-          <span className="flex-1 min-w-0 truncate text-sm font-medium text-foreground" title={target.title}>
+        {/* The page's title — what n copies — centred over the address. */}
+        <div className="flex items-center justify-center gap-2 h-8 mt-2 px-4 shrink-0">
+          <TabFavicon favicon={target.favicon} globeSize={16} />
+          <span className="min-w-0 truncate text-sm font-medium text-foreground" title={target.title}>
             {target.title || 'Untitled'}
           </span>
-          {vim.mode && <VimModeBadge mode={vim.mode} pending={vim.pending} />}
         </div>
 
         <div className="px-4 pt-2 shrink-0">
-          {/* The address in a field, centred while it's shorter than the
-              field. A press anywhere in the field types there. */}
-          <div
-            data-detached-no-drag=""
-            onMouseDown={(e) => {
-              if (e.target === inputRef.current) return
-              e.preventDefault()
-              typeAt(valueRef.current.length)
-            }}
-            className="flex items-center gap-3 h-12 px-3 rounded-md border border-input bg-secondary cursor-text transition-colors focus-within:border-ring focus-within:bg-background"
-          >
-            <PencilLine size={18} className={`shrink-0 ${edited ? 'text-primary' : 'text-muted-foreground'}`} />
-            <input
-              ref={bindInput}
-              data-detached-no-drag=""
-              type="text"
-              value={value}
-              onChange={(e) => setValue(e.target.value, false)}
-              onKeyDown={onKeyDown}
-              onFocus={vim.onBoxFocus}
-              onBlur={(e) => {
-                lastSelRef.current = { start: e.currentTarget.selectionStart ?? 0, end: e.currentTarget.selectionEnd ?? 0 }
-                vim.onBoxBlur()
-              }}
-              onScroll={syncScroll}
-              onSelect={syncScroll}
-              spellCheck={false}
-              autoComplete="off"
-              placeholder="Address"
-              style={{ fontSize: fontPx }}
-              className="flex-1 min-w-0 h-full bg-transparent border-none outline-none font-mono leading-none text-center text-foreground placeholder:text-muted-foreground"
-            />
+          {/* The address in a field, the mode at its end. A press anywhere
+              in the field types at the end. */}
+          <div data-detached-no-drag="">
+            <InputField
+              inputRef={inputRef}
+              onPress={() => typeAt(valueRef.current.length)}
+              mode={vim.mode}
+              pending={vim.pending}
+              className="h-12"
+            >
+              <input
+                ref={bindInput}
+                type="text"
+                value={value}
+                onChange={(e) => setValue(e.target.value, false)}
+                onKeyDown={onKeyDown}
+                onFocus={vim.onBoxFocus}
+                onBlur={(e) => {
+                  lastSelRef.current = { start: e.currentTarget.selectionStart ?? 0, end: e.currentTarget.selectionEnd ?? 0 }
+                  vim.onBoxBlur()
+                }}
+                onScroll={syncScroll}
+                onSelect={syncScroll}
+                spellCheck={false}
+                autoComplete="off"
+                placeholder={PLACEHOLDER}
+                style={{ fontSize: fontPx, paddingLeft: indent }}
+                className="flex-1 min-w-0 h-full bg-transparent border-none outline-none font-mono leading-none text-foreground placeholder:text-muted-foreground"
+              />
+            </InputField>
           </div>
 
           {/* The blocks under the text, each with its quick-edit key — lit
-              while an intent waits for one. Laid out as the field is
-              (border, padding, icon), so they line up with its text. */}
-          <div className="flex gap-3 mt-1 px-3 border-x border-transparent">
-            <div className="w-[18px] shrink-0" />
-            <div className="relative flex-1 min-w-0 h-[46px] overflow-hidden select-none">
+              while an intent waits for one. Padded as the field's left
+              side is, so they line up with its text; stacked in one grid
+              cell, so the row is as tall as the tallest, and clipped only
+              at the sides, where the address scrolls. */}
+          <div className="mt-1 pl-3">
+            <div className="grid overflow-x-clip select-none">
               {marks.map(({ block, left, width }) => (
                 <div
                   key={`${block.kind}-${block.start}`}
-                  className="absolute top-0 flex flex-col items-center"
-                  style={{ left, width }}
+                  className="col-start-1 row-start-1 flex flex-col items-center"
+                  style={{ marginLeft: left, width }}
                 >
                   <div className={`h-1.5 w-full rounded-b border-x border-b ${intent ? 'border-primary/70' : 'border-muted-foreground/40'}`} />
                   {/* A label wider than its block would run into the next one. */}
@@ -551,7 +561,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
           </div>
         </div>
 
-        <HintBar edge="bottom" wrap className="mt-auto">
+        <HintBar wrap className="mt-auto">
           {intent ? (
             <>
               {flash && <span>{flash} ·</span>}

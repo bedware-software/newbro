@@ -60,7 +60,7 @@ export function InputDialog({ open, title, placeholder, defaultValue = '', confi
             if (e.key === 'Escape') onCancel()
           }}
           placeholder={placeholder}
-          className="w-full h-9 px-3 rounded-md bg-secondary border border-input text-sm text-foreground outline-none focus:border-ring focus:bg-background"
+          className="w-full h-9 px-3 field rounded-xl text-sm text-foreground outline-none"
         />
         <div className="flex justify-end gap-2 mt-auto pt-3">
           <button

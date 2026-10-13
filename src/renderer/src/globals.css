@@ -2,14 +2,33 @@
 
 /* Suppress Chromium's default :focus-visible ring everywhere. The default
  * yellow outline shows up most visibly on right-click context menus and
- * dropdown rows, and we already provide custom focus indication on the
- * controls that need it (see `focus:border-ring focus:bg-background`
- * patterns in InputDialog / SettingsDialog inputs). Off across the
- * board keeps the chrome visually consistent. */
+ * dropdown rows, and the controls that need focus shown show it their own
+ * way (text fields: .field below). Off across the board keeps the chrome
+ * visually consistent. */
 *:focus,
 *:focus-visible {
   outline: none !important;
   box-shadow: none;
+}
+
+/* A text field — an input, or a box around one (InputField, the address
+ * bar) — the way Claude's message box is drawn: a raised fill, no border
+ * but a hairline edge, and a soft shadow. Hovering darkens the edge; with
+ * the caret in it the shadow deepens too. No coloured focus ring. Corners
+ * come from a rounded-* class beside it. Unlayered, and its focus rule is
+ * more specific than the one above, which would drop the shadow. */
+.field {
+  background-color: var(--color-field);
+  border-color: transparent;
+  box-shadow: var(--field-shadow), 0 0 0 0.5px var(--field-edge);
+  transition: box-shadow 200ms ease, background-color 200ms ease;
+}
+.field:hover {
+  box-shadow: var(--field-shadow), 0 0 0 0.5px var(--field-edge-strong);
+}
+.field:focus,
+.field:focus-within {
+  box-shadow: var(--field-shadow-strong), 0 0 0 0.5px var(--field-edge-strong);
 }
 
 /* ── Dark theme — default ── */
@@ -34,19 +53,36 @@
   --color-input: oklch(0.30 0 0);
   --color-ring: oklch(0.72 0.12 240);
   --color-toolbar: oklch(0.20 0 0);
-  /* Vim mode's colours — COMMAND blue, BROWSE yellow, INSERT green. The
-   * mode badge wears each as its text over a faint wash of itself; BROWSE
-   * names its wash, as on a light theme a wash of a yellow dark enough to
-   * read as text turns brown — there it is a pale yellow instead. */
-  --color-vim-command: oklch(0.76 0.11 245);
-  --color-vim-browse: oklch(0.86 0.13 90);
-  --color-vim-browse-wash: oklch(0.86 0.13 90 / 0.15);
-  --color-vim-insert: oklch(0.79 0.14 150);
+  /* Vim mode's colours — COMMAND sky blue, BROWSE yellow, INSERT lime:
+   * the rim of the mode's key cap (kbd.vim-mode below), and its label in
+   * the -text one — the same colour on a dark theme, a deeper shade of it
+   * on a light one, where the rim's would be too pale to read. */
+  --color-vim-command: oklch(0.78 0.10 230);
+  --color-vim-command-text: oklch(0.78 0.10 230);
+  --color-vim-browse: oklch(0.84 0.14 90);
+  --color-vim-browse-text: oklch(0.84 0.14 90);
+  --color-vim-insert: oklch(0.82 0.16 135);
+  --color-vim-insert-text: oklch(0.82 0.16 135);
   --radius: 0.375rem;
+}
+
+/* Text fields (.field below), dark: a shade above the surfaces they sit
+ * on, a faint light edge, a shadow deep enough to read on a dark page. */
+:root {
+  --color-field: oklch(0.25 0 0);
+  --field-edge: oklch(0.9 0 0 / 0.15);
+  --field-edge-strong: oklch(0.9 0 0 / 0.3);
+  --field-shadow: 0 0.25rem 1.25rem oklch(0 0 0 / 0.2);
+  --field-shadow-strong: 0 0.25rem 1.25rem oklch(0 0 0 / 0.4);
 }
 
 /* ── Light theme ── */
 [data-theme="light"] {
+  --color-field: oklch(1 0 0);
+  --field-edge: oklch(0.2 0 0 / 0.15);
+  --field-edge-strong: oklch(0.2 0 0 / 0.3);
+  --field-shadow: 0 0.25rem 1.25rem oklch(0 0 0 / 0.035);
+  --field-shadow-strong: 0 0.25rem 1.25rem oklch(0 0 0 / 0.075);
   --color-background: oklch(0.965 0 0);
   --color-foreground: oklch(0.22 0 0);
   --color-card: oklch(0.99 0 0);
@@ -67,15 +103,22 @@
   --color-input: oklch(0.92 0 0);
   --color-ring: oklch(0.55 0.18 260);
   --color-toolbar: oklch(0.976 0 0);
-  --color-vim-command: oklch(0.50 0.16 255);
-  --color-vim-browse: oklch(0.52 0.12 85);
-  --color-vim-browse-wash: oklch(0.94 0.10 100);
-  --color-vim-insert: oklch(0.50 0.13 150);
+  --color-vim-command: oklch(0.62 0.12 235);
+  --color-vim-command-text: oklch(0.48 0.12 235);
+  --color-vim-browse: oklch(0.78 0.15 85);
+  --color-vim-browse-text: oklch(0.50 0.11 80);
+  --color-vim-insert: oklch(0.66 0.16 140);
+  --color-vim-insert-text: oklch(0.48 0.15 140);
 }
 
 /* ── System theme: auto-switch to light when OS prefers light ── */
 @media (prefers-color-scheme: light) {
   [data-theme="system"] {
+    --color-field: oklch(1 0 0);
+    --field-edge: oklch(0.2 0 0 / 0.15);
+    --field-edge-strong: oklch(0.2 0 0 / 0.3);
+    --field-shadow: 0 0.25rem 1.25rem oklch(0 0 0 / 0.035);
+    --field-shadow-strong: 0 0.25rem 1.25rem oklch(0 0 0 / 0.075);
     --color-background: oklch(0.965 0 0);
     --color-foreground: oklch(0.22 0 0);
     --color-card: oklch(0.99 0 0);
@@ -96,10 +139,12 @@
     --color-input: oklch(0.92 0 0);
     --color-ring: oklch(0.55 0.18 260);
     --color-toolbar: oklch(0.976 0 0);
-    --color-vim-command: oklch(0.50 0.16 255);
-    --color-vim-browse: oklch(0.52 0.12 85);
-    --color-vim-browse-wash: oklch(0.94 0.10 100);
-    --color-vim-insert: oklch(0.50 0.13 150);
+    --color-vim-command: oklch(0.62 0.12 235);
+    --color-vim-command-text: oklch(0.48 0.12 235);
+    --color-vim-browse: oklch(0.78 0.15 85);
+    --color-vim-browse-text: oklch(0.50 0.11 80);
+    --color-vim-insert: oklch(0.66 0.16 140);
+    --color-vim-insert-text: oklch(0.48 0.15 140);
   }
 }
 
@@ -133,6 +178,7 @@
   --color-border: oklch(0.87 0 0);
   --color-input: oklch(0.87 0 0);
   --color-toolbar: oklch(0.935 0 0);
+  --color-field: oklch(0.975 0 0);
 }
 
 [data-theme-variant="dark-deep"] {
@@ -145,6 +191,7 @@
   --color-border: oklch(0.22 0 0);
   --color-input: oklch(0.22 0 0);
   --color-toolbar: oklch(0.12 0 0);
+  --color-field: oklch(0.18 0 0);
 }
 
 [data-theme-variant="dark-soft"] {
@@ -157,6 +204,7 @@
   --color-border: oklch(0.36 0 0);
   --color-input: oklch(0.36 0 0);
   --color-toolbar: oklch(0.27 0 0);
+  --color-field: oklch(0.32 0 0);
 }
 
 /* ── Cinema mode ──
@@ -179,6 +227,11 @@
   --color-border: oklch(0 0 0);
   --color-input: oklch(0.18 0 0);
   --color-toolbar: oklch(0 0 0);
+  --color-field: oklch(0.18 0 0);
+  --field-edge: oklch(0.9 0 0 / 0.1);
+  --field-edge-strong: oklch(0.9 0 0 / 0.2);
+  --field-shadow: 0 0 0 transparent;
+  --field-shadow-strong: 0 0 0 transparent;
 }
 
 /* ── Page fullscreen (video) ──
@@ -415,6 +468,21 @@ kbd[data-on-field] {
     box-shadow: none;
   }
 }
+
+/* Vim's mode, shown as a key cap (VimModeBadge): the caps above, a little
+ * bigger, one width for CMD / WEB / INS so a switch doesn't shift what's
+ * beside it, its rim and label in the mode's colours. After the theme
+ * rules, which it overrides. */
+kbd.vim-mode {
+  width: 42px;
+  padding: 4px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+kbd.vim-mode[data-mode="command"] { border-color: var(--color-vim-command); color: var(--color-vim-command-text); }
+kbd.vim-mode[data-mode="browse"] { border-color: var(--color-vim-browse); color: var(--color-vim-browse-text); }
+kbd.vim-mode[data-mode="insert"] { border-color: var(--color-vim-insert); color: var(--color-vim-insert-text); }
 
 /* ── Custom scrollbars ── */
 ::-webkit-scrollbar {

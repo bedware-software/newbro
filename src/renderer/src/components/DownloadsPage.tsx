@@ -4,7 +4,7 @@
 //
 // The list itself lives in main (src/main/downloads.ts); we mirror its
 // broadcasts and sort / filter locally. Every action is on the keyboard — see
-// KEY_HELP (shown with `?`); the hint bar on top advertises the common keys.
+// KEY_HELP (shown with `?`); the hint bar at the bottom advertises the common keys.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -584,33 +584,6 @@ export function DownloadsPage() {
       role="region"
       aria-label="Downloads"
     >
-      {/* Hint bar: the common keys, or a short confirmation after an action. */}
-      <HintBar>
-        {flash ? (
-          <span className="text-foreground">{flash}</span>
-        ) : (
-          <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
-            <Hint label="Navigate" keys={['j', 'k']} />
-            <Hint label="Open" keys={['Enter']} />
-            <Hint label="Folder" keys={['f']} />
-            <Hint label="Copy link" keys={['c']} />
-            <Hint label="Remove" keys={['x']} />
-            <Hint label="Sort" keys={['s']} />
-            <Hint label="Search" keys={['/']} />
-            <Hint label="Actions" keys={['m']} />
-          </div>
-        )}
-        <button
-          onClick={() => setHelpOpen((v) => !v)}
-          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-secondary hover:text-foreground"
-          title="Keyboard shortcuts (?)"
-          tabIndex={-1}
-        >
-          <Keyboard size={13} />
-          <kbd>?</kbd>
-        </button>
-      </HintBar>
-
       {/* Header: title + global actions, then search and sort. */}
       <div className="shrink-0 border-b border-border">
         <div className="mx-auto flex max-w-4xl items-center gap-3 px-6 pt-5 pb-3">
@@ -650,7 +623,7 @@ export function DownloadsPage() {
               onKeyDown={onSearchKeyDown}
               placeholder="Search downloads"
               spellCheck={false}
-              className="h-9 w-full rounded-md border border-input bg-secondary pl-9 pr-9 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:bg-background"
+              className="h-9 w-full field rounded-xl pl-9 pr-9 text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
             {query ? (
               <button
@@ -744,6 +717,33 @@ export function DownloadsPage() {
           )}
         </div>
       </div>
+
+      {/* Hint bar: the common keys, or a short confirmation after an action. */}
+      <HintBar>
+        {flash ? (
+          <span className="text-foreground">{flash}</span>
+        ) : (
+          <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
+            <Hint label="Navigate" keys={['j', 'k']} />
+            <Hint label="Open" keys={['Enter']} />
+            <Hint label="Folder" keys={['f']} />
+            <Hint label="Copy link" keys={['c']} />
+            <Hint label="Remove" keys={['x']} />
+            <Hint label="Sort" keys={['s']} />
+            <Hint label="Search" keys={['/']} />
+            <Hint label="Actions" keys={['m']} />
+          </div>
+        )}
+        <button
+          onClick={() => setHelpOpen((v) => !v)}
+          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-secondary hover:text-foreground"
+          title="Keyboard shortcuts (?)"
+          tabIndex={-1}
+        >
+          <Keyboard size={13} />
+          <kbd>?</kbd>
+        </button>
+      </HintBar>
 
       {helpOpen && (
         <div

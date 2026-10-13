@@ -89,7 +89,7 @@ export function HttpAuthDialog({ request, onDone }: Props) {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
-              className="h-8 px-2 rounded-md bg-secondary border border-border text-sm text-foreground outline-none focus:border-primary/60"
+              className="h-8 px-2 field rounded-lg text-sm text-foreground outline-none"
             />
           </label>
           <label className="flex flex-col gap-1">
@@ -100,7 +100,7 @@ export function HttpAuthDialog({ request, onDone }: Props) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
-              className="h-8 px-2 rounded-md bg-secondary border border-border text-sm text-foreground outline-none focus:border-primary/60"
+              className="h-8 px-2 field rounded-lg text-sm text-foreground outline-none"
             />
           </label>
           {wantsDomain ? (

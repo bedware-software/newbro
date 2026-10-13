@@ -1,7 +1,8 @@
 // The key hint bar the Downloads page introduced, shared by every keyboard
-// surface — Search Everything, the Command Palette, Find in Page, the
-// Sidebar and the Bookshelf: "Label <key> <key>" items in the toolbar tone,
-// each key its own cap.
+// surface — Downloads, Search Everything, the Command Palette, Find in Page,
+// the address editor, the pickers, the Sidebar and the Bookshelf: "Label
+// <key> <key>" items in the toolbar tone, each key its own cap, always along
+// the bottom.
 
 import type { ReactNode } from 'react'
 import { cn } from '../lib/utils'
@@ -31,19 +32,17 @@ export function KeyCap({ children, onField = false }: { children: ReactNode; onF
 
 interface BarProps {
   children: ReactNode
-  /** The edge it sits against: the line goes on the other side. */
-  edge?: 'top' | 'bottom'
   /** Narrow panels: hints wrap onto more rows instead of being cut off. */
   wrap?: boolean
   className?: string
 }
 
-export function HintBar({ children, edge = 'top', wrap = false, className }: BarProps) {
+/** The bar, for the bottom of whatever it's for: the line is on top. */
+export function HintBar({ children, wrap = false, className }: BarProps) {
   return (
     <div
       className={cn(
-        'flex shrink-0 items-center justify-center gap-x-3 border-border bg-toolbar px-4 text-[11px] font-medium text-muted-foreground',
-        edge === 'top' ? 'border-b' : 'border-t',
+        'flex shrink-0 items-center justify-center gap-x-3 border-t border-border bg-toolbar px-4 text-[11px] font-medium text-muted-foreground',
         wrap ? 'flex-wrap gap-y-1.5 py-2' : 'h-10 overflow-hidden whitespace-nowrap',
         className,
       )}
@@ -59,7 +58,7 @@ export function HintBar({ children, edge = 'top', wrap = false, className }: Bar
 export function PanelHintBar({ panel, keymap, active }: { panel: 'sidebar' | 'bookshelf'; keymap: VimKeymap; active: boolean }) {
   const caps = (...commands: string[]): string[] => vimKeyCaps(keymap, ...commands)
   return (
-    <HintBar edge="bottom" wrap className={cn('px-2 transition-opacity', !active && 'opacity-50')}>
+    <HintBar wrap className={cn('px-2 transition-opacity', !active && 'opacity-50')}>
       <Hint label="Navigate" keys={caps('cursor-down', 'cursor-up')} />
       <Hint label="Open" keys={caps('row-open')} />
       <Hint label="Show" keys={caps('row-show')} />

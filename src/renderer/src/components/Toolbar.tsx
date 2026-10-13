@@ -1437,7 +1437,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
         {/* URL bar with security indicator + tab title */}
         <div
           ref={urlBarRef}
-          className="flex-[5] min-w-0 flex items-center h-8 rounded-md bg-secondary hover:bg-muted focus-within:bg-background"
+          className="field flex-[5] min-w-0 flex items-center h-8 rounded-lg"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           {security !== 'internal' && (<>
@@ -1445,7 +1445,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
               className={
                 security === 'warning'
                   ? 'ml-1.5 h-6 px-2 flex items-center gap-1 rounded-md bg-red-600 text-white cursor-pointer group relative hover:bg-red-700'
-                  : 'ml-1.5 h-6 w-6 flex items-center justify-center rounded-md bg-card cursor-pointer group relative'
+                  : 'ml-1.5 h-6 w-6 flex items-center justify-center rounded-md bg-secondary cursor-pointer group relative'
               }
               onClick={() => setCertPopupOpen((v) => !v)}
             >
@@ -1466,19 +1466,14 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
                 </div>
               )}
             </button>
-            {/* The hairline after the padlock; Vim's mode block takes its place. */}
-            <div className={vimMode ? 'w-1.5 shrink-0' : 'w-px h-full ml-1.5 bg-card'} />
+            <div className="w-px h-full ml-1.5 bg-border" />
           </>)}
-          {/* Vim's mode, a segment of the bar flush between the padlock and
-              the address. With no padlock (an internal page) it starts the
-              bar and takes its left corners. */}
-          {vimMode && (
-            <VimModeBadge mode={vimMode} pending={vimPending} size="bar" className={security === 'internal' ? 'rounded-l-md' : ''} />
-          )}
           {/* The address editor (e) has the address: the bar shows stats. */}
           {urlEditorOpen
             ? <WorkspaceStats />
             : <Omnibox tabId={activeTabId} tabUrl={activeTab?.url || ''} anchorRef={urlBarRef} />}
+          {/* Vim's mode at the bar's end, as in every text field. */}
+          {vimMode && <VimModeBadge mode={vimMode} pending={vimPending} size="field" />}
         </div>
 
         {/* Extensions cluster sits at the far right of the toolbar so it

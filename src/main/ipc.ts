@@ -181,7 +181,7 @@ const detachedPopups = new Set<BrowserWindow>()
 // page's top-right corner), by the id DetachedWindow gave them.
 const pinnablePopups = new Map<string, BrowserWindow>()
 
-export function registerDetachedPopup(popup: BrowserWindow, popupId: string | null = null): void {
+export function registerDetachedPopup(popup: BrowserWindow, popupId: string | null = null, modalTo: BrowserWindow | null = null): void {
   detachedPopups.add(popup)
   popup.once('closed', () => detachedPopups.delete(popup))
   if (popupId) {
@@ -190,6 +190,38 @@ export function registerDetachedPopup(popup: BrowserWindow, popupId: string | nu
       if (pinnablePopups.get(popupId) === popup) pinnablePopups.delete(popupId)
     })
   }
+  if (modalTo) holdModal(popup, modalTo)
+}
+
+// How many modal popups hold each window disabled.
+const modalHolds = new WeakMap<BrowserWindow, number>()
+
+/** Makes `popup` modal to `parent` the way a native dialog is: the parent is
+ *  disabled — no clicks, no focus; the OS hands its activation to the popup,
+ *  which as an owned window stays above it — until the popup goes. Electron's
+ *  own `modal` would make a sheet of it on macOS. */
+function holdModal(popup: BrowserWindow, parent: BrowserWindow): void {
+  if (parent.isDestroyed()) return
+  if (popup.getParentWindow() !== parent) popup.setParentWindow(parent)
+  modalHolds.set(parent, (modalHolds.get(parent) ?? 0) + 1)
+  parent.setEnabled(false)
+  let held = true
+  const release = (): void => {
+    if (!held) return
+    held = false
+    if (parent.isDestroyed()) return
+    const left = (modalHolds.get(parent) ?? 1) - 1
+    modalHolds.set(parent, left)
+    if (left === 0) parent.setEnabled(true)
+  }
+  // Released as the popup starts closing, while it still exists: Windows
+  // hands activation from a closing window to its owner only if the owner is
+  // enabled by then — otherwise to some other app's window. The renderer
+  // closing it (DetachedWindow) emits the webContents' 'close', which
+  // electron.d.ts doesn't declare; Alt+F4 the window's. 'closed' backs both.
+  ;(popup.webContents as NodeJS.EventEmitter).once('close', release)
+  popup.once('close', release)
+  popup.once('closed', release)
 }
 
 interface PinnedSpot {

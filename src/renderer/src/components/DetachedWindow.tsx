@@ -14,6 +14,9 @@ const BACKGROUND_FEATURE = 'newbro-bg'
 /** Features-string token naming a pinned popup, so main can place it.
  *  Mirrored in src/main/index.ts (setWindowOpenHandler). */
 const POPUP_ID_FEATURE = 'newbro-popup-id'
+/** Features-string token making the popup modal to its opener window.
+ *  Mirrored in src/main/index.ts (setWindowOpenHandler). */
+const MODAL_FEATURE = 'newbro-modal'
 
 /** A spot in the opener window's content area, in CSS pixels. */
 export interface PopupPlacement {
@@ -35,6 +38,9 @@ interface Props {
   // Keep the popup floating above the app's windows (a modal-ish offer that
   // shouldn't get buried). Applied at reveal time.
   alwaysOnTop?: boolean
+  /** The window that opened it takes no clicks or focus while it's open
+   *  (the address editor). Fixed for the popup's life. */
+  modal?: boolean
   /** When set, remember the popup's size + position across opens, keyed by
    *  this string. Saved to localStorage on resize, drag-end, and unmount.
    *  Saved bounds override the `width` / `height` props on subsequent
@@ -161,6 +167,7 @@ export function DetachedWindow({
   closeOnEscape = true,
   closeOnBlur = false,
   alwaysOnTop = false,
+  modal = false,
   persistKey,
   matchRunwaPalette = false,
   placement,
@@ -228,6 +235,7 @@ export function DetachedWindow({
         ...(matchRunwaPalette ? [`${RUNWA_PALETTE_FEATURE}=yes`] : []),
         ...(background ? [`${BACKGROUND_FEATURE}=${background}`] : []),
         ...(popupId ? [`${POPUP_ID_FEATURE}=${popupId}`] : []),
+        ...(modal ? [`${MODAL_FEATURE}=yes`] : []),
       ].join(','),
     )
 
@@ -409,7 +417,7 @@ export function DetachedWindow({
         suppressBeforeUnloadRef.current = false
       }
     }
-  }, [open, width, height, resizable, closeOnEscape, closeOnBlur, persistKey, matchRunwaPalette])
+  }, [open, width, height, resizable, closeOnEscape, closeOnBlur, modal, persistKey, matchRunwaPalette])
 
   // Show the popup window once React has rendered content into the portal.
   // Double-rAF on the POPUP's own frame clock ensures the popup has

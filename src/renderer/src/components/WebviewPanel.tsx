@@ -117,7 +117,7 @@ function applyScrollbarStyle(tabId: string): void {
 function describeLoadError(
   code: number,
   host: string
-): { Icon: LucideIcon; title: string; message: ReactNode; suggestions: string[] } {
+): { Icon: LucideIcon; title: string; message: ReactNode } {
   const site = <span className="font-medium text-foreground">{host || 'This site'}</span>
   switch (code) {
     case -106: // ERR_INTERNET_DISCONNECTED
@@ -126,7 +126,6 @@ function describeLoadError(
         Icon: WifiOff,
         title: "You're offline",
         message: <>Newbro can&apos;t load this page because your device isn&apos;t connected to the internet.</>,
-        suggestions: ['Checking the network cables, modem, and router', 'Reconnecting to Wi-Fi'],
       }
     case -105: // ERR_NAME_NOT_RESOLVED
     case -137: // ERR_NAME_RESOLUTION_FAILED
@@ -135,14 +134,12 @@ function describeLoadError(
         Icon: SearchX,
         title: "This site can't be found",
         message: <>{site}&apos;s server IP address could not be found.</>,
-        suggestions: ['Checking the address for typos', 'Running a network diagnostic'],
       }
     case -102: // ERR_CONNECTION_REFUSED
       return {
         Icon: Unplug,
         title: "This site can't be reached",
         message: <>{site} refused to connect.</>,
-        suggestions: ['Checking the connection', 'Checking the proxy and the firewall'],
       }
     case -101: // ERR_CONNECTION_RESET
     case -104: // ERR_CONNECTION_FAILED
@@ -152,14 +149,12 @@ function describeLoadError(
         Icon: Unplug,
         title: "This site can't be reached",
         message: <>The connection to {site} was interrupted.</>,
-        suggestions: ['Checking the connection', 'Checking the proxy and the firewall'],
       }
     default: // -7 ERR_TIMED_OUT, -118 ERR_CONNECTION_TIMED_OUT, and the rest
       return {
         Icon: CloudOff,
         title: "Hmmm… can't reach this page",
         message: <>{site} took too long to respond.</>,
-        suggestions: ['Checking the connection', 'Checking the proxy and the firewall'],
       }
   }
 }
@@ -679,28 +674,17 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick }: Props)
               the middle of the panel — reads better than perfect centring. */}
           <div className="w-full max-w-[440px] -translate-y-[8vh] px-8">
             <h2 className="mb-2 text-2xl font-semibold tracking-tight">{errorInfo.title}</h2>
-            <p className="mb-6 text-sm leading-relaxed text-muted-foreground">{errorInfo.message}</p>
-            <p className="mb-2 text-xs font-medium text-foreground">Try:</p>
-            <ul className="mb-7 space-y-1.5">
-              {errorInfo.suggestions.map((s) => (
-                <li key={s} className="flex items-start gap-2 text-xs text-muted-foreground">
-                  <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-muted-foreground/60" />
-                  <span>{s}</span>
-                </li>
-              ))}
-            </ul>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={handleRetry}
-                className="flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
-              >
-                <RotateCw size={15} />
-                Reload
-              </button>
-              <span className="font-mono text-xs text-muted-foreground">
-                {activeError.description} ({activeError.code})
-              </span>
-            </div>
+            <p className="mb-3 font-mono text-xs text-muted-foreground">
+              {activeError.description} ({activeError.code})
+            </p>
+            <p className="mb-7 text-sm leading-relaxed text-muted-foreground">{errorInfo.message}</p>
+            <button
+              onClick={handleRetry}
+              className="flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              <RotateCw size={15} />
+              Reload
+            </button>
           </div>
         </div>
       )}

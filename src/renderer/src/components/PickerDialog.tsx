@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, ArrowUpDown, CornerDownLeft } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
+import { InputField } from './InputField'
+import { Hint, HintBar } from './KeyHints'
 import { GroupPill } from './GroupPill'
 import { ScopeSwitch } from './ScopeSwitch'
 import { fuzzyFilter } from '../lib/fuzzy'
@@ -224,19 +226,21 @@ export function PickerDialog({
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
         <div
           data-detached-drag-handle
-          className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0"
+          className="px-4 py-2.5 border-b border-border shrink-0"
         >
-          <Search size={16} className="text-muted-foreground shrink-0" />
-          <input
-            data-detached-no-drag
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            className="flex-1 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
-          />
+          <InputField inputRef={inputRef} mode={null} className="h-10">
+            <Search size={16} className="text-muted-foreground shrink-0" />
+            <input
+              data-detached-no-drag
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={placeholder}
+              className="flex-1 min-w-0 h-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
+            />
+          </InputField>
         </div>
 
         {/* What's being acted on, with the scope switch at the row's end —
@@ -320,19 +324,16 @@ export function PickerDialog({
           )}
         </div>
 
-        <div
-          data-detached-drag-handle
-          className="h-10 px-3 flex items-center justify-between border-t border-border bg-toolbar text-[11px] font-medium text-muted-foreground shrink-0"
-        >
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1">Navigate <kbd><ArrowUpDown size={11} strokeWidth={2.5} /></kbd></span>
-            <span className="flex items-center gap-1">{confirmVerb} <kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
+        <div data-detached-drag-handle>
+          <HintBar>
+            <Hint label="Navigate" keys={[<ArrowUpDown key="nav" size={11} strokeWidth={2.5} />]} />
+            <Hint label={confirmVerb} keys={[<CornerDownLeft key="go" size={11} strokeWidth={2.5} />]} />
             {backgroundHint && (
-              <span className="flex items-center gap-1">{backgroundHint} <kbd>⇧</kbd><kbd><CornerDownLeft size={11} strokeWidth={2.5} /></kbd></span>
+              <Hint label={backgroundHint} keys={['⇧', <CornerDownLeft key="go" size={11} strokeWidth={2.5} />]} />
             )}
-            {scopeSwitch && <span className="flex items-center gap-1">Scope <kbd>⇥</kbd></span>}
-          </div>
-          <span className="flex items-center gap-1">Close <kbd>Esc</kbd></span>
+            {scopeSwitch && <Hint label="Scope" keys={['⇥']} />}
+            <Hint label="Close" keys={['Esc']} />
+          </HintBar>
         </div>
       </div>
     </DetachedWindow>

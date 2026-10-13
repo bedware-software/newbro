@@ -117,7 +117,11 @@ try {
   if (-not (Test-Path -LiteralPath $exe)) { throw "$exe not found after install" }
   $installed = Get-ExeVersion $exe
   if ($installed -ne $version) { throw "the installed app reports $installed, expected $version" }
-  Start-Process -FilePath $exe
+  # Through Explorer, so Newbro starts from the user's shell rather than as a child of this
+  # script. A shell an agent runs this from can have a stale sandboxed view of %APPDATA%, and a
+  # child inherits it: Newbro then reads an old runwa-settings.json and its palettes stop
+  # matching Runwa's window. Explorer's exit code means nothing, so it isn't checked.
+  Start-Process -FilePath explorer.exe -ArgumentList "`"$exe`""
 
   Step '7/7 Push'
   # Last on purpose: the new build is already running, so a failed push (offline, remote moved
