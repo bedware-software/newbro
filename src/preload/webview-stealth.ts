@@ -813,6 +813,7 @@ function installVimBrowse(): void {
       case 'browse-paste-url':
       case 'browse-paste-url-new-tab':
       case 'browse-focus-url':
+      case 'browse-split-focus':
         ipcRenderer.send('newbro-vim-page', { command: command.slice('browse-'.length) })
         break
     }

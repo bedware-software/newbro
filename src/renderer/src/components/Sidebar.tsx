@@ -11,6 +11,8 @@ import { useVimPanel } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import type { PanelCommand, VimKeymap } from '../lib/vim-keymap'
 import { PanelHintBar } from './KeyHints'
+import { SplitGlyph } from './SplitPanes'
+import { isSplitShown, useSplitStore } from '../lib/split-view'
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
@@ -144,6 +146,10 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
   const convertGroupToComment = useAppStore((s) => s.convertGroupToComment)
   const convertTabToGroup = useAppStore((s) => s.convertTabToGroup)
   const setTabComment = useAppStore((s) => s.setTabComment)
+  // Split view: its two tabs wear a glyph showing their pane; while it's on
+  // screen the unfocused one is lit too, a step below the active tab.
+  const split = useSplitStore((s) => s.split)
+  const splitOnScreen = isSplitShown(split, activeTabId)
 
   // Current "new tab" key, mirrored from main so the bottom-pinned affordance
   // can show the shortcut the user actually has bound (in Vim mode, its
@@ -974,6 +980,8 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
     const isBeingDragged = dragging?.ids.includes(tab.id) ?? false
     const selected = selectedIds.has(tab.id)
     const active = tab.id === activeTabId
+    const splitPane = split ? (tab.id === split.first ? 'first' : tab.id === split.second ? 'second' : null) : null
+    const splitVisible = !active && splitPane !== null && splitOnScreen
     const tabNumber = tabNumberById.get(tab.id)
     const showBefore = containerId === null
       ? isSidebarDropBefore(index)
@@ -992,6 +1000,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
         className={`relative flex items-center gap-1 px-1 py-1 cursor-pointer group/tab transition-colors ${
           selected ? 'bg-primary/20 text-foreground'
           : active ? 'bg-accent text-accent-foreground'
+          : splitVisible ? 'bg-accent/60 text-foreground'
           : 'hover:bg-accent/50 text-muted-foreground hover:text-foreground'
         } ${isBeingDragged ? 'opacity-30' : ''}`}
         onClick={(e) => handleTabClick(tab.id, e)}
@@ -1017,6 +1026,20 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
         )}
         {vimActive && vimCursorId === tab.id && <span data-vim-cursor="" aria-hidden />}
         <TabFavicon favicon={tab.favicon} />
+        {split && splitPane && (
+          <span
+            className="shrink-0 flex items-center"
+            title={`Split view — ${split.direction === 'right'
+              ? splitPane === 'first' ? 'left' : 'right'
+              : splitPane === 'first' ? 'top' : 'bottom'} pane`}
+          >
+            <SplitGlyph
+              direction={split.direction}
+              pane={splitPane}
+              className={active && splitOnScreen ? 'text-primary' : 'text-muted-foreground'}
+            />
+          </span>
+        )}
         {tab.comment && <CommentChip comment={tab.comment} />}
         {/* A numbered row keeps its stub clear of the 24×24 slot below. */}
         <span

@@ -7,6 +7,7 @@ import { useAppStore } from '../store/app-store'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { usePopupVimMode } from '../lib/vim-mode'
 import type { VimKeymap } from '../lib/vim-keymap'
+import { isSplitShown, useSplitStore } from '../lib/split-view'
 
 interface Props {
   open: boolean
@@ -67,6 +68,10 @@ const COMMANDS: CommandItem[] = [
   { id: 'search', label: 'Search Everything', category: 'General' },
   { id: 'open-downloads', label: 'Open Downloads', category: 'General' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'View' },
+  { id: 'split-right', label: 'Split Right', category: 'Split View' },
+  { id: 'split-down', label: 'Split Down', category: 'Split View' },
+  { id: 'split-focus', label: 'Switch Split Pane', category: 'Split View' },
+  { id: 'split-close', label: 'Close Split', category: 'Split View' },
   { id: 'settings', label: 'Open Settings', category: 'General' },
   { id: 'about', label: 'About', category: 'General' },
   { id: 'close-window', label: 'Close Window', category: 'Window' },
@@ -151,6 +156,7 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
   // Group-scoped commands need a real group to operate on. The active tab
   // group can be null when the user is on an ungrouped (Root) tab.
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
+  const splitShown = useSplitStore((s) => isSplitShown(s.split, activeTab?.id ?? null))
 
   // Fetch once — the version never changes for the life of the window.
   useEffect(() => {
@@ -172,9 +178,10 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
       }
       // A tab in a group (not the group header parked with no active tab).
       if (cmd.id === 'ungroup-tab') return !!activeTab && !!activeTabGroupId
+      if (cmd.id === 'split-focus' || cmd.id === 'split-close') return splitShown
       return true
     })
-  }, [activeTab, activeTabGroupId])
+  }, [activeTab, activeTabGroupId, splitShown])
 
   useEffect(() => {
     if (open) {

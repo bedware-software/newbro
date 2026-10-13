@@ -8,6 +8,10 @@ import { internalPageOf, isInternalUrl } from '../lib/internal-pages'
 import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, Mic, Camera, MapPin, Bell, Clipboard, Music, X, CircleAlert, type LucideIcon } from 'lucide-react'
 import { describePermissionKinds, type PermissionKind } from '../lib/permissions'
 import { DownloadsPage } from './DownloadsPage'
+import { SplitFrames, insetForFrame, splitPaneRects } from './SplitPanes'
+import { SplitPicker } from './SplitPicker'
+import { isSplitShown, setSplitRatio, useSplitStore, workspaceTabs, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO } from '../lib/split-view'
+import type { VimKeymap } from '../lib/vim-keymap'
 
 // Tab rendering lives in the main process now, as a WebContentsView per tab
 // attached to the window's root contentView. This component is a thin layout
@@ -160,7 +164,14 @@ function describeLoadError(
   }
 }
 
-export function WebviewPanel() {
+interface Props {
+  /** The split view tab picker's COMMAND keys; null while Vim mode is off. */
+  splitPickerKeymap: VimKeymap | null
+  /** Bumped to hand the keyboard back to the split view's tab picker. */
+  splitPickerFocusTick: number
+}
+
+export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [errors, setErrors] = useState<Map<string, LoadError>>(new Map())
   const [certErrors, setCertErrors] = useState<Map<string, CertError>>(new Map())
@@ -191,6 +202,74 @@ export function WebviewPanel() {
     const url = s.getActiveTab()?.url
     return url && isInternalUrl(url) ? url : null
   })
+
+  // Split view (lib/split-view.ts): while it shows, the page area is two
+  // panes, each tab view at its pane's bounds (setWindowSplit in main).
+  const split = useSplitStore((s) => s.split)
+  const splitShown = isSplitShown(split, activeTabId) && !activeInternalUrl
+  // The divider's position while it's being dragged.
+  const [dragRatio, setDragRatio] = useState<number | null>(null)
+  const emptyPaneRef = useRef<HTMLDivElement>(null)
+  const splitLayoutRef = useRef({ split, shown: splitShown })
+  splitLayoutRef.current = { split, shown: splitShown }
+  // Views are off screen (a drag over the page area, an error overlay).
+  const suppressedRef = useRef(false)
+  const splitSentRef = useRef(false)
+
+  /** Tells main which tabs show in the split and where, measured now — sent
+   *  before an activation in the same commit, so a pane never flashes at
+   *  the full page area's bounds. */
+  const sendSplitRef = useRef<() => void>(() => {})
+  sendSplitRef.current = (): void => {
+    const el = containerRef.current
+    const { split: current, shown } = splitLayoutRef.current
+    if (!el || !current || !shown || suppressedRef.current) {
+      if (splitSentRef.current) window.electronAPI.tabSetSplit?.([])
+      splitSentRef.current = false
+      return
+    }
+    const r = el.getBoundingClientRect()
+    const area = { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }
+    const [first, second] = splitPaneRects(area, current.direction, current.ratio)
+    const urlOf = (id: string): string => workspaceTabs().find((t) => t.id === id)?.url || 'about:blank'
+    const panes = [{ tabId: current.first, url: urlOf(current.first), bounds: insetForFrame(first) }]
+    if (current.second) panes.push({ tabId: current.second, url: urlOf(current.second), bounds: insetForFrame(second) })
+    window.electronAPI.tabSetSplit?.(panes)
+    splitSentRef.current = true
+  }
+  // Before the reconcile effect below, so main has the panes when the
+  // activation arrives.
+  useEffect(() => {
+    sendSplitRef.current()
+  }, [split, splitShown, activeTabId])
+
+  const onDividerMouseDown = (e: React.MouseEvent): void => {
+    const el = containerRef.current
+    if (e.button !== 0 || !split || !el) return
+    e.preventDefault()
+    const r = el.getBoundingClientRect()
+    const direction = split.direction
+    let latest = split.ratio
+    // The views go off screen so the mouse stays with us over them.
+    window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+    setDragRatio(latest)
+    document.body.style.cursor = direction === 'right' ? 'col-resize' : 'row-resize'
+    const move = (ev: MouseEvent): void => {
+      const at = direction === 'right' ? (ev.clientX - r.left) / r.width : (ev.clientY - r.top) / r.height
+      latest = Math.min(MAX_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, at))
+      setDragRatio(latest)
+    }
+    const up = (): void => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      document.body.style.cursor = ''
+      setSplitRatio(latest)
+      setDragRatio(null)
+      window.dispatchEvent(new CustomEvent('newbro-tab-show'))
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
 
   // Collect tabs from the active workspace. We only host one workspace per
   // window; tabs from other workspaces are not reified as WebContentsViews.
@@ -313,14 +392,15 @@ export function WebviewPanel() {
     const el = containerRef.current
     if (!el) return
     let frame = 0
-    let suppressed = false
 
     const report = (force = false): void => {
       if (frame) return
       frame = requestAnimationFrame(() => {
         frame = 0
         if (!el.isConnected) return
-        if (suppressed && !force) return
+        if (suppressedRef.current && !force) return
+        // Split panes first: an active tab in a pane keeps the pane's bounds.
+        sendSplitRef.current()
         const rect = el.getBoundingClientRect()
         window.electronAPI.tabSetBounds?.({
           x: Math.round(rect.left),
@@ -332,11 +412,12 @@ export function WebviewPanel() {
     }
 
     const hide = (): void => {
-      suppressed = true
+      suppressedRef.current = true
+      sendSplitRef.current()
       window.electronAPI.tabSetBounds?.({ x: 0, y: 0, width: 0, height: 0 })
     }
     const show = (): void => {
-      suppressed = false
+      suppressedRef.current = false
       report()
     }
 
@@ -569,7 +650,22 @@ export function WebviewPanel() {
       {/* Transparent placeholder whose rect defines where main paints the
           active tab's WebContentsView. Must remain empty — any child DOM
           here would overlap the tab view in unpredictable ways. */}
-      <div ref={containerRef} style={{ flex: 1, minHeight: 0 }} />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        {/* Split view: frames and the divider, around (under) the views. */}
+        {splitShown && split && (
+          <SplitFrames
+            split={split}
+            ratio={dragRatio ?? split.ratio}
+            focusedTabId={activeTabId}
+            dragging={dragRatio !== null}
+            onDividerMouseDown={onDividerMouseDown}
+            emptyPaneRef={emptyPaneRef}
+          />
+        )}
+      </div>
+      {splitShown && split && split.second === null && (
+        <SplitPicker split={split} paneRef={emptyPaneRef} vimKeymap={splitPickerKeymap} focusTick={splitPickerFocusTick} />
+      )}
 
       {parkedGroup && <ParkedGroupCard group={parkedGroup} />}
 

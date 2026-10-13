@@ -38,6 +38,7 @@ import {
   closeExtensionPopup,
   moveExtensionPopup,
   setWindowBounds,
+  setWindowSplit,
   tabExecuteJS,
   tabFindInPage,
   tabGetState,
@@ -383,6 +384,19 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (!win) return
     setWindowBounds(win.id, bounds)
+  })
+
+  // Split view: the tabs on screen side by side and their panes' bounds;
+  // an empty list ends it. Sent like tab:bounds, on every layout change.
+  ipcMain.on('tab:split', (_e, panes: unknown) => {
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    if (!win || !Array.isArray(panes)) return
+    const valid = panes.filter((p): p is { tabId: string; url: string; bounds: TabBounds } => {
+      const b = (p as { bounds?: TabBounds })?.bounds
+      return typeof (p as { tabId?: unknown })?.tabId === 'string' && typeof (p as { url?: unknown }).url === 'string' &&
+        !!b && [b.x, b.y, b.width, b.height].every((n) => Number.isFinite(n))
+    })
+    setWindowSplit(win.id, valid.slice(0, 2))
   })
 
   ipcMain.handle('tab:navigate', (_e, tabId: string, url: string) => {

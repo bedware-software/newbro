@@ -44,7 +44,7 @@ const FOCUS_SETTLE_MS = 300
 const REPEATABLE = new Set(['cursor-down', 'cursor-up', 'cursor-down-show', 'cursor-up-show', 'row-move-down', 'row-move-up'])
 
 // App commands a page's BROWSE keys may ask for (browse-close-tab & co.).
-const PAGE_COMMANDS = new Set(['close-tab', 'copy-url', 'paste-url', 'paste-url-new-tab', 'focus-url'])
+const PAGE_COMMANDS = new Set(['close-tab', 'copy-url', 'paste-url', 'paste-url-new-tab', 'focus-url', 'split-focus'])
 
 let settleUntil = 0
 // Until when focus arriving in the renderer is the OS handing it back after

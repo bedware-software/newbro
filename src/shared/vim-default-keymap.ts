@@ -49,6 +49,15 @@ row-close           x
 row-show            o
 row-open            <CR>
 
+" ── COMMAND: split view ───────────────────────────────────────────────
+" S splits the page area with a pane on the right, V with one below, and
+" offers the tabs to put there. <C-w> moves the focus to the other pane; q
+" ends the split, keeping the focused pane's tab.
+split-right         S
+split-down          V
+split-focus         <C-w>
+split-close         q
+
 " ── COMMAND: app commands (the regular shortcuts' ids) ────────────────
 new-tab             t
 close-tab
@@ -109,6 +118,7 @@ browse-copy-url           y
 browse-paste-url          p
 browse-paste-url-new-tab  P
 browse-focus-url          <C-l>
+browse-split-focus        <C-w>
 browse-help               ?
 
 " ── Search Everything and the Command Palette ─────────────────────────
@@ -174,6 +184,11 @@ const NEW_IN_V2 = new Set([
   'browse-focus-url',
   'find-next',
   'find-prev',
+  'split-right',
+  'split-down',
+  'split-focus',
+  'split-close',
+  'browse-split-focus',
 ])
 
 /** The v1 name of a command, read as v2's. */

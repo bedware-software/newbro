@@ -160,6 +160,12 @@ const tabs = new Map<string, TabRecord>()
 const windowBounds = new Map<number, TabBounds>()
 /** windowId -> active tabId. Inactive tabs get HIDDEN_BOUNDS. */
 const activeTabByWindow = new Map<number, string>()
+/** windowId -> the tabs of a split view on screen, each at its own pane's
+ *  bounds (renderer WebviewPanel). The active tab is one of them while the
+ *  split shows: it takes its pane's bounds instead of the window's, and the
+ *  other one stays on screen beside it. Moving focus between the panes just
+ *  switches the active tab — neither view moves. */
+const splitByWindow = new Map<number, Map<string, TabBounds>>()
 /** windowId -> tabId whose page is currently in HTML fullscreen (video
  *  playback / "cinema mode"). Tracked so the window/view base colour is
  *  painted black for the duration and so the view can be forced to fill the
@@ -258,10 +264,24 @@ function getFullscreenTabBounds(windowId: number): TabBounds | null {
 
 function applyCurrentBounds(rec: TabRecord): void {
   const fullscreenTabId = htmlFullscreenByWindow.get(rec.windowId)
+  // A split's other pane steps aside while its neighbour plays fullscreen.
+  if (fullscreenTabId && fullscreenTabId !== rec.tabId) {
+    rec.view.setBounds(HIDDEN_BOUNDS)
+    return
+  }
   const bounds = fullscreenTabId === rec.tabId
     ? getFullscreenTabBounds(rec.windowId) ?? rec.lastBounds
     : rec.lastBounds
   rec.view.setBounds(bounds)
+}
+
+/** Re-places a window's split panes after one of them enters or leaves
+ *  fullscreen, which takes the whole window from the other. */
+function reapplySplitPanes(windowId: number): void {
+  for (const tabId of splitByWindow.get(windowId)?.keys() ?? []) {
+    const rec = tabs.get(tabId)
+    if (rec) applyCurrentBounds(rec)
+  }
 }
 
 function syncFullscreenBounds(windowId: number): void {
@@ -513,6 +533,7 @@ function enterPageFullscreen(rec: TabRecord, source: string, pageMetrics?: unkno
   const win = BrowserWindow.fromId(rec.windowId)
   if (win && !win.isDestroyed()) enterPageFullscreenWindow(win)
   applyCurrentBounds(rec)
+  reapplySplitPanes(rec.windowId)
   try { rec.view.setBackgroundColor(TAB_BG_FULLSCREEN) } catch { /* ignore */ }
   try { win?.setBackgroundColor(TAB_BG_FULLSCREEN) } catch { /* ignore */ }
   log.info('tab fullscreen geometry', {
@@ -533,6 +554,7 @@ function leavePageFullscreen(rec: TabRecord, source: string): void {
   const win = BrowserWindow.fromId(rec.windowId)
   try { rec.view.setBackgroundColor(TAB_BG_TRANSPARENT) } catch { /* ignore */ }
   applyCurrentBounds(rec)
+  reapplySplitPanes(rec.windowId)
   try { win?.setBackgroundColor(DEFAULT_WINDOW_BG) } catch { /* ignore */ }
   leavePageFullscreenWindow(rec.windowId)
   const evt: TabEvent = { type: 'leave-html-full-screen', tabId: rec.tabId }
@@ -893,6 +915,8 @@ export function setWindowBounds(windowId: number, bounds: TabBounds): void {
   windowBounds.set(windowId, bounds)
   const activeTabId = activeTabByWindow.get(windowId)
   if (!activeTabId) return
+  // A split pane keeps its own bounds.
+  if (splitByWindow.get(windowId)?.has(activeTabId)) return
   const rec = tabs.get(activeTabId)
   if (!rec) return
   rec.lastBounds = bounds
@@ -1177,6 +1201,34 @@ function focusTabPage(rec: TabRecord): void {
   }
 }
 
+/**
+ * Lays out a split view: `panes` are the tabs on screen side by side, each
+ * at its pane's bounds; empty ends the split. A pane's tab that never loaded
+ * starts loading now. Tabs that leave the split go off screen — unless
+ * active, which then fills the window's page area again.
+ */
+export function setWindowSplit(windowId: number, panes: Array<{ tabId: string; url: string; bounds: TabBounds }>): void {
+  const previous = splitByWindow.get(windowId)
+  const next = new Map(panes.map((p) => [p.tabId, p.bounds]))
+  if (next.size > 0) splitByWindow.set(windowId, next)
+  else splitByWindow.delete(windowId)
+  const activeTabId = activeTabByWindow.get(windowId)
+  for (const tabId of previous?.keys() ?? []) {
+    if (next.has(tabId)) continue
+    const rec = tabs.get(tabId)
+    if (!rec) continue
+    rec.lastBounds = tabId === activeTabId ? windowBounds.get(windowId) ?? HIDDEN_BOUNDS : HIDDEN_BOUNDS
+    applyCurrentBounds(rec)
+  }
+  for (const pane of panes) {
+    const rec = tabs.get(pane.tabId)
+    if (!rec || rec.windowId !== windowId) continue
+    rec.lastBounds = pane.bounds
+    applyCurrentBounds(rec)
+    loadIfNeeded(rec, pane.url)
+  }
+}
+
 /** Take the window's current tab off screen for whatever replaces it:
  *  `nextTabId`, or no tab at all (see deactivateTab). */
 function hideOutgoingTab(windowId: number, nextTabId: string | null): void {
@@ -1195,7 +1247,8 @@ function hideOutgoingTab(windowId: number, nextTabId: string | null): void {
     }
   }
   const prev = activeTabByWindow.get(windowId)
-  if (prev && prev !== nextTabId) {
+  // A split pane stays on screen while focus moves to the other pane.
+  if (prev && prev !== nextTabId && !splitByWindow.get(windowId)?.has(prev)) {
     const prevRec = tabs.get(prev)
     if (prevRec) {
       prevRec.lastBounds = HIDDEN_BOUNDS
@@ -1214,7 +1267,7 @@ function setActiveTab(windowId: number, tabId: string): void {
   activeTabByWindow.set(windowId, tabId)
   const rec = tabs.get(tabId)
   if (!rec) return
-  const wb = windowBounds.get(windowId)
+  const wb = splitByWindow.get(windowId)?.get(tabId) ?? windowBounds.get(windowId)
   if (wb) {
     rec.lastBounds = wb
     applyCurrentBounds(rec)
@@ -1271,6 +1324,7 @@ export function destroyTab(tabId: string): void {
   }
   tabs.delete(tabId)
   wcIdToTabId.delete(wcId)
+  splitByWindow.get(rec.windowId)?.delete(tabId)
   if (activeTabByWindow.get(rec.windowId) === tabId) {
     activeTabByWindow.delete(rec.windowId)
   }
@@ -1288,6 +1342,7 @@ export function destroyAllTabsForWindow(windowId: number): void {
   }
   windowBounds.delete(windowId)
   activeTabByWindow.delete(windowId)
+  splitByWindow.delete(windowId)
   htmlFullscreenByWindow.delete(windowId)
   windowStateBeforePage.delete(windowId)
   normalWindowStateByWindow.delete(windowId)

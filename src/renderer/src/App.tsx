@@ -9,6 +9,7 @@ import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
 import { FindPopup } from './components/FindPopup'
+import { closeSplit, focusOtherPane, isSplitShown, otherPaneTab, startSplit, useSplitStore } from './lib/split-view'
 import { SearchDialog } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
@@ -252,6 +253,7 @@ declare global {
       tabDeactivate?: () => Promise<void>
       tabFocus?: (tabId: string) => Promise<void>
       tabSetBounds?: (bounds: { x: number; y: number; width: number; height: number }) => void
+      tabSetSplit?: (panes: Array<{ tabId: string; url: string; bounds: { x: number; y: number; width: number; height: number } }>) => void
       getSidePanelState?: () => Promise<{ extensionId: string | null }>
       onSidePanelState?: (callback: (state: { extensionId: string | null }) => void) => () => void
       sidePanelSetBounds?: (bounds: { x: number; y: number; width: number; height: number }) => void
@@ -540,6 +542,9 @@ export default function App() {
   // while the popup is already open re-focuses + selects the input (matches
   // Chrome / Firefox). The FindPopup runs a focus effect on every increment.
   const [findBarFocusTick, setFindBarFocusTick] = useState(0)
+  // Bumped to hand the keyboard back to the split view's tab picker (S / V
+  // again while it's up).
+  const [splitPickerFocusTick, setSplitPickerFocusTick] = useState(0)
   const [commentDialogOpen, setCommentDialogOpen] = useState(false)
   const [commentDefault, setCommentDefault] = useState('')
   const [newGroupDialogOpen, setNewGroupDialogOpen] = useState(false)
@@ -955,6 +960,20 @@ export default function App() {
           break
         case 'open-downloads':
           s.showInternalPage(DOWNLOADS_URL)
+          break
+        case 'split-right':
+        case 'split-down': {
+          const before = useSplitStore.getState().split
+          const picking = isSplitShown(before, s.activeTabId) && before.second === null
+          if (startSplit(action === 'split-right' ? 'right' : 'down') && picking) setSplitPickerFocusTick((t) => t + 1)
+          break
+        }
+        case 'split-close':
+          closeSplit()
+          break
+        case 'split-focus':
+          // The keys follow into the other page unless COMMAND has them.
+          if (focusOtherPane() && vimRef.current?.mode && vimRef.current.mode !== 'command') vimRef.current.enterBrowse()
           break
         case 'toggle-sidebar':
           toggleSidebar()
@@ -1392,7 +1411,8 @@ export default function App() {
     keymap: vimKeymap.main,
     browseKeymap: vimKeymap.browse,
     onCommand: runVimCommand,
-    isActiveTab: (tabId) => useAppStore.getState().activeTabId === tabId,
+    // The other split pane's page counts too: clicking into it focuses it.
+    isActiveTab: (tabId) => useAppStore.getState().activeTabId === tabId || otherPaneTab() === tabId,
     onHelp: () => setVimHelpFrom(vimRef.current?.mode ?? 'browse'),
     focusPage: () => {
       const s = useAppStore.getState()
@@ -1419,7 +1439,16 @@ export default function App() {
   // A popup window (Search, Command Palette, Settings) closing hands focus
   // back to this window — sometimes to the page view. In COMMAND mode the
   // chrome keeps it.
-  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || findBarOpen || vimHelpFrom !== null
+  const activeTabIdNow = useAppStore((s) => s.activeTabId)
+  const splitPicking = useSplitStore((st) => isSplitShown(st.split, activeTabIdNow) && st.split.second === null)
+  // Clicking into the other split pane's page moves the focus there.
+  useEffect(() => window.electronAPI.onTabEvent?.((raw) => {
+    const evt = raw as { type?: string; tabId?: string; byUser?: boolean }
+    if (evt.type !== 'focus' || !evt.byUser || !evt.tabId || evt.tabId !== otherPaneTab()) return
+    log.event('split: pane clicked')
+    useAppStore.getState().setActiveTab(evt.tabId)
+  }), [])
+  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || findBarOpen || splitPicking || vimHelpFrom !== null
   const popupWasOpenRef = useRef(popupOpen)
   useEffect(() => {
     if (popupWasOpenRef.current && !popupOpen && isCommandMode()) claimRendererFocus(false)
@@ -1447,7 +1476,10 @@ export default function App() {
             anchorRef={webviewColumnRef}
             vimKeymap={vimEnabled ? vimKeymap.find : null}
           />
-          <WebviewPanel />
+          <WebviewPanel
+            splitPickerKeymap={vimEnabled ? paletteKeymap(vimKeymap.search) : null}
+            splitPickerFocusTick={splitPickerFocusTick}
+          />
         </div>
         {/* Extension chrome.sidePanel column; hidden in cinema mode like the
             Bookshelf, the panel stays open behind it. */}

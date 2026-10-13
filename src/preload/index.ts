@@ -205,6 +205,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   tabSetBounds: (bounds: { x: number; y: number; width: number; height: number }): void => {
     ipcRenderer.send('tab:bounds', bounds)
   },
+  // Split view: the tabs on screen side by side and where; [] ends it.
+  tabSetSplit: (panes: Array<{ tabId: string; url: string; bounds: { x: number; y: number; width: number; height: number } }>): void => {
+    ipcRenderer.send('tab:split', panes)
+  },
   tabNavigate: (tabId: string, url: string): Promise<void> => ipcRenderer.invoke('tab:navigate', tabId, url),
   tabGoBack: (tabId: string): Promise<void> => ipcRenderer.invoke('tab:go-back', tabId),
   tabGoForward: (tabId: string): Promise<void> => ipcRenderer.invoke('tab:go-forward', tabId),
