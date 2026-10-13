@@ -131,9 +131,9 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const [popupWindow, setPopupWindow] = useState<Window | null>(null)
-  // Vim mode (null while off): the window opens in COMMAND mode, where plain
-  // keys pick filters and rows; INSERT is typing in the search box. Follows
-  // the box's focus. Set up further down, once its commands exist; the
+  // Vim mode (null while off): the window opens in INSERT, typing in the
+  // search box; Esc goes to COMMAND, where plain keys pick filters and rows.
+  // Follows the box's focus. Set up further down, once its commands exist; the
   // handlers above only need to know which mode it's in.
   const vimModeRef = useRef<VimMode | null>(null)
 
@@ -214,10 +214,8 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
     if (open) {
       setQuery('')
       setSelectedIndex(0)
-      if (!vimKeymap) setTimeout(() => inputRef.current?.focus(), 50)
+      setTimeout(() => inputRef.current?.focus(), 50)
     }
-    // Only on opening: the mode is the user's from then on.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   useEffect(() => {
@@ -412,7 +410,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
     keymap: vimKeymap,
     popup: popupWindow,
     box: inputRef,
-    initial: 'command',
+    initial: 'insert',
     open,
     onCommand: runVimCommand,
     onEscape: () => onOpenChange(false),

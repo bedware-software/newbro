@@ -203,16 +203,30 @@ const modalHolds = new WeakMap<BrowserWindow, number>()
 function holdModal(popup: BrowserWindow, parent: BrowserWindow): void {
   if (parent.isDestroyed()) return
   if (popup.getParentWindow() !== parent) popup.setParentWindow(parent)
-  modalHolds.set(parent, (modalHolds.get(parent) ?? 0) + 1)
-  parent.setEnabled(false)
+  let unhold: () => void
+  if (process.platform === 'darwin') {
+    // setEnabled(false) on macOS hangs a half-transparent sheet over the
+    // whole window, the popup included, and gives it the keyboard. So the
+    // window hands focus straight back instead: a click on it only makes it
+    // key (acceptFirstMouse is off) and never reaches the page.
+    const deflect = (): void => { if (!popup.isDestroyed()) popup.focus() }
+    parent.on('focus', deflect)
+    unhold = () => parent.off('focus', deflect)
+  } else {
+    modalHolds.set(parent, (modalHolds.get(parent) ?? 0) + 1)
+    parent.setEnabled(false)
+    unhold = () => {
+      const left = (modalHolds.get(parent) ?? 1) - 1
+      modalHolds.set(parent, left)
+      if (left === 0) parent.setEnabled(true)
+    }
+  }
   let held = true
   const release = (): void => {
     if (!held) return
     held = false
     if (parent.isDestroyed()) return
-    const left = (modalHolds.get(parent) ?? 1) - 1
-    modalHolds.set(parent, left)
-    if (left === 0) parent.setEnabled(true)
+    unhold()
   }
   // Released as the popup starts closing, while it still exists: Windows
   // hands activation from a closing window to its owner only if the owner is
