@@ -272,7 +272,7 @@ export function PickerDialog({
           </div>
         )}
 
-        <div ref={listRef} className="flex-1 overflow-y-auto py-1">
+        <div ref={listRef} className="flex-1 overflow-y-auto pb-1">
           {filtered.length === 0 ? (
             <div className="px-4 py-8 text-center text-sm text-muted-foreground">
               {items.length === 0 ? emptyMessage : 'No matches'}
