@@ -14,14 +14,17 @@
 //   - the authenticator: keys from passkey-store.ts, "none" attestation, no
 //     signature counter (always 0, as synced passkeys report).
 //
-// Passkeys in iCloud Keychain (Safari, the Passwords app) or on a phone stay
-// out of reach — macOS gives those only to browsers Apple entitles. A site
-// that asks only for one of those gets a note saying so, then NotAllowedError,
-// so it can offer its other ways to sign in.
+// Passkeys in iCloud Keychain (Safari, the Passwords app) can't be read here —
+// macOS gives those only to browsers Apple entitles. An iPhone serves them to
+// any browser that speaks the hybrid protocol, though, so a sign-in Newbro
+// holds no passkey for goes to the phone: a QR code to scan (hybrid.ts).
 
 import { BrowserWindow, dialog, ipcMain, systemPreferences } from 'electron'
 import type { MessageBoxOptions, Session, WebContents } from 'electron'
 import { createHash } from 'crypto'
+import { encodeCbor } from './cbor'
+import type { CborValue } from './cbor'
+import { getAssertionFromPhone, HybridError } from './hybrid'
 import { log } from './log'
 import { createPasskey, deletePasskey, listPasskeys, passkeysForRp, signWithPasskey } from './passkey-store'
 import type { PasskeyInfo } from './passkey-store'
@@ -87,48 +90,11 @@ const AAGUID = Buffer.alloc(16)
 // unrelated sites; the server also checks the origin in the client data.
 const SECOND_LEVEL_SUFFIX = /^(ac|co|com|edu|gov|ltd|mil|ne|net|or|org|plc|sch)\.[a-z]{2}$/
 
-const NO_PASSKEY_DETAIL =
-  'Newbro can only use passkeys it saved itself. Passkeys in iCloud Keychain (Safari, the Passwords app) ' +
-  'or on your phone aren\'t available to Newbro: macOS gives them only to browsers Apple approves.\n\n' +
-  'Choose another way to sign in on the page. To use Touch ID here next time, add a passkey for Newbro ' +
-  'in the site\'s security settings.'
-
 // One ceremony per tab at a time, like Chromium ("A request is already pending").
 const active = new Map<number, { requestId: string; controller: AbortController }>()
 
 function sha256(data: Buffer | string): Buffer {
   return createHash('sha256').update(data).digest()
-}
-
-// ── CBOR (the subset WebAuthn needs, in CTAP2 canonical key order) ──
-
-type CborValue = number | string | Buffer | Map<CborValue, CborValue>
-
-function cborHead(major: number, length: number): Buffer {
-  if (length < 24) return Buffer.from([(major << 5) | length])
-  if (length < 0x100) return Buffer.from([(major << 5) | 24, length])
-  if (length < 0x10000) {
-    const head = Buffer.alloc(3)
-    head[0] = (major << 5) | 25
-    head.writeUInt16BE(length, 1)
-    return head
-  }
-  const head = Buffer.alloc(5)
-  head[0] = (major << 5) | 26
-  head.writeUInt32BE(length, 1)
-  return head
-}
-
-function cbor(value: CborValue): Buffer {
-  if (typeof value === 'number') return value >= 0 ? cborHead(0, value) : cborHead(1, -1 - value)
-  if (typeof value === 'string') {
-    const bytes = Buffer.from(value, 'utf8')
-    return Buffer.concat([cborHead(3, bytes.length), bytes])
-  }
-  if (Buffer.isBuffer(value)) return Buffer.concat([cborHead(2, value.length), value])
-  const parts = [cborHead(5, value.size)]
-  for (const [key, item] of value) parts.push(cbor(key), cbor(item))
-  return Buffer.concat(parts)
 }
 
 // ── Request checks ──
@@ -208,11 +174,16 @@ function requestContext(event: Electron.IpcMainInvokeEvent, getPartition: (ses: 
 
 // ── User interaction ──
 
+function ownerWindow(ctx: Context): BrowserWindow | null {
+  const win = getWindowForTabWebContents(ctx.wc) ?? BrowserWindow.fromWebContents(ctx.wc)
+  return win && !win.isDestroyed() ? win : null
+}
+
 async function ask(ctx: Context, options: MessageBoxOptions, signal: AbortSignal): Promise<number> {
   if (signal.aborted) throw new CeremonyError('AbortError', 'The operation was aborted.')
-  const win = getWindowForTabWebContents(ctx.wc) ?? BrowserWindow.fromWebContents(ctx.wc)
+  const win = ownerWindow(ctx)
   const withSignal = { ...options, signal }
-  const { response } = win && !win.isDestroyed()
+  const { response } = win
     ? await dialog.showMessageBox(win, withSignal)
     : await dialog.showMessageBox(withSignal)
   if (signal.aborted) throw new CeremonyError('AbortError', 'The operation was aborted.')
@@ -319,7 +290,7 @@ async function makeCredential(ctx: Context, req: CreateRequest, signal: AbortSig
     userName,
     userDisplayName,
   })
-  const coseKey = cbor(new Map<CborValue, CborValue>([[1, 2], [3, COSE_ES256], [-1, 1], [-2, key.x], [-3, key.y]]))
+  const coseKey = encodeCbor(new Map<CborValue, CborValue>([[1, 2], [3, COSE_ES256], [-1, 1], [-2, key.x], [-3, key.y]]))
   const idLength = Buffer.alloc(2)
   idLength.writeUInt16BE(key.id.length)
   const authData = authenticatorData(
@@ -327,7 +298,7 @@ async function makeCredential(ctx: Context, req: CreateRequest, signal: AbortSig
     FLAG_UP | (verified ? FLAG_UV : 0) | FLAG_AT,
     Buffer.concat([AAGUID, idLength, key.id, coseKey]),
   )
-  const attestationObject = cbor(new Map<CborValue, CborValue>([
+  const attestationObject = encodeCbor(new Map<CborValue, CborValue>([
     ['fmt', 'none'],
     ['attStmt', new Map()],
     ['authData', authData],
@@ -358,14 +329,7 @@ async function getAssertion(ctx: Context, req: GetRequest, signal: AbortSignal) 
     const securityKeysOnly = allowed.length > 0 && allowed.every((d) =>
       d.transports && d.transports.length > 0 && !d.transports.some((t) => t === 'internal' || t === 'hybrid'))
     if (securityKeysOnly) throw new NativeFallback()
-    log.info('webauthn: no saved passkey', { rpId, allowed: allowed.length })
-    await ask(ctx, {
-      type: 'info',
-      message: `No passkey for ${rpId} in Newbro`,
-      detail: NO_PASSKEY_DETAIL,
-      buttons: ['OK'],
-    }, signal)
-    throw new CeremonyError('NotAllowedError', NOT_ALLOWED)
+    return getAssertionWithPhone(ctx, rpId, challenge, allowed, req.userVerification, signal)
   }
 
   let chosen = candidates[0]
@@ -404,6 +368,49 @@ async function getAssertion(ctx: Context, req: GetRequest, signal: AbortSignal) 
     authenticatorData: authData.toString('base64url'),
     signature: signature.toString('base64url'),
     userHandle: chosen.userId,
+    extensions: {},
+  }
+}
+
+/** Newbro holds no passkey the site accepts: ask a phone, through a QR code
+ *  (hybrid.ts). An iPhone answers with the passkeys in iCloud Keychain. */
+async function getAssertionWithPhone(
+  ctx: Context,
+  rpId: string,
+  challenge: Buffer,
+  allowed: CredentialDescriptor[],
+  userVerification: unknown,
+  signal: AbortSignal,
+) {
+  log.info('webauthn: no saved passkey, offering a phone', { rpId, allowed: allowed.length })
+  const clientData = clientDataJSON('webauthn.get', challenge, ctx)
+  let assertion
+  try {
+    assertion = await getAssertionFromPhone({
+      parent: ownerWindow(ctx),
+      rpId,
+      clientDataHash: sha256(clientData),
+      allowList: allowed.map((d) => Buffer.from(d.id, 'base64url')),
+      userVerification: userVerification !== 'discouraged',
+      signal,
+    })
+  } catch (err) {
+    if (!(err instanceof HybridError)) throw err
+    if (signal.aborted) throw new CeremonyError('AbortError', 'The operation was aborted.')
+    throw new CeremonyError('NotAllowedError', NOT_ALLOWED)
+  }
+  if (!assertion.authenticatorData.subarray(0, 32).equals(sha256(rpId))) {
+    throw new CeremonyError('NotAllowedError', 'The phone answered for a different site.')
+  }
+  log.info('webauthn: signed in with a phone passkey', { rpId })
+  return {
+    ok: true as const,
+    id: assertion.credentialId.toString('base64url'),
+    clientDataJSON: clientData.toString('base64url'),
+    authenticatorData: assertion.authenticatorData.toString('base64url'),
+    signature: assertion.signature.toString('base64url'),
+    userHandle: assertion.userHandle ? assertion.userHandle.toString('base64url') : null,
+    attachment: 'cross-platform',
     extensions: {},
   }
 }

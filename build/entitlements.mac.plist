@@ -19,5 +19,9 @@
   <true/>
   <key>com.apple.security.device.camera</key>
   <true/>
+  <!-- Signing in with a passkey from an iPhone (src/main/hybrid.ts): the
+       phone is found by its Bluetooth LE advert. -->
+  <key>com.apple.security.device.bluetooth</key>
+  <true/>
 </dict>
 </plist>

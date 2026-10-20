@@ -105,18 +105,20 @@ function mainWorldWebAuthn(
   }
   const credential = (res: any, response: any, responseJSON: Record<string, unknown>): any => {
     const extensions = () => JSON.parse(JSON.stringify(res.extensions || {}))
+    // Newbro's own passkeys are 'platform'; a phone's are 'cross-platform'.
+    const attachment = res.attachment || 'platform'
     return own(Object.create(PKC.prototype), {
       id: res.id,
       rawId: fromB64u(res.id),
       type: 'public-key',
-      authenticatorAttachment: 'platform',
+      authenticatorAttachment: attachment,
       response,
       getClientExtensionResults: extensions,
       toJSON: () => ({
         id: res.id,
         rawId: res.id,
         response: responseJSON,
-        authenticatorAttachment: 'platform',
+        authenticatorAttachment: attachment,
         clientExtensionResults: extensions(),
         type: 'public-key',
       }),
@@ -263,7 +265,7 @@ function mainWorldWebAuthn(
         ...capabilities,
         conditionalCreate: false,
         conditionalGet: false,
-        hybridTransport: false,
+        hybridTransport: true,
         passkeyPlatformAuthenticator: platform,
         userVerifyingPlatformAuthenticator: platform,
       })))

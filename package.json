@@ -1,6 +1,6 @@
 {
   "name": "Newbro",
-  "version": "1.1.221",
+  "version": "1.1.222",
   "author": "Dmitry Surin <dmitry.surin@gmail.com>",
   "description": "Workspace-based browser with profiles and tab groups",
   "repository": {
@@ -9,13 +9,13 @@
   },
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "dev": "node scripts/build-native.mjs && electron-vite dev",
+    "build": "node scripts/build-native.mjs && electron-vite build",
     "start": "electron-vite preview",
-    "dist": "electron-vite build && electron-builder",
-    "dist:win": "electron-vite build && electron-builder --win --x64",
-    "dist:mac": "electron-vite build && electron-builder --mac",
-    "dist:linux": "electron-vite build && electron-builder --linux",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win --x64",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux",
     "prepare": "husky"
   },
   "devDependencies": {
@@ -47,6 +47,9 @@
     "files": [
       "out/**/*",
       "resources/**/*"
+    ],
+    "asarUnpack": [
+      "out/native/**"
     ],
     "win": {
       "target": [

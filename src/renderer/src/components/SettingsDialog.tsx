@@ -2054,8 +2054,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <h3 className="text-sm font-semibold text-foreground mb-1">Passkeys</h3>
                   <p className="text-[11px] text-muted-foreground mb-3 leading-relaxed">
                     Saved when a website offers to create a passkey. Signing in with one asks for Touch ID.
-                    They stay on this Mac and aren&apos;t included in Cloud Sync. Passkeys in iCloud Keychain
-                    (Safari, the Passwords app) aren&apos;t available to Newbro.
+                    They stay on this Mac and aren&apos;t included in Cloud Sync. For a site with no passkey here,
+                    Newbro shows a QR code: scan it with your iPhone to use a passkey from iCloud Keychain.
                   </p>
                   {passkeys.length === 0 ? (
                     <div className="py-8 text-center border-y border-border">
