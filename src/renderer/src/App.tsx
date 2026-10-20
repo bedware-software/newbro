@@ -135,6 +135,17 @@ export interface PasswordEntryInfo {
   lastUsedAt: number
 }
 
+/** A passkey Newbro saved (Settings → Passwords → Passkeys). */
+export interface PasskeyInfo {
+  id: string
+  partition: string
+  rpId: string
+  userName: string
+  userDisplayName: string
+  createdAt: number
+  lastUsedAt: number
+}
+
 export interface PasswordImportResult {
   imported: number
   updated: number
@@ -243,6 +254,8 @@ declare global {
         result: EdgePasswordImportResult
         entries: PasswordEntryInfo[]
       }>
+      passkeysList: (partition: string) => Promise<PasskeyInfo[]>
+      passkeyDelete: (partition: string, id: string) => Promise<PasskeyInfo[]>
       onSettingsUpdated: (callback: (settings: unknown) => void) => () => void
       onActivateTab: (callback: (tabId: string) => void) => () => void
       checkForUpdates: () => Promise<UpdateStatus>

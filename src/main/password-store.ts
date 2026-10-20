@@ -64,7 +64,7 @@ const asyncSafeStorage = safeStorage as typeof safeStorage & {
   decryptStringAsync?: (value: Buffer) => Promise<{ result: string; shouldReEncrypt: boolean }>
 }
 
-function normalizePartition(partition: string): string {
+export function normalizePartition(partition: string): string {
   const value = String(partition || '').trim()
   if (!/^persist:profile-[A-Za-z0-9-]+$/.test(value)) {
     throw new Error('A valid Newbro profile is required.')
@@ -99,7 +99,7 @@ async function encryptionAvailable(): Promise<boolean> {
   return safeStorage.isEncryptionAvailable()
 }
 
-async function encryptSecret(value: string): Promise<string> {
+export async function encryptSecret(value: string): Promise<string> {
   if (!(await encryptionAvailable())) {
     throw new Error('The operating system password vault is unavailable, so Newbro cannot save passwords safely.')
   }
@@ -109,7 +109,7 @@ async function encryptSecret(value: string): Promise<string> {
   return encrypted.toString('base64')
 }
 
-async function decryptSecret(value: string): Promise<string> {
+export async function decryptSecret(value: string): Promise<string> {
   if (!(await encryptionAvailable())) throw new Error('The operating system password vault is unavailable.')
   const encrypted = Buffer.from(value, 'base64')
   if (typeof asyncSafeStorage.decryptStringAsync === 'function') {

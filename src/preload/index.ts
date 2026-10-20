@@ -78,6 +78,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   edgePasswordsDetect: (): Promise<unknown> => ipcRenderer.invoke('passwords:edge-detect'),
   edgePasswordsOpenExport: (profileId: string): Promise<void> => ipcRenderer.invoke('passwords:edge-open-export', profileId),
   passwordsImportEdge: (partition: string): Promise<unknown> => ipcRenderer.invoke('passwords:import-edge', partition),
+  // Passkeys Newbro's own authenticator saved (macOS). Metadata only — the
+  // private keys never leave main.
+  passkeysList: (partition: string): Promise<unknown[]> => ipcRenderer.invoke('passkeys:list', partition),
+  passkeyDelete: (partition: string, id: string): Promise<unknown[]> =>
+    ipcRenderer.invoke('passkeys:delete', partition, id),
 
   // Cloud sync (synced-folder). Config + status come back as one info object;
   // onCloudSyncStatus pushes the same shape whenever it changes.

@@ -21,6 +21,7 @@ import { registerIpcHandlers, registerDetachedPopup } from './ipc'
 import { setupAutoUpdater } from './updater'
 import { initCloudSync, flushPushSync } from './cloud-sync'
 import { handleServerAuth, registerHttpAuthIpc } from './http-auth'
+import { registerWebAuthnIpc } from './webauthn'
 import {
   loadState,
   loadOpenWindows,
@@ -4065,6 +4066,7 @@ app.whenReady().then(async () => {
   buildMenu()
   registerIpcHandlers()
   registerHttpAuthIpc()
+  registerWebAuthnIpc(getPartitionForSession)
   installTabPreloadListeners()
   setupAutoUpdater()
   // Pull synced data (tabs/workspaces, settings, …) before the first windows

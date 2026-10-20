@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, Bell, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil, Copy, Check, Eye, EyeOff, ChevronDown, ChevronRight, UserRound } from 'lucide-react'
+import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, Bell, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil, Copy, Check, Eye, EyeOff, ChevronDown, ChevronRight, UserRound, FingerprintPattern } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo, PasswordEntryInfo, PasswordImportResult, EdgePasswordSourceInfo, EdgePasswordImportResult } from '../App'
+import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo, PasswordEntryInfo, PasskeyInfo, PasswordImportResult, EdgePasswordSourceInfo, EdgePasswordImportResult } from '../App'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ExtensionPermissionList } from './ExtensionPermissionList'
@@ -466,6 +466,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
   const [passwordEntries, setPasswordEntries] = useState<PasswordEntryInfo[]>([])
+  // Passkeys exist only on macOS, where Newbro is its own authenticator.
+  const passkeysSupported = navigator.platform.includes('Mac')
+  const [passkeys, setPasskeys] = useState<PasskeyInfo[]>([])
+  const [passkeyToRemove, setPasskeyToRemove] = useState<PasskeyInfo | null>(null)
   const [passwordPartition, setPasswordPartition] = useState('')
   const [passwordSearch, setPasswordSearch] = useState('')
   const [passwordImporting, setPasswordImporting] = useState(false)
@@ -837,7 +841,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     window.electronAPI.passwordsList(partition).then(setPasswordEntries).catch((err) => {
       setPasswordError(err instanceof Error ? err.message : String(err))
     })
-  }, [open, activeTab, profiles, activeProfileId, passwordPartition])
+    if (passkeysSupported) {
+      window.electronAPI.passkeysList(partition).then(setPasskeys).catch((err) => {
+        setPasswordError(err instanceof Error ? err.message : String(err))
+      })
+    }
+  }, [open, activeTab, profiles, activeProfileId, passwordPartition, passkeysSupported])
 
   // Revealed passwords don't outlive the pane: forget them (and close the open
   // record) when Settings closes or moves to another pane.
@@ -1094,6 +1103,17 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     setOpenPasswordId((current) => current === id ? null : current)
     setRevealedPasswords(({ [id]: _deleted, ...rest }) => rest)
   }, [passwordPartition])
+
+  const handleRemovePasskey = useCallback(async () => {
+    const passkey = passkeyToRemove
+    setPasskeyToRemove(null)
+    if (!passkey) return
+    try {
+      setPasskeys(await window.electronAPI.passkeyDelete(passkey.partition, passkey.id))
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : String(err))
+    }
+  }, [passkeyToRemove])
 
   const handleClearPasswords = useCallback(async () => {
     setPasswordClearConfirmOpen(false)
@@ -2028,6 +2048,51 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   CSV files contain readable passwords, so delete them when you no longer need them. Passwords are not included in Cloud Sync.
                 </p>
               </div>
+
+              {passkeysSupported && (
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground mb-1">Passkeys</h3>
+                  <p className="text-[11px] text-muted-foreground mb-3 leading-relaxed">
+                    Saved when a website offers to create a passkey. Signing in with one asks for Touch ID.
+                    They stay on this Mac and aren&apos;t included in Cloud Sync. Passkeys in iCloud Keychain
+                    (Safari, the Passwords app) aren&apos;t available to Newbro.
+                  </p>
+                  {passkeys.length === 0 ? (
+                    <div className="py-8 text-center border-y border-border">
+                      <FingerprintPattern size={21} className="mx-auto mb-2 text-muted-foreground" />
+                      <p className="text-sm text-foreground">No passkeys in this profile</p>
+                      <p className="text-[11px] text-muted-foreground mt-1">Add one in a website&apos;s security settings to sign in with Touch ID.</p>
+                    </div>
+                  ) : (
+                    <div className="border-y border-border divide-y divide-border">
+                      {passkeys.map((passkey) => (
+                        <div key={passkey.id} className="flex items-center gap-3 py-2">
+                          <div className="h-8 w-8 rounded-md bg-secondary flex items-center justify-center text-muted-foreground shrink-0">
+                            <FingerprintPattern size={14} />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm text-foreground truncate">{passkey.rpId}</p>
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              {passkey.userName || passkey.userDisplayName || 'No username'}
+                              {' · '}
+                              {passkey.lastUsedAt ? `Last used ${formatPasswordDate(passkey.lastUsedAt)}` : 'Never used to sign in'}
+                              {' · '}Saved {formatPasswordDate(passkey.createdAt)}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setPasskeyToRemove(passkey)}
+                            className="h-7 px-2.5 flex items-center gap-1.5 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10 shrink-0"
+                          >
+                            <Trash2 size={12} />
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -3393,6 +3458,17 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
         confirmLabel="Remove all passwords"
         onConfirm={handleClearPasswords}
         onCancel={() => setPasswordClearConfirmOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={passkeyToRemove !== null}
+        title="Remove this passkey?"
+        message={passkeyToRemove
+          ? `Newbro will no longer sign in to ${passkeyToRemove.rpId} as ${passkeyToRemove.userName || passkeyToRemove.userDisplayName || 'this account'} with Touch ID. The site keeps it listed until you remove it in the site's security settings too.`
+          : ''}
+        confirmLabel="Remove passkey"
+        onConfirm={handleRemovePasskey}
+        onCancel={() => setPasskeyToRemove(null)}
       />
 
       <ConfirmDialog

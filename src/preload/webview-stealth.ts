@@ -11,6 +11,7 @@
 
 import { webFrame, ipcRenderer } from 'electron'
 import { KeySequencer, isCtrlToken, keyTokenFromEvent, type VimKeymap } from '../shared/vim-keys'
+import { installWebAuthnBridge } from './webauthn-bridge'
 
 // Diagnostic marker so we can confirm in the webview's DevTools console that
 // this preload is actually being loaded. If you see "[newbro-stealth] preload
@@ -589,6 +590,7 @@ const STEALTH_SCRIPT = `
 
 if (STEALTH_ENABLED) {
   installPseudoFullscreen()
+  installWebAuthnBridge()
   try {
     // webFrame.executeJavaScript runs the code string in the frame's MAIN world
     // (world 0), even if the preload itself is in an isolated world. This is
