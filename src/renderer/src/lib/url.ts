@@ -47,6 +47,11 @@ export function windowsPathToFileURL(raw: string): string | null {
 // port and path. Chrome opens these over http:// (no certificate to be had).
 const LOCAL_HOST = /^(localhost|(\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:.]+\])(:\d{1,5})?([/?#].*)?$/i
 
+// A dotless intranet name with a trailing slash — `jira/`, `wiki/team/`.
+// Chrome's rule: the slash at the end forces an address, so these open over
+// http:// instead of being searched for, while `and/or` still searches.
+const INTRANET_HOST = /^[\p{L}\p{N}][\p{L}\p{N}_-]*(:\d{1,5})?\/(\S*\/)?$/iu
+
 export function normalizeURL(raw: string): string | null {
   const trimmed = raw.trim()
   if (!trimmed) return null
@@ -59,7 +64,7 @@ export function normalizeURL(raw: string): string | null {
   const fileURL = windowsPathToFileURL(trimmed)
   if (fileURL) return fileURL
 
-  if (!trimmed.includes(' ') && LOCAL_HOST.test(trimmed)) return 'http://' + trimmed
+  if (!trimmed.includes(' ') && (LOCAL_HOST.test(trimmed) || INTRANET_HOST.test(trimmed))) return 'http://' + trimmed
 
   if (!trimmed.includes(' ') && trimmed.includes('.')) {
     return 'https://' + trimmed
@@ -74,6 +79,6 @@ export function looksLikeSearch(raw: string): boolean {
   if (!trimmed) return false
   if (/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed)) return false
   if (windowsPathToFileURL(trimmed)) return false
-  if (!trimmed.includes(' ') && (LOCAL_HOST.test(trimmed) || trimmed.includes('.'))) return false
+  if (!trimmed.includes(' ') && (LOCAL_HOST.test(trimmed) || INTRANET_HOST.test(trimmed) || trimmed.includes('.'))) return false
   return true
 }
