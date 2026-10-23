@@ -227,14 +227,19 @@ export function Omnibox({ tabId, tabUrl, anchorRef }: Props) {
     }, SUGGEST_DELAY_MS)
   }, [activePartition, rebuild])
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
-    const next = e.target.value
+  /** Every edit, including one that leaves the text as it was: typing the
+   *  last letter of a completion over its selection gives the same string
+   *  showText put there, and React's onChange skips that as "no change" —
+   *  the typed text would stay a letter short, and an answer still on its
+   *  way for it would cut that letter off the bar. Hence onInput. */
+  const handleInput = (e: React.FormEvent<HTMLInputElement>): void => {
+    const input = e.currentTarget
+    const next = input.value
     const native = e.nativeEvent as InputEvent
     const inputType = native.inputType || ''
     const isDeletion = inputType ? inputType.startsWith('delete') : next.length < userTextRef.current.length
     const isPaste = inputType === 'insertFromPaste' || inputType === 'insertFromDrop'
     const composing = native.isComposing || inputType === 'insertCompositionText'
-    const input = e.target
     const caretAtEnd = input.selectionStart === next.length && input.selectionEnd === next.length
 
     if (isPaste) pastedRef.current = true
@@ -503,7 +508,7 @@ export function Omnibox({ tabId, tabUrl, anchorRef }: Props) {
       role="combobox"
       aria-autocomplete="both"
       aria-expanded={popupOpen}
-      onChange={handleChange}
+      onInput={handleInput}
       onKeyDown={handleKeyDown}
       onFocus={() => { window.electronAPI.omniboxPrewarm?.() }}
       onMouseDown={(e) => {
