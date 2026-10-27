@@ -17,7 +17,8 @@
 // Passkeys in iCloud Keychain (Safari, the Passwords app) can't be read here —
 // macOS gives those only to browsers Apple entitles. An iPhone serves them to
 // any browser that speaks the hybrid protocol, though, so a sign-in Newbro
-// holds no passkey for goes to the phone: a QR code to scan (hybrid.ts).
+// holds no passkey for goes to the phone: a QR code to scan (hybrid.ts). A
+// sign-in that takes any passkey offers the phone next to Newbro's own.
 
 import { BrowserWindow, dialog, ipcMain, systemPreferences } from 'electron'
 import type { MessageBoxOptions, Session, WebContents } from 'electron'
@@ -332,17 +333,28 @@ async function getAssertion(ctx: Context, req: GetRequest, signal: AbortSignal) 
     return getAssertionWithPhone(ctx, rpId, challenge, allowed, req.userVerification, signal)
   }
 
+  // A site that names Newbro's passkey knows it. One that takes any passkey
+  // (no allow list) may not: it can have dropped the one Newbro holds — for
+  // one saved in iCloud Keychain, say — and would turn it down. So the iPhone
+  // stays a choice next to Newbro's passkeys.
+  const offerPhone = allowed.length === 0
   let chosen = candidates[0]
-  if (candidates.length > 1) {
+  if (candidates.length > 1 || offerPhone) {
     const shown = candidates.slice(0, 8)
+    const buttons = [...shown.map(accountLabel), ...(offerPhone ? ['Use iPhone…'] : []), 'Cancel']
     const choice = await ask(ctx, {
       type: 'question',
       message: `Sign in to ${rpId}`,
-      detail: 'Choose a passkey saved in Newbro.',
-      buttons: [...shown.map(accountLabel), 'Cancel'],
+      detail: offerPhone
+        ? 'Choose a passkey saved in Newbro, or use your iPhone for one saved in iCloud Keychain (Safari, the Passwords app).'
+        : 'Choose a passkey saved in Newbro.',
+      buttons,
       defaultId: 0,
-      cancelId: shown.length,
+      cancelId: buttons.length - 1,
     }, signal)
+    if (offerPhone && choice === shown.length) {
+      return getAssertionWithPhone(ctx, rpId, challenge, allowed, req.userVerification, signal)
+    }
     if (choice < 0 || choice >= shown.length) throw new CeremonyError('NotAllowedError', NOT_ALLOWED)
     chosen = shown[choice]
   }
@@ -372,8 +384,9 @@ async function getAssertion(ctx: Context, req: GetRequest, signal: AbortSignal) 
   }
 }
 
-/** Newbro holds no passkey the site accepts: ask a phone, through a QR code
- *  (hybrid.ts). An iPhone answers with the passkeys in iCloud Keychain. */
+/** Newbro holds no passkey the site accepts, or the user picked the iPhone:
+ *  ask a phone, through a QR code (hybrid.ts). An iPhone answers with the
+ *  passkeys in iCloud Keychain. */
 async function getAssertionWithPhone(
   ctx: Context,
   rpId: string,
@@ -382,7 +395,7 @@ async function getAssertionWithPhone(
   userVerification: unknown,
   signal: AbortSignal,
 ) {
-  log.info('webauthn: no saved passkey, offering a phone', { rpId, allowed: allowed.length })
+  log.info('webauthn: asking a phone', { rpId, allowed: allowed.length })
   const clientData = clientDataJSON('webauthn.get', challenge, ctx)
   let assertion
   try {

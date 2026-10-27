@@ -33,7 +33,7 @@ import { cborGet, decodeCbor, encodeCbor } from './cbor'
 import type { CborValue } from './cbor'
 import { log } from './log'
 
-export type HybridFailure = 'cancelled' | 'denied' | 'no-credentials' | 'failed'
+export type HybridFailure = 'cancelled' | 'denied' | 'no-credentials' | 'ended' | 'failed'
 
 export class HybridError extends Error {
   constructor(readonly reason: HybridFailure, message: string) {
@@ -271,6 +271,12 @@ class HandshakeInitiator {
 
 // ── Tunnel (WebSocket) ──
 
+class TunnelClosed extends Error {
+  constructor(readonly code: number, reason: string) {
+    super(`tunnel closed (${code}${reason ? ` ${reason}` : ''})`)
+  }
+}
+
 class Tunnel {
   private readonly socket: WebSocket
   private readonly inbox: Buffer[] = []
@@ -294,7 +300,7 @@ class Tunnel {
       }
     }
     this.socket.onerror = () => this.fail(new Error('tunnel connection error'))
-    this.socket.onclose = (event) => this.fail(new Error(`tunnel closed (${event.code}${event.reason ? ` ${event.reason}` : ''})`))
+    this.socket.onclose = (event) => this.fail(new TunnelClosed(event.code, event.reason))
   }
 
   static open(url: string): Promise<Tunnel> {
@@ -434,8 +440,8 @@ const PHONE_PAGE = `<!doctype html>
   <div class="actions"><button id="cancel">Cancel</button></div>
   <script>
     const params = new URLSearchParams(location.hash.slice(1));
-    document.getElementById('intro').textContent = 'Newbro has no passkey for ' + params.get('rp') +
-      '. Scan this code with your iPhone\\u2019s Camera to sign in with the passkey saved there.';
+    document.getElementById('intro').textContent = 'Scan this code with your iPhone\\u2019s Camera to sign in to ' +
+      params.get('rp') + ' with the passkey saved there.';
     document.getElementById('qr').src = 'data:image/png;base64,' + params.get('qr');
     window.setStatus = (text, error) => {
       const el = document.getElementById('status');
@@ -569,7 +575,18 @@ async function transact(
     const command = buildCommand(decodeCbor(getInfoBytes))
     tunnel.send(crypter.encrypt(revision >= 1 ? Buffer.concat([Buffer.from([MESSAGE_CTAP]), command]) : command))
     for (;;) {
-      const message = crypter.decrypt(await tunnel.next())
+      let data: Buffer
+      try {
+        data = await tunnel.next()
+      } catch (err) {
+        // The phone hung up without an answer: it found no passkey for the
+        // site, or the user closed the sheet there.
+        if (err instanceof TunnelClosed && err.code === 1000 && !signal.aborted) {
+          throw new HybridError('ended', 'Your iPhone ended the sign-in without a passkey. If it found none for this site, check that the Passwords app on it has one.')
+        }
+        throw err
+      }
+      const message = crypter.decrypt(data)
       if (revision < 1) return message
       if (message[0] === MESSAGE_UPDATE) continue // linking updates: not used
       if (message[0] !== MESSAGE_CTAP) throw new Error(`unexpected tunnel message type ${message[0]}`)
