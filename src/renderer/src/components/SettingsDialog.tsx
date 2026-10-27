@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { X, RotateCcw, Sun, Moon, Monitor, AlertTriangle, Trash2, Download, Bell, CheckCircle2, Loader2, Puzzle, ExternalLink, Plus, Globe, Pin, PinOff, SlidersHorizontal, Palette, Keyboard, Info, Compass, ShieldCheck, Cloud, FolderOpen, RefreshCw, Wifi, Building2, KeyRound, Search, FileUp, Pencil, Copy, Check, Eye, EyeOff, ChevronDown, ChevronRight, UserRound, FingerprintPattern } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo, PasswordEntryInfo, PasskeyInfo, PasswordImportResult, EdgePasswordSourceInfo, EdgePasswordImportResult } from '../App'
+import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo, PasswordEntryInfo, PasskeyInfo, PasswordImportResult, EdgePasswordSourceInfo, EdgePasswordImportResult, OtherBrowser } from '../App'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ExtensionPermissionList } from './ExtensionPermissionList'
@@ -531,6 +531,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // been opened and we want to remind them to actually pick Newbro there
   // until the next status refresh confirms the change took effect.
   const [defaultBrowserSystemPaneOpened, setDefaultBrowserSystemPaneOpened] = useState(false)
+  // The browser the Open Link picker's ⌘↵ / Ctrl+Enter passes links on to —
+  // this computer's,
+  // saved as soon as it's picked rather than with the other settings.
+  const otherBrowserOnMac = navigator.platform.includes('Mac')
+  const otherBrowserSupported = otherBrowserOnMac || navigator.platform.startsWith('Win')
+  const passOnKeys = otherBrowserOnMac ? '⌘↵' : 'Ctrl+Enter'
+  const [otherBrowser, setOtherBrowser] = useState<OtherBrowser | null>(null)
+  const [installedBrowsers, setInstalledBrowsers] = useState<OtherBrowser[]>([])
   const recordingRef = useRef<{ action: string; slot: number } | null>(null)
   const pendingTabChordRef = useRef(false)
   const originalAppearanceRef = useRef<AppearancePreview>({
@@ -614,6 +622,25 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     window.addEventListener('focus', refresh)
     return () => window.removeEventListener('focus', refresh)
   }, [open])
+
+  useEffect(() => {
+    if (!open || !otherBrowserSupported) return
+    Promise.all([window.electronAPI.otherBrowserGet(), window.electronAPI.otherBrowserList()])
+      .then(([chosen, browsers]) => {
+        setOtherBrowser(chosen)
+        setInstalledBrowsers(browsers)
+      })
+      .catch((err) => {
+        console.warn('SettingsDialog: other browser load failed', String(err))
+      })
+  }, [open, otherBrowserSupported])
+
+  const handleOtherBrowserChange = useCallback((id: string) => {
+    const pick = installedBrowsers.find((browser) => browser.id === id) ?? null
+    window.electronAPI.otherBrowserSet(pick).then(setOtherBrowser).catch((err) => {
+      console.warn('SettingsDialog: other browser save failed', String(err))
+    })
+  }, [installedBrowsers])
 
   const handleMakeDefaultBrowser = useCallback(async () => {
     const api = (window as any).electronAPI
@@ -2415,6 +2442,34 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   )}
                 </div>
               </div>
+
+              {/* Another browser for links — the Open Link picker's ⌘↵ / Ctrl+Enter. */}
+              {otherBrowserSupported && (
+                <div className="flex items-start gap-4">
+                  <div className="flex-1 min-w-0">
+                    <label className="block text-sm font-medium text-foreground">Open links in another browser</label>
+                    <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                      When a link from another app asks where to open, {passOnKeys} sends it to this browser instead
+                      {otherBrowserOnMac
+                        ? ' — say, for a site whose passkey is in iCloud Keychain, to sign in with Touch ID there.'
+                        : ' — say, for a site that works better there.'}
+                    </p>
+                  </div>
+                  <select
+                    value={otherBrowser?.id ?? ''}
+                    onChange={(event) => handleOtherBrowserChange(event.target.value)}
+                    className="h-8 max-w-52 px-2.5 text-xs field text-foreground rounded-lg outline-none shrink-0"
+                  >
+                    <option value="">Ask on first {passOnKeys}</option>
+                    {installedBrowsers.map((browser) => (
+                      <option key={browser.id} value={browser.id}>{browser.name}</option>
+                    ))}
+                    {otherBrowser && !installedBrowsers.some((browser) => browser.id === otherBrowser.id) && (
+                      <option value={otherBrowser.id}>{otherBrowser.name} (not found)</option>
+                    )}
+                  </select>
+                </div>
+              )}
 
               {/* Notifications — checks that the OS shows Newbro's toasts, the
                   kind extensions (Claude's "needs your attention") send. */}

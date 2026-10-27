@@ -146,6 +146,19 @@ export interface PasskeyInfo {
   lastUsedAt: number
 }
 
+/** A browser installed on this computer that the Open Link picker's ⌘↵
+ *  (Ctrl+Enter on Windows) can pass a link on to (main/other-browser.ts). */
+export interface OtherBrowser {
+  /** macOS: the bundle identifier, e.g. com.apple.Safari. Windows: the
+   *  browser's StartMenuInternet key, e.g. "Google Chrome". */
+  id: string
+  name: string
+}
+
+export type OtherBrowserOpenResult =
+  | { opened: true; browser: OtherBrowser }
+  | { opened: false; browsers: OtherBrowser[]; failed?: OtherBrowser }
+
 export interface PasswordImportResult {
   imported: number
   updated: number
@@ -216,6 +229,10 @@ declare global {
       wipeAllData: () => Promise<void>
       getDefaultBrowserStatus: () => Promise<DefaultBrowserStatus>
       setAsDefaultBrowser: () => Promise<SetAsDefaultBrowserResult>
+      otherBrowserGet: () => Promise<OtherBrowser | null>
+      otherBrowserList: () => Promise<OtherBrowser[]>
+      otherBrowserSet: (browser: OtherBrowser | null) => Promise<OtherBrowser | null>
+      otherBrowserOpen: (url: string, pick?: OtherBrowser) => Promise<OtherBrowserOpenResult>
       openBookmarkFile: () => Promise<string | null>
       saveBookmarkFile: (html: string, suggestedName: string) => Promise<boolean>
       detachedWindowShow: (alwaysOnTop?: boolean, activate?: boolean) => void

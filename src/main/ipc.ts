@@ -78,6 +78,7 @@ import { listExtensionCommands, setExtensionCommandShortcut } from './extensions
 import { registerDropdownIpc } from './dropdown-window'
 import { registerUpdateToastIpc } from './update-toast-window'
 import { registerDefaultBrowserIpc } from './default-browser'
+import { registerOtherBrowserIpc } from './other-browser'
 import { registerDownloadsIpc } from './downloads'
 import { registerHistoryIpc, exportEntries, replaceEntries } from './history'
 import { registerOmniboxSuggestIpc } from './omnibox-suggest'
@@ -1363,6 +1364,7 @@ function alive(p) {
   registerDropdownIpc()
   registerUpdateToastIpc()
   registerDefaultBrowserIpc()
+  registerOtherBrowserIpc()
   registerDownloadsIpc()
   registerExtensionFrameIpc()
   registerSidePanelIpc()

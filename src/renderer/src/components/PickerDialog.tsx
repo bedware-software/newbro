@@ -84,10 +84,19 @@ interface Props {
   /** What the scope switch reads in each position, e.g. "This workspace" /
    *  "All workspaces". */
   scopeLabels?: Record<'current' | 'all', string>
+  /** A second action on ⌘↵ (Ctrl+Enter off the Mac) that doesn't act on the
+   *  selected row — e.g. "Open in Safari". Its label sits by a ⌘↵ hint in the
+   *  footer. */
+  altAction?: { label: string; run: () => void }
+  /** Changing it clears the search, as re-opening does — for a dialog that
+   *  swaps in a different list without closing. */
+  resetKey?: string
   /** `opts.background` is true when the user held Shift while confirming. */
   onConfirm: (itemId: string, opts: { background: boolean }) => void
   onCancel: () => void
 }
+
+const isMac = navigator.platform.includes('Mac')
 
 export function PickerDialog({
   open,
@@ -105,6 +114,8 @@ export function PickerDialog({
   scope,
   onScopeChange,
   scopeLabels,
+  altAction,
+  resetKey,
   onConfirm,
   onCancel,
 }: Props) {
@@ -123,7 +134,7 @@ export function PickerDialog({
       inputRef.current?.focus()
       inputRef.current?.select()
     }, 50)
-  }, [open])
+  }, [open, resetKey])
 
   const filtered = useMemo(() => {
     if (!query.trim()) return items
@@ -198,6 +209,10 @@ export function PickerDialog({
       setSelectedIndex((i) => Math.max(i - 1, 0))
     } else if (e.key === 'Enter') {
       e.preventDefault()
+      if (altAction && (isMac ? e.metaKey : e.ctrlKey)) {
+        altAction.run()
+        return
+      }
       const picked = filtered[selectedIndex]
       if (picked) onConfirm(picked.id, { background: e.shiftKey })
     } else if (e.key === 'Escape') {
@@ -330,6 +345,9 @@ export function PickerDialog({
             <Hint label={confirmVerb} keys={[<CornerDownLeft key="go" size={11} strokeWidth={2.5} />]} />
             {backgroundHint && (
               <Hint label={backgroundHint} keys={['⇧', <CornerDownLeft key="go" size={11} strokeWidth={2.5} />]} />
+            )}
+            {altAction && (
+              <Hint label={altAction.label} keys={[isMac ? '⌘' : 'Ctrl', <CornerDownLeft key="go" size={11} strokeWidth={2.5} />]} />
             )}
             {scopeSwitch && <Hint label="Scope" keys={['⇥']} />}
             <Hint label="Close" keys={['Esc']} />

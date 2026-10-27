@@ -1,7 +1,15 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useAppStore, saveStateNow } from '../store/app-store'
 import { buildDestinationItems, decodeTarget, encodeTarget } from '../lib/tab-destinations'
+import { log } from '../lib/log'
+import type { OtherBrowser } from '../App'
 import { PickerDialog } from './PickerDialog'
+
+// ⌘↵ (Ctrl+Enter on Windows) passes the link on to another browser
+// (main/other-browser.ts), on macOS and Windows.
+const isMac = navigator.platform.includes('Mac')
+const canPassOn = isMac || navigator.platform.startsWith('Win')
+const passOnKeys = isMac ? '⌘↵' : 'Ctrl+Enter'
 
 interface Props {
   open: boolean
@@ -19,12 +27,39 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
   const addUngroupedTab = useAppStore((s) => s.addUngroupedTab)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const [scope, setScope] = useState<'current' | 'all'>('current')
+  // The browser ⌘↵ / Ctrl+Enter passes the link on to, once chosen.
+  const [otherBrowser, setOtherBrowser] = useState<OtherBrowser | null>(null)
+  // Set while the dialog lists browsers to choose from instead of workspaces:
+  // the first ⌘↵ / Ctrl+Enter, or one whose browser couldn't open the link.
+  const [browserChoice, setBrowserChoice] = useState<{ browsers: OtherBrowser[]; failed?: OtherBrowser } | null>(null)
 
   // Reset scope on each (re)open so the user always starts in the workspace
-  // the link was routed to — mirrors MoveTabDialog's behavior.
+  // the link was routed to — mirrors MoveTabDialog's behavior. A queued link
+  // replaces the last one without closing: it starts over too.
   useEffect(() => {
-    if (open) setScope('current')
-  }, [open])
+    if (!open) return
+    setScope('current')
+    setBrowserChoice(null)
+    if (canPassOn) {
+      window.electronAPI.otherBrowserGet().then(setOtherBrowser).catch((err) => {
+        log.warn('other browser: load failed', err)
+      })
+    }
+  }, [open, url])
+
+  const passOn = async (pick?: OtherBrowser): Promise<void> => {
+    if (!url) return
+    try {
+      const result = await window.electronAPI.otherBrowserOpen(url, pick)
+      if (result.opened) {
+        onClose()
+        return
+      }
+      setBrowserChoice({ browsers: result.browsers, failed: result.failed })
+    } catch (err) {
+      log.warn('other browser: open failed', err)
+    }
+  }
 
   // Default destination: the active tab group in the routed workspace, or
   // its Root if no group is active. Captured per-open so a late state shift
@@ -101,6 +136,30 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
     </>
   ) : undefined
 
+  if (browserChoice) {
+    const { browsers, failed } = browserChoice
+    return (
+      <PickerDialog
+        open={open}
+        title="Open in Another Browser"
+        windowTitle="Open Link - Newbro"
+        placeholder="Open link in…"
+        subtitle={failed
+          ? <>{failed.name} couldn&apos;t open the link. Choose another browser for {passOnKeys}.</>
+          : <>Newbro remembers it for {passOnKeys}. Change it in Settings → General.</>}
+        items={browsers.map((browser) => ({ id: browser.id, label: browser.name }))}
+        emptyMessage="No other browser is installed"
+        confirmVerb="Open"
+        resetKey="browsers"
+        onConfirm={(id) => {
+          const pick = browsers.find((browser) => browser.id === id)
+          if (pick) void passOn(pick)
+        }}
+        onCancel={onClose}
+      />
+    )
+  }
+
   return (
     <PickerDialog
       open={open}
@@ -115,6 +174,10 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
       scope={scope}
       onScopeChange={setScope}
       scopeLabels={{ current: 'This workspace', all: 'All workspaces' }}
+      altAction={canPassOn
+        ? { label: otherBrowser ? `Open in ${otherBrowser.name}` : 'Other browser', run: () => void passOn() }
+        : undefined}
+      resetKey="workspaces"
       onConfirm={handleConfirm}
       onCancel={onClose}
     />

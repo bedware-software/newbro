@@ -160,6 +160,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getDefaultBrowserStatus: (): Promise<unknown> => ipcRenderer.invoke('default-browser:get-status'),
   setAsDefaultBrowser: (): Promise<unknown> => ipcRenderer.invoke('default-browser:set-default'),
 
+  // Another browser for links handed to Newbro: the Open Link picker's ⌘↵
+  // (Ctrl+Enter on Windows), and its choice in Settings (main/other-browser.ts).
+  // macOS and Windows.
+  otherBrowserGet: (): Promise<unknown> => ipcRenderer.invoke('other-browser:get'),
+  otherBrowserList: (): Promise<unknown> => ipcRenderer.invoke('other-browser:list'),
+  otherBrowserSet: (browser: unknown): Promise<unknown> => ipcRenderer.invoke('other-browser:set', browser),
+  otherBrowserOpen: (url: string, pick?: unknown): Promise<unknown> => ipcRenderer.invoke('other-browser:open', url, pick),
+
   // Import
   openBookmarkFile: (): Promise<string | null> => ipcRenderer.invoke('dialog:open-bookmark-file'),
 
