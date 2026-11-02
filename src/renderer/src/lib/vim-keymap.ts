@@ -5,7 +5,7 @@
 // One binding per line: `<command> <keys> [<keys>…]`. A command with no keys
 // is listed but unbound. `"` (vim) or `#` starts a comment line. Keys are
 // typed characters — Shift is the capital, so `J` is Shift+J — sequences
-// like `gg`, Ctrl with a letter (`<C-l>`), and named keys in angle brackets
+// like `gg`, Ctrl with a letter or digit (`<C-l>`, `<C-1>`), and named keys in angle brackets
 // (`<CR>`, `<Esc>`, `<Tab>`). The command's prefix says where it works:
 // `search-` in Search Everything and the Command Palette, `find-` in Find in
 // Page, `url-` in the address editor, anything else in COMMAND mode.
@@ -141,9 +141,9 @@ const NAMED_KEYS: Record<string, string> = {
 }
 for (let n = 1; n <= 12; n++) NAMED_KEYS[`f${n}`] = `<F${n}>`
 
-/** A named key in angle brackets, without them: `cr`, `C-l`, `c-s-j`. */
+/** A named key in angle brackets, without them: `cr`, `C-l`, `c-s-j`, `C-1`. */
 function namedKeyToken(name: string): string | null {
-  const ctrl = /^c-(s-)?([a-z])$/i.exec(name)
+  const ctrl = /^c-(s-)?([a-z0-9])$/i.exec(name)
   if (ctrl) return `<C-${ctrl[1] ? 'S-' : ''}${ctrl[2].toLowerCase()}>`
   return NAMED_KEYS[name.toLowerCase()] ?? null
 }

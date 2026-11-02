@@ -33,14 +33,14 @@ type KeyEventLike = Pick<KeyboardEvent, 'key' | 'code' | 'shiftKey' | 'metaKey' 
 
 /** The key token a keydown stands for, or null for a bare modifier, a dead
  *  key or a key with Alt/Cmd held (those are never Vim keys). Ctrl counts
- *  only with a letter: `<C-l>`, `<C-S-l>` with Shift. */
+ *  only with a letter or a digit: `<C-l>`, `<C-1>`, `<C-S-l>` with Shift. */
 export function keyTokenFromEvent(e: KeyEventLike): string | null {
   if (e.metaKey || e.altKey || e.isComposing) return null
   if (e.ctrlKey) {
     // By physical key, like the letters below. Ctrl+[ never gets here: main
     // turns it into COMMAND mode first.
-    const letter = /^Key([A-Z])$/.exec(e.code)
-    return letter ? `<C-${e.shiftKey ? 'S-' : ''}${letter[1].toLowerCase()}>` : null
+    const chord = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(e.code)
+    return chord ? `<C-${e.shiftKey ? 'S-' : ''}${(chord[1] ?? chord[2]).toLowerCase()}>` : null
   }
   if (e.key === 'Tab') return e.shiftKey ? '<S-Tab>' : '<Tab>'
   const named = NAMED_EVENT_KEYS[e.key]

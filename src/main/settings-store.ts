@@ -400,25 +400,27 @@ function migrateNewKeybindingDefaults(): void {
 }
 
 /**
- * Vim mode's keymap v3 (BROWSE folded into COMMAND, the Sidebar's cursor on
- * Ctrl chords — see src/shared/vim-default-keymap.ts): a keymap saved under
- * v1 or v2 keeps what its owner changed and takes the new defaults for
- * everything else. Once.
+ * Vim mode's keymap v4 (v3: BROWSE folded into COMMAND, the Sidebar's cursor
+ * on Ctrl chords; v4: the tab numbers on Ctrl — see
+ * src/shared/vim-default-keymap.ts): a keymap saved under v1, v2 or v3 keeps
+ * what its owner changed and takes the new defaults for everything else.
+ * Once.
  */
 function migrateVimKeymap(): void {
   const raw = store as unknown as { get(key: string): unknown; set(key: string, value: unknown): void }
-  const marker = 'vim-keymap-v3'
+  const marker = 'vim-keymap-v4'
   const migratedList = raw.get('migratedKeybindingDefaults')
   const migrated = new Set(Array.isArray(migratedList) ? (migratedList as string[]) : [])
   if (migrated.has(marker)) return
 
   const saved = store.get('settings')
   if (saved && typeof saved.vimKeymap === 'string') {
-    const from = migrated.has('vim-keymap-v2') ? 2 : 1
+    const from = migrated.has('vim-keymap-v3') ? 3 : migrated.has('vim-keymap-v2') ? 2 : 1
     store.set('settings', { ...saved, vimKeymap: migrateVimKeymapText(saved.vimKeymap, from) })
   }
 
   migrated.add('vim-keymap-v2')
+  migrated.add('vim-keymap-v3')
   migrated.add(marker)
   raw.set('migratedKeybindingDefaults', [...migrated])
 }

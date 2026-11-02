@@ -8,9 +8,9 @@ export const DEFAULT_VIM_KEYMAP = `" Vim mode keys.
 " keys is unbound. Lines starting with " are comments.
 "
 " Keys: a typed character (Shift is the capital: J is Shift+J), a sequence
-" (gg), Ctrl with a letter (<C-l>, <C-S-j> with Shift), or a named key:
-" <CR> <Esc> <Space> <Tab> <S-Tab> <BS> <Del> <Up> <Down> <Left> <Right>
-" <Home> <End> <PageUp> <PageDown> <F1>…<F12>.
+" (gg), Ctrl with a letter or digit (<C-l>, <C-1>, <C-S-j> with Shift), or a
+" named key: <CR> <Esc> <Space> <Tab> <S-Tab> <BS> <Del> <Up> <Down> <Left>
+" <Right> <Home> <End> <PageUp> <PageDown> <F1>…<F12>.
 " Keys go by position on the keyboard, so they work in any input language.
 "
 " Two modes:
@@ -79,15 +79,15 @@ page-devtools       I
 ui-devtools
 find-in-page        /
 save-page
-tab-1               1
-tab-2               2
-tab-3               3
-tab-4               4
-tab-5               5
-tab-6               6
-tab-7               7
-tab-8               8
-tab-9               9
+tab-1               <C-1>
+tab-2               <C-2>
+tab-3               <C-3>
+tab-4               <C-4>
+tab-5               <C-5>
+tab-6               <C-6>
+tab-7               <C-7>
+tab-8               <C-8>
+tab-9               <C-9>
 duplicate-tab
 move-tab
 rename-tab-group
@@ -173,7 +173,9 @@ export function contextOf(command: string): VimContext {
 // v2 renamed the WEB mode BROWSE (web-* commands are browse-* now) and
 // moved some COMMAND defaults. v3 folded BROWSE into COMMAND: the page's
 // keys (browse-*) are COMMAND keys now, under plain names, and the Sidebar's
-// cursor moved onto Ctrl chords, so j/k/h/l/gg/G/x are the page's. A saved
+// cursor moved onto Ctrl chords, so j/k/h/l/gg/G/x are the page's. v4 put
+// the tab numbers (tab-1…tab-9) on Ctrl too, with the Sidebar that shows
+// them: a plain digit picked a tab out of sight when it's hidden. A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
 // the rest, including commands it couldn't know about.
@@ -258,6 +260,12 @@ const V1_DEFAULT_KEYS: Record<string, string> = {
   'find-in-page': 'f /',
 }
 
+/** v3 defaults of the commands v4 rebound: the tab numbers, plain digits
+ *  since v1. */
+const V3_DEFAULT_KEYS: Record<string, string> = Object.fromEntries(
+  [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`tab-${n}`, String(n)]),
+)
+
 /** Commands v3 added under new names; no older keymap mentions them. */
 const NEW_IN_V3 = new Set([
   'scroll-down', 'scroll-up', 'half-page-down', 'half-page-up', 'page-top', 'page-bottom',
@@ -293,11 +301,12 @@ function sequencesClash(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1 or v2) over to v3's: the
- * v3 default text, with each binding the owner changed (or removed) as they
- * had it. Null when that comes out as the plain default — nothing to keep.
+ * Carries a keymap saved under older defaults (v1, v2 or v3) over to the
+ * current ones: the default text, with each binding the owner changed (or
+ * removed) as they had it. Null when that comes out as the plain default —
+ * nothing to keep.
  */
-export function migrateVimKeymap(saved: string, fromVersion: 1 | 2): string | null {
+export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3): string | null {
   // What the owner had, by the old name.
   const mine = new Map<string, string>()
   for (const line of saved.split('\n')) {
@@ -308,13 +317,18 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2): string | nu
     mine.set(v2, keys.join(' '))
   }
   const oldDefault = (command: string, fallback: string): string =>
-    (fromVersion === 1 ? V1_DEFAULT_KEYS[command] : undefined) ?? V2_DEFAULT_KEYS[command] ?? fallback
+    (fromVersion === 1 ? V1_DEFAULT_KEYS[command] : undefined) ??
+    (fromVersion <= 2 ? V2_DEFAULT_KEYS[command] : undefined) ??
+    V3_DEFAULT_KEYS[command] ??
+    fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
   const existed = (command: string): boolean =>
-    !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))
-  // The old commands that make up each v3 one: itself, and what was renamed
-  // or merged into it.
+    fromVersion === 3
+      ? !(command in RENAMED_IN_V3)
+      : !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))
+  // The old commands that make up each current one: itself, and what was
+  // renamed or merged into it.
   const sourcesOf = (command: string): string[] => [
     command,
     ...Object.keys(RENAMED_IN_V3).filter((old) => RENAMED_IN_V3[old] === command),

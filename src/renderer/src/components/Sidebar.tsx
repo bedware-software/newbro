@@ -9,7 +9,7 @@ import { ChevronRight, ChevronDown, Plus, X } from 'lucide-react'
 import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
 import { useVimSidebar } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
-import type { SidebarCommand, VimKeymap } from '../lib/vim-keymap'
+import { displayKeySequence, keysFor, type SidebarCommand, type VimKeymap } from '../lib/vim-keymap'
 import { SidebarHintBar } from './KeyHints'
 import { SplitGlyph } from './SplitPanes'
 import { isSplitShown, useSplitStore } from '../lib/split-view'
@@ -936,6 +936,11 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
     const splitPane = split ? (tab.id === split.first ? 'first' : tab.id === split.second ? 'second' : null) : null
     const splitVisible = !active && splitPane !== null && splitOnScreen
     const tabNumber = tabNumberById.get(tab.id)
+    // What switches to it: Cmd+N, or in Vim mode whatever tab-N is bound to.
+    const vimTabKeys = tabNumber !== undefined && vimKeymap ? keysFor(vimKeymap, `tab-${tabNumber}`)[0] : undefined
+    const tabNumberKeys = vimKeymap
+      ? vimTabKeys && displayKeySequence(vimTabKeys)
+      : `${isMacOS ? '⌘' : 'Ctrl+'}${tabNumber}`
     const showBefore = containerId === null
       ? isSidebarDropBefore(index)
       : isGroupedTabDropBefore(containerId, index)
@@ -1013,7 +1018,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
             {tabNumber !== undefined && (
               <span
                 className="w-4 h-4 inline-flex items-center justify-center rounded bg-card/85 backdrop-blur-sm text-[10px] font-medium tabular-nums text-muted-foreground group-hover/tab:opacity-0 transition-opacity pointer-events-none"
-                title={`Switch to this tab — ${isMacOS ? '⌘' : 'Ctrl+'}${tabNumber}`}
+                title={tabNumberKeys ? `Switch to this tab — ${tabNumberKeys}` : undefined}
               >
                 {tabNumber}
               </span>

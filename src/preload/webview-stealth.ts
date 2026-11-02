@@ -774,7 +774,8 @@ function installVimPage(): void {
       enterInsertForField()
       return
     }
-    // Ctrl with a letter can be a Vim key (<C-j>); other chords are the page's.
+    // Ctrl with a letter or digit can be a Vim key (<C-j>, <C-1>); other
+    // chords are the page's.
     if (e.metaKey || e.altKey) return
     if (e.ctrlKey) {
       const token = keyTokenFromEvent(e)
