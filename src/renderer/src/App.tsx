@@ -18,7 +18,6 @@ import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDi
 import { CommandPalette } from './components/CommandPalette'
 import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
 import { VimHelpDialog } from './components/VimHelpDialog'
-import { SidebarPeek } from './components/SidebarPeek'
 import { SidePanel } from './components/SidePanel'
 import { startExtensionTabGroupsBridge } from './lib/extension-tab-groups'
 import { setExtensionInstallHandler, type InstallOutcome } from './lib/extension-install'
@@ -49,8 +48,7 @@ interface Settings {
   showTabNumbers: boolean
   /** Vim mode: COMMAND / INSERT modes, see lib/vim-mode.ts. */
   vimMode: boolean
-  /** With Vim mode on: the Sidebar hides, Ctrl held shows it over the page
-   *  (components/SidebarPeek.tsx). */
+  /** With Vim mode on: the Sidebar hides, Ctrl held in COMMAND shows it. */
   sidebarAutoHide: boolean
   /** How the mode's key cap shows its colour, see lib/vim-indicator.ts. */
   vimIndicator: VimIndicator
@@ -206,9 +204,6 @@ declare global {
       vimRunInPage?: (tabId: string, command: string) => void
       /** Ctrl pressed (true) or let go (false) anywhere in this window. */
       onVimCtrl?: (callback: (down: boolean) => void) => () => void
-      /** Where the Sidebar peek sits in this window's content area, and
-       *  whether it shows. */
-      sidebarPeekSet?: (popupId: string, spot: { left: number; top: number; width: number; height: number; shown: boolean }) => void
       reclaimWindowRendererFocus?: () => void
       minimizeWindow: () => Promise<void>
       maximizeWindow: () => Promise<void>
@@ -614,8 +609,6 @@ export default function App() {
   const [externalUrlQueue, setExternalUrlQueue] = useState<string[]>([])
   const shortcutHandlerRef = useRef<((action: string) => void) | null>(null)
   const webviewColumnRef = useRef<HTMLDivElement>(null)
-  // The area under the toolbar: the Sidebar peek is as tall as it is.
-  const bodyRef = useRef<HTMLDivElement>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(() => {
     const v = localStorage.getItem(SIDEBAR_VISIBLE_KEY)
@@ -625,8 +618,8 @@ export default function App() {
   const { profileId: windowProfileId, workspaceId: windowWorkspaceId, tabId: windowTabId } = getWindowParams()
 
   // Settings → Keyboard Shortcuts → Hide the Sidebar (with Vim mode on): it
-  // stays out of the way, Ctrl held shows it over the page (SidebarPeek),
-  // and toggling it (\, the toolbar button) pins it open for the time being.
+  // stays out of the way, Ctrl held in COMMAND shows it, and toggling it (\,
+  // the toolbar button) pins it open for the time being.
   const sidebarAutoHide = settings?.vimMode === true && settings.sidebarAutoHide === true
   const sidebarAutoHideRef = useRef(sidebarAutoHide)
   sidebarAutoHideRef.current = sidebarAutoHide
@@ -1418,9 +1411,6 @@ export default function App() {
     () => parseVimKeymap(settings?.vimKeymap ?? DEFAULT_VIM_KEYMAP),
     [settings?.vimKeymap],
   )
-  // The Sidebar in the window's layout: shown unless toggled off, or — hiding
-  // (Settings) — while pinned open. The peek stands in for it otherwise.
-  const sidebarShown = sidebarAutoHide ? sidebarPinned && !pageFullscreen : sidebarVisible
   const focusActivePage = (): boolean => {
     const s = useAppStore.getState()
     if (!s.activeTabId) return false
@@ -1470,6 +1460,9 @@ export default function App() {
     focusPage: focusActivePage,
   })
   vimRef.current = vim
+  // Shown unless toggled off, or — hiding (Settings) — while pinned open or
+  // Ctrl is held.
+  const sidebarShown = sidebarAutoHide ? (sidebarPinned || vim.sidebarKeys) && !pageFullscreen : sidebarVisible
 
   // A popup window (Search, Command Palette, Settings) closing hands focus
   // back to this window — sometimes to the page view. In COMMAND mode the
@@ -1506,18 +1499,11 @@ export default function App() {
   return (
     <>
       <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
-      <div ref={bodyRef} style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           visible={sidebarShown}
           showTabNumbers={settings?.showTabNumbers ?? true}
           vimActive={vim.sidebarKeys}
-          vimKeymap={vimEnabled ? vimKeymap.main : null}
-        />
-        <SidebarPeek
-          enabled={sidebarAutoHide && !sidebarShown && !pageFullscreen}
-          shown={vim.sidebarKeys}
-          anchorRef={bodyRef}
-          showTabNumbers={settings?.showTabNumbers ?? true}
           vimKeymap={vimEnabled ? vimKeymap.main : null}
         />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>

@@ -34,11 +34,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('vim-ctrl', handler)
     return () => { ipcRenderer.removeListener('vim-ctrl', handler) }
   },
-  // The Sidebar peek (SidebarPeek.tsx): where it sits in this window's
-  // content area and whether it shows.
-  sidebarPeekSet: (popupId: string, spot: { left: number; top: number; width: number; height: number; shown: boolean }): void => {
-    ipcRenderer.send('sidebar-peek:set', popupId, spot)
-  },
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),
   restoreWindow: (): Promise<void> => ipcRenderer.invoke('window:restore'),

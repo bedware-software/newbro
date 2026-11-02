@@ -106,9 +106,6 @@ function loadWidth(): number {
   return v ? Math.max(MIN_WIDTH, parseInt(v, 10)) : DEFAULT_WIDTH
 }
 
-/** The width the user dragged the Sidebar to — the peek's too. */
-export const getSidebarWidth = loadWidth
-
 interface Props {
   visible: boolean
   /** When true, the first 9 visible tabs show a small "N" badge advertising
@@ -120,13 +117,9 @@ interface Props {
   vimActive: boolean
   /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
   vimKeymap: VimKeymap | null
-  /** Drawn in the peek window over the page (SidebarPeek.tsx), whose
-   *  top-left corner sits here in the main window's content area: no
-   *  resize handle, menus moved by as much. */
-  peek?: { x: number; y: number }
 }
 
-export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, peek }: Props) {
+export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -609,15 +602,10 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, peek }:
 
   /** Opens a sidebar menu. One opened from COMMAND mode (Ctrl+M) takes the
    *  keyboard: its first action starts highlighted and hjkl move around it. */
-  const showMenu = (spec: Omit<DropdownSpec, 'openerId'>, keyboard: boolean) => {
-    // In the peek, menus are placed from the peek window's corner.
-    const placed = peek && spec.position
-      ? { ...spec, position: { x: spec.position.x + peek.x, y: spec.position.y + peek.y } }
-      : spec
-    return keyboard
-      ? runMenu(() => openDropdownAsync({ ...placed, keyboard: true }))
-      : openDropdownAsync(placed)
-  }
+  const showMenu = (spec: Omit<DropdownSpec, 'openerId'>, keyboard: boolean) =>
+    keyboard
+      ? runMenu(() => openDropdownAsync({ ...spec, keyboard: true }))
+      : openDropdownAsync(spec)
 
   /** Menu for a multi-selection that includes a group. Only actions that
    *  work on whole groups and single tabs alike are offered; the tab-only
@@ -1214,11 +1202,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, peek }:
 
   return (
     <>
-      <div
-        ref={sidebarRef}
-        style={{ width: peek ? '100%' : width }}
-        className={`bg-toolbar ${peek ? '' : 'border-r border-border'} flex flex-col shrink-0 overflow-hidden select-none relative`}
-      >
+      <div ref={sidebarRef} style={{ width }} className="bg-toolbar border-r border-border flex flex-col shrink-0 overflow-hidden select-none relative">
         <div className="flex-1 overflow-y-auto pt-0 pb-0.5">
           {sidebarItems.map((item, sidebarIdx) => {
             if (item.type === 'tab') {
@@ -1285,12 +1269,10 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, peek }:
 
         {vimKeymap && <SidebarHintBar keymap={vimKeymap} active={vimActive} />}
 
-        {!peek && (
-          <div
-            className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
-            onMouseDown={onResizeStart}
-          />
-        )}
+        <div
+          className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
+          onMouseDown={onResizeStart}
+        />
       </div>
 
 

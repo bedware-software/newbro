@@ -107,7 +107,7 @@ function writeSavedBounds(key: string, b: SavedBounds): void {
   }
 }
 
-export function syncThemeToPopup(popupDoc: Document): void {
+function syncThemeToPopup(popupDoc: Document): void {
   const theme = document.documentElement.getAttribute('data-theme')
   if (theme) popupDoc.documentElement.setAttribute('data-theme', theme)
   else popupDoc.documentElement.removeAttribute('data-theme')
@@ -119,7 +119,7 @@ export function syncThemeToPopup(popupDoc: Document): void {
 /** The page background as RRGGBB, for the popup's native window background,
  *  which shows wherever the page hasn't painted yet. The canvas round trip
  *  turns any CSS color syntax (the theme tokens are oklch) into sRGB. */
-export function pageBackgroundHex(): string | null {
+function pageBackgroundHex(): string | null {
   try {
     const color = getComputedStyle(document.body).backgroundColor
     const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
@@ -138,7 +138,7 @@ export function pageBackgroundHex(): string | null {
  *  <link rel="stylesheet"> tags made the popup fetch the stylesheet again,
  *  asynchronously: the popup was revealed before it arrived and showed
  *  unstyled — white — for a few frames before switching to the theme. */
-export function copyStylesToPopup(popupDoc: Document): void {
+function copyStylesToPopup(popupDoc: Document): void {
   const nodes = document.querySelectorAll('style, link[rel="stylesheet"]')
   nodes.forEach((node) => {
     const sheet = node instanceof HTMLLinkElement ? node.sheet : null

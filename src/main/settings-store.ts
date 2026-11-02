@@ -23,8 +23,8 @@ export interface Settings {
    *  renderer lib/vim-mode.ts. Turns the regular {@link keybindings} off,
    *  menu accelerators included. */
   vimMode: boolean
-  /** With Vim mode on: the Sidebar stays hidden and shows over the page
-   *  while Ctrl is held in COMMAND mode (renderer SidebarPeek.tsx). */
+  /** With Vim mode on: the Sidebar stays hidden and shows while Ctrl is
+   *  held in COMMAND mode (renderer App.tsx). */
   sidebarAutoHide: boolean
   /** How Vim's mode key cap shows the mode's colour (renderer
    *  lib/vim-indicator.ts): 'rim-label', 'rim', 'label', 'tint', 'base',
