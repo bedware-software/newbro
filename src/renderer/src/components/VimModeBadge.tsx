@@ -14,12 +14,11 @@ interface Props {
 }
 
 const MODE_STYLE: Record<VimMode, { label: string; title: string }> = {
-  command: { label: 'CMD', title: 'Vim: COMMAND mode — the browser has the keys' },
-  browse: { label: 'WEB', title: 'Vim: BROWSE mode — the page, driven by its Vim keys' },
+  command: { label: 'CMD', title: 'Vim: COMMAND mode — the page and the browser, driven by Vim keys' },
   insert: { label: 'INS', title: 'Vim: INSERT mode — keys go where you type; Esc to leave' },
 }
 
-/** Vim's mode as a key cap, the hint bars' kind: CMD, WEB or INS, in the
+/** Vim's mode as a key cap, the hint bars' kind: CMD or INS, in the
  *  mode's colour the way Settings → Appearance says (kbd.vim-mode in
  *  globals.css). The keys typed so far of an unfinished sequence show as a
  *  cap to its left. */

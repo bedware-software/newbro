@@ -7,39 +7,39 @@
 // typed characters — Shift is the capital, so `J` is Shift+J — sequences
 // like `gg`, Ctrl with a letter (`<C-l>`), and named keys in angle brackets
 // (`<CR>`, `<Esc>`, `<Tab>`). The command's prefix says where it works:
-// `browse-` in BROWSE mode (the page), `search-` in Search Everything and
-// the Command Palette, `find-` in Find in Page, `url-` in the address editor,
-// anything else in COMMAND mode.
+// `search-` in Search Everything and the Command Palette, `find-` in Find in
+// Page, `url-` in the address editor, anything else in COMMAND mode.
 
 import { ACTION_LABELS } from './action-labels'
 import { SEQUENCE_JOIN, type VimKeymap } from '../../../shared/vim-keys'
-import { DEFAULT_VIM_KEYMAP, renamedVimCommand } from '../../../shared/vim-default-keymap'
+import { DEFAULT_VIM_KEYMAP, contextOf, renamedVimCommand, type VimContext } from '../../../shared/vim-default-keymap'
 
-export { keyTokenFromEvent, matchKeys, type VimKeymap, type VimKeymapEntries } from '../../../shared/vim-keys'
-export { DEFAULT_VIM_KEYMAP } from '../../../shared/vim-default-keymap'
+export { keyTokenFromEvent, matchKeys, isPageCommand, type VimKeymap, type VimKeymapEntries } from '../../../shared/vim-keys'
+export { DEFAULT_VIM_KEYMAP, type VimContext } from '../../../shared/vim-default-keymap'
 
 /** What each Vim command does, for the help window. App commands use the
  *  regular shortcuts' names. */
 const VIM_COMMAND_LABELS: Record<string, string> = {
+  'scroll-down': 'Scroll down',
+  'scroll-up': 'Scroll up',
+  'half-page-down': 'Half a page down',
+  'half-page-up': 'Half a page up',
+  'page-top': 'Top of the page',
+  'page-bottom': 'Bottom of the page',
   'insert-mode': 'INSERT mode in the page',
-  'browse-mode': 'BROWSE mode in the page',
-  'focus-sidebar': 'Cursor to the Sidebar',
-  'focus-bookshelf': 'Cursor to the Bookshelf',
+  'focus-input': 'Pick a text field',
   help: 'This help',
-  'cursor-down': 'Cursor down',
-  'cursor-up': 'Cursor up',
-  'cursor-down-show': 'Cursor down, showing its tab',
-  'cursor-up-show': 'Cursor up, showing its tab',
-  'cursor-first': 'Cursor to the first row',
-  'cursor-last': 'Cursor to the last row',
-  'row-move-down': 'Move the row down',
-  'row-move-up': 'Move the row up',
-  'row-collapse': 'Collapse the group',
-  'row-expand': 'Expand the group',
-  'row-menu': 'Row menu',
-  'row-close': 'Close the row',
-  'row-show': 'Show the row (stay in COMMAND)',
-  'row-open': 'Open the row (a tab: into its page, BROWSE)',
+  'cursor-down-show': 'Next tab, showing it',
+  'cursor-up-show': 'Previous tab, showing it',
+  'row-move-down': 'Move the tab down',
+  'row-move-up': 'Move the tab up',
+  'row-fold': 'Fold or unfold the group',
+  'row-menu': 'Tab menu',
+  'cursor-down': 'Next result',
+  'cursor-up': 'Previous result',
+  'cursor-first': 'First result',
+  'cursor-last': 'Last result',
+  'row-open': 'Open the result',
   'copy-url': 'Copy the page address',
   'paste-url': 'Open the copied address here',
   'paste-url-new-tab': 'Open the copied address in a new tab',
@@ -62,23 +62,6 @@ const VIM_COMMAND_LABELS: Record<string, string> = {
   'url-insert': 'Type where you left off',
   'url-undo': 'Undo the last change',
   'url-go': 'Go to the address',
-  'browse-scroll-down': 'Scroll down',
-  'browse-scroll-up': 'Scroll up',
-  'browse-half-page-down': 'Half a page down',
-  'browse-half-page-up': 'Half a page up',
-  'browse-top': 'Top of the page',
-  'browse-bottom': 'Bottom of the page',
-  'browse-back': 'Back in history',
-  'browse-forward': 'Forward in history',
-  'browse-insert': 'INSERT mode',
-  'browse-focus-input': 'Pick a text field',
-  'browse-close-tab': 'Close the tab',
-  'browse-copy-url': 'Copy the page address',
-  'browse-paste-url': 'Open the copied address here',
-  'browse-paste-url-new-tab': 'Open the copied address in a new tab',
-  'browse-focus-url': 'Focus the address bar',
-  'browse-split-focus': 'Focus the other split pane',
-  'browse-help': 'This help',
   'search-all': 'Show everything',
   'search-profiles': 'Profiles only',
   'search-workspaces': 'Workspaces only',
@@ -94,57 +77,46 @@ export function vimCommandLabel(command: string): string {
   return VIM_COMMAND_LABELS[command] ?? ACTION_LABELS[command] ?? command
 }
 
-/** Commands that drive the focused panel's cursor. Their keys also work in
- *  the Search Everything results list. */
-export const PANEL_COMMANDS = [
-  'cursor-down',
-  'cursor-up',
+/** Commands that act on the Sidebar's row under the cursor — the active
+ *  tab's. Bound to Ctrl chords, so holding Ctrl shows the cursor (and a
+ *  hidden Sidebar). */
+export const SIDEBAR_COMMANDS = [
   'cursor-down-show',
   'cursor-up-show',
-  'cursor-first',
-  'cursor-last',
   'row-move-down',
   'row-move-up',
-  'row-collapse',
-  'row-expand',
+  'row-fold',
   'row-menu',
-  'row-close',
-  'row-show',
-  'row-open',
 ] as const
-export type PanelCommand = (typeof PANEL_COMMANDS)[number]
+export type SidebarCommand = (typeof SIDEBAR_COMMANDS)[number]
 
-export function isPanelCommand(command: string): command is PanelCommand {
-  return (PANEL_COMMANDS as readonly string[]).includes(command)
+export function isSidebarCommand(command: string): command is SidebarCommand {
+  return (SIDEBAR_COMMANDS as readonly string[]).includes(command)
 }
+
+/** A popup's list commands (the results of Search Everything, the Command
+ *  Palette, the split picker) and the main window's commands whose keys they
+ *  take: the keys that scroll the page step through the results. Enter,
+ *  fixed, opens one. */
+const LIST_COMMANDS: Record<string, string> = {
+  'cursor-down': 'scroll-down',
+  'cursor-up': 'scroll-up',
+  'cursor-first': 'page-top',
+  'cursor-last': 'page-bottom',
+}
+const LIST_OPEN_KEY = ['<CR>']
 
 /** Commands from the main window's map that also work in a popup's own
- *  COMMAND mode, under the popup's own bindings. */
-const SHARED_COMMANDS: Record<'search' | 'find', Set<string>> = {
-  search: new Set(['insert-mode', 'cursor-down', 'cursor-up', 'cursor-first', 'cursor-last', 'row-open']),
-  find: new Set(['insert-mode']),
-}
-
-export type VimContext = 'command' | 'browse' | 'search' | 'find' | 'url'
-
-// COMMAND-mode commands whose names happen to start with another context's
-// prefix.
-const COMMAND_CONTEXT_EXCEPTIONS = new Set(['browse-mode', 'find-in-page'])
-
-export function contextOf(command: string): VimContext {
-  if (COMMAND_CONTEXT_EXCEPTIONS.has(command)) return 'command'
-  if (command.startsWith('browse-')) return 'browse'
-  if (command.startsWith('search-')) return 'search'
-  if (command.startsWith('find-')) return 'find'
-  if (command.startsWith('url-')) return 'url'
-  return 'command'
+ *  COMMAND mode, as popup command → main command. */
+const SHARED_COMMANDS: Record<'search' | 'find', Record<string, string>> = {
+  search: { 'insert-mode': 'insert-mode', ...LIST_COMMANDS },
+  find: { 'insert-mode': 'insert-mode' },
 }
 
 export interface ParsedVimKeymap {
-  /** The main window's COMMAND mode. */
+  /** COMMAND mode: the main window's chrome and its pages
+   *  (src/preload/webview-stealth.ts). */
   main: VimKeymap
-  /** BROWSE mode, run in the page (src/preload/webview-stealth.ts). */
-  browse: VimKeymap
   /** COMMAND mode of Search Everything and the Command Palette. */
   search: VimKeymap
   /** COMMAND mode of Find in Page. */
@@ -244,9 +216,10 @@ function getKnownCommands(): Set<string> {
   return knownCommands
 }
 
-/** Every command in the default config's order — for the help window. */
+/** Every command in the default config's order, then the popups' list
+ *  commands — for the help window. */
 export function vimCommandsInOrder(): string[] {
-  return [...getKnownCommands()]
+  return [...getKnownCommands(), ...Object.keys(LIST_COMMANDS), 'row-open']
 }
 
 /** Adds `seq → command` unless it clashes with a binding already there:
@@ -270,7 +243,7 @@ function bind(map: VimKeymap, seq: string[], command: string): string | null {
 
 export function parseVimKeymap(text: string): ParsedVimKeymap {
   const known = getKnownCommands()
-  const maps: Record<VimContext, VimKeymap> = { command: new Map(), browse: new Map(), search: new Map(), find: new Map(), url: new Map() }
+  const maps: Record<VimContext, VimKeymap> = { command: new Map(), search: new Map(), find: new Map(), url: new Map() }
   const shared: Array<{ seq: string[]; command: string }> = []
   const errors: string[] = []
 
@@ -278,9 +251,10 @@ export function parseVimKeymap(text: string): ParsedVimKeymap {
     const trimmed = line.trim()
     if (!trimmed || trimmed.startsWith('"') || trimmed.startsWith('#')) return
     const [written, ...keys] = trimmed.split(/\s+/)
-    // A keymap saved before WEB mode became BROWSE (another device's, via
-    // Cloud Sync) still names its commands web-*.
+    // A keymap saved under older defaults (another device's, via Cloud Sync)
+    // names commands web-* or browse-*, or ones that are gone.
     const command = known.has(written) ? written : renamedVimCommand(written)
+    if (command === null) return
     const where = `Line ${index + 1}`
     if (!known.has(command)) {
       errors.push(`${where}: unknown command "${written}"`)
@@ -305,18 +279,22 @@ export function parseVimKeymap(text: string): ParsedVimKeymap {
   // for groups vs gg) just isn't available there.
   const withShared = (context: 'search' | 'find'): VimKeymap => {
     const map: VimKeymap = new Map(maps[context])
-    for (const { seq, command } of shared) if (SHARED_COMMANDS[context].has(command)) bind(map, seq, command)
+    const sharedHere = Object.entries(SHARED_COMMANDS[context])
+    for (const { seq, command } of shared) {
+      for (const [popupCommand, mainCommand] of sharedHere) if (mainCommand === command) bind(map, seq, popupCommand)
+    }
+    if (context === 'search') bind(map, LIST_OPEN_KEY, 'row-open')
     return map
   }
 
-  return { main: maps.command, browse: maps.browse, search: withShared('search'), find: withShared('find'), url: maps.url, errors }
+  return { main: maps.command, search: withShared('search'), find: withShared('find'), url: maps.url, errors }
 }
 
 /** The Command Palette's COMMAND keys: Search Everything's, less its filters. */
 export function paletteKeymap(search: VimKeymap): VimKeymap {
   const map: VimKeymap = new Map()
   for (const [seq, command] of search) {
-    if (SHARED_COMMANDS.search.has(command) || /^search-row-\d$/.test(command)) map.set(seq, command)
+    if (command in SHARED_COMMANDS.search || command === 'row-open' || /^search-row-\d$/.test(command)) map.set(seq, command)
   }
   return map
 }

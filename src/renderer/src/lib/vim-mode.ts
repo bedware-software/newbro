@@ -1,131 +1,121 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { KeySequencer, isCtrlToken, keyTokenFromEvent, type VimKeymap, type VimKeymapEntries } from '../../../shared/vim-keys'
-import type { PanelCommand } from './vim-keymap'
+import type { SidebarCommand } from './vim-keymap'
 import { log } from './log'
 
-// Vim mode. A window is in one of three modes:
-//   COMMAND — the browser chrome holds the keyboard; plain keys run the
-//             commands from Settings' keymap. A block cursor sits in one
-//             panel (Sidebar or Bookshelf); each panel decides what a cursor
-//             command means for its rows.
-//   BROWSE  — the page holds the keyboard and the page's preload
-//             (webview-stealth.ts) runs the browse-* keys, the way Vimium
-//             did: scrolling, history, picking a text field. Other keys
-//             reach the page.
+// Vim mode. A window is in one of two modes:
+//   COMMAND — plain keys run the commands from Settings' keymap: scrolling
+//             the page, history, tabs, app commands. Mostly the page has the
+//             keyboard: its preload (webview-stealth.ts) runs the page's
+//             keys, the way Vimium does, passes the browser's commands on
+//             here and lets unbound keys reach the page. The chrome has it
+//             only with no page to go to, or while Ctrl steps through the
+//             tabs; this module passes the page's keys on to the page then.
 //   INSERT  — keys go where you type: a page field, the page itself (i),
 //             the URL bar, a rename box.
-// Clicking the chrome is COMMAND, clicking the page BROWSE (a field: INSERT).
-// Esc climbs INSERT → BROWSE → COMMAND. This module holds the window's mode
-// and tells main, which passes it on to the pages.
+// Clicking a text field is INSERT, anywhere else COMMAND; Esc (or Ctrl+[)
+// leaves INSERT. Holding Ctrl in COMMAND is the Sidebar's turn: a cursor on
+// the active tab (and a hidden Sidebar shown), its Ctrl chords stepping
+// through the tabs — with the keyboard kept in the chrome, so a page's text
+// field can't take it on the way; letting Ctrl go hands it to the page shown.
+// This module holds the window's mode and tells main, which passes it on to
+// the pages.
 
-export type VimMode = 'command' | 'browse' | 'insert'
-export type VimPanel = 'sidebar' | 'bookshelf'
+export type VimMode = 'command' | 'insert'
 
-// Window-wide flag read by WebviewPanel: in COMMAND mode activating a tab
-// (Ctrl+J/K and o show tabs live) must not hand OS keyboard focus to the
-// page, or the next keystroke would go to the site instead of the command
-// keys. Set synchronously with the React state so an activation in the same
-// render as the mode change already sees it.
-let commandModeActive = false
+// Set while Ctrl steps through the tabs: activating a tab then must not hand
+// OS keyboard focus to its page (WebviewPanel), or the next keystroke would
+// go to the site — or a field of it — instead of the Sidebar's keys.
+let walkingTabs = false
 
-export function isCommandMode(): boolean {
-  return commandModeActive
+export function keepsChromeKeyboard(): boolean {
+  return walkingTabs
 }
 
-// How long after we pull keyboard focus back to the renderer it is still
-// settling. When a popup (context menu, Search) hides, the OS hands focus
-// back to the window, where the active tab's view may claim it a beat after
-// we asked for the renderer — a page focus inside this window is that
-// handoff, not the user clicking into the page, so we take focus back
-// instead of switching modes. Taking it back only succeeds while our window
-// is the focused one, so a dialog opened from a menu keeps its focus.
-const FOCUS_SETTLE_MS = 300
+// How long Ctrl is held on its own before the Sidebar shows — long enough
+// that a quick chord (Ctrl+L, Ctrl+[) doesn't flash it.
+const CTRL_HOLD_MS = 200
+// With no Ctrl held (a Sidebar command rebound to a plain key), how long the
+// Sidebar keys stay live after the last one.
+const WALK_IDLE_MS = 1000
 // Commands that keep going while their key is held.
 const REPEATABLE = new Set([
-  'cursor-down', 'cursor-up', 'cursor-down-show', 'cursor-up-show', 'row-move-down', 'row-move-up',
-  'find-next', 'find-prev',
+  'scroll-down', 'scroll-up', 'half-page-down', 'half-page-up',
+  'cursor-down-show', 'cursor-up-show', 'row-move-down', 'row-move-up',
+  'cursor-down', 'cursor-up', 'find-next', 'find-prev',
 ])
-
-// App commands a page's BROWSE keys may ask for (browse-close-tab & co.).
-const PAGE_COMMANDS = new Set(['close-tab', 'copy-url', 'paste-url', 'paste-url-new-tab', 'focus-url', 'split-focus'])
-
-let settleUntil = 0
-// Until when focus arriving in the renderer is the OS handing it back after
-// a popup we opened from the page (help) — the page should get it, not
-// COMMAND.
-let returnToPageUntil = 0
 
 function isEditable(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   return target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT'
 }
 
-/** The mode keyboard focus on `target` in this renderer stands for: a text
- *  field is INSERT, a page this renderer draws itself (marked
- *  `data-vim-page`, e.g. Downloads — it has keys of its own) is BROWSE, the
- *  rest of the chrome is COMMAND. */
-function modeForRendererFocus(target: EventTarget | null): VimMode {
-  if (isEditable(target)) return 'insert'
-  if (target instanceof HTMLElement && target.closest('[data-vim-page]') !== null) return 'browse'
-  return 'command'
+/** A page this renderer draws itself (marked `data-vim-page`, e.g.
+ *  Downloads): it has keys of its own, the way a tab's page does. */
+function isInternalPage(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest('[data-vim-page]') !== null
 }
 
-/** Move OS keyboard focus to this renderer, retrying while a popup hide or
- *  tab view is still pulling it away. `force` takes it even from another
- *  window — right for a hotkey, which only reaches us while ours is in use. */
-export function claimRendererFocus(force: boolean): void {
+/** The mode keyboard focus on `target` in this renderer stands for: a text
+ *  field is INSERT, the rest COMMAND. */
+function modeForRendererFocus(target: EventTarget | null): VimMode {
+  return isEditable(target) ? 'insert' : 'command'
+}
+
+/** Move OS keyboard focus to this renderer, retrying while a tab view is
+ *  still pulling it away. `force` takes it even from another window — right
+ *  for a hotkey, which only reaches us while ours is in use. */
+function claimRendererFocus(force: boolean): void {
   if (force) window.electronAPI?.focusWindowRenderer?.()
   else window.electronAPI?.reclaimWindowRendererFocus?.()
-  settleUntil = Date.now() + FOCUS_SETTLE_MS
   for (const delay of [60, 180]) {
     setTimeout(() => {
-      // Only for COMMAND: a w pressed meanwhile gave the keyboard to the page.
-      if (commandModeActive && !document.hasFocus()) window.electronAPI?.reclaimWindowRendererFocus?.()
+      if (walkingTabs && !document.hasFocus()) window.electronAPI?.reclaimWindowRendererFocus?.()
     }, delay)
   }
 }
 
-// ── Panels ──
+// ── The Sidebar ──
 
-const panelHandlers = new Map<VimPanel, (cmd: PanelCommand) => void>()
+let sidebarHandler: ((cmd: SidebarCommand) => void) | null = null
+// Ends the Sidebar keys (useVimMode's), for a row menu that swallowed the
+// Ctrl release.
+let endSidebarKeysHook: (() => void) | null = null
 
-/** Runs a cursor command in `panel`; false when the panel isn't listening
- *  (hidden, or not the one with the cursor). */
-export function dispatchPanelCommand(panel: VimPanel, cmd: PanelCommand): boolean {
-  const handler = panelHandlers.get(panel)
-  if (!handler) return false
-  handler(cmd)
+/** Runs a Sidebar command on the row under its cursor; false when no
+ *  Sidebar is showing to take it. */
+export function dispatchSidebarCommand(cmd: SidebarCommand): boolean {
+  if (!sidebarHandler) return false
+  sidebarHandler(cmd)
   return true
 }
 
 /**
- * Hooks a panel up to COMMAND mode: while `active` its rows get the cursor
- * commands. Wrap keyboard-opened context menus in the returned `runMenu` so
- * focus comes back to the renderer once the menu popup closes.
+ * Hooks a Sidebar up to its Ctrl commands while `active`. Wrap
+ * keyboard-opened context menus in the returned `runMenu`: a native menu
+ * keeps the Ctrl release from us, so its closing ends the Sidebar keys.
  */
-export function useVimPanel(
-  panel: VimPanel,
+export function useVimSidebar(
   active: boolean,
-  onCommand: (cmd: PanelCommand) => void,
+  onCommand: (cmd: SidebarCommand) => void,
 ): { runMenu: <T>(open: () => Promise<T>) => Promise<T> } {
   const commandRef = useRef(onCommand)
   commandRef.current = onCommand
 
   useEffect(() => {
     if (!active) return
-    const handler = (cmd: PanelCommand): void => commandRef.current(cmd)
-    panelHandlers.set(panel, handler)
+    const handler = (cmd: SidebarCommand): void => commandRef.current(cmd)
+    sidebarHandler = handler
     return () => {
-      if (panelHandlers.get(panel) === handler) panelHandlers.delete(panel)
+      if (sidebarHandler === handler) sidebarHandler = null
     }
-  }, [panel, active])
+  }, [active])
 
   const runMenu = useCallback(async <T,>(open: () => Promise<T>): Promise<T> => {
     try {
       return await open()
     } finally {
-      // Not forced: if the menu's action opened a dialog window, it keeps focus.
-      if (commandModeActive) claimRendererFocus(false)
+      endSidebarKeysHook?.()
     }
   }, [])
 
@@ -152,7 +142,7 @@ export function useKeySequence(
   const sequencer = useMemo(() => new KeySequencer(
     () => keymapRef.current,
     (command, e) => {
-      // Holding j/k (or J/K) keeps going; anything else fires once per press.
+      // Holding j/k (or Ctrl+J/K) keeps going; anything else fires once per press.
       if (!e.repeat || REPEATABLE.has(command)) commandRef.current(command)
     },
     setPending,
@@ -255,20 +245,13 @@ const NO_KEYMAP: VimKeymap = new Map()
 interface Options {
   enabled: boolean
   keymap: VimKeymap
-  /** BROWSE mode's keys, handed to the pages. */
-  browseKeymap: VimKeymap
-  /** A command from the keymap: an app action id or a vim command. Also an
-   *  app command a page's BROWSE key asked for (browse-close-tab). */
+  /** A command from the keymap: an app action id, a Sidebar command or a
+   *  vim command — also one the page's keys asked for. */
   onCommand: (command: string) => void
   /** Hand the keyboard to the active tab's page. False when there is no
    *  page to go to, e.g. while parked on a group. */
   focusPage: () => boolean
   isActiveTab: (tabId: string) => boolean
-  /** True while Esc from the page must not switch modes (it just left a
-   *  fullscreen video). */
-  ignorePageEscape: () => boolean
-  /** browse-help (?) pressed in the page. */
-  onHelp: () => void
 }
 
 export interface VimModeState {
@@ -276,27 +259,39 @@ export interface VimModeState {
   mode: VimMode | null
   /** Keys typed so far of an unfinished sequence (vim's showcmd). */
   pending: string
+  /** Ctrl held in COMMAND (or a Sidebar command just ran): the Sidebar's
+   *  keys are live — a cursor on the active tab, a hidden Sidebar shown. */
+  sidebarKeys: boolean
+  /** COMMAND, in the active tab's page when there is one. */
   enterCommand: (force: boolean) => void
-  /** Into the active tab's page, in BROWSE mode. */
-  enterBrowse: () => void
   /** Into the active tab's page, in INSERT mode — keys reach the page. */
   enterInsert: () => void
-  /** Back into the page after a popup opened from it closes: focus the OS
-   *  gives the renderer meanwhile goes on to the page. */
+  /** A Sidebar command is about to run: its keys stay live, with the
+   *  keyboard in the chrome, until Ctrl is let go. */
+  startTabWalk: () => void
+  /** A popup closed: in COMMAND the page gets the keyboard back — unless
+   *  what the popup did put it in a chrome field. */
   returnToPage: () => void
 }
 
-export function useVimMode({ enabled, keymap, browseKeymap, onCommand, focusPage, isActiveTab, ignorePageEscape, onHelp }: Options): VimModeState {
+export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab }: Options): VimModeState {
   const [mode, setModeState] = useState<VimMode | null>(null)
   const modeRef = useRef<VimMode | null>(null)
   // INSERT in a chrome field (URL bar, rename) rather than in the page.
   const insertInChromeRef = useRef(false)
-  const setMode = useCallback((next: VimMode | null, why: string, inChrome = false) => {
-    if (modeRef.current !== next) log.event('vim:mode', next ?? 'off', why)
-    modeRef.current = next
-    insertInChromeRef.current = next === 'insert' && inChrome
-    commandModeActive = next === 'command'
-    setModeState(next)
+  const [sidebarKeys, setSidebarKeys] = useState(false)
+  const ctrlDownRef = useRef(false)
+  const ctrlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const walkIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // What the pages get (main passes it on): the mode, COMMAND's keys, and a
+  // count of trips out of INSERT on purpose (Ctrl+[), each of which makes a
+  // page's focused field let go. Sent as the mode changes, not after the
+  // render, so a page learns it before it's handed the keyboard.
+  const keymapEntriesRef = useRef<VimKeymapEntries>([])
+  const leaveInsertRef = useRef(0)
+  const pushState = useCallback(() => {
+    window.electronAPI.vimSetState?.({ mode: modeRef.current, keymap: keymapEntriesRef.current, leaveInsert: leaveInsertRef.current })
   }, [])
 
   const onCommandRef = useRef(onCommand)
@@ -306,36 +301,87 @@ export function useVimMode({ enabled, keymap, browseKeymap, onCommand, focusPage
   focusPageRef.current = focusPage
   const isActiveTabRef = useRef(isActiveTab)
   isActiveTabRef.current = isActiveTab
-  const ignoreEscapeRef = useRef(ignorePageEscape)
-  ignoreEscapeRef.current = ignorePageEscape
-  const onHelpRef = useRef(onHelp)
-  onHelpRef.current = onHelp
+
+  const clearCtrlTimers = useCallback(() => {
+    if (ctrlTimerRef.current) clearTimeout(ctrlTimerRef.current)
+    if (walkIdleTimerRef.current) clearTimeout(walkIdleTimerRef.current)
+    ctrlTimerRef.current = null
+    walkIdleTimerRef.current = null
+  }, [])
+
+  /** The Sidebar keys end: Ctrl let go (or the window lost it). The tab the
+   *  walk stopped on gets the keyboard. */
+  const endSidebarKeys = useCallback(() => {
+    clearCtrlTimers()
+    setSidebarKeys(false)
+    if (!walkingTabs) return
+    walkingTabs = false
+    log.event('vim:tab walk', 'end')
+    if (modeRef.current === 'command') focusPageRef.current()
+  }, [clearCtrlTimers])
+
+  useEffect(() => {
+    endSidebarKeysHook = endSidebarKeys
+    return () => {
+      if (endSidebarKeysHook === endSidebarKeys) endSidebarKeysHook = null
+    }
+  }, [endSidebarKeys])
+
+  const setMode = useCallback((next: VimMode | null, why: string, inChrome = false) => {
+    const changed = modeRef.current !== next
+    if (changed) log.event('vim:mode', next ?? 'off', why)
+    modeRef.current = next
+    insertInChromeRef.current = next === 'insert' && inChrome
+    setModeState(next)
+    if (changed) pushState()
+    if (next !== 'command') {
+      // The Sidebar keys are COMMAND's.
+      walkingTabs = false
+      clearCtrlTimers()
+      setSidebarKeys(false)
+    }
+  }, [clearCtrlTimers, pushState])
 
   const enterCommand = useCallback((force: boolean) => {
     if (modeRef.current === null) return
-    // Otherwise taking focus back would land in the URL bar (or whatever
-    // chrome field had it before the page did), which is INSERT again.
+    // A chrome field (the URL bar) lets go of the keys, and so does the
+    // page's field: this is a trip out of INSERT on purpose.
     const focused = document.activeElement
     if (focused instanceof HTMLElement && focused !== document.body) focused.blur()
+    leaveInsertRef.current++
+    // Set first: the page must learn its mode before it gets the keys.
     setMode('command', 'enter-command')
-    claimRendererFocus(force)
-  }, [setMode])
+    pushState()
+    if (walkingTabs || !focusPageRef.current()) claimRendererFocus(force)
+  }, [setMode, pushState])
 
-  const enterPage = useCallback((next: 'browse' | 'insert') => {
+  const enterInsert = useCallback(() => {
     if (modeRef.current === null) return
-    settleUntil = 0
+    walkingTabs = false
     // Set first: focusPage may activate a tab, which must now take the
     // keyboard, and the page must learn its mode before keys arrive.
     const previous = modeRef.current
-    setMode(next, `enter-${next}`)
+    setMode('insert', 'enter-insert')
     if (!focusPageRef.current()) setMode(previous, 'no page to go to')
   }, [setMode])
-  const enterBrowse = useCallback(() => enterPage('browse'), [enterPage])
-  const enterInsert = useCallback(() => enterPage('insert'), [enterPage])
+
   const returnToPage = useCallback(() => {
-    returnToPageUntil = Date.now() + FOCUS_SETTLE_MS
-    enterPage('browse')
-  }, [enterPage])
+    if (modeRef.current !== 'command' || walkingTabs || isEditable(document.activeElement)) return
+    focusPageRef.current()
+  }, [])
+
+  const startTabWalk = useCallback(() => {
+    if (modeRef.current !== 'command') return
+    clearCtrlTimers()
+    setSidebarKeys(true)
+    if (!walkingTabs) {
+      walkingTabs = true
+      log.event('vim:tab walk', 'start')
+      claimRendererFocus(true)
+    }
+    // Rebound to a plain key: no Ctrl release will end it.
+    if (!ctrlDownRef.current) walkIdleTimerRef.current = setTimeout(endSidebarKeys, WALK_IDLE_MS)
+  }, [clearCtrlTimers, endSidebarKeys])
 
   // Vim mode starts in COMMAND, like vim. Not forced: of several windows
   // restored at launch only the focused one takes the keyboard.
@@ -347,26 +393,25 @@ export function useVimMode({ enabled, keymap, browseKeymap, onCommand, focusPage
     }
     const initial = modeForRendererFocus(document.activeElement)
     setMode(initial, 'enabled', initial === 'insert')
-    if (modeRef.current === 'command') claimRendererFocus(false)
+    if (initial === 'command' && document.hasFocus()) focusPageRef.current()
   }, [enabled, setMode, reset])
 
-  // Pages run BROWSE mode themselves: main hands them the mode and the keys.
-  const browseEntries = useMemo<VimKeymapEntries>(() => [...browseKeymap], [browseKeymap])
+  // Pages run COMMAND's keys themselves.
   useEffect(() => {
-    window.electronAPI.vimSetState?.({ mode, browseKeymap: browseEntries })
-  }, [mode, browseEntries])
+    keymapEntriesRef.current = [...keymap]
+    pushState()
+  }, [keymap, pushState])
 
   useEffect(() => {
     if (!enabled) return
 
     const onKeyDown = (e: KeyboardEvent): void => {
       if (modeRef.current !== 'command') return
-      // Typing into a chrome field (URL bar, rename) stays typing, and a
-      // page this renderer draws keeps its own keys.
-      if (modeForRendererFocus(e.target) !== 'command') return
+      // Typing into a chrome field (URL bar, rename) stays typing.
+      if (isEditable(e.target)) return
       if (e.metaKey || e.altKey) return
       if (e.ctrlKey) {
-        // Ctrl with a letter is a Vim key when the keymap binds it (<C-l>);
+        // Ctrl with a letter is a Vim key when the keymap binds it (<C-j>);
         // other Ctrl chords go on as they would.
         const token = keyTokenFromEvent(e)
         if (token && isCtrlToken(token) && feed(e)) {
@@ -375,36 +420,35 @@ export function useVimMode({ enabled, keymap, browseKeymap, onCommand, focusPage
         }
         return
       }
-      // COMMAND mode owns every plain key — an unbound one must not reach a
-      // focused toolbar button (Enter/Space) or move focus (Tab) either.
-      // Capture phase on window, so App's global Escape handler and any row
-      // handlers never see it.
+      // A page this renderer draws keeps its own plain keys.
+      if (isInternalPage(e.target)) return
+      // COMMAND mode owns every plain key in the chrome — an unbound one
+      // must not reach a focused toolbar button (Enter/Space) or move focus
+      // (Tab) either. Capture phase on window, so App's global Escape
+      // handler and any row handlers never see it.
       e.preventDefault()
       e.stopPropagation()
       feed(e)
     }
 
-    // A click into the chrome (or the window coming back with the chrome
-    // focused) is COMMAND; a text field taking focus is INSERT.
+    // A text field taking focus is INSERT; the chrome taking it otherwise
+    // (a click on it, the window coming back) is COMMAND, here in the
+    // chrome — not handed on to the page, which would take it from under a
+    // double-click that opens a rename box.
     const syncWithFocus = (): void => {
       if (!document.hasFocus()) return
       const next = modeForRendererFocus(document.activeElement)
-      if (next === 'command' && Date.now() < returnToPageUntil && modeRef.current === 'browse') {
-        focusPageRef.current()
-        return
-      }
       setMode(next, 'renderer focus', next === 'insert')
     }
     const onWindowFocus = (): void => { setTimeout(syncWithFocus, 0) }
     const onFocusIn = (e: FocusEvent): void => {
-      const next = modeForRendererFocus(e.target)
-      if (next !== 'command') setMode(next, 'field focus', next === 'insert')
+      if (isEditable(e.target)) setMode('insert', 'field focus', true)
       else syncWithFocus()
     }
     // Leaving a text field for nothing (Esc, Enter in a rename) is COMMAND;
     // leaving it for the page is the page's focus event's to decide.
     const onFocusOut = (e: FocusEvent): void => {
-      if (modeForRendererFocus(e.target) === 'command' || e.relatedTarget) return
+      if (!isEditable(e.target) || e.relatedTarget) return
       setTimeout(syncWithFocus, 0)
     }
 
@@ -416,32 +460,35 @@ export function useVimMode({ enabled, keymap, browseKeymap, onCommand, focusPage
           // A click into the page. A field it lands in makes the page
           // report INSERT right after.
           reset()
-          setMode('browse', 'page click')
+          setMode('command', 'page click')
           return
         }
-        // The page took focus on its own — a reload, a load finishing, the
-        // OS handing it back after a popup. COMMAND keeps the keyboard;
-        // from a chrome field the keys did move to the page, which is BROWSE.
-        if (modeRef.current === 'command') {
-          claimRendererFocus(false)
-        } else if (modeRef.current === 'insert' && insertInChromeRef.current) {
-          setMode('browse', 'page focus')
-        }
-      } else if (evt.type === 'vim' && (evt.mode === 'browse' || evt.mode === 'insert')) {
+        // The page took focus on its own — a reload, a load finishing. While
+        // Ctrl walks the tabs the chrome keeps the keyboard; from a chrome
+        // field the keys did move to the page, which is COMMAND.
+        if (walkingTabs) claimRendererFocus(false)
+        else if (modeRef.current === 'insert' && insertInChromeRef.current) setMode('command', 'page focus')
+      } else if (evt.type === 'vim' && (evt.mode === 'command' || evt.mode === 'insert')) {
         // The page moved itself along: i, a field focused or left, Esc.
-        if (modeRef.current !== 'command') setMode(evt.mode, `page: ${evt.why ?? ''}`)
+        if (!walkingTabs) setMode(evt.mode, `page: ${evt.why ?? ''}`)
       } else if (evt.type === 'vim-command') {
-        if (evt.command && PAGE_COMMANDS.has(evt.command)) onCommandRef.current(evt.command)
-      } else if (evt.type === 'vim-help') {
-        onHelpRef.current()
-      } else if (evt.type === 'unhandled-escape') {
-        if (modeRef.current !== 'browse') return
-        if (ignoreEscapeRef.current()) {
-          log.event('vim:page-escape ignored (fullscreen)')
-          return
-        }
-        enterCommand(true)
+        if (evt.command) onCommandRef.current(evt.command)
       }
+    })
+
+    // Ctrl pressed or let go anywhere in the window — the page or the
+    // chrome (main sees both) — or the window losing it.
+    const cleanupCtrl = window.electronAPI.onVimCtrl?.((down) => {
+      ctrlDownRef.current = down
+      if (!down) {
+        endSidebarKeys()
+        return
+      }
+      if (modeRef.current !== 'command' || ctrlTimerRef.current) return
+      ctrlTimerRef.current = setTimeout(() => {
+        ctrlTimerRef.current = null
+        if (ctrlDownRef.current && modeRef.current === 'command') setSidebarKeys(true)
+      }, CTRL_HOLD_MS)
     })
 
     window.addEventListener('keydown', onKeyDown, true)
@@ -450,12 +497,14 @@ export function useVimMode({ enabled, keymap, browseKeymap, onCommand, focusPage
     document.addEventListener('focusout', onFocusOut)
     return () => {
       cleanupTabEvents?.()
+      cleanupCtrl?.()
+      endSidebarKeys()
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('focus', onWindowFocus)
       document.removeEventListener('focusin', onFocusIn)
       document.removeEventListener('focusout', onFocusOut)
     }
-  }, [enabled, feed, reset, setMode, enterCommand])
+  }, [enabled, feed, reset, setMode, endSidebarKeys])
 
-  return { mode, pending, enterCommand, enterBrowse, enterInsert, returnToPage }
+  return { mode, pending, sidebarKeys, enterCommand, enterInsert, startTabWalk, returnToPage }
 }

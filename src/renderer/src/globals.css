@@ -53,14 +53,12 @@
   --color-input: oklch(0.30 0 0);
   --color-ring: oklch(0.72 0.12 240);
   --color-toolbar: oklch(0.20 0 0);
-  /* Vim mode's colours — COMMAND sky blue, BROWSE yellow, INSERT lime:
+  /* Vim mode's colours — COMMAND sky blue, INSERT lime:
    * the rim of the mode's key cap (kbd.vim-mode below), and its label in
    * the -text one — the same colour on a dark theme, a deeper shade of it
    * on a light one, where the rim's would be too pale to read. */
   --color-vim-command: oklch(0.78 0.10 230);
   --color-vim-command-text: oklch(0.78 0.10 230);
-  --color-vim-browse: oklch(0.84 0.14 90);
-  --color-vim-browse-text: oklch(0.84 0.14 90);
   --color-vim-insert: oklch(0.82 0.16 135);
   --color-vim-insert-text: oklch(0.82 0.16 135);
   --radius: 0.375rem;
@@ -105,8 +103,6 @@
   --color-toolbar: oklch(0.976 0 0);
   --color-vim-command: oklch(0.62 0.12 235);
   --color-vim-command-text: oklch(0.48 0.12 235);
-  --color-vim-browse: oklch(0.78 0.15 85);
-  --color-vim-browse-text: oklch(0.50 0.11 80);
   --color-vim-insert: oklch(0.66 0.16 140);
   --color-vim-insert-text: oklch(0.48 0.15 140);
 }
@@ -141,8 +137,6 @@
     --color-toolbar: oklch(0.976 0 0);
     --color-vim-command: oklch(0.62 0.12 235);
     --color-vim-command-text: oklch(0.48 0.12 235);
-    --color-vim-browse: oklch(0.78 0.15 85);
-    --color-vim-browse-text: oklch(0.50 0.11 80);
     --color-vim-insert: oklch(0.66 0.16 140);
     --color-vim-insert-text: oklch(0.48 0.15 140);
   }
@@ -482,7 +476,6 @@ kbd.vim-mode {
   letter-spacing: 0.04em;
 }
 kbd.vim-mode[data-mode="command"] { --vim-c: var(--color-vim-command); --vim-t: var(--color-vim-command-text); }
-kbd.vim-mode[data-mode="browse"] { --vim-c: var(--color-vim-browse); --vim-t: var(--color-vim-browse-text); }
 kbd.vim-mode[data-mode="insert"] { --vim-c: var(--color-vim-insert); --vim-t: var(--color-vim-insert-text); }
 kbd.vim-mode[data-indicator="rim-label"] { border-color: var(--vim-c); color: var(--vim-t); }
 kbd.vim-mode[data-indicator="rim"] { border-color: var(--vim-c); }

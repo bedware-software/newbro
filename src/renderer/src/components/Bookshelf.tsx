@@ -2,10 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAppStore } from '../store/app-store'
 import { TabFavicon } from './TabFavicon'
 import { InlineRenameInput } from './InlineRenameInput'
-import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
-import { useVimPanel } from '../lib/vim-mode'
-import type { PanelCommand, VimKeymap } from '../lib/vim-keymap'
-import { PanelHintBar } from './KeyHints'
+import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 import { MoveBookshelfDialog, type BookshelfMoveTarget } from './MoveBookshelfDialog'
 import {
   BookOpen, ChevronRight, ChevronDown, Download, Loader2, WifiOff,
@@ -33,12 +30,6 @@ function contextMenuPoint(e: React.MouseEvent): MenuPoint {
   e.stopPropagation()
   return { x: e.clientX, y: e.clientY }
 }
-
-/** Rows vim mode steps through, in display order. */
-type ShelfRow =
-  | { kind: 'reading'; id: string; reading: Reading }
-  | { kind: 'group'; id: string; group: ReadingGroup }
-  | { kind: 'archive'; id: string }
 
 const ARCHIVE_ROW_ID = '__archive__'
 /** Container key of the To Read list's ungrouped readings. Group containers
@@ -98,13 +89,6 @@ interface Props {
   /** The profile this window belongs to — its shelf is the one we show. */
   profileId: string | null
   onClose: () => void
-  /** Vim's COMMAND mode with the cursor in this panel: a block cursor on
-   *  one row, driven by the keymap's cursor commands. */
-  vimActive: boolean
-  /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
-  vimKeymap: VimKeymap | null
-  /** Go into the active tab's page (BROWSE mode). */
-  onVimEnterPage: () => void
 }
 
 const MIN_WIDTH = 180
@@ -118,7 +102,7 @@ function loadWidth(): number {
   return Number.isFinite(parsed) ? Math.max(MIN_WIDTH, parsed) : DEFAULT_WIDTH
 }
 
-export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVimEnterPage }: Props) {
+export function Bookshelf({ open, profileId, onClose }: Props) {
   const [readings, setReadings] = useState<Reading[]>([])
   const [groups, setGroups] = useState<ReadingGroup[]>([])
   const [archiveCollapsed, setArchiveCollapsed] = useState(true)
@@ -331,46 +315,8 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
     if (profileId) window.electronAPI.bookshelfRemoveGroup?.(profileId, id, true)
   }, [profileId])
 
-  // ── vim mode ──
-  // The shelf has no "active" row, so the cursor is its own state. It stays
-  // where it was between visits and falls back to the first row when that
-  // row is gone.
-  const [vimCursorId, setVimCursorId] = useState<string | null>(null)
-  const listVimRows = (): ShelfRow[] => {
-    const rows: ShelfRow[] = []
-    for (const r of readings) if (r.status === 'toread' && !r.groupId) rows.push({ kind: 'reading', id: r.id, reading: r })
-    for (const g of groups) {
-      rows.push({ kind: 'group', id: g.id, group: g })
-      if (g.isCollapsed) continue
-      for (const r of readings) if (r.status === 'toread' && r.groupId === g.id) rows.push({ kind: 'reading', id: r.id, reading: r })
-    }
-    if (readings.some((r) => r.status === 'archived')) {
-      rows.push({ kind: 'archive', id: ARCHIVE_ROW_ID })
-      if (!archiveCollapsed) for (const r of readings) if (r.status === 'archived') rows.push({ kind: 'reading', id: r.id, reading: r })
-    }
-    return rows
-  }
-  const vimRows = listVimRows()
-  const vimCursor = vimRows.find((row) => row.id === vimCursorId) ?? vimRows[0] ?? null
-  const { runMenu } = useVimPanel('bookshelf', open && vimActive, (cmd) => handleVimCommand(cmd))
-  const findVimRow = (id: string): Element | null =>
-    listRef.current?.querySelector(`[data-vim-row="${CSS.escape(id)}"]`) ?? null
-  // Also on shelf changes, so a row J/K carried out of view is followed.
-  useEffect(() => {
-    if (!open || !vimActive || !vimCursor) return
-    findVimRow(vimCursor.id)?.scrollIntoView({ block: 'nearest' })
-  }, [open, vimActive, vimCursor?.id, readings, groups])
-
-  /** Opens a shelf menu. One opened from COMMAND mode (m) takes the keyboard:
-   *  its first action starts highlighted and hjkl move around it. */
-  const showMenu = useCallback((spec: Omit<DropdownSpec, 'openerId'>, keyboard: boolean) =>
-    keyboard
-      ? runMenu(() => openDropdownAsync({ ...spec, keyboard: true }))
-      : openDropdownAsync(spec),
-  [runMenu])
-
   // ── right-click context menus (reuse the sidebar's dropdown popup) ──
-  const openGroupMenu = useCallback(async (g: ReadingGroup, at: MenuPoint, keyboard = false) => {
+  const openGroupMenu = useCallback(async (g: ReadingGroup, at: MenuPoint) => {
     if (!profileId) return
     const count = readings.filter((r) => r.status === 'toread' && r.groupId === g.id).length
     const actions: DropdownAction[] = [
@@ -386,13 +332,13 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
         destructive: true,
       },
     ]
-    const result = await showMenu({
+    const result = await openDropdownAsync({
       kind: 'menu',
       position: at,
       ...readThemeAttrs(),
       header: g.name,
       actions,
-    }, keyboard)
+    })
     if (!result || result.type !== 'action') return
     if (result.actionId === 'rename') { setEditingGroupId(g.id); setGroupEditValue(g.name) }
     else if (result.actionId === 'collapse') toggleGroup(g)
@@ -401,9 +347,9 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
     else if (result.actionId === 'duplicate-group') duplicate([g.id], false)
     else if (result.actionId === 'ungroup') ungroup(g.id)
     else if (result.actionId === 'delete') deleteGroup(g.id)
-  }, [profileId, readings, showMenu, toggleGroup, duplicate, ungroup, deleteGroup])
+  }, [profileId, readings, toggleGroup, duplicate, ungroup, deleteGroup])
 
-  const openReadingMenu = useCallback(async (r: Reading, at: MenuPoint, keyboard = false) => {
+  const openReadingMenu = useCallback(async (r: Reading, at: MenuPoint) => {
     if (!profileId) return
     // Right-clicking one of the multi-selected readings acts on the whole
     // selection (same as the sidebar's tab context menu).
@@ -446,13 +392,13 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
       divider: useSelection ? 'before' : undefined,
     })
 
-    const result = await showMenu({
+    const result = await openDropdownAsync({
       kind: 'menu',
       position: at,
       ...readThemeAttrs(),
       header: useSelection ? `${targets.length} readings` : r.title,
       actions,
-    }, keyboard)
+    })
     if (!result || result.type !== 'action') return
     switch (result.actionId) {
       case 'open': openReading(r, false); break
@@ -470,125 +416,7 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
         setSelectedIds(new Set())
         break
     }
-  }, [profileId, selectedIds, showMenu, openReading, saveOffline, duplicate, setStatus, remove, groupReadings])
-
-  const handleVimCommand = (cmd: PanelCommand): void => {
-    const at = vimCursor ? vimRows.indexOf(vimCursor) : -1
-    const moveTo = (index: number): void => {
-      const row = vimRows[Math.max(0, Math.min(vimRows.length - 1, index))]
-      if (row) setVimCursorId(row.id)
-    }
-    // The header a reading row sits under, if it's in a group or the archive.
-    const headerOf = (r: Reading): ShelfRow | undefined =>
-      r.status === 'archived'
-        ? vimRows.find((row) => row.kind === 'archive')
-        : vimRows.find((row) => row.kind === 'group' && row.id === r.groupId)
-    const setHeaderCollapsed = (header: ShelfRow, collapsed: boolean): void => {
-      if (header.kind === 'group') {
-        if (header.group.isCollapsed !== collapsed) toggleGroup(header.group)
-      } else if (header.kind === 'archive') {
-        setArchiveCollapsed(collapsed)
-      }
-    }
-    // J/K carry the row under the cursor one visible row down/up, the way the
-    // sidebar does: a group swaps with its neighbour, a reading steps through
-    // its list and on into the next or previous group (expanding it). The
-    // archive is a status rather than a place, so readings neither step into
-    // it nor out of it.
-    const moveRow = (dir: 1 | -1): void => {
-      if (!profileId || !vimCursor || vimCursor.kind === 'archive') return
-      // Pin the cursor to what's moving — unpinned, it sits on the first row.
-      setVimCursorId(vimCursor.id)
-      if (vimCursor.kind === 'group') {
-        const i = groups.findIndex((g) => g.id === vimCursor.id)
-        if (!groups[i + dir]) return
-        const before = dir === 1 ? groups[i + 2] : groups[i - 1]
-        window.electronAPI.bookshelfPlaceGroup?.(profileId, vimCursor.id, before?.id ?? null).then(applyShelf)
-        return
-      }
-      const r = vimCursor.reading
-      const container = r.status === 'archived' ? ARCHIVE_ROW_ID : r.groupId ?? UNGROUPED
-      const list = containerReadings(container)
-      const i = list.findIndex((x) => x.id === r.id)
-      let target = container
-      let beforeId: string | null
-      if (list[i + dir]) {
-        beforeId = dir === 1 ? list[i + 2]?.id ?? null : list[i - 1].id
-      } else {
-        if (container === ARCHIVE_ROW_ID) return
-        const order = [UNGROUPED, ...groups.map((g) => g.id)]
-        const next = order[order.indexOf(container) + dir]
-        if (!next) return
-        // Down lands first in the next list, up lands last in the previous one.
-        target = next
-        beforeId = dir === 1 ? containerReadings(next)[0]?.id ?? null : null
-      }
-      window.electronAPI.bookshelfPlaceReadings?.(profileId, [r.id], placeTarget(target), beforeId).then(applyShelf)
-    }
-    switch (cmd) {
-      // Readings open as new tabs, so walking the shelf only moves the
-      // cursor — Ctrl+J/K included.
-      case 'cursor-down':
-      case 'cursor-down-show': moveTo(at + 1); break
-      case 'cursor-up':
-      case 'cursor-up-show': moveTo(at - 1); break
-      case 'row-move-down': moveRow(1); break
-      case 'row-move-up': moveRow(-1); break
-      case 'cursor-first': moveTo(0); break
-      case 'cursor-last': moveTo(vimRows.length - 1); break
-      case 'row-collapse': {
-        if (!vimCursor) break
-        // On a reading inside a group (or the archive), h climbs to the header and folds it.
-        const header = vimCursor.kind === 'reading' ? headerOf(vimCursor.reading) : vimCursor
-        if (!header) break
-        setHeaderCollapsed(header, true)
-        setVimCursorId(header.id)
-        break
-      }
-      case 'row-expand':
-        if (vimCursor && vimCursor.kind !== 'reading') setHeaderCollapsed(vimCursor, false)
-        break
-      case 'row-close':
-        if (!vimCursor) break
-        if (vimCursor.kind === 'reading') {
-          // The cursor takes the next row, as vim's x leaves it on what follows.
-          const next = vimRows[at + 1] ?? vimRows[at - 1]
-          setVimCursorId(next?.id ?? null)
-          remove(vimCursor.id)
-        } else if (vimCursor.kind === 'group') {
-          // Removes the group but keeps its readings — nothing is lost to a stray x.
-          ungroup(vimCursor.id)
-        }
-        break
-      case 'row-menu': {
-        if (!vimCursor || vimCursor.kind === 'archive') break
-        const row = findVimRow(vimCursor.id)
-        if (!row) break
-        // Just under the row, past the cursor block and the favicon column.
-        const rect = row.getBoundingClientRect()
-        const point = { x: rect.left + 24, y: rect.bottom }
-        if (vimCursor.kind === 'group') void openGroupMenu(vimCursor.group, point, true)
-        else void openReadingMenu(vimCursor.reading, point, true)
-        break
-      }
-      case 'row-show':
-        // The reading opens in a tab that shows; the keys stay here.
-        if (vimCursor?.kind === 'reading') openReading(vimCursor.reading, false)
-        break
-      case 'row-open':
-        if (!vimCursor) break
-        if (vimCursor.kind === 'reading') {
-          // Into the new tab's page: it's the active tab by now, and with
-          // BROWSE set before it's created, it takes the keyboard.
-          openReading(vimCursor.reading, false)
-          onVimEnterPage()
-        } else {
-          // Same as clicking a header: fold or unfold it.
-          setHeaderCollapsed(vimCursor, vimCursor.kind === 'group' ? !vimCursor.group.isCollapsed : !archiveCollapsed)
-        }
-        break
-    }
-  }
+  }, [profileId, selectedIds, openReading, saveOffline, duplicate, setStatus, remove, groupReadings])
 
   // ── drag handlers ──
   /** A container's readings in display order. */
@@ -738,7 +566,6 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
       <div
         key={r.id}
         data-sidebar-row=""
-        data-vim-row={r.id}
         data-drop-reading={r.id}
         data-drop-container={isArchived ? ARCHIVE_ROW_ID : r.groupId ?? UNGROUPED}
         className={`relative flex items-center gap-1 px-1 py-1 cursor-pointer group/row transition-colors ${
@@ -756,7 +583,6 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
         onContextMenu={(e) => openReadingMenu(r, contextMenuPoint(e))}
       >
         {drop?.type === 'reading' && !drop.into && drop.beforeId === r.id && <DropLine />}
-        {vimActive && vimCursor?.id === r.id && <span data-vim-cursor="" aria-hidden />}
         <TabFavicon favicon={r.favicon} />
         <span className="flex-1 text-xs truncate">{r.title}</span>
         {/* Action overlay floated at the right edge so it never changes the
@@ -812,7 +638,6 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
         <div
           data-sidebar-row=""
           data-sidebar-group-row=""
-          data-vim-row={g.id}
           data-drop-into={g.id}
           {...(!g.isCollapsed && items.length > 0 ? { 'data-group-expanded': '' } : {})}
           className={`group/gh relative flex items-center gap-1 px-1 py-1 cursor-pointer ${
@@ -822,7 +647,6 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
           onClick={() => { if (!suppressClick.current && editingGroupId !== g.id) toggleGroup(g) }}
           onContextMenu={(e) => openGroupMenu(g, contextMenuPoint(e))}
         >
-          {vimActive && vimCursor?.id === g.id && <span data-vim-cursor="" aria-hidden />}
           <span
             data-group-badge=""
             className="shrink-0 w-4 h-4 inline-flex items-center justify-center rounded text-[10px] font-semibold tabular-nums leading-none"
@@ -940,7 +764,6 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
         {archived.length > 0 && (
           <div className="mt-2">
             <button
-              data-vim-row={ARCHIVE_ROW_ID}
               data-drop-into={ARCHIVE_ROW_ID}
               onClick={() => setArchiveCollapsed((v) => !v)}
               className={`relative w-full flex items-center gap-1 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider ${
@@ -949,7 +772,6 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
                   : 'text-muted-foreground/80 hover:text-foreground'
               }`}
             >
-              {vimActive && vimCursor?.id === ARCHIVE_ROW_ID && <span data-vim-cursor="" aria-hidden />}
               {archiveCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
               Archive · {archived.length}
             </button>
@@ -959,7 +781,6 @@ export function Bookshelf({ open, profileId, onClose, vimActive, vimKeymap, onVi
         )}
       </div>
 
-      {vimKeymap && <PanelHintBar panel="bookshelf" keymap={vimKeymap} active={vimActive} />}
 
       <div
         className="absolute top-0 left-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"

@@ -52,21 +52,17 @@ export function HintBar({ children, wrap = false, className }: BarProps) {
   )
 }
 
-/** The Sidebar's and the Bookshelf's keys, at the bottom of the panel —
- *  wrapping, since a panel is narrow. Faded while the COMMAND cursor is
- *  elsewhere (another panel, or the keys are in the page). */
-export function PanelHintBar({ panel, keymap, active }: { panel: 'sidebar' | 'bookshelf'; keymap: VimKeymap; active: boolean }) {
+/** The Sidebar's keys, at the bottom of it — wrapping, since it's narrow.
+ *  Faded until Ctrl is held, which brings them to life. */
+export function SidebarHintBar({ keymap, active }: { keymap: VimKeymap; active: boolean }) {
   const caps = (...commands: string[]): string[] => vimKeyCaps(keymap, ...commands)
   return (
     <HintBar wrap className={cn('px-2 transition-opacity', !active && 'opacity-50')}>
-      <Hint label="Navigate" keys={caps('cursor-down', 'cursor-up')} />
-      <Hint label="Open" keys={caps('row-open')} />
-      <Hint label="Show" keys={caps('row-show')} />
-      {panel === 'sidebar' && <Hint label="Switch" keys={caps('cursor-down-show', 'cursor-up-show')} />}
+      <Hint label="Switch" keys={caps('cursor-down-show', 'cursor-up-show')} />
       <Hint label="Move" keys={caps('row-move-down', 'row-move-up')} />
-      <Hint label={panel === 'sidebar' ? 'Close' : 'Remove'} keys={caps('row-close')} />
+      <Hint label="Fold" keys={caps('row-fold')} />
       <Hint label="Menu" keys={caps('row-menu')} />
-      {!active && <Hint label="Cursor here" keys={caps(panel === 'sidebar' ? 'focus-sidebar' : 'focus-bookshelf')} />}
+      <Hint label="Close" keys={caps('close-tab')} />
     </HintBar>
   )
 }

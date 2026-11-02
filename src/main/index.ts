@@ -1273,6 +1273,12 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
   }
 
   source.on('before-input-event', (event, input) => {
+    // Vim mode: Ctrl pressed and let go anywhere in the window — the page or
+    // the chrome. Held in COMMAND it brings up the Sidebar's keys (renderer
+    // lib/vim-mode.ts), which the release ends.
+    if (input.key === 'Control' && !input.isAutoRepeat && loadSettings().vimMode && !targetWindow.isDestroyed()) {
+      targetWindow.webContents.send('vim-ctrl', input.type !== 'keyUp')
+    }
     if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return
 
     const key = keyTokenFromInput(input)
@@ -1280,9 +1286,9 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
 
     const settings = loadSettings()
 
-    // Vim mode replaces the regular shortcuts: its keys live in the window
-    // renderer (COMMAND) and the pages (BROWSE). Ctrl+[ — vim's other Esc —
-    // jumps to COMMAND from anywhere, even a page that keeps Esc to itself.
+    // Vim mode replaces the regular shortcuts: its COMMAND keys live in the
+    // pages and the window renderer. Ctrl+[ — vim's other Esc — leaves
+    // INSERT from anywhere, even a page that keeps Esc to itself.
     if (settings.vimMode) {
       if (input.control && !input.meta && !input.alt && !input.shift && input.code === 'BracketLeft') {
         event.preventDefault()
@@ -3255,6 +3261,10 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
     saveLastUsedWorkspace(workspaceProfiles.get(workspaceId) ?? '', workspaceId)
   })
   installShortcutInterceptor(win.webContents, win)
+  // A Ctrl let go in another window or app never reaches us.
+  win.on('blur', () => {
+    if (!win.isDestroyed()) win.webContents.send('vim-ctrl', false)
+  })
 
   // Route the mouse side buttons (XButton1/XButton2 on Windows, matching
   // swipe gestures on macOS) to the renderer's existing back/forward shortcut

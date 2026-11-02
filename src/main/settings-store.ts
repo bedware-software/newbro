@@ -1,5 +1,5 @@
 import Store from 'electron-store'
-import { migrateVimKeymapV1 } from '../shared/vim-default-keymap'
+import { migrateVimKeymap as migrateVimKeymapText } from '../shared/vim-default-keymap'
 import { PERMISSION_KINDS, type PermissionKind, type PermissionPolicy } from './permissions-store'
 
 export interface Settings {
@@ -18,11 +18,14 @@ export interface Settings {
    *  because their job is to advertise the shortcut at a glance. */
   showTabNumbers: boolean
   /** Vim mode: windows switch between COMMAND mode (plain keys run the
-   *  commands in {@link vimKeymap}), BROWSE mode (the page, driven by its
-   *  browse-* keys) and INSERT mode (keys go to the page or the field being
-   *  typed in) — renderer lib/vim-mode.ts. Turns the regular
-   *  {@link keybindings} off, menu accelerators included. */
+   *  commands in {@link vimKeymap} — scrolling the page, tabs, app commands)
+   *  and INSERT mode (keys go to the page or the field being typed in) —
+   *  renderer lib/vim-mode.ts. Turns the regular {@link keybindings} off,
+   *  menu accelerators included. */
   vimMode: boolean
+  /** With Vim mode on: the Sidebar stays hidden and shows over the page
+   *  while Ctrl is held in COMMAND mode (renderer SidebarPeek.tsx). */
+  sidebarAutoHide: boolean
   /** How Vim's mode key cap shows the mode's colour (renderer
    *  lib/vim-indicator.ts): 'rim-label', 'rim', 'label', 'tint', 'base',
    *  'dot' or 'plain'. */
@@ -218,6 +221,7 @@ export const DEFAULT_SETTINGS: Settings = {
   newTabFocus: 'site',
   showTabNumbers: true,
   vimMode: false,
+  sidebarAutoHide: false,
   vimIndicator: 'rim-label',
   vimKeymap: null,
   defaultPageUrl: '',
@@ -396,22 +400,25 @@ function migrateNewKeybindingDefaults(): void {
 }
 
 /**
- * Vim mode's keymap v2 (WEB mode became BROWSE, some COMMAND keys moved —
- * see src/shared/vim-default-keymap.ts): a keymap saved under v1 keeps what
- * its owner changed and takes the new defaults for everything else. Once.
+ * Vim mode's keymap v3 (BROWSE folded into COMMAND, the Sidebar's cursor on
+ * Ctrl chords — see src/shared/vim-default-keymap.ts): a keymap saved under
+ * v1 or v2 keeps what its owner changed and takes the new defaults for
+ * everything else. Once.
  */
 function migrateVimKeymap(): void {
   const raw = store as unknown as { get(key: string): unknown; set(key: string, value: unknown): void }
-  const marker = 'vim-keymap-v2'
+  const marker = 'vim-keymap-v3'
   const migratedList = raw.get('migratedKeybindingDefaults')
   const migrated = new Set(Array.isArray(migratedList) ? (migratedList as string[]) : [])
   if (migrated.has(marker)) return
 
   const saved = store.get('settings')
   if (saved && typeof saved.vimKeymap === 'string') {
-    store.set('settings', { ...saved, vimKeymap: migrateVimKeymapV1(saved.vimKeymap) })
+    const from = migrated.has('vim-keymap-v2') ? 2 : 1
+    store.set('settings', { ...saved, vimKeymap: migrateVimKeymapText(saved.vimKeymap, from) })
   }
 
+  migrated.add('vim-keymap-v2')
   migrated.add(marker)
   raw.set('migratedKeybindingDefaults', [...migrated])
 }
@@ -451,6 +458,7 @@ export function loadSettings(): Settings {
       ? (saved!.newTabFocus as 'site' | 'url')
       : DEFAULT_SETTINGS.newTabFocus,
     vimMode: saved?.vimMode === true,
+    sidebarAutoHide: saved?.sidebarAutoHide === true,
     vimIndicator: KNOWN_VIM_INDICATORS.has(saved?.vimIndicator as string)
       ? (saved!.vimIndicator as string)
       : DEFAULT_SETTINGS.vimIndicator,
@@ -498,6 +506,7 @@ export function saveSettings(settings: Settings): void {
       ? settings.newTabFocus
       : DEFAULT_SETTINGS.newTabFocus,
     vimMode: settings.vimMode === true,
+    sidebarAutoHide: settings.sidebarAutoHide === true,
     vimIndicator: KNOWN_VIM_INDICATORS.has(settings.vimIndicator)
       ? settings.vimIndicator
       : DEFAULT_SETTINGS.vimIndicator,

@@ -8,46 +8,45 @@ export const DEFAULT_VIM_KEYMAP = `" Vim mode keys.
 " keys is unbound. Lines starting with " are comments.
 "
 " Keys: a typed character (Shift is the capital: J is Shift+J), a sequence
-" (gg), Ctrl with a letter (<C-l>), or a named key: <CR> <Esc> <Space>
-" <Tab> <S-Tab> <BS> <Del> <Up> <Down> <Left> <Right> <Home> <End>
-" <PageUp> <PageDown> <F1>…<F12>.
+" (gg), Ctrl with a letter (<C-l>, <C-S-j> with Shift), or a named key:
+" <CR> <Esc> <Space> <Tab> <S-Tab> <BS> <Del> <Up> <Down> <Left> <Right>
+" <Home> <End> <PageUp> <PageDown> <F1>…<F12>.
 " Keys go by position on the keyboard, so they work in any input language.
 "
-" Modes, top to bottom:
-"   COMMAND  the browser: tabs, panels, app commands
-"   BROWSE   the page, as Vimium drives it: scroll, history, find a field
+" Two modes:
+"   COMMAND  the page and the browser: scrolling, history, tabs, app
+"            commands. Keys not bound here reach the page.
 "   INSERT   keys go to the page or the field you type in
-" w (or <CR> on a tab) goes COMMAND → BROWSE, i goes on to INSERT. Esc
-" climbs back: INSERT → BROWSE, then (when the page has no use for it)
-" BROWSE → COMMAND. Ctrl+[ jumps to COMMAND from anywhere. Clicking the
-" page is BROWSE (a text field: INSERT), clicking the browser around it is
-" COMMAND. The regular shortcuts (⌘T, ⌘L, …) are off while Vim mode is on.
+" i (or gi, picking a text field) goes into INSERT; Esc or Ctrl+[ comes back
+" to COMMAND. Clicking a text field is INSERT, anywhere else COMMAND. The
+" regular shortcuts (⌘T, ⌘L, …) are off while Vim mode is on.
 
-" ── COMMAND: modes and panels ─────────────────────────────────────────
+" ── COMMAND: the page ─────────────────────────────────────────────────
+" focus-input outlines the page's text fields: h/j/k/l (or Tab) pick one,
+" <CR> types into it, Esc cancels.
+scroll-down         j
+scroll-up           k
+half-page-down      d
+half-page-up        u
+page-top            gg
+page-bottom         G
+back                h [
+forward             l ]
 insert-mode         i
-browse-mode         w
-focus-sidebar       s
-focus-bookshelf     b
+focus-input         gi
 help                ?
 
-" ── COMMAND: cursor in the focused panel (Sidebar or Bookshelf) ───────
-" j/k only move the cursor. <C-j>/<C-k> move it and show the tab it lands
-" on, o shows the tab under it — both stay in COMMAND. row-open makes the
-" tab under it active and goes into its page (BROWSE), or shows the group.
-cursor-down         j <Down>
-cursor-up           k <Up>
+" ── COMMAND: the Sidebar, with Ctrl held ──────────────────────────────
+" Holding Ctrl puts a cursor on the active tab's row (and shows the
+" Sidebar while it's hidden — Settings → Keyboard Shortcuts). <C-j>/<C-k>
+" step through the tabs, showing each; letting Ctrl go stays on the one
+" shown. row-fold folds the group the cursor is in, or unfolds it.
 cursor-down-show    <C-j>
 cursor-up-show      <C-k>
-cursor-first        gg
-cursor-last         G
-row-move-down       J
-row-move-up         K
-row-collapse        h
-row-expand          l
-row-menu            m
-row-close           x
-row-show            o
-row-open            <CR>
+row-move-down       <C-S-j>
+row-move-up         <C-S-k>
+row-fold            <C-h>
+row-menu            <C-m>
 
 " ── COMMAND: split view ───────────────────────────────────────────────
 " S splits the page area with a pane on the right, V with one below, and
@@ -60,7 +59,7 @@ split-close         q
 
 " ── COMMAND: app commands (the regular shortcuts' ids) ────────────────
 new-tab             t
-close-tab
+close-tab           x
 reopen-closed-tab   T
 close-window
 new-workspace       N
@@ -74,8 +73,6 @@ command-palette     :
 copy-url            y
 paste-url           p
 paste-url-new-tab   P
-back                [
-forward             ]
 reload              r
 settings            ,
 page-devtools       I
@@ -98,35 +95,13 @@ move-group
 duplicate-group
 add-to-bookshelf
 toggle-bookshelf    B
-open-downloads      d
-
-" ── BROWSE: the page ──────────────────────────────────────────────────
-" Keys not listed here go to the page. browse-focus-input outlines the
-" page's text fields: h/j/k/l (or Tab) pick one, <CR> types into it, Esc
-" cancels.
-browse-scroll-down        j
-browse-scroll-up          k
-browse-half-page-down     d
-browse-half-page-up       u
-browse-top                gg
-browse-bottom             G
-browse-back               h
-browse-forward            l
-browse-insert             i
-browse-focus-input        gi
-browse-close-tab          x
-browse-copy-url           y
-browse-paste-url          p
-browse-paste-url-new-tab  P
-browse-focus-url          <C-l>
-browse-split-focus        <C-w>
-browse-help               ?
+open-downloads      D
 
 " ── Search Everything and the Command Palette ─────────────────────────
 " Search Everything opens in COMMAND mode, the Command Palette in INSERT;
 " insert-mode (i) drops into the box and Esc comes back out. Esc in
-" COMMAND closes the window. The cursor keys above move through the
-" results, row-open runs one. The filters are Search Everything's.
+" COMMAND closes the window. The scroll keys above (j/k, gg/G) move through
+" the results, Enter runs one. The filters are Search Everything's.
 search-all          a
 search-profiles     p
 search-workspaces   w
@@ -174,14 +149,105 @@ find-next           j n
 find-prev           k N
 `
 
+// ── Contexts ──
+
+export type VimContext = 'command' | 'search' | 'find' | 'url'
+
+// COMMAND-mode commands whose names happen to start with another context's
+// prefix.
+const COMMAND_CONTEXT_EXCEPTIONS = new Set(['find-in-page'])
+
+/** Where a command works, by its name's prefix: `search-` in Search
+ *  Everything and the Command Palette, `find-` in Find in Page, `url-` in
+ *  the address editor, anything else in COMMAND mode. */
+export function contextOf(command: string): VimContext {
+  if (COMMAND_CONTEXT_EXCEPTIONS.has(command)) return 'command'
+  if (command.startsWith('search-')) return 'search'
+  if (command.startsWith('find-')) return 'find'
+  if (command.startsWith('url-')) return 'url'
+  return 'command'
+}
+
 // ── Migration ──
 //
 // v2 renamed the WEB mode BROWSE (web-* commands are browse-* now) and
-// moved some COMMAND defaults: search p → f, find-in-page f / → /,
-// focus-url o → <C-l>, command-palette P : → :, close-tab w → unbound (x
-// closes the row under the cursor; w goes into the page). A saved keymap
-// keeps every binding its owner changed and takes the new defaults for the
-// rest — including commands it couldn't know about.
+// moved some COMMAND defaults. v3 folded BROWSE into COMMAND: the page's
+// keys (browse-*) are COMMAND keys now, under plain names, and the Sidebar's
+// cursor moved onto Ctrl chords, so j/k/h/l/gg/G/x are the page's. A saved
+// keymap keeps every binding its owner changed — unless it now clashes with
+// another binding, then it takes the new default — and the new defaults for
+// the rest, including commands it couldn't know about.
+
+/** v3's name for an older command: null when v3 has no such command. */
+const RENAMED_IN_V3: Record<string, string | null> = {
+  'browse-scroll-down': 'scroll-down',
+  'browse-scroll-up': 'scroll-up',
+  'browse-half-page-down': 'half-page-down',
+  'browse-half-page-up': 'half-page-up',
+  'browse-top': 'page-top',
+  'browse-bottom': 'page-bottom',
+  'browse-back': 'back',
+  'browse-forward': 'forward',
+  'browse-insert': 'insert-mode',
+  'browse-focus-input': 'focus-input',
+  'browse-close-tab': 'close-tab',
+  'browse-copy-url': 'copy-url',
+  'browse-paste-url': 'paste-url',
+  'browse-paste-url-new-tab': 'paste-url-new-tab',
+  'browse-focus-url': 'focus-url',
+  'browse-split-focus': 'split-focus',
+  'browse-help': 'help',
+  'row-collapse': 'row-fold',
+  'row-expand': 'row-fold',
+  'browse-mode': null,
+  'focus-sidebar': null,
+  'focus-bookshelf': null,
+  'cursor-down': null,
+  'cursor-up': null,
+  'cursor-first': null,
+  'cursor-last': null,
+  'row-close': null,
+  'row-show': null,
+  'row-open': null,
+}
+
+/** The current name of a command written under an older keymap (web-*,
+ *  browse-*), or null for one that's gone. Any other name comes back as is. */
+export function renamedVimCommand(command: string): string | null {
+  const v2 = command.startsWith('web-') ? `browse-${command.slice(4)}` : command
+  return v2 in RENAMED_IN_V3 ? RENAMED_IN_V3[v2] : v2
+}
+
+/** v2 defaults of the commands v3 renamed, merged or rebound — the rest
+ *  kept their keys. */
+const V2_DEFAULT_KEYS: Record<string, string> = {
+  'browse-scroll-down': 'j',
+  'browse-scroll-up': 'k',
+  'browse-half-page-down': 'd',
+  'browse-half-page-up': 'u',
+  'browse-top': 'gg',
+  'browse-bottom': 'G',
+  'browse-back': 'h',
+  'browse-forward': 'l',
+  'browse-insert': 'i',
+  'browse-focus-input': 'gi',
+  'browse-close-tab': 'x',
+  'browse-copy-url': 'y',
+  'browse-paste-url': 'p',
+  'browse-paste-url-new-tab': 'P',
+  'browse-focus-url': '<C-l>',
+  'browse-split-focus': '<C-w>',
+  'browse-help': '?',
+  back: '[',
+  forward: ']',
+  'close-tab': '',
+  'row-move-down': 'J',
+  'row-move-up': 'K',
+  'row-collapse': 'h',
+  'row-expand': 'l',
+  'row-menu': 'm',
+  'open-downloads': 'd',
+}
 
 /** v1 defaults of the commands v2 rebound. */
 const V1_DEFAULT_KEYS: Record<string, string> = {
@@ -192,78 +258,110 @@ const V1_DEFAULT_KEYS: Record<string, string> = {
   'find-in-page': 'f /',
 }
 
-/** Commands v2 added; a v1 keymap never mentions them. */
-const NEW_IN_V2 = new Set([
-  'browse-mode',
-  'cursor-down-show',
-  'cursor-up-show',
-  'row-show',
-  'copy-url',
-  'paste-url',
-  'paste-url-new-tab',
-  'browse-close-tab',
-  'browse-copy-url',
-  'browse-paste-url',
-  'browse-paste-url-new-tab',
-  'browse-focus-url',
-  'find-next',
-  'find-prev',
-  'split-right',
-  'split-down',
-  'split-focus',
-  'split-close',
-  'browse-split-focus',
-  'edit-url',
-  'url-change',
-  'url-remove',
-  'url-copy',
-  'url-paste',
-  'url-paste-all',
-  'url-up',
-  'url-site',
-  'url-copy-title',
-  'url-clear',
-  'url-append',
-  'url-insert-start',
-  'url-insert',
-  'url-undo',
-  'url-go',
+/** Commands v3 added under new names; no older keymap mentions them. */
+const NEW_IN_V3 = new Set([
+  'scroll-down', 'scroll-up', 'half-page-down', 'half-page-up', 'page-top', 'page-bottom',
+  'focus-input', 'row-fold',
 ])
 
-/** The v1 name of a command, read as v2's. */
-export function renamedVimCommand(command: string): string {
-  return command.startsWith('web-') ? `browse-${command.slice(4)}` : command
-}
+/** Commands v2 added; a v1 keymap never mentions them. */
+const NEW_IN_V2 = new Set([
+  'browse-mode', 'cursor-down-show', 'cursor-up-show', 'row-show', 'copy-url', 'paste-url',
+  'paste-url-new-tab', 'browse-close-tab', 'browse-copy-url', 'browse-paste-url',
+  'browse-paste-url-new-tab', 'browse-focus-url', 'find-next', 'find-prev', 'split-right',
+  'split-down', 'split-focus', 'split-close', 'browse-split-focus', 'edit-url', 'url-change',
+  'url-remove', 'url-copy', 'url-paste', 'url-paste-all', 'url-up', 'url-site', 'url-copy-title',
+  'url-clear', 'url-append', 'url-insert-start', 'url-insert', 'url-undo', 'url-go',
+])
 
 function isBindingLine(trimmed: string): boolean {
   return trimmed !== '' && !trimmed.startsWith('"') && !trimmed.startsWith('#')
 }
 
+/** Splits written keys into tokens, enough to tell clashes apart: `<C-j>`
+ *  is one, `gg` two. */
+function keyTokens(written: string): string[] {
+  return (written.match(/<[^<>\s]+>|./gu) ?? []).map((t) => (t.length > 1 ? t.toLowerCase() : t))
+}
+
+/** Whether one sequence is the other or starts it (`g` before `gg`). */
+function sequencesClash(a: string, b: string): boolean {
+  const x = keyTokens(a)
+  const y = keyTokens(b)
+  const n = Math.min(x.length, y.length)
+  return n > 0 && x.slice(0, n).every((t, i) => t === y[i])
+}
+
 /**
- * Carries a keymap saved under v1's defaults over to v2's: the v2 default
- * text, with each binding the owner changed (or removed) as they had it.
- * Null when that comes out as the plain default — nothing to keep.
+ * Carries a keymap saved under older defaults (v1 or v2) over to v3's: the
+ * v3 default text, with each binding the owner changed (or removed) as they
+ * had it. Null when that comes out as the plain default — nothing to keep.
  */
-export function migrateVimKeymapV1(saved: string): string | null {
+export function migrateVimKeymap(saved: string, fromVersion: 1 | 2): string | null {
+  // What the owner had, by the old name.
   const mine = new Map<string, string>()
   for (const line of saved.split('\n')) {
     const trimmed = line.trim()
     if (!isBindingLine(trimmed)) continue
-    const [command, ...keys] = trimmed.split(/\s+/)
-    mine.set(renamedVimCommand(command), keys.join(' '))
+    const [written, ...keys] = trimmed.split(/\s+/)
+    const v2 = written.startsWith('web-') ? `browse-${written.slice(4)}` : written
+    mine.set(v2, keys.join(' '))
   }
-  const migrated = DEFAULT_VIM_KEYMAP.split('\n').map((line) => {
+  const oldDefault = (command: string, fallback: string): string =>
+    (fromVersion === 1 ? V1_DEFAULT_KEYS[command] : undefined) ?? V2_DEFAULT_KEYS[command] ?? fallback
+  // Whether the saved keymap's version had the command: one it lacks isn't
+  // missing because its owner unbound it.
+  const existed = (command: string): boolean =>
+    !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))
+  // The old commands that make up each v3 one: itself, and what was renamed
+  // or merged into it.
+  const sourcesOf = (command: string): string[] => [
+    command,
+    ...Object.keys(RENAMED_IN_V3).filter((old) => RENAMED_IN_V3[old] === command),
+  ].filter(existed)
+
+  const lines = DEFAULT_VIM_KEYMAP.split('\n')
+  // command → [line index, keys] for every binding line, as it stands.
+  const bindings = new Map<string, { index: number; keys: string[] }>()
+  const changed: string[] = []
+  lines.forEach((line, index) => {
     const trimmed = line.trim()
-    if (!isBindingLine(trimmed)) return line
+    if (!isBindingLine(trimmed)) return
     const [command, ...defaults] = trimmed.split(/\s+/)
-    if (NEW_IN_V2.has(command)) return line
-    // A line the owner deleted is a command they unbound.
-    const keys = mine.get(command) ?? ''
-    const untouched = V1_DEFAULT_KEYS[command] ?? defaults.join(' ')
-    if (keys === untouched) return line
-    if (!keys) return command
+    bindings.set(command, { index, keys: defaults })
+    // The owner's keys over all of its sources, against those sources' old
+    // defaults: equal is untouched.
+    let touched = false
+    const ownKeys: string[] = []
+    for (const source of sourcesOf(command)) {
+      const before = oldDefault(source, defaults.join(' '))
+      // A line the owner deleted is a command they unbound.
+      const theirs = mine.get(source) ?? ''
+      if (theirs !== before) touched = true
+      for (const key of theirs.split(' ')) if (key && !ownKeys.includes(key)) ownKeys.push(key)
+    }
+    if (!touched) return
+    bindings.set(command, { index, keys: ownKeys })
+    changed.push(command)
+  })
+
+  // An owner's binding that clashes with another in its context goes back
+  // to the default.
+  for (const command of changed) {
+    const own = bindings.get(command)!
+    const clashes = own.keys.some((key) => [...bindings].some(([other, b]) =>
+      other !== command && contextOf(other) === contextOf(command) && b.keys.some((k) => sequencesClash(key, k))))
+    if (!clashes) continue
+    const line = lines[own.index].trim().split(/\s+/)
+    own.keys = line.slice(1)
+  }
+
+  for (const command of changed) {
+    const { index, keys } = bindings.get(command)!
+    const line = lines[index]
     const column = /^\S+\s+/.exec(line)?.[0] ?? `${command.padEnd(19)} `
-    return column + keys
-  }).join('\n')
+    lines[index] = keys.length > 0 ? column + keys.join(' ') : command
+  }
+  const migrated = lines.join('\n')
   return migrated === DEFAULT_VIM_KEYMAP ? null : migrated
 }

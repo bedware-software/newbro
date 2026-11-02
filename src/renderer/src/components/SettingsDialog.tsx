@@ -34,6 +34,7 @@ interface Settings {
   newTabFocus: 'site' | 'url'
   showTabNumbers: boolean
   vimMode: boolean
+  sidebarAutoHide: boolean
   vimIndicator: VimIndicator
   /** Null = the built-in default keymap. */
   vimKeymap: string | null
@@ -442,6 +443,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [newTabFocus, setNewTabFocus] = useState<'site' | 'url'>('site')
   const [showTabNumbers, setShowTabNumbers] = useState(true)
   const [vimMode, setVimMode] = useState(false)
+  const [sidebarAutoHide, setSidebarAutoHide] = useState(false)
   const [vimIndicator, setVimIndicator] = useState<VimIndicator>(DEFAULT_VIM_INDICATOR)
   const [vimKeymapText, setVimKeymapText] = useState(DEFAULT_VIM_KEYMAP)
   const [defaultUrl, setDefaultUrl] = useState('')
@@ -823,6 +825,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setNewTabFocus(settings.newTabFocus === 'url' ? 'url' : 'site')
       setShowTabNumbers(settings.showTabNumbers !== false)
       setVimMode(settings.vimMode === true)
+      setSidebarAutoHide(settings.sidebarAutoHide === true)
       setVimIndicator(indicator)
       setVimKeymapText(settings.vimKeymap ?? DEFAULT_VIM_KEYMAP)
       originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens, vimIndicator: indicator }
@@ -1320,6 +1323,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       newTabFocus,
       showTabNumbers,
       vimMode,
+      sidebarAutoHide,
       vimIndicator,
       // Left at the default it stays null, so later default bindings reach it.
       vimKeymap: vimKeymapText === DEFAULT_VIM_KEYMAP ? null : vimKeymapText,
@@ -1569,7 +1573,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       >
                         <span className="flex gap-1.5">
                           <VimModeBadge mode="command" indicator={v.id} />
-                          <VimModeBadge mode="browse" indicator={v.id} />
                           <VimModeBadge mode="insert" indicator={v.id} />
                         </span>
                         <span className="text-xs font-medium text-foreground">{v.label}</span>
@@ -2937,13 +2940,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <div>
                     <h3 className="text-lg font-semibold text-foreground">Vim Mode</h3>
                     <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
-                      Three modes, shown in the address bar. COMMAND: plain keys drive the browser —
-                      tabs, panels, app commands. BROWSE: the page, driven the way Vimium does —
-                      scrolling, history, picking a text field. INSERT: keys go to the page or the field
-                      you're typing in. w (or Enter on a tab) goes into the page, i on to INSERT; Esc
-                      climbs back up, Ctrl+[ jumps straight to COMMAND. Clicking the page is BROWSE,
-                      clicking the browser around it COMMAND. Replaces the regular shortcuts and the
-                      Vimium extension.
+                      Two modes, shown in the address bar. COMMAND: plain keys drive the page and the
+                      browser, the way Vimium does — scrolling, history, tabs, app commands; keys not
+                      bound reach the page. INSERT: keys go to the page or the field you're typing in.
+                      i goes into INSERT, Esc or Ctrl+[ comes back. Clicking a text field is INSERT,
+                      anywhere else COMMAND. Holding Ctrl brings up the Sidebar's keys: Ctrl+J/K step
+                      through the tabs. Replaces the regular shortcuts and the Vimium extension.
                     </p>
                   </div>
                   <button
@@ -2965,11 +2967,40 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </div>
 
                 {vimMode && (
+                  <div className="mt-4 flex items-start justify-between gap-4">
+                    <div>
+                      <div className="text-sm text-foreground">Hide the Sidebar</div>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                        For a small screen: the page takes the whole width, and the Sidebar shows over
+                        it while you hold Ctrl in COMMAND mode — Ctrl+J/K step through the tabs, letting
+                        go stays on the one shown. Toggle Sidebar pins it open for the time being.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={sidebarAutoHide}
+                      aria-label="Hide the Sidebar"
+                      onClick={() => setSidebarAutoHide((on) => !on)}
+                      className={`relative mt-1 inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors ${
+                        sidebarAutoHide ? 'bg-primary' : 'bg-muted-foreground/30'
+                      }`}
+                    >
+                      <span
+                        className={`h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
+                          sidebarAutoHide ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                )}
+
+                {vimMode && (
                   <div className="mt-4">
                     <div className="flex items-center justify-between gap-4 mb-2">
                       <p className="text-sm text-muted-foreground">
                         One <code className="font-mono text-xs">command keys…</code> per line;
-                        the <code className="font-mono text-xs">browse-</code>, <code className="font-mono text-xs">search-</code>,{' '}
+                        the <code className="font-mono text-xs">search-</code>,{' '}
                         <code className="font-mono text-xs">find-</code> and <code className="font-mono text-xs">url-</code> prefixes say where a command works.
                       </p>
                       <button

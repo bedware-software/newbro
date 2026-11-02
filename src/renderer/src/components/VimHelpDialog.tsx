@@ -16,8 +16,7 @@ interface Props {
 }
 
 const SECTIONS: Array<{ context: VimContext; title: string; mode: VimMode | null; note: string }> = [
-  { context: 'command', title: 'COMMAND', mode: 'command', note: 'The browser: tabs, panels, app commands.' },
-  { context: 'browse', title: 'BROWSE', mode: 'browse', note: 'The page. Keys not listed here reach the page.' },
+  { context: 'command', title: 'COMMAND', mode: 'command', note: 'The page and the browser. In the page, keys not listed here reach it.' },
   { context: 'search', title: 'Search Everything · Command Palette', mode: null, note: 'Their COMMAND mode, out of the box (Esc); i types again.' },
   { context: 'find', title: 'Find in Page', mode: null, note: 'Its COMMAND mode, out of typing (Enter or Esc); i types again.' },
   { context: 'url', title: 'Address editor', mode: null, note: 'e in COMMAND. Blocks: h protocol, d domain, n port, 1–9 path levels, p parameters, f fragment. The intent\'s key again (yy, cc, rr): the whole address.' },
@@ -61,7 +60,7 @@ export function VimHelpDialog({ open, keymap, fromMode, onClose }: Props) {
 
   if (!open) return null
 
-  const maps: Record<VimContext, ParsedVimKeymap['main']> = { command: keymap.main, browse: keymap.browse, search: keymap.search, find: keymap.find, url: keymap.url }
+  const maps: Record<VimContext, ParsedVimKeymap['main']> = { command: keymap.main, search: keymap.search, find: keymap.find, url: keymap.url }
   const commands = vimCommandsInOrder()
   const ordered = [...SECTIONS].sort((a, b) => Number(b.mode === fromMode) - Number(a.mode === fromMode))
   const sections = ordered.map((section) => {
@@ -133,7 +132,7 @@ export function VimHelpDialog({ open, keymap, fromMode, onClose }: Props) {
           data-detached-drag-handle
           className="h-10 px-4 flex items-center justify-between border-t border-border bg-toolbar text-[11px] font-medium text-muted-foreground shrink-0"
         >
-          <span>Esc climbs INSERT → BROWSE → COMMAND · Ctrl+[ jumps to COMMAND · edit in Settings → Keyboard Shortcuts</span>
+          <span>Esc or Ctrl+[ leaves INSERT · hold Ctrl for the Sidebar · edit in Settings → Keyboard Shortcuts</span>
           <span className="flex items-center gap-1 shrink-0">{query ? 'Clear' : 'Close'} <kbd>Esc</kbd></span>
         </div>
       </div>

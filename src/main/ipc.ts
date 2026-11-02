@@ -282,6 +282,36 @@ function pinPopup(popup: BrowserWindow, parent: BrowserWindow, left: number, top
   apply()
 }
 
+/** Mirrored in renderer SidebarPeek.tsx. */
+const PEEK_ID_PREFIX = 'peek-'
+/** A Sidebar peek's spot in its window's content area. */
+const peekSpots = new WeakMap<BrowserWindow, Electron.Rectangle>()
+
+/** Puts the Sidebar peek over `parent`'s page at `spot`, keeps it there as
+ *  the window moves, and shows it — or hides it: invisible and letting
+ *  clicks through to the page, but kept, so it comes up at once. It never
+ *  takes the keyboard; clicks on it still work. */
+function placePeek(popup: BrowserWindow, parent: BrowserWindow, spot: { left: number; top: number; width: number; height: number }, shown: boolean): void {
+  const apply = (): void => {
+    const s = peekSpots.get(popup)
+    if (!s || popup.isDestroyed() || parent.isDestroyed()) return
+    const content = parent.getContentBounds()
+    popup.setBounds({ x: Math.round(content.x + s.x), y: Math.round(content.y + s.y), width: s.width, height: s.height })
+  }
+  if (!peekSpots.has(popup)) {
+    popup.setParentWindow(parent)
+    popup.setFocusable(false)
+    parent.on('move', apply)
+    popup.once('closed', () => {
+      if (!parent.isDestroyed()) parent.off('move', apply)
+    })
+  }
+  peekSpots.set(popup, { x: spot.left, y: spot.top, width: Math.round(spot.width), height: Math.round(spot.height) })
+  apply()
+  popup.setIgnoreMouseEvents(!shown)
+  popup.setOpacity(shown ? 1 : 0)
+}
+
 /**
  * React portals rendered into a detached popup still execute in the opener's
  * renderer, so IPC sent from Settings identifies the workspace window as its
@@ -856,6 +886,19 @@ export function registerIpcHandlers(): void {
     pinPopup(popup, parent, s.left, s.top)
   })
 
+  // The Sidebar peek (renderer SidebarPeek.tsx): where it sits over the
+  // page and whether it shows.
+  ipcMain.on('sidebar-peek:set', (event, popupId: unknown, spot: unknown) => {
+    const popup = typeof popupId === 'string' && popupId.startsWith(PEEK_ID_PREFIX) ? pinnablePopups.get(popupId) : undefined
+    const parent = BrowserWindow.fromWebContents(event.sender)
+    const s = spot as { left?: unknown; top?: unknown; width?: unknown; height?: unknown; shown?: unknown } | null
+    if (!popup || popup.isDestroyed() || !parent || parent.isDestroyed() || !s) return
+    const nums = [s.left, s.top, s.width, s.height]
+    if (!nums.every((n) => typeof n === 'number' && Number.isFinite(n))) return
+    const [left, top, width, height] = nums as number[]
+    placePeek(popup, parent, { left, top, width: Math.max(1, width), height: Math.max(1, height) }, s.shown === true)
+  })
+
   // Hand the keyboard back to a popup that's already open (Find in Page
   // asked for again while the page has the keys).
   ipcMain.on('detached-window:focus', (_e, popupId: unknown) => {
@@ -871,6 +914,8 @@ export function registerIpcHandlers(): void {
   // compositor frame — no white flash.
   ipcMain.on('detached-window:show', (_e, opts?: { alwaysOnTop?: boolean; activate?: boolean }) => {
     for (const popup of detachedPopups) {
+      // A Sidebar peek waits at opacity 0 until Ctrl brings it up.
+      if (peekSpots.has(popup)) continue
       if (!popup.isDestroyed() && popup.getOpacity() < 1) {
         // Only popups still at opacity 0 are being revealed now, so options
         // passed by the just-rendered DetachedWindow land on the right popup.

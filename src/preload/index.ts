@@ -24,8 +24,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // renderer-side input so typed characters actually land there.
   focusWindowRenderer: (): void => { ipcRenderer.send('window:focus-renderer') },
   reclaimWindowRendererFocus: (): void => { ipcRenderer.send('window:reclaim-renderer-focus') },
-  // Vim mode's current mode and BROWSE keys, passed on to this window's pages.
+  // Vim mode's current mode and COMMAND keys, passed on to this window's pages.
   vimSetState: (state: unknown): void => { ipcRenderer.send('vim:set-state', state) },
+  // A page's COMMAND key typed while the chrome has the keyboard, for that page.
+  vimRunInPage: (tabId: string, command: string): void => { ipcRenderer.send('vim:run-in-page', tabId, command) },
+  // Ctrl pressed (true) or let go (false) anywhere in this window, with Vim mode on.
+  onVimCtrl: (callback: (down: boolean) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, down: unknown) => callback(down === true)
+    ipcRenderer.on('vim-ctrl', handler)
+    return () => { ipcRenderer.removeListener('vim-ctrl', handler) }
+  },
+  // The Sidebar peek (SidebarPeek.tsx): where it sits in this window's
+  // content area and whether it shows.
+  sidebarPeekSet: (popupId: string, spot: { left: number; top: number; width: number; height: number; shown: boolean }): void => {
+    ipcRenderer.send('sidebar-peek:set', popupId, spot)
+  },
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),
   restoreWindow: (): Promise<void> => ipcRenderer.invoke('window:restore'),

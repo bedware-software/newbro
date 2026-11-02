@@ -4,8 +4,8 @@ import { normalizeURL, setSearchEngine } from './lib/url'
 import { openAddress } from './lib/open-address'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
-import { useVimMode, dispatchPanelCommand, claimRendererFocus, isCommandMode, type VimPanel, type VimMode } from './lib/vim-mode'
-import { parseVimKeymap, paletteKeymap, DEFAULT_VIM_KEYMAP, isPanelCommand } from './lib/vim-keymap'
+import { useVimMode, dispatchSidebarCommand, type VimMode } from './lib/vim-mode'
+import { parseVimKeymap, paletteKeymap, DEFAULT_VIM_KEYMAP, isPageCommand, isSidebarCommand } from './lib/vim-keymap'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
@@ -18,6 +18,7 @@ import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDi
 import { CommandPalette } from './components/CommandPalette'
 import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
 import { VimHelpDialog } from './components/VimHelpDialog'
+import { SidebarPeek } from './components/SidebarPeek'
 import { SidePanel } from './components/SidePanel'
 import { startExtensionTabGroupsBridge } from './lib/extension-tab-groups'
 import { setExtensionInstallHandler, type InstallOutcome } from './lib/extension-install'
@@ -48,6 +49,9 @@ interface Settings {
   showTabNumbers: boolean
   /** Vim mode: COMMAND / INSERT modes, see lib/vim-mode.ts. */
   vimMode: boolean
+  /** With Vim mode on: the Sidebar hides, Ctrl held shows it over the page
+   *  (components/SidebarPeek.tsx). */
+  sidebarAutoHide: boolean
   /** How the mode's key cap shows its colour, see lib/vim-indicator.ts. */
   vimIndicator: VimIndicator
   /** COMMAND-mode keymap text; null = DEFAULT_VIM_KEYMAP. */
@@ -196,8 +200,15 @@ declare global {
       toggleFocusedDevTools?: () => Promise<void>
       closeWindow: () => Promise<void>
       focusWindowRenderer: () => void
-      /** Vim mode's mode and BROWSE keys, for this window's pages. */
-      vimSetState?: (state: { mode: 'command' | 'browse' | 'insert' | null; browseKeymap: Array<[string, string]> }) => void
+      /** Vim mode's mode and COMMAND keys, for this window's pages. */
+      vimSetState?: (state: { mode: 'command' | 'insert' | null; keymap: Array<[string, string]>; leaveInsert: number }) => void
+      /** A page's COMMAND key typed while the chrome has the keyboard. */
+      vimRunInPage?: (tabId: string, command: string) => void
+      /** Ctrl pressed (true) or let go (false) anywhere in this window. */
+      onVimCtrl?: (callback: (down: boolean) => void) => () => void
+      /** Where the Sidebar peek sits in this window's content area, and
+       *  whether it shows. */
+      sidebarPeekSet?: (popupId: string, spot: { left: number; top: number; width: number; height: number; shown: boolean }) => void
       reclaimWindowRendererFocus?: () => void
       minimizeWindow: () => Promise<void>
       maximizeWindow: () => Promise<void>
@@ -529,9 +540,6 @@ function applyTheme(theme: ThemeChoice, lightVariant: string, darkVariant: strin
 }
 
 const SIDEBAR_VISIBLE_KEY = 'newbro-sidebar-visible'
-// How long after a video leaves fullscreen an Esc from the page still
-// belongs to the fullscreen rather than switching Vim to COMMAND.
-const FULLSCREEN_ESCAPE_GRACE_MS = 500
 
 export default function App() {
   const [ready, setReady] = useState(false)
@@ -606,6 +614,8 @@ export default function App() {
   const [externalUrlQueue, setExternalUrlQueue] = useState<string[]>([])
   const shortcutHandlerRef = useRef<((action: string) => void) | null>(null)
   const webviewColumnRef = useRef<HTMLDivElement>(null)
+  // The area under the toolbar: the Sidebar peek is as tall as it is.
+  const bodyRef = useRef<HTMLDivElement>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(() => {
     const v = localStorage.getItem(SIDEBAR_VISIBLE_KEY)
@@ -614,7 +624,22 @@ export default function App() {
   const hydrate = useAppStore((s) => s.hydrate)
   const { profileId: windowProfileId, workspaceId: windowWorkspaceId, tabId: windowTabId } = getWindowParams()
 
+  // Settings → Keyboard Shortcuts → Hide the Sidebar (with Vim mode on): it
+  // stays out of the way, Ctrl held shows it over the page (SidebarPeek),
+  // and toggling it (\, the toolbar button) pins it open for the time being.
+  const sidebarAutoHide = settings?.vimMode === true && settings.sidebarAutoHide === true
+  const sidebarAutoHideRef = useRef(sidebarAutoHide)
+  sidebarAutoHideRef.current = sidebarAutoHide
+  const [sidebarPinned, setSidebarPinned] = useState(false)
+  useEffect(() => {
+    if (!sidebarAutoHide) setSidebarPinned(false)
+  }, [sidebarAutoHide])
+
   const toggleSidebar = useCallback(() => {
+    if (sidebarAutoHideRef.current) {
+      setSidebarPinned((v) => !v)
+      return
+    }
     setSidebarVisible((v) => {
       const next = !v
       localStorage.setItem(SIDEBAR_VISIBLE_KEY, String(next))
@@ -622,11 +647,7 @@ export default function App() {
     })
   }, [])
 
-  // Vim mode: which panel has the COMMAND-mode cursor. `b` moves it to the
-  // Bookshelf, `s` back; it falls back to the Sidebar when the shelf closes.
-  const [vimFocusedPanel, setVimFocusedPanel] = useState<VimPanel>('sidebar')
-  // The help window (?), and the mode it was opened from — closing it goes
-  // back there.
+  // The help window (?), and the mode it was opened from.
   const [vimHelpFrom, setVimHelpFrom] = useState<VimMode | null>(null)
   // The Vim mode API for the shortcut handler, which is registered once.
   const vimRef = useRef<ReturnType<typeof useVimMode> | null>(null)
@@ -639,13 +660,11 @@ export default function App() {
   const [pageFullscreen, setPageFullscreen] = useState(false)
   const fullscreenTabRef = useRef<string | null>(null)
   const sidebarBeforeFullscreenRef = useRef<boolean | null>(null)
-  const fullscreenLeftAtRef = useRef(0)
 
   useEffect(() => {
     const exitCinema = (): void => {
       if (fullscreenTabRef.current === null) return
       fullscreenTabRef.current = null
-      fullscreenLeftAtRef.current = Date.now()
       setPageFullscreen(false)
       const saved = sidebarBeforeFullscreenRef.current
       sidebarBeforeFullscreenRef.current = null
@@ -993,7 +1012,8 @@ export default function App() {
           break
         case 'split-focus':
           // The keys follow into the other page unless COMMAND has them.
-          if (focusOtherPane() && vimRef.current?.mode && vimRef.current.mode !== 'command') vimRef.current.enterBrowse()
+          // Activating the other pane's tab hands its page the keyboard.
+          focusOtherPane()
           break
         case 'toggle-sidebar':
           toggleSidebar()
@@ -1382,14 +1402,11 @@ export default function App() {
 
   const bookshelfVisible = bookshelfOpen && !pageFullscreen
 
-  // Find closing gives the keyboard back to the page — in Vim mode only when
-  // that's where it was (BROWSE / INSERT); COMMAND takes it back itself.
+  // Find closing gives the keyboard back to the page — in Vim mode COMMAND
+  // takes it there itself, once the popup's gone (below).
   const closeFind = useCallback(() => {
     setFindBarOpen(false)
-    const mode = vimRef.current?.mode
-    if (mode === 'browse' || mode === 'insert') {
-      vimRef.current?.returnToPage()
-    } else if (!mode) {
+    if (!vimRef.current?.mode) {
       const s = useAppStore.getState()
       if (s.activeTabId && !isInternalUrl(s.getActiveTab()?.url)) window.electronAPI.tabFocus?.(s.activeTabId)
     }
@@ -1401,31 +1418,45 @@ export default function App() {
     () => parseVimKeymap(settings?.vimKeymap ?? DEFAULT_VIM_KEYMAP),
     [settings?.vimKeymap],
   )
-  const vimPanel: VimPanel = vimFocusedPanel === 'bookshelf' && bookshelfVisible ? 'bookshelf' : 'sidebar'
+  // The Sidebar in the window's layout: shown unless toggled off, or — hiding
+  // (Settings) — while pinned open. The peek stands in for it otherwise.
+  const sidebarShown = sidebarAutoHide ? sidebarPinned && !pageFullscreen : sidebarVisible
+  const focusActivePage = (): boolean => {
+    const s = useAppStore.getState()
+    if (!s.activeTabId) return false
+    // Internal pages are drawn by this renderer (data-vim-page).
+    if (isInternalUrl(s.getActiveTab()?.url)) {
+      const page = document.querySelector<HTMLElement>('[data-vim-page]')
+      page?.focus({ preventScroll: true })
+      return !!page
+    }
+    window.electronAPI.tabFocus?.(s.activeTabId)
+    return true
+  }
   const runVimCommand = (command: string): void => {
     switch (command) {
       case 'insert-mode':
         vimRef.current?.enterInsert()
         return
-      case 'browse-mode':
-        vimRef.current?.enterBrowse()
-        return
-      case 'focus-sidebar':
-        if (!sidebarVisible) toggleSidebar()
-        setVimFocusedPanel('sidebar')
-        return
-      case 'focus-bookshelf':
-        setBookshelfOpen(true)
-        setVimFocusedPanel('bookshelf')
-        return
       case 'help':
-        setVimHelpFrom('command')
+        setVimHelpFrom(vimRef.current?.mode ?? 'command')
         return
     }
-    if (isPanelCommand(command)) {
-      if (dispatchPanelCommand(vimPanel, command)) return
-      // Sidebar hidden: no cursor to move, but Enter still goes into the page.
-      if (command === 'row-open') vimRef.current?.enterBrowse()
+    if (isPageCommand(command)) {
+      // Typed in the chrome: the page's keys go on to the page — the text
+      // field picker (gi) with the keyboard, which it needs.
+      const s = useAppStore.getState()
+      if (!s.activeTabId || isInternalUrl(s.getActiveTab()?.url)) return
+      if (command === 'focus-input') focusActivePage()
+      window.electronAPI.vimRunInPage?.(s.activeTabId, command)
+      return
+    }
+    if (isSidebarCommand(command)) {
+      vimRef.current?.startTabWalk()
+      if (dispatchSidebarCommand(command)) return
+      // No Sidebar showing: Ctrl+J/K still go through the tabs.
+      if (command === 'cursor-down-show') shortcutHandlerRef.current?.('next-tab')
+      else if (command === 'cursor-up-show') shortcutHandlerRef.current?.('prev-tab')
       return
     }
     shortcutHandlerRef.current?.(command)
@@ -1433,32 +1464,12 @@ export default function App() {
   const vim = useVimMode({
     enabled: vimEnabled,
     keymap: vimKeymap.main,
-    browseKeymap: vimKeymap.browse,
     onCommand: runVimCommand,
     // The other split pane's page counts too: clicking into it focuses it.
     isActiveTab: (tabId) => useAppStore.getState().activeTabId === tabId || otherPaneTab() === tabId,
-    onHelp: () => setVimHelpFrom(vimRef.current?.mode ?? 'browse'),
-    focusPage: () => {
-      const s = useAppStore.getState()
-      if (!s.activeTabId) return false
-      // Internal pages are drawn by this renderer (data-vim-page).
-      if (isInternalUrl(s.getActiveTab()?.url)) {
-        const page = document.querySelector<HTMLElement>('[data-vim-page]')
-        page?.focus({ preventScroll: true })
-        return !!page
-      }
-      window.electronAPI.tabFocus?.(s.activeTabId)
-      return true
-    },
-    ignorePageEscape: () =>
-      fullscreenTabRef.current !== null || Date.now() - fullscreenLeftAtRef.current < FULLSCREEN_ESCAPE_GRACE_MS,
+    focusPage: focusActivePage,
   })
   vimRef.current = vim
-
-  // The cursor goes home to the Sidebar when the Bookshelf closes.
-  useEffect(() => {
-    if (!bookshelfVisible) setVimFocusedPanel('sidebar')
-  }, [bookshelfVisible])
 
   // A popup window (Search, Command Palette, Settings) closing hands focus
   // back to this window — sometimes to the page view. In COMMAND mode the
@@ -1474,24 +1485,19 @@ export default function App() {
   }), [])
   const urlEditorOpen = useUrlEditorStore((st) => st.open)
   const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || findBarOpen || splitPicking || urlEditorOpen || vimHelpFrom !== null
-  // The address editor closing gives the keyboard back to the page when
-  // that's where it was; COMMAND takes it back itself (below).
+  // The address editor closing gives the keyboard back to the page; in Vim
+  // mode COMMAND does that for every popup (below).
   const urlEditorWasOpenRef = useRef(urlEditorOpen)
   useEffect(() => {
     const closed = urlEditorWasOpenRef.current && !urlEditorOpen
     urlEditorWasOpenRef.current = urlEditorOpen
-    if (!closed) return
-    const mode = vimRef.current?.mode
-    if (mode === 'browse' || mode === 'insert') {
-      vimRef.current?.returnToPage()
-    } else if (!mode) {
-      const s = useAppStore.getState()
-      if (s.activeTabId && !isInternalUrl(s.getActiveTab()?.url)) window.electronAPI.tabFocus?.(s.activeTabId)
-    }
+    if (!closed || vimRef.current?.mode) return
+    const s = useAppStore.getState()
+    if (s.activeTabId && !isInternalUrl(s.getActiveTab()?.url)) window.electronAPI.tabFocus?.(s.activeTabId)
   }, [urlEditorOpen])
   const popupWasOpenRef = useRef(popupOpen)
   useEffect(() => {
-    if (popupWasOpenRef.current && !popupOpen && isCommandMode()) claimRendererFocus(false)
+    if (popupWasOpenRef.current && !popupOpen) vimRef.current?.returnToPage()
     popupWasOpenRef.current = popupOpen
   }, [popupOpen])
 
@@ -1499,14 +1505,20 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarVisible} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
+      <div ref={bodyRef} style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
-          visible={sidebarVisible}
+          visible={sidebarShown}
           showTabNumbers={settings?.showTabNumbers ?? true}
-          vimActive={vim.mode === 'command' && vimPanel === 'sidebar'}
+          vimActive={vim.sidebarKeys}
           vimKeymap={vimEnabled ? vimKeymap.main : null}
-          onVimEnterPage={vim.enterBrowse}
+        />
+        <SidebarPeek
+          enabled={sidebarAutoHide && !sidebarShown && !pageFullscreen}
+          shown={vim.sidebarKeys}
+          anchorRef={bodyRef}
+          showTabNumbers={settings?.showTabNumbers ?? true}
+          vimKeymap={vimEnabled ? vimKeymap.main : null}
         />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
           <UrlEditor anchorRef={webviewColumnRef} vimKeymap={vimEnabled ? vimKeymap.url : null} />
@@ -1532,9 +1544,6 @@ export default function App() {
           open={bookshelfVisible}
           profileId={windowProfileId ?? activeProfileId}
           onClose={() => setBookshelfOpen(false)}
-          vimActive={vim.mode === 'command' && vimPanel === 'bookshelf'}
-          vimKeymap={vimEnabled ? vimKeymap.main : null}
-          onVimEnterPage={vim.enterBrowse}
         />
       </div>
       <SearchDialog
@@ -1547,12 +1556,7 @@ export default function App() {
         open={vimHelpFrom !== null}
         keymap={vimKeymap}
         fromMode={vimHelpFrom ?? 'command'}
-        onClose={() => {
-          const from = vimHelpFrom
-          setVimHelpFrom(null)
-          // Back to the page it was opened from.
-          if (from === 'browse' || from === 'insert') vimRef.current?.returnToPage()
-        }}
+        onClose={() => setVimHelpFrom(null)}
       />
       <ExtensionInstallDialog
         preview={installPrompt?.preview ?? null}

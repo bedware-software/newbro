@@ -7,10 +7,10 @@ import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
 import { ChevronRight, ChevronDown, Plus, X } from 'lucide-react'
 import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
-import { useVimPanel } from '../lib/vim-mode'
+import { useVimSidebar } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
-import type { PanelCommand, VimKeymap } from '../lib/vim-keymap'
-import { PanelHintBar } from './KeyHints'
+import type { SidebarCommand, VimKeymap } from '../lib/vim-keymap'
+import { SidebarHintBar } from './KeyHints'
 import { SplitGlyph } from './SplitPanes'
 import { isSplitShown, useSplitStore } from '../lib/split-view'
 
@@ -106,22 +106,27 @@ function loadWidth(): number {
   return v ? Math.max(MIN_WIDTH, parseInt(v, 10)) : DEFAULT_WIDTH
 }
 
+/** The width the user dragged the Sidebar to — the peek's too. */
+export const getSidebarWidth = loadWidth
+
 interface Props {
   visible: boolean
   /** When true, the first 9 visible tabs show a small "N" badge advertising
    *  the CmdOrCtrl+N quick-jump. Visible state is owned by App.tsx because
    *  it lives in the settings store. */
   showTabNumbers: boolean
-  /** Vim's COMMAND mode with the cursor in this panel: a block cursor on
-   *  the active row, driven by the keymap's cursor commands. */
+  /** Vim's Sidebar keys are live (Ctrl held in COMMAND): a block cursor on
+   *  the active row, which the keymap's Ctrl chords act on. */
   vimActive: boolean
   /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
   vimKeymap: VimKeymap | null
-  /** Go into the active tab's page (BROWSE mode). */
-  onVimEnterPage: () => void
+  /** Drawn in the peek window over the page (SidebarPeek.tsx), whose
+   *  top-left corner sits here in the main window's content area: no
+   *  resize handle, menus moved by as much. */
+  peek?: { x: number; y: number }
 }
 
-export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEnterPage }: Props) {
+export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, peek }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -471,12 +476,12 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
   }
 
   // ── Vim mode ──
-  // The block cursor starts on the active row — the active tab, the group
-  // we're parked on, or the header of the collapsed group hiding the active
-  // tab — and moves on its own from there: j/k only walk the tree, Enter
-  // opens the row under it, o shows it and Ctrl+J/K walk and show as they
-  // go (both staying in COMMAND). Activating something else (a click, 1-9,
-  // Search) brings it back to the active row.
+  // While Ctrl is held the block cursor sits on the active row — the active
+  // tab, the group we're parked on, or the header of the collapsed group
+  // hiding the active tab. Ctrl+J/K step through the tabs showing each, so
+  // it follows the active tab; folding a group leaves it on the header.
+  // Activating something else (a click, 1-9, Search) or letting Ctrl go
+  // brings it back to the active row.
   const [vimCursorOverride, setVimCursorOverride] = useState<string | null>(null)
   useEffect(() => { setVimCursorOverride(null) }, [activeTabId, activeTabGroupId, vimActive])
   const activeRowId = activeTabId === null
@@ -485,7 +490,9 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
   const vimCursorId = vimCursorOverride !== null && visibleRowIds.includes(vimCursorOverride)
     ? vimCursorOverride
     : activeRowId
-  const { runMenu } = useVimPanel('sidebar', visible && vimActive, (cmd) => handleVimCommand(cmd))
+  // Listening whenever it's showing: the first Ctrl+J arrives before
+  // vimActive does.
+  const { runMenu } = useVimSidebar(visible, (cmd) => handleVimCommand(cmd))
   const findVimRow = (id: string): Element | null =>
     sidebarRef.current?.querySelector(`[data-vim-row="${CSS.escape(id)}"]`) ?? null
   useEffect(() => {
@@ -600,12 +607,17 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
     setSelectedIds(new Set(duplicateItems(ids)))
   }
 
-  /** Opens a sidebar menu. One opened from COMMAND mode (m) takes the keyboard:
-   *  its first action starts highlighted and hjkl move around it. */
-  const showMenu = (spec: Omit<DropdownSpec, 'openerId'>, keyboard: boolean) =>
-    keyboard
-      ? runMenu(() => openDropdownAsync({ ...spec, keyboard: true }))
-      : openDropdownAsync(spec)
+  /** Opens a sidebar menu. One opened from COMMAND mode (Ctrl+M) takes the
+   *  keyboard: its first action starts highlighted and hjkl move around it. */
+  const showMenu = (spec: Omit<DropdownSpec, 'openerId'>, keyboard: boolean) => {
+    // In the peek, menus are placed from the peek window's corner.
+    const placed = peek && spec.position
+      ? { ...spec, position: { x: spec.position.x + peek.x, y: spec.position.y + peek.y } }
+      : spec
+    return keyboard
+      ? runMenu(() => openDropdownAsync({ ...placed, keyboard: true }))
+      : openDropdownAsync(placed)
+  }
 
   /** Menu for a multi-selection that includes a group. Only actions that
    *  work on whole groups and single tabs alike are offered; the tab-only
@@ -827,20 +839,15 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
     return ordered.length > 0 ? ordered : ids
   }
 
-  const handleVimCommand = (cmd: PanelCommand): void => {
+  const handleVimCommand = (cmd: SidebarCommand): void => {
     if (!workspace) return
     const groupById = (id: string | null) => (id ? workspace.tabGroups.find((g) => g.id === id) : undefined)
     const at = vimCursorId ? visibleRowIds.indexOf(vimCursorId) : -1
-    // Moving only moves the cursor; the page stays as it is until Enter.
-    const moveTo = (index: number): void => {
-      const id = visibleRowIds[Math.max(0, Math.min(visibleRowIds.length - 1, index))]
-      if (id) setVimCursorOverride(id)
-    }
-    // J/K carry the row under the cursor one visible row down/up. A group
-    // swaps places with its neighbour. A tab steps into an expanded group it
-    // runs into, out of its own group at either end, and over a collapsed
-    // group as if it were one row. The cursor keeps the row's id, so it stays
-    // on what moved.
+    // Ctrl+Shift+J/K carry the row under the cursor one visible row
+    // down/up. A group swaps places with its neighbour. A tab steps into an
+    // expanded group it runs into, out of its own group at either end, and
+    // over a collapsed group as if it were one row. The cursor keeps the
+    // row's id, so it stays on what moved.
     const moveRow = (dir: 1 | -1): void => {
       if (!vimCursorId) return
       const id = vimCursorId
@@ -878,37 +885,18 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
       }
     }
     switch (cmd) {
-      case 'cursor-down': moveTo(at === -1 ? 0 : at + 1); break
-      case 'cursor-up': moveTo(at === -1 ? 0 : at - 1); break
       case 'cursor-down-show': showNextTab(1); break
       case 'cursor-up-show': showNextTab(-1); break
       case 'row-move-down': moveRow(1); break
       case 'row-move-up': moveRow(-1); break
-      case 'cursor-first': moveTo(0); break
-      case 'cursor-last': moveTo(visibleRowIds.length - 1); break
-      case 'row-collapse': {
+      case 'row-fold': {
         if (!vimCursorId) break
-        // On a tab inside a group, h climbs to the group's header and folds it.
+        // A tab in a group folds (or unfolds) its group; the cursor goes to
+        // the header, where Ctrl+J steps into the group again.
         const group = groupById(vimCursorId) ?? groupById(findTabGroup(vimCursorId))
         if (!group) break
-        if (!group.isCollapsed) toggleTabGroupCollapse(group.id)
-        setVimCursorOverride(group.id)
-        break
-      }
-      case 'row-expand': {
-        const group = groupById(vimCursorId)
-        if (!group?.isCollapsed) break
         toggleTabGroupCollapse(group.id)
         setVimCursorOverride(group.id)
-        break
-      }
-      case 'row-close': {
-        if (!vimCursorId) break
-        // The cursor takes the next row, as vim's x leaves it on what follows.
-        const next = visibleRowIds[at + 1] ?? visibleRowIds[at - 1] ?? null
-        if (groupById(vimCursorId)) closeGroup(vimCursorId)
-        else closeTab(vimCursorId)
-        setVimCursorOverride(next)
         break
       }
       case 'row-menu': {
@@ -920,29 +908,6 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
         const point = { x: rect.left + 24, y: rect.bottom }
         if (groupById(vimCursorId)) void openGroupMenu(vimCursorId, point, true)
         else void openTabMenu(vimCursorId, point, true)
-        break
-      }
-      case 'row-show':
-        // The row's tab (or group) shows; the keys stay here, in COMMAND.
-        if (!vimCursorId) break
-        if (groupById(vimCursorId)) setActiveGroup(vimCursorId)
-        else setActiveTab(vimCursorId)
-        break
-      case 'row-open': {
-        // A tab becomes the active one and we go into its page (BROWSE); a
-        // group header parks on the group, which stays in COMMAND — there's
-        // no page.
-        if (!vimCursorId) {
-          onVimEnterPage()
-          break
-        }
-        if (groupById(vimCursorId)) {
-          setActiveGroup(vimCursorId)
-          break
-        }
-        // Active first: going into the page focuses whatever tab is active.
-        setActiveTab(vimCursorId)
-        onVimEnterPage()
         break
       }
     }
@@ -1249,7 +1214,11 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
 
   return (
     <>
-      <div ref={sidebarRef} style={{ width }} className="bg-toolbar border-r border-border flex flex-col shrink-0 overflow-hidden select-none relative">
+      <div
+        ref={sidebarRef}
+        style={{ width: peek ? '100%' : width }}
+        className={`bg-toolbar ${peek ? '' : 'border-r border-border'} flex flex-col shrink-0 overflow-hidden select-none relative`}
+      >
         <div className="flex-1 overflow-y-auto pt-0 pb-0.5">
           {sidebarItems.map((item, sidebarIdx) => {
             if (item.type === 'tab') {
@@ -1314,12 +1283,14 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, onVimEn
           </button>
         </div>
 
-        {vimKeymap && <PanelHintBar panel="sidebar" keymap={vimKeymap} active={vimActive} />}
+        {vimKeymap && <SidebarHintBar keymap={vimKeymap} active={vimActive} />}
 
-        <div
-          className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
-          onMouseDown={onResizeStart}
-        />
+        {!peek && (
+          <div
+            className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
+            onMouseDown={onResizeStart}
+          />
+        )}
       </div>
 
 

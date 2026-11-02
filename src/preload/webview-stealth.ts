@@ -638,45 +638,45 @@ if (STEALTH_ENABLED) {
   }
 }
 
-// ── Vim mode: BROWSE and INSERT in the page ───────────────────────────────
+// ── Vim mode: COMMAND and INSERT in the page ──────────────────────────────
 // With Vim mode on (Settings → Keyboard Shortcuts) the window's renderer
 // holds the mode (renderer lib/vim-mode.ts) and main passes it on to the
-// pages. In BROWSE mode this page runs the browse-* keys the way Vimium did
-// — scrolling, history, picking a text field — and lets every other key
-// through; the ones that act on the browser (close the tab, copy the
-// address) go to the renderer. INSERT passes everything through; Esc leaves
-// it for BROWSE (and a focused field loses focus), like Vimium's insert
-// mode; in a field inside a frame main catches that Esc for us. In BROWSE,
-// an Esc the page has no use for climbs on to COMMAND: one a site acted on
-// (closing a dialog) is marked with preventDefault and visibly changes the
-// page, and stays the page's. Changes made here (i, a field focused or
-// left, Esc) are reported back to the renderer.
+// pages, with COMMAND's keys. In COMMAND mode this page runs the keys the way
+// Vimium did — the page's own (scrolling, picking a text field) here, the
+// browser's (close the tab, switch tabs, copy the address) in the renderer —
+// and lets every unbound key through. INSERT passes everything through; Esc
+// leaves it for COMMAND (and a focused field loses focus), like Vimium's
+// insert mode; in a field inside a frame main catches that Esc for us.
+// Changes made here (i, a field focused or left, Esc) are reported back to
+// the renderer.
 //
 // The keydown listener sits in the capture phase on window, registered
 // before any page script, so it sees keys first: a consumed key never
-// reaches the page, and site hotkey libraries that stopPropagation() every
-// key (habr) can't hide an unhandled Esc. Only trusted (real) keys count.
+// reaches the page. Only trusted (real) keys count.
 if (STEALTH_ENABLED) {
   try {
-    installVimBrowse()
+    installVimPage()
   } catch (err) {
     // eslint-disable-next-line no-console
     console.log('[newbro-vim] wiring failed:', err)
   }
 }
 
-function installVimBrowse(): void {
+function installVimPage(): void {
   // The stealth preload can run twice in a page (session preload and the
   // view's own); one set of listeners is enough.
-  const flag = '__newbroVimBrowse'
+  const flag = '__newbroVimPage'
   const scope = globalThis as unknown as Record<string, boolean>
   if (scope[flag]) return
   scope[flag] = true
 
-  type Mode = 'command' | 'browse' | 'insert' | null
+  type Mode = 'command' | 'insert' | null
   let mode: Mode = null
   let keymap: VimKeymap = new Map()
-  // INSERT because a field took focus (leaving it is BROWSE again), not by i.
+  // The renderer's count of explicit trips out of INSERT (Ctrl+[): a new one
+  // makes a focused field here let go. Null until the first state.
+  let leaveInsertSeq: number | null = null
+  // INSERT because a field took focus (leaving it is COMMAND again), not by i.
   let insertFromField = false
   let hints: InputHints | null = null
   // The last thing clicked: scrolling starts from its scrollable ancestor.
@@ -689,9 +689,9 @@ function installVimBrowse(): void {
     },
   )
 
-  const report = (next: 'browse' | 'insert', why: string): void => {
+  const report = (next: 'command' | 'insert', why: string): void => {
     mode = next
-    if (next === 'browse') insertFromField = false
+    if (next === 'command') insertFromField = false
     sequencer.reset()
     ipcRenderer.send('newbro-vim-page', { mode: next, why })
   }
@@ -705,17 +705,26 @@ function installVimBrowse(): void {
 
   let pushed = false
   const applyState = (raw: unknown): void => {
-    const state = raw as { mode?: Mode; browseKeymap?: Array<[string, string]> } | null
-    keymap = new Map(Array.isArray(state?.browseKeymap) ? state.browseKeymap : [])
+    const state = raw as { mode?: Mode; keymap?: Array<[string, string]>; leaveInsert?: number } | null
+    keymap = new Map(Array.isArray(state?.keymap) ? state.keymap : [])
     const previous = mode
     mode = state?.mode ?? null
-    if (mode !== 'browse') {
+    const seq = typeof state?.leaveInsert === 'number' ? state.leaveInsert : null
+    const leaving = leaveInsertSeq !== null && seq !== null && seq !== leaveInsertSeq
+    leaveInsertSeq = seq
+    if (mode !== 'command') {
       sequencer.reset()
       hints?.close()
     }
-    // Arriving in BROWSE with a field focused (the click landed in one) is INSERT.
-    if (mode === 'browse' && document.hasFocus() && keysBelongToElement(deepActiveElement())) enterInsertForField()
-    else if (mode === 'insert' && previous !== 'insert') insertFromField = keysBelongToElement(deepActiveElement())
+    if (mode === 'command' && leaving && keysBelongToElement(deepActiveElement())) {
+      // Out of INSERT on purpose (Ctrl+[): the field lets go of the keys.
+      leaveInsert()
+    } else if (mode === 'command' && document.hasFocus() && keysBelongToElement(deepActiveElement())) {
+      // Arriving in COMMAND with a field focused (the click landed in one) is INSERT.
+      enterInsertForField()
+    } else if (mode === 'insert' && previous !== 'insert') {
+      insertFromField = keysBelongToElement(deepActiveElement())
+    }
   }
   ipcRenderer.on('newbro-vim-state', (_e, state: unknown) => {
     pushed = true
@@ -735,10 +744,10 @@ function installVimBrowse(): void {
   }
 
   // Esc out of INSERT: the field (or frame) with the keys lets them go.
-  const leaveInsert = (): void => {
+  function leaveInsert(): void {
     const focused = deepActiveElement()
     if (focused instanceof HTMLElement && focused !== document.body) focused.blur()
-    report('browse', 'esc')
+    report('command', 'esc')
   }
   // Keys typed in a frame (an editor in an iframe — Confluence's comment
   // box) never reach this document; main sees that Esc and passes it here.
@@ -755,7 +764,7 @@ function installVimBrowse(): void {
       leaveInsert()
       return
     }
-    if (mode !== 'browse') return
+    if (mode !== 'command') return
     if (hints) {
       hints.onKey(e)
       return
@@ -765,38 +774,24 @@ function installVimBrowse(): void {
       enterInsertForField()
       return
     }
-    // Ctrl with a letter can be a Vim key (<C-l>); other chords are the page's.
+    // Ctrl with a letter can be a Vim key (<C-j>); other chords are the page's.
     if (e.metaKey || e.altKey) return
     if (e.ctrlKey) {
       const token = keyTokenFromEvent(e)
       if (!token || !isCtrlToken(token)) return
     }
-    if (sequencer.feed(e)) {
-      consume(e)
-      return
-    }
-    if (e.key === 'Escape' && !e.shiftKey && !e.repeat) {
-      // An Esc the page marked used stays the page's — unless nothing came
-      // of it: Atlassian's AUI (Confluence, Jira) marks every Esc, with or
-      // without a dialog to close. Read once dispatch is over, so page
-      // listeners after ours count too.
-      const reacted = watchForReaction()
-      setTimeout(() => {
-        const pageReacted = reacted()
-        if (!e.defaultPrevented || !pageReacted) ipcRenderer.send('newbro-unhandled-escape')
-      }, 0)
-    }
+    if (sequencer.feed(e)) consume(e)
   }, true)
 
   document.addEventListener('focusin', (e) => {
     const target = e.composedPath()[0]
-    if (mode === 'browse' && !hints && target instanceof Element && keysBelongToElement(target)) enterInsertForField()
+    if (mode === 'command' && !hints && target instanceof Element && keysBelongToElement(target)) enterInsertForField()
   }, true)
   document.addEventListener('focusout', () => {
     if (mode !== 'insert' || !insertFromField) return
     setTimeout(() => {
       if (mode === 'insert' && insertFromField && document.hasFocus() && !keysBelongToElement(deepActiveElement())) {
-        report('browse', 'field left')
+        report('command', 'field left')
       }
     }, 0)
   }, true)
@@ -805,11 +800,16 @@ function installVimBrowse(): void {
   // and is focused again.
   window.addEventListener('blur', () => {
     setTimeout(() => {
-      if (mode === 'browse' && !hints && document.hasFocus() && deepActiveElement() instanceof HTMLIFrameElement) enterInsertForField()
+      if (mode === 'command' && !hints && document.hasFocus() && deepActiveElement() instanceof HTMLIFrameElement) enterInsertForField()
     }, 0)
   })
   window.addEventListener('focus', () => {
-    if (mode === 'insert' && insertFromField && !keysBelongToElement(deepActiveElement())) report('browse', 'field left')
+    if (mode === 'insert' && insertFromField && !keysBelongToElement(deepActiveElement())) report('command', 'field left')
+  })
+  // The page's keys typed while the chrome has the keyboard (the renderer
+  // passes them on, to the active page only).
+  ipcRenderer.on('newbro-vim-run', (_e, command: unknown) => {
+    if (typeof command === 'string' && mode === 'command') runCommand(command)
   })
   window.addEventListener('mousedown', (e) => {
     const target = e.composedPath()[0]
@@ -818,33 +818,24 @@ function installVimBrowse(): void {
 
   function runCommand(command: string): void {
     switch (command) {
-      case 'browse-scroll-down': glideBy(() => VIM_SCROLL_STEP); break
-      case 'browse-scroll-up': glideBy(() => -VIM_SCROLL_STEP); break
-      case 'browse-half-page-down': glideBy((el) => el.clientHeight / 2); break
-      case 'browse-half-page-up': glideBy((el) => -el.clientHeight / 2); break
-      case 'browse-top': jumpTo('top'); break
-      case 'browse-bottom': jumpTo('bottom'); break
-      case 'browse-back': ipcRenderer.send('newbro-nav', 'back'); break
-      case 'browse-forward': ipcRenderer.send('newbro-nav', 'forward'); break
-      case 'browse-insert':
+      case 'scroll-down': glideBy(() => VIM_SCROLL_STEP); break
+      case 'scroll-up': glideBy(() => -VIM_SCROLL_STEP); break
+      case 'half-page-down': glideBy((el) => el.clientHeight / 2); break
+      case 'half-page-up': glideBy((el) => -el.clientHeight / 2); break
+      case 'page-top': jumpTo('top'); break
+      case 'page-bottom': jumpTo('bottom'); break
+      case 'back': ipcRenderer.send('newbro-nav', 'back'); break
+      case 'forward': ipcRenderer.send('newbro-nav', 'forward'); break
+      case 'insert-mode':
         insertFromField = false
         report('insert', 'i')
         break
-      case 'browse-focus-input':
+      case 'focus-input':
         hints = openInputHints(() => { hints = null })
         break
-      case 'browse-help':
-        ipcRenderer.send('newbro-vim-page', { help: true })
-        break
-      // The browser's own commands: the renderer runs them.
-      case 'browse-close-tab':
-      case 'browse-copy-url':
-      case 'browse-paste-url':
-      case 'browse-paste-url-new-tab':
-      case 'browse-focus-url':
-      case 'browse-split-focus':
-        ipcRenderer.send('newbro-vim-page', { command: command.slice('browse-'.length) })
-        break
+      // The browser's own commands (and the Sidebar's): the renderer runs them.
+      default:
+        ipcRenderer.send('newbro-vim-page', { command })
     }
   }
 
@@ -930,8 +921,11 @@ const VIM_SCROLL_STEP = 60
 // How quickly a glide catches up with its goal: the time constant (ms) of
 // the exponential approach — about 95% of the way after three of these.
 const VIM_GLIDE_MS = 70
-// BROWSE commands that keep going while their key is held.
-const VIM_REPEATABLE = new Set(['browse-scroll-down', 'browse-scroll-up', 'browse-half-page-down', 'browse-half-page-up'])
+// Commands that keep going while their key is held.
+const VIM_REPEATABLE = new Set([
+  'scroll-down', 'scroll-up', 'half-page-down', 'half-page-up',
+  'cursor-down-show', 'cursor-up-show', 'row-move-down', 'row-move-up',
+])
 
 // Input types that take typing; the rest (checkbox, button, …) don't hold
 // the keys.
@@ -960,55 +954,6 @@ function deepActiveElement(): Element | null {
   let el: Element | null = document.activeElement
   while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement
   return el
-}
-
-// Attributes that hide an element: one of them changing on an element that
-// is hidden now may be what hid it (a dialog closing).
-const HIDING_ATTRIBUTES = new Set(['class', 'style', 'hidden', 'aria-hidden', 'open'])
-// The page's layers — dialogs, menus, popups — whose visibility before a key
-// is noted, so a change to one that was hidden all along is told apart from
-// one closing.
-const LAYER_SELECTOR = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [role="tooltip"], ' +
-  '[aria-modal="true"], dialog, [popover], [open]'
-const VISIBILITY_CHECK = { visibilityProperty: true, opacityProperty: true }
-
-/** Starts watching for the page's visible answer to a key: elements added,
- *  removed, restyled or hidden, or focus moving. The returned function stops
- *  watching and says whether any of it happened. Bookkeeping doesn't count:
- *  scratch work (jQuery tests a selector on a <fieldset> it adds and takes
- *  away again), changes to elements that stay hidden (Atlassian's AUI marks
- *  a hidden dialog it still keeps open on Esc), and attributes of <html> and
- *  <body>, where input-modality trackers mark every key. */
-function watchForReaction(): () => boolean {
-  const focusedBefore = deepActiveElement()
-  const layerShown = new Map<Element, boolean>()
-  for (const layer of document.querySelectorAll(LAYER_SELECTOR)) layerShown.set(layer, layer.checkVisibility(VISIBILITY_CHECK))
-  const records: MutationRecord[] = []
-  const observer = new MutationObserver((list) => { records.push(...list) })
-  observer.observe(document, { subtree: true, childList: true, attributes: true })
-  return () => {
-    records.push(...observer.takeRecords())
-    observer.disconnect()
-    if (deepActiveElement() !== focusedBefore) return true
-    const added = new Set<Node>()
-    for (const r of records) r.addedNodes.forEach((node) => added.add(node))
-    // Made while the key was handled: the node or one of its ancestors.
-    const isNew = (node: Node): boolean => {
-      for (let n: Node | null = node; n; n = n.parentNode) if (added.has(n)) return true
-      return false
-    }
-    return records.some((r) => {
-      if (r.type === 'attributes') {
-        const el = r.target as Element
-        if (el === document.documentElement || el === document.body || !el.isConnected || isNew(el)) return false
-        if (el.checkVisibility(VISIBILITY_CHECK)) return true
-        // Hidden now: what hid it, unless it was hidden before too.
-        return layerShown.get(el) ?? HIDING_ATTRIBUTES.has(r.attributeName ?? '')
-      }
-      return Array.from(r.addedNodes).some((node) => node.isConnected) ||
-        Array.from(r.removedNodes).some((node) => !node.isConnected && !isNew(node) && layerShown.get(node as Element) !== false)
-    })
-  }
 }
 
 function parentAcrossShadow(el: Element): Element | null {

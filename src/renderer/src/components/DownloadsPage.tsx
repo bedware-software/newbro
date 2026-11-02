@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import type { DownloadEntry } from '../App'
 import { useAppStore } from '../store/app-store'
-import { isCommandMode } from '../lib/vim-mode'
+import { keepsChromeKeyboard } from '../lib/vim-mode'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 import { Hint, HintBar, KeyCap } from './KeyHints'
 
@@ -173,8 +173,7 @@ function isEditable(target: EventTarget | null): boolean {
 }
 
 /** Win keyboard focus back for the renderer after a popup (the actions menu)
- *  closes: the OS may hand it to the hidden tab view first. Same retry the
- *  Vim mode uses. */
+ *  closes: the OS may hand it to the hidden tab view first. */
 function reclaimRendererFocus(): void {
   window.electronAPI?.reclaimWindowRendererFocus?.()
   for (const delay of [60, 180]) {
@@ -297,10 +296,10 @@ export function DownloadsPage() {
       ?.scrollIntoView({ block: 'nearest' })
   }, [selected?.id])
 
-  // Take the keyboard when the page opens — unless Vim's COMMAND mode is
-  // stepping through tabs, or the user is typing somewhere (the URL bar).
+  // Take the keyboard when the page opens — unless Vim's Ctrl is stepping
+  // through tabs, or the user is typing somewhere (the URL bar).
   useEffect(() => {
-    if (isCommandMode()) return
+    if (keepsChromeKeyboard()) return
     if (isEditable(document.activeElement)) return
     rootRef.current?.focus({ preventScroll: true })
   }, [])

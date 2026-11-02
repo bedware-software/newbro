@@ -1,7 +1,8 @@
-// Key handling Vim mode shares between the window renderer (COMMAND mode, its
-// popups) and tab pages (BROWSE mode, src/preload/webview-stealth.ts):
-// turning a keydown into a key token and resolving token sequences against a
-// keymap. Pure — no DOM beyond the KeyboardEvent fields it reads.
+// Key handling Vim mode shares between the window renderer (COMMAND mode in
+// the browser chrome, its popups) and tab pages (COMMAND mode in the page,
+// src/preload/webview-stealth.ts): turning a keydown into a key token and
+// resolving token sequences against a keymap. Pure — no DOM beyond the
+// KeyboardEvent fields it reads.
 
 /** Joins the tokens of a key sequence into a keymap key. */
 export const SEQUENCE_JOIN = '\u0000'
@@ -53,6 +54,18 @@ export function keyTokenFromEvent(e: KeyEventLike): string | null {
   const other = US_LAYOUT[e.code]
   if (other) return e.shiftKey ? other[1] : other[0]
   return e.key
+}
+
+/** COMMAND-mode commands the page runs itself (webview-stealth.ts) — the
+ *  window renderer passes them on to the active page when the keyboard is
+ *  in the chrome. INSERT (insert-mode) is the page's too, but it moves the
+ *  window's mode along. */
+const PAGE_COMMANDS = new Set([
+  'scroll-down', 'scroll-up', 'half-page-down', 'half-page-up', 'page-top', 'page-bottom', 'focus-input',
+])
+
+export function isPageCommand(command: string): boolean {
+  return PAGE_COMMANDS.has(command)
 }
 
 /** A Ctrl chord's token (`<C-l>`). */

@@ -3,7 +3,7 @@ import { useAppStore, consumeNewTabUrlFocus, consumeEagerLoad } from '../store/a
 import type { TabGroup } from '../store/types'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
-import { isCommandMode } from '../lib/vim-mode'
+import { keepsChromeKeyboard } from '../lib/vim-mode'
 import { internalPageOf, isInternalUrl } from '../lib/internal-pages'
 import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, CircleAlert, type LucideIcon } from 'lucide-react'
 import type { PermissionKind } from '../lib/permissions'
@@ -338,8 +338,8 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick }: Props)
         const wantsUrlFocus = isActiveNow && consumeNewTabUrlFocus(tab.id)
         if (wantsUrlFocus) focusUrlBarForNewTab = true
         window.electronAPI.setupSession?.(tab.partition)
-        // Vim's COMMAND mode keeps the keyboard too (lib/vim-mode.ts).
-        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad, wantsUrlFocus || isCommandMode())
+        // So does Vim's Ctrl stepping through the tabs (lib/vim-mode.ts).
+        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad, wantsUrlFocus || keepsChromeKeyboard())
         createdTabsRef.current.add(tab.id)
         if (isActiveNow) activatedTabsRef.current.add(tab.id)
       }
@@ -354,9 +354,9 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick }: Props)
     } else if (activeTabId && createdTabsRef.current.has(activeTabId)) {
       const tab = currentTabs.find((t) => t.id === activeTabId)
       const url = tab?.url || 'about:blank'
-      // In Vim's COMMAND mode j/k switch tabs live while the chrome keeps
-      // the keyboard.
-      window.electronAPI.tabActivate?.(activeTabId, url, !isCommandMode())
+      // While Vim's Ctrl+J/K step through the tabs, showing each, the chrome
+      // keeps the keyboard.
+      window.electronAPI.tabActivate?.(activeTabId, url, !keepsChromeKeyboard())
       activatedTabsRef.current.add(activeTabId)
       // Focus the URL bar immediately for a brand-new "focus URL" tab,
       // rather than waiting for did-finish-load. Because we asked main to
