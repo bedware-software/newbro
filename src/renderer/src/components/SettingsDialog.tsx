@@ -2973,7 +2973,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
                         For a small screen: the page takes the whole width, and the Sidebar shows while
                         you hold Ctrl in COMMAND mode — Ctrl+J/K step through the tabs, letting go stays
-                        on the one shown. Tapping Ctrl twice (or Toggle Sidebar) pins it open for the
+                        on the one shown. Tapping Esc twice (or Toggle Sidebar) pins it open for the
                         time being.
                       </p>
                     </div>

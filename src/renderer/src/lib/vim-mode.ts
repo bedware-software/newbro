@@ -33,8 +33,8 @@ export function keepsChromeKeyboard(): boolean {
 }
 
 // How long Ctrl is held on its own before the Sidebar shows — a chord typed
-// at speed (Ctrl+L, Ctrl+[) doesn't flash it.
-const CTRL_HOLD_MS = 50
+// at speed (Ctrl+L, Ctrl+[) or a tap doesn't flash it.
+const CTRL_HOLD_MS = 150
 // With no Ctrl held (a Sidebar command rebound to a plain key), how long the
 // Sidebar keys stay live after the last one.
 const WALK_IDLE_MS = 1000

@@ -1251,51 +1251,27 @@ function runMatchingExtensionCommand(input: Electron.Input, targetWindow: Browse
   return false
 }
 
-// A Ctrl tap: pressed and let go on its own, quickly. Two in a row pin the
-// hidden Sidebar open, or let it go (renderer App.tsx). Esc doesn't break
-// the pair: a keyboard that makes a lone Ctrl an Esc too (Karabiner's
-// to_if_alone) sends one after each tap.
-const CTRL_TAP_MAX_MS = 300
-const CTRL_DOUBLE_TAP_MS = 400
-interface CtrlTaps {
-  downAt: number
-  /** Another key went down while Ctrl was held. */
-  chord: boolean
-  /** This press follows a tap closely enough to make a pair. */
-  second: boolean
-  lastTapAt: number
-}
-const ctrlTaps = new WeakMap<BrowserWindow, CtrlTaps>()
+// Esc tapped twice: pins the hidden Sidebar open, or lets it go (renderer
+// App.tsx). A keyboard that makes a lone Ctrl an Esc too (Karabiner's
+// to_if_alone) sends it as Ctrl goes up, so modifiers pressed in between
+// don't break the pair; any other key does.
+const ESC_DOUBLE_TAP_MS = 400
+const lastEscAt = new WeakMap<BrowserWindow, number>()
 
-/** Follows Ctrl in `win` — the page or the chrome — and says when it's just
- *  been tapped twice. */
-function isCtrlDoubleTap(win: BrowserWindow, input: Electron.Input): boolean {
-  let s = ctrlTaps.get(win)
-  if (!s) {
-    s = { downAt: 0, chord: false, second: false, lastTapAt: 0 }
-    ctrlTaps.set(win, s)
-  }
+/** Follows the keys in `win` — the page or the chrome — and says when Esc
+ *  has just been tapped twice. */
+function isEscDoubleTap(win: BrowserWindow, input: Electron.Input): boolean {
+  if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return false
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(input.key)) return false
+  const plainEsc = input.key === 'Escape' && !input.isAutoRepeat && !input.control && !input.shift && !input.alt && !input.meta
+  const last = lastEscAt.get(win)
   const now = Date.now()
-  if (input.key !== 'Control') {
-    if (input.type !== 'keyUp' && input.key !== 'Escape') {
-      s.chord = true
-      s.lastTapAt = 0
-    }
+  if (plainEsc && (last === undefined || now - last > ESC_DOUBLE_TAP_MS)) {
+    lastEscAt.set(win, now)
     return false
   }
-  if (input.isAutoRepeat) return false
-  if (input.type !== 'keyUp') {
-    s.downAt = now
-    s.chord = false
-    s.second = s.lastTapAt > 0 && now - s.lastTapAt <= CTRL_DOUBLE_TAP_MS
-    return false
-  }
-  const tap = s.downAt > 0 && !s.chord && now - s.downAt <= CTRL_TAP_MAX_MS
-  const double = tap && s.second
-  s.downAt = 0
-  s.second = false
-  s.lastTapAt = tap && !double ? now : 0
-  return double
+  lastEscAt.delete(win)
+  return plainEsc
 }
 
 function installShortcutInterceptor(source: Electron.WebContents, targetWindow: BrowserWindow): void {
@@ -1322,12 +1298,12 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
   source.on('before-input-event', (event, input) => {
     // Vim mode: Ctrl pressed and let go anywhere in the window — the page or
     // the chrome. Held in COMMAND it brings up the Sidebar's keys (renderer
-    // lib/vim-mode.ts), which the release ends. A double tap goes first, so
-    // the Sidebar it pins never drops out in between.
-    const doubleTap = !targetWindow.isDestroyed() && isCtrlDoubleTap(targetWindow, input)
+    // lib/vim-mode.ts), which the release ends.
     if (input.key === 'Control' && !input.isAutoRepeat && loadSettings().vimMode && !targetWindow.isDestroyed()) {
-      if (doubleTap) targetWindow.webContents.send('vim-ctrl-double-tap')
       targetWindow.webContents.send('vim-ctrl', input.type !== 'keyUp')
+    }
+    if (isEscDoubleTap(targetWindow, input) && loadSettings().vimMode && !targetWindow.isDestroyed()) {
+      targetWindow.webContents.send('vim-esc-double-tap')
     }
     if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return
 

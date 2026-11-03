@@ -34,11 +34,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('vim-ctrl', handler)
     return () => { ipcRenderer.removeListener('vim-ctrl', handler) }
   },
-  // Ctrl tapped twice in this window, with Vim mode on.
-  onVimCtrlDoubleTap: (callback: () => void) => {
+  // Esc tapped twice in this window, with Vim mode on.
+  onVimEscDoubleTap: (callback: () => void) => {
     const handler = () => callback()
-    ipcRenderer.on('vim-ctrl-double-tap', handler)
-    return () => { ipcRenderer.removeListener('vim-ctrl-double-tap', handler) }
+    ipcRenderer.on('vim-esc-double-tap', handler)
+    return () => { ipcRenderer.removeListener('vim-esc-double-tap', handler) }
   },
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),

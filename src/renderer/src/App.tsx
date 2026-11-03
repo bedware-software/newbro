@@ -204,8 +204,8 @@ declare global {
       vimRunInPage?: (tabId: string, command: string) => void
       /** Ctrl pressed (true) or let go (false) anywhere in this window. */
       onVimCtrl?: (callback: (down: boolean) => void) => () => void
-      /** Ctrl tapped twice in this window. */
-      onVimCtrlDoubleTap?: (callback: () => void) => () => void
+      /** Esc tapped twice in this window. */
+      onVimEscDoubleTap?: (callback: () => void) => () => void
       reclaimWindowRendererFocus?: () => void
       minimizeWindow: () => Promise<void>
       maximizeWindow: () => Promise<void>
@@ -621,7 +621,7 @@ export default function App() {
 
   // Settings → Keyboard Shortcuts → Hide the Sidebar (with Vim mode on): it
   // stays out of the way, Ctrl held in COMMAND shows it, and toggling it (\,
-  // the toolbar button, Ctrl tapped twice) pins it open for the time being.
+  // the toolbar button, Esc tapped twice) pins it open for the time being.
   const sidebarAutoHide = settings?.vimMode === true && settings.sidebarAutoHide === true
   const sidebarAutoHideRef = useRef(sidebarAutoHide)
   sidebarAutoHideRef.current = sidebarAutoHide
@@ -641,7 +641,7 @@ export default function App() {
       return next
     })
   }, [])
-  useEffect(() => window.electronAPI.onVimCtrlDoubleTap?.(() => {
+  useEffect(() => window.electronAPI.onVimEscDoubleTap?.(() => {
     if (sidebarAutoHideRef.current) setSidebarPinned((v) => !v)
   }), [])
 
