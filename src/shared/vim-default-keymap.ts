@@ -66,8 +66,8 @@ new-workspace       N
 next-tab            gt
 prev-tab            gT
 toggle-sidebar      \\
-focus-url           <C-l>
-edit-url            e
+focus-url           e
+edit-url            E
 search              f
 command-palette     :
 copy-url            y
@@ -118,7 +118,7 @@ search-row-7        7
 search-row-8        8
 search-row-9        9
 
-" ── Address editor (e) ───────────────────────────────────────────────
+" ── Address editor (E) ───────────────────────────────────────────────
 " The page's title, and its address big, cut into blocks with a key each:
 " h protocol, d domain, n port, 1–9 the path's levels, p parameters,
 " f fragment. An intent and a block's key act on that block — c changes it
@@ -175,7 +175,9 @@ export function contextOf(command: string): VimContext {
 // keys (browse-*) are COMMAND keys now, under plain names, and the Sidebar's
 // cursor moved onto Ctrl chords, so j/k/h/l/gg/G/x are the page's. v4 put
 // the tab numbers (tab-1…tab-9) on Ctrl too, with the Sidebar that shows
-// them: a plain digit picked a tab out of sight when it's hidden. A saved
+// them: a plain digit picked a tab out of sight when it's hidden. v5 took
+// the address bar off Ctrl (<C-l> brought the Sidebar up on the way) and
+// onto e, moving the address editor to E. A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
 // the rest, including commands it couldn't know about.
@@ -266,6 +268,12 @@ const V3_DEFAULT_KEYS: Record<string, string> = Object.fromEntries(
   [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`tab-${n}`, String(n)]),
 )
 
+/** v4 defaults of the commands v5 rebound. */
+const V4_DEFAULT_KEYS: Record<string, string> = {
+  'focus-url': '<C-l>',
+  'edit-url': 'e',
+}
+
 /** Commands v3 added under new names; no older keymap mentions them. */
 const NEW_IN_V3 = new Set([
   'scroll-down', 'scroll-up', 'half-page-down', 'half-page-up', 'page-top', 'page-bottom',
@@ -301,12 +309,12 @@ function sequencesClash(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1, v2 or v3) over to the
+ * Carries a keymap saved under older defaults (v1 to v4) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
  * nothing to keep.
  */
-export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3): string | null {
+export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4): string | null {
   // What the owner had, by the old name.
   const mine = new Map<string, string>()
   for (const line of saved.split('\n')) {
@@ -319,12 +327,13 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3): string 
   const oldDefault = (command: string, fallback: string): string =>
     (fromVersion === 1 ? V1_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 2 ? V2_DEFAULT_KEYS[command] : undefined) ??
-    V3_DEFAULT_KEYS[command] ??
+    (fromVersion <= 3 ? V3_DEFAULT_KEYS[command] : undefined) ??
+    V4_DEFAULT_KEYS[command] ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
   const existed = (command: string): boolean =>
-    fromVersion === 3
+    fromVersion >= 3
       ? !(command in RENAMED_IN_V3)
       : !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))
   // The old commands that make up each current one: itself, and what was

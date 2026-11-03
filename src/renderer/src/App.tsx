@@ -641,14 +641,19 @@ export default function App() {
       return next
     })
   }, [])
-  useEffect(() => window.electronAPI.onVimEscDoubleTap?.(() => {
-    if (sidebarAutoHideRef.current) setSidebarPinned((v) => !v)
-  }), [])
 
   // The help window (?), and the mode it was opened from.
   const [vimHelpFrom, setVimHelpFrom] = useState<VimMode | null>(null)
   // The Vim mode API for the shortcut handler, which is registered once.
   const vimRef = useRef<ReturnType<typeof useVimMode> | null>(null)
+
+  // Esc tapped twice pins the hidden Sidebar, or lets it go — then at once:
+  // the Ctrl tap that sent the second Esc would keep it up a moment longer.
+  useEffect(() => window.electronAPI.onVimEscDoubleTap?.(() => {
+    if (!sidebarAutoHideRef.current) return
+    setSidebarPinned((v) => !v)
+    vimRef.current?.endSidebarKeys()
+  }), [])
 
   // Page-fullscreen "cinema mode". A video going fullscreen fills only the
   // tab's view rect, so the window chrome stays on screen. We lean into

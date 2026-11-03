@@ -1,4 +1,4 @@
-// Whether the address editor (components/UrlEditor.tsx, Vim's e) is up. The
+// Whether the address editor (components/UrlEditor.tsx, Vim's E) is up. The
 // toolbar shows workspace stats where the address bar was while it is.
 
 import { create } from 'zustand'

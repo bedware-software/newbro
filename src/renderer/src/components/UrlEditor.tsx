@@ -1,4 +1,4 @@
-// The address editor (Vim's e): the page's title, and under it the active
+// The address editor (Vim's E): the page's title, and under it the active
 // tab's address big in a field, cut into blocks — protocol, domain, port,
 // each path level, parameters, fragment — labelled underneath with the key
 // that names each one. In COMMAND mode an intent and a block's key act on

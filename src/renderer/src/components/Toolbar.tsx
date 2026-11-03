@@ -1468,7 +1468,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
             </button>
             <div className="w-px h-full ml-1.5 bg-border" />
           </>)}
-          {/* The address editor (e) has the address: the bar shows stats. */}
+          {/* The address editor (E) has the address: the bar shows stats. */}
           {urlEditorOpen
             ? <WorkspaceStats />
             : <Omnibox tabId={activeTabId} tabUrl={activeTab?.url || ''} anchorRef={urlBarRef} />}

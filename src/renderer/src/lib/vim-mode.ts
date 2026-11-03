@@ -275,6 +275,9 @@ export interface VimModeState {
   /** A popup closed: in COMMAND the page gets the keyboard back — unless
    *  what the popup did put it in a chrome field. */
   returnToPage: () => void
+  /** The Sidebar keys end now, a Ctrl tap's linger and all — the Sidebar
+   *  pinned open was just let go. */
+  endSidebarKeys: () => void
 }
 
 export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab }: Options): VimModeState {
@@ -514,5 +517,5 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     }
   }, [enabled, feed, reset, setMode, endSidebarKeys, clearCtrlTimers])
 
-  return { mode, pending, sidebarKeys, enterCommand, enterInsert, startTabWalk, returnToPage }
+  return { mode, pending, sidebarKeys, enterCommand, enterInsert, startTabWalk, returnToPage, endSidebarKeys }
 }
