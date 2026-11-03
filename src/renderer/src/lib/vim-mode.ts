@@ -32,9 +32,12 @@ export function keepsChromeKeyboard(): boolean {
   return walkingTabs
 }
 
-// How long Ctrl is held on its own before the Sidebar shows — a chord typed
-// at speed (Ctrl+L, Ctrl+[) or a tap doesn't flash it.
-const CTRL_HOLD_MS = 150
+// Ctrl let go this soon is a tap: the Sidebar it brought up stays a moment
+// longer, for a second tap — Esc tapped twice pins it (App.tsx; a keyboard
+// that makes a lone Ctrl an Esc too sends one per tap) — so it doesn't drop
+// out in between.
+const CTRL_TAP_MS = 300
+const CTRL_TAP_LINGER_MS = 400
 // With no Ctrl held (a Sidebar command rebound to a plain key), how long the
 // Sidebar keys stay live after the last one.
 const WALK_IDLE_MS = 1000
@@ -281,6 +284,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
   const insertInChromeRef = useRef(false)
   const [sidebarKeys, setSidebarKeys] = useState(false)
   const ctrlDownRef = useRef(false)
+  const ctrlDownAtRef = useRef(0)
   const ctrlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const walkIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -480,15 +484,19 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     // chrome (main sees both) — or the window losing it.
     const cleanupCtrl = window.electronAPI.onVimCtrl?.((down) => {
       ctrlDownRef.current = down
-      if (!down) {
+      if (down) {
+        ctrlDownAtRef.current = Date.now()
+        clearCtrlTimers()
+        if (modeRef.current === 'command') setSidebarKeys(true)
+        return
+      }
+      const tap = !walkingTabs && Date.now() - ctrlDownAtRef.current <= CTRL_TAP_MS
+      if (!tap || modeRef.current !== 'command') {
         endSidebarKeys()
         return
       }
-      if (modeRef.current !== 'command' || ctrlTimerRef.current) return
-      ctrlTimerRef.current = setTimeout(() => {
-        ctrlTimerRef.current = null
-        if (ctrlDownRef.current && modeRef.current === 'command') setSidebarKeys(true)
-      }, CTRL_HOLD_MS)
+      clearCtrlTimers()
+      ctrlTimerRef.current = setTimeout(endSidebarKeys, CTRL_TAP_LINGER_MS)
     })
 
     window.addEventListener('keydown', onKeyDown, true)
@@ -504,7 +512,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
       document.removeEventListener('focusin', onFocusIn)
       document.removeEventListener('focusout', onFocusOut)
     }
-  }, [enabled, feed, reset, setMode, endSidebarKeys])
+  }, [enabled, feed, reset, setMode, endSidebarKeys, clearCtrlTimers])
 
   return { mode, pending, sidebarKeys, enterCommand, enterInsert, startTabWalk, returnToPage }
 }
