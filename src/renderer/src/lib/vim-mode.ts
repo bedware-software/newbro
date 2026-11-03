@@ -32,6 +32,9 @@ export function keepsChromeKeyboard(): boolean {
   return walkingTabs
 }
 
+// How long Ctrl is held on its own before the Sidebar shows — a chord typed
+// at speed (Ctrl+L, Ctrl+[) doesn't flash it.
+const CTRL_HOLD_MS = 50
 // With no Ctrl held (a Sidebar command rebound to a plain key), how long the
 // Sidebar keys stay live after the last one.
 const WALK_IDLE_MS = 1000
@@ -278,6 +281,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
   const insertInChromeRef = useRef(false)
   const [sidebarKeys, setSidebarKeys] = useState(false)
   const ctrlDownRef = useRef(false)
+  const ctrlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const walkIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // What the pages get (main passes it on): the mode, COMMAND's keys, and a
@@ -298,21 +302,23 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
   const isActiveTabRef = useRef(isActiveTab)
   isActiveTabRef.current = isActiveTab
 
-  const clearWalkIdleTimer = useCallback(() => {
+  const clearCtrlTimers = useCallback(() => {
+    if (ctrlTimerRef.current) clearTimeout(ctrlTimerRef.current)
     if (walkIdleTimerRef.current) clearTimeout(walkIdleTimerRef.current)
+    ctrlTimerRef.current = null
     walkIdleTimerRef.current = null
   }, [])
 
   /** The Sidebar keys end: Ctrl let go (or the window lost it). The tab the
    *  walk stopped on gets the keyboard. */
   const endSidebarKeys = useCallback(() => {
-    clearWalkIdleTimer()
+    clearCtrlTimers()
     setSidebarKeys(false)
     if (!walkingTabs) return
     walkingTabs = false
     log.event('vim:tab walk', 'end')
     if (modeRef.current === 'command') focusPageRef.current()
-  }, [clearWalkIdleTimer])
+  }, [clearCtrlTimers])
 
   useEffect(() => {
     endSidebarKeysHook = endSidebarKeys
@@ -331,10 +337,10 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     if (next !== 'command') {
       // The Sidebar keys are COMMAND's.
       walkingTabs = false
-      clearWalkIdleTimer()
+      clearCtrlTimers()
       setSidebarKeys(false)
     }
-  }, [clearWalkIdleTimer, pushState])
+  }, [clearCtrlTimers, pushState])
 
   const enterCommand = useCallback((force: boolean) => {
     if (modeRef.current === null) return
@@ -366,7 +372,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
 
   const startTabWalk = useCallback(() => {
     if (modeRef.current !== 'command') return
-    clearWalkIdleTimer()
+    clearCtrlTimers()
     setSidebarKeys(true)
     if (!walkingTabs) {
       walkingTabs = true
@@ -375,7 +381,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     }
     // Rebound to a plain key: no Ctrl release will end it.
     if (!ctrlDownRef.current) walkIdleTimerRef.current = setTimeout(endSidebarKeys, WALK_IDLE_MS)
-  }, [clearWalkIdleTimer, endSidebarKeys])
+  }, [clearCtrlTimers, endSidebarKeys])
 
   // Vim mode starts in COMMAND, like vim. Not forced: of several windows
   // restored at launch only the focused one takes the keyboard.
@@ -478,7 +484,11 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
         endSidebarKeys()
         return
       }
-      if (modeRef.current === 'command') setSidebarKeys(true)
+      if (modeRef.current !== 'command' || ctrlTimerRef.current) return
+      ctrlTimerRef.current = setTimeout(() => {
+        ctrlTimerRef.current = null
+        if (ctrlDownRef.current && modeRef.current === 'command') setSidebarKeys(true)
+      }, CTRL_HOLD_MS)
     })
 
     window.addEventListener('keydown', onKeyDown, true)
