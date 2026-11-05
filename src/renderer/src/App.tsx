@@ -13,7 +13,7 @@ import { FindPopup } from './components/FindPopup'
 import { UrlEditor } from './components/UrlEditor'
 import { openUrlEditor, useUrlEditorStore } from './lib/url-editor'
 import { closeSplit, focusOtherPane, isSplitShown, otherPaneTab, startSplit, useSplitStore } from './lib/split-view'
-import { SearchDialog } from './components/SearchDialog'
+import { SearchDialog, type SearchFilter } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
@@ -538,9 +538,21 @@ function applyTheme(theme: ThemeChoice, lightVariant: string, darkVariant: strin
 
 const SIDEBAR_VISIBLE_KEY = 'newbro-sidebar-visible'
 
+/** Vim's COMMAND keys that open Search Everything on one kind of thing,
+ *  typing (INSERT) at once. */
+const VIM_PICK_FILTERS: Record<string, SearchFilter> = {
+  'pick-workspace': 'workspace',
+  'pick-tab': 'tab',
+  'pick-group': 'tabGroup',
+  'pick-profile': 'profile',
+}
+
 export default function App() {
   const [ready, setReady] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  // The filter Vim's pick-* keys open Search Everything on; null for the
+  // one it remembers.
+  const [searchOpenFilter, setSearchOpenFilter] = useState<SearchFilter | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTabRequest, setSettingsTabRequest] = useState<SettingsTabRequest | null>(null)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
@@ -971,6 +983,7 @@ export default function App() {
           break
         }
         case 'search':
+          setSearchOpenFilter(null)
           setSearchOpen((v) => !v)
           break
         case 'settings':
@@ -1434,6 +1447,12 @@ export default function App() {
     return true
   }
   const runVimCommand = (command: string): void => {
+    const pickFilter = VIM_PICK_FILTERS[command]
+    if (pickFilter) {
+      setSearchOpenFilter(pickFilter)
+      setSearchOpen(true)
+      return
+    }
     switch (command) {
       case 'insert-mode':
         vimRef.current?.enterInsert()
@@ -1508,7 +1527,7 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => setSearchOpen(true)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => { setSearchOpenFilter(null); setSearchOpen(true) }} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           visible={sidebarShown}
@@ -1547,6 +1566,7 @@ export default function App() {
         onOpenChange={setSearchOpen}
         windowWorkspaceId={windowWorkspaceId}
         vimKeymap={vimEnabled ? vimKeymap.search : null}
+        openFilter={searchOpenFilter}
       />
       <VimHelpDialog
         open={vimHelpFrom !== null}

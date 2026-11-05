@@ -20,6 +20,9 @@ interface Props {
   windowWorkspaceId: string | null
   /** Vim mode's keymap for this window; null while Vim mode is off. */
   vimKeymap: VimKeymap | null
+  /** The filter to open on (Vim's pick-* keys), without remembering it as
+   *  the one the window opens on next time; null opens on the remembered one. */
+  openFilter?: SearchFilter | null
 }
 
 /** Search commands from the Vim keymap → the filter they pick. */
@@ -69,6 +72,7 @@ const FILTER_LETTERS: Record<FilterType, string> = {
 
 /** Exclusive filter selection — 'all' or exactly one item type. */
 type FilterSelection = 'all' | FilterType
+export type SearchFilter = FilterSelection
 
 /** Where tab groups / tabs are searched: every workspace or only the one this window shows. */
 type SearchScope = 'all' | 'current'
@@ -123,7 +127,7 @@ function SearchBreadcrumb({ item }: { item: SearchableItem }) {
 const isMac = navigator.platform.includes('Mac')
 const MOD = isMac ? '⌘' : 'Ctrl+'
 
-export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap }: Props) {
+export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap, openFilter = null }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [filter, setFilter] = useState<FilterSelection>(loadFilter)
@@ -214,6 +218,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap 
     if (open) {
       setQuery('')
       setSelectedIndex(0)
+      setFilter(openFilter ?? loadFilter())
       setTimeout(() => inputRef.current?.focus(), 50)
     }
   }, [open])

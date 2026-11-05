@@ -57,21 +57,28 @@ split-down          V
 split-focus         <C-w>
 split-close         q
 
+" ── COMMAND: Search Everything on one kind of thing ───────────────────
+" Opens typing (INSERT) with the filter set; Esc goes to its COMMAND keys.
+pick-workspace      w
+pick-tab            t
+pick-group
+pick-profile        p
+
 " ── COMMAND: app commands (the regular shortcuts' ids) ────────────────
-new-tab             t
+new-tab             <CR>
 close-tab           x
 reopen-closed-tab   T
 close-window
 new-workspace       N
-next-tab            gt
-prev-tab            gT
+next-tab
+prev-tab
 toggle-sidebar      \\
-focus-url           e
-edit-url            E
+focus-url
+edit-url            e
 search              f
 command-palette     :
 copy-url            y
-paste-url           p
+paste-url
 paste-url-new-tab   P
 reload              r
 settings            ,
@@ -98,8 +105,8 @@ toggle-bookshelf    B
 open-downloads      D
 
 " ── Search Everything and the Command Palette ─────────────────────────
-" Search Everything opens in COMMAND mode, the Command Palette in INSERT;
-" insert-mode (i) drops into the box and Esc comes back out. Esc in
+"Search Everything and the Command Palette open in INSERT; Esc goes to
+" COMMAND, and insert-mode (i) drops back into the box. Esc in
 " COMMAND closes the window. The scroll keys above (j/k, gg/G) move through
 " the results, Enter runs one. The filters are Search Everything's.
 search-all          a
@@ -118,7 +125,9 @@ search-row-7        7
 search-row-8        8
 search-row-9        9
 
-" ── Address editor (E) ───────────────────────────────────────────────
+" ── Address editor (e) ───────────────────────────────────────────────
+" Opens typing (INSERT) over the whole address, selected, as other
+" browsers' address bars do; Esc goes to its COMMAND keys.
 " The page's title, and its address big, cut into blocks with a key each:
 " h protocol, d domain, n port, 1–9 the path's levels, p parameters,
 " f fragment. An intent and a block's key act on that block — c changes it
@@ -177,7 +186,10 @@ export function contextOf(command: string): VimContext {
 // the tab numbers (tab-1…tab-9) on Ctrl too, with the Sidebar that shows
 // them: a plain digit picked a tab out of sight when it's hidden. v5 took
 // the address bar off Ctrl (<C-l> brought the Sidebar up on the way) and
-// onto e, moving the address editor to E. A saved
+// onto e, moving the address editor to E. v6 put the address editor on e
+// (the plain address bar went unbound), opened Search Everything on one kind
+// of thing from w/t/p (pick-*), moved new-tab to <CR> and unbound paste-url,
+// next-tab and prev-tab, whose keys those took. A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
 // the rest, including commands it couldn't know about.
@@ -274,6 +286,19 @@ const V4_DEFAULT_KEYS: Record<string, string> = {
   'edit-url': 'e',
 }
 
+/** v5 defaults of the commands v6 rebound. */
+const V5_DEFAULT_KEYS: Record<string, string> = {
+  'new-tab': 't',
+  'paste-url': 'p',
+  'next-tab': 'gt',
+  'prev-tab': 'gT',
+  'focus-url': 'e',
+  'edit-url': 'E',
+}
+
+/** Commands v6 added; no older keymap mentions them. */
+const NEW_IN_V6 = new Set(['pick-workspace', 'pick-tab', 'pick-group', 'pick-profile'])
+
 /** Commands v3 added under new names; no older keymap mentions them. */
 const NEW_IN_V3 = new Set([
   'scroll-down', 'scroll-up', 'half-page-down', 'half-page-up', 'page-top', 'page-bottom',
@@ -309,12 +334,12 @@ function sequencesClash(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1 to v4) over to the
+ * Carries a keymap saved under older defaults (v1 to v5) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
  * nothing to keep.
  */
-export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4): string | null {
+export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5): string | null {
   // What the owner had, by the old name.
   const mine = new Map<string, string>()
   for (const line of saved.split('\n')) {
@@ -328,12 +353,14 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4): str
     (fromVersion === 1 ? V1_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 2 ? V2_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 3 ? V3_DEFAULT_KEYS[command] : undefined) ??
-    V4_DEFAULT_KEYS[command] ??
+    (fromVersion <= 4 ? V4_DEFAULT_KEYS[command] : undefined) ??
+    V5_DEFAULT_KEYS[command] ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
   const existed = (command: string): boolean =>
-    fromVersion >= 3
+    NEW_IN_V6.has(command) ? false
+    : fromVersion >= 3
       ? !(command in RENAMED_IN_V3)
       : !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))
   // The old commands that make up each current one: itself, and what was

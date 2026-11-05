@@ -112,8 +112,8 @@ interface Props {
    *  the CmdOrCtrl+N quick-jump. Visible state is owned by App.tsx because
    *  it lives in the settings store. */
   showTabNumbers: boolean
-  /** Vim's Sidebar keys are live (Ctrl held in COMMAND): a block cursor on
-   *  the active row, which the keymap's Ctrl chords act on. */
+  /** Vim's Sidebar keys are live (Ctrl held in COMMAND): the keymap's Ctrl
+   *  chords act on the active row. */
   vimActive: boolean
   /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
   vimKeymap: VimKeymap | null
@@ -469,7 +469,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
   }
 
   // ── Vim mode ──
-  // While Ctrl is held the block cursor sits on the active row — the active
+  // While Ctrl is held the (unmarked) cursor sits on the active row — the active
   // tab, the group we're parked on, or the header of the collapsed group
   // hiding the active tab. Ctrl+J/K step through the tabs showing each, so
   // it follows the active tab; folding a group leaves it on the header.
@@ -891,7 +891,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
         if (!vimCursorId) break
         const row = findVimRow(vimCursorId)
         if (!row) break
-        // Just under the row, past the cursor block and the favicon column.
+        // Just under the row, past the favicon column.
         const rect = row.getBoundingClientRect()
         const point = { x: rect.left + 24, y: rect.bottom }
         if (groupById(vimCursorId)) void openGroupMenu(vimCursorId, point, true)
@@ -982,7 +982,6 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
         {showBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
-        {vimActive && vimCursorId === tab.id && <span data-vim-cursor="" aria-hidden />}
         <TabFavicon favicon={tab.favicon} />
         {split && splitPane && (
           <span
@@ -1112,7 +1111,6 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
         {showGroupBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
-        {vimActive && vimCursorId === group.id && <span data-vim-cursor="" aria-hidden />}
         {/* Count badge — leading-edge column. Sized to match a tab row's
             favicon (w-4 h-4) so the leftmost glyph in every sidebar row
             sits on the same vertical axis. Colored with the group's hue

@@ -1,4 +1,4 @@
-// The address editor (Vim's E): the page's title, and under it the active
+// The address editor (Vim's e): the page's title, and under it the active
 // tab's address big in a field, cut into blocks — protocol, domain, port,
 // each path level, parameters, fragment — labelled underneath with the key
 // that names each one. In COMMAND mode an intent and a block's key act on
@@ -6,7 +6,8 @@
 // copies it, p pastes over it; the intent's key again (yy, cc, rr) acts on
 // the whole address, and P pastes over all of it. u goes up a level, t
 // keeps only the site, n copies the page's title; i / A / I / C go to
-// typing. Enter goes there.
+// typing. Enter goes there. It opens typing over the whole address,
+// selected, as other browsers' address bars do; Esc goes to COMMAND.
 // A pinned popup over the top of the page area, or wherever it was dragged
 // to, and modal: the window behind it takes no clicks or focus until it
 // closes. While it's up the toolbar shows workspace stats where the address
@@ -142,7 +143,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     flashTimerRef.current = setTimeout(() => setFlash(null), FLASH_MS)
   }, [])
 
-  // Opening: the active tab's address, COMMAND mode, nothing selected.
+  // Opening: the active tab's address (selected once the box is up).
   useEffect(() => {
     if (!open) {
       setTarget(null)
@@ -424,19 +425,20 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     keymap: vimKeymap,
     popup: popupWindow,
     box: inputRef,
-    initial: 'command',
+    initial: 'insert',
     open,
     onCommand,
     onEscape: closeUrlEditor,
     intercept,
   })
 
-  // Without Vim mode the box has the keys from the start.
+  // The box has the keys from the start, the whole address selected — typing
+  // replaces it, as in any address bar; Vim's Esc goes to COMMAND.
   useEffect(() => {
-    if (!popupWindow || vimKeymap) return
-    const t = setTimeout(() => typeAt(valueRef.current.length), 0)
+    if (!popupWindow) return
+    const t = setTimeout(() => typeAt(0, valueRef.current.length), 0)
     return () => clearTimeout(t)
-  }, [popupWindow, vimKeymap, typeAt])
+  }, [popupWindow, typeAt])
 
   useEffect(() => () => {
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
