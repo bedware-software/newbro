@@ -17,7 +17,7 @@ import { dirname, isAbsolute, join, resolve } from 'path'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { pathToFileURL } from 'url'
 import { is } from '@electron-toolkit/utils'
-import { registerIpcHandlers, registerDetachedPopup } from './ipc'
+import { registerIpcHandlers, registerDetachedPopup, modalPopupOf } from './ipc'
 import { setupAutoUpdater } from './updater'
 import { initCloudSync, flushPushSync } from './cloud-sync'
 import { handleServerAuth, registerHttpAuthIpc } from './http-auth'
@@ -1048,7 +1048,9 @@ function dispatchExternalUrl(url: string): void {
   }
   if (target.isMinimized()) target.restore()
   target.show()
-  target.focus()
+  // The Open Link picker is modal to the window: one still up from the last
+  // link keeps the keyboard, and this link waits its turn in it.
+  ;(modalPopupOf(target) ?? target).focus()
   // Use the dedicated 'open-external-url' channel — the renderer routes
   // this through the picker dialog so the user can choose a workspace /
   // group. The plain 'open-url-as-tab' channel is reserved for in-app

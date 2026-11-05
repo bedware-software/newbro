@@ -84,10 +84,16 @@ interface Props {
   /** What the scope switch reads in each position, e.g. "This workspace" /
    *  "All workspaces". */
   scopeLabels?: Record<'current' | 'all', string>
-  /** A second action on ⌘↵ (Ctrl+Enter off the Mac) that doesn't act on the
-   *  selected row — e.g. "Open in Safari". Its label sits by a ⌘↵ hint in the
-   *  footer. */
+  /** A second action on ⌘↵ or Ctrl+Enter (Ctrl+Enter alone off the Mac) that
+   *  doesn't act on the selected row — e.g. "Open in Safari". Its label sits
+   *  by a ⌘↵ hint in the footer. */
   altAction?: { label: string; run: () => void }
+  /** For a question that mustn't get lost (a link another app handed over):
+   *  the picker floats above every window, other apps' too, the window that
+   *  opened it takes no clicks or focus until it's answered, and clicking
+   *  away doesn't close it — a choice or Esc does. Fixed for the picker's
+   *  life. */
+  modal?: boolean
   /** Changing it clears the search, as re-opening does — for a dialog that
    *  swaps in a different list without closing. */
   resetKey?: string
@@ -115,6 +121,7 @@ export function PickerDialog({
   onScopeChange,
   scopeLabels,
   altAction,
+  modal = false,
   resetKey,
   onConfirm,
   onCancel,
@@ -209,7 +216,8 @@ export function PickerDialog({
       setSelectedIndex((i) => Math.max(i - 1, 0))
     } else if (e.key === 'Enter') {
       e.preventDefault()
-      if (altAction && (isMac ? e.metaKey : e.ctrlKey)) {
+      // Ctrl+Enter everywhere; on the Mac ⌘↵ as well.
+      if (altAction && (e.ctrlKey || (isMac && e.metaKey))) {
         altAction.run()
         return
       }
@@ -217,6 +225,10 @@ export function PickerDialog({
       if (picked) onConfirm(picked.id, { background: e.shiftKey })
     } else if (e.key === 'Escape') {
       e.preventDefault()
+      // The window closes on Esc itself (DetachedWindow) — that would be a
+      // second cancel for one press, and the Open Link picker would drop the
+      // next link it has queued along with this one.
+      e.stopPropagation()
       onCancel()
     }
   }
@@ -234,7 +246,9 @@ export function PickerDialog({
       width={width}
       height={height}
       resizable={false}
-      closeOnBlur
+      closeOnBlur={!modal}
+      alwaysOnTop={modal}
+      modal={modal}
       matchRunwaPalette
       onClose={onCancel}
     >

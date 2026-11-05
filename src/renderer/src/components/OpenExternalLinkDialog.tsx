@@ -5,7 +5,7 @@ import { log } from '../lib/log'
 import type { OtherBrowser } from '../App'
 import { PickerDialog } from './PickerDialog'
 
-// ⌘↵ (Ctrl+Enter on Windows) passes the link on to another browser
+// Ctrl+Enter, or ⌘↵ on the Mac, passes the link on to another browser
 // (main/other-browser.ts), on macOS and Windows.
 const isMac = navigator.platform.includes('Mac')
 const canPassOn = isMac || navigator.platform.startsWith('Win')
@@ -150,6 +150,7 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
         items={browsers.map((browser) => ({ id: browser.id, label: browser.name }))}
         emptyMessage="No other browser is installed"
         confirmVerb="Open"
+        modal
         resetKey="browsers"
         onConfirm={(id) => {
           const pick = browsers.find((browser) => browser.id === id)
@@ -177,6 +178,9 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
       altAction={canPassOn
         ? { label: otherBrowser ? `Open in ${otherBrowser.name}` : 'Other browser', run: () => void passOn() }
         : undefined}
+      // The link came from another app, which may still be in front: the
+      // picker stays above every window until it's answered.
+      modal
       resetKey="workspaces"
       onConfirm={handleConfirm}
       onCancel={onClose}

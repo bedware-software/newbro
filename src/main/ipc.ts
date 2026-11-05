@@ -196,6 +196,16 @@ export function registerDetachedPopup(popup: BrowserWindow, popupId: string | nu
 
 // How many modal popups hold each window disabled.
 const modalHolds = new WeakMap<BrowserWindow, number>()
+// The modal popups each window waits on, in the order they opened.
+const modalPopups = new WeakMap<BrowserWindow, BrowserWindow[]>()
+
+/** The popup `win` is waiting on (DetachedWindow `modal`), if one is open —
+ *  the last to open. Whoever would focus `win` focuses it instead: on Windows
+ *  the window is disabled meanwhile and would hold the keyboard for nothing. */
+export function modalPopupOf(win: BrowserWindow): BrowserWindow | null {
+  const open = (modalPopups.get(win) ?? []).filter((popup) => !popup.isDestroyed())
+  return open[open.length - 1] ?? null
+}
 
 /** Makes `popup` modal to `parent` the way a native dialog is: the parent is
  *  disabled — no clicks, no focus; the OS hands its activation to the popup,
@@ -222,10 +232,12 @@ function holdModal(popup: BrowserWindow, parent: BrowserWindow): void {
       if (left === 0) parent.setEnabled(true)
     }
   }
+  modalPopups.set(parent, [...(modalPopups.get(parent) ?? []), popup])
   let held = true
   const release = (): void => {
     if (!held) return
     held = false
+    modalPopups.set(parent, (modalPopups.get(parent) ?? []).filter((other) => other !== popup))
     if (parent.isDestroyed()) return
     unhold()
   }

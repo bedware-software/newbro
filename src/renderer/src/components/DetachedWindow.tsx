@@ -35,8 +35,8 @@ interface Props {
   // parent window or another app). Armed only after the popup first gains
   // focus, so the show-sequence's transient blurs don't dismiss it.
   closeOnBlur?: boolean
-  // Keep the popup floating above the app's windows (a modal-ish offer that
-  // shouldn't get buried). Applied at reveal time.
+  // Keep the popup floating above every window, other apps' too (the Open
+  // Link picker, which shouldn't get buried). Applied at reveal time.
   alwaysOnTop?: boolean
   /** The window that opened it takes no clicks or focus while it's open
    *  (the address editor). Fixed for the popup's life. */

@@ -1,6 +1,6 @@
 // Passing a link on to another browser. A link another app hands Newbro (as
-// the default browser) lands in the Open Link picker; ⌘↵ (Ctrl+Enter on
-// Windows) there opens it in a browser the user picked once instead — Safari,
+// the default browser) lands in the Open Link picker; Ctrl+Enter (or ⌘↵ on
+// the Mac) there opens it in a browser the user picked once instead — Safari,
 // Chrome, Edge — for a site that works better there, like one whose passkey
 // is in iCloud Keychain and wants Touch ID (webauthn.ts can only reach those
 // through an iPhone). macOS and Windows.
