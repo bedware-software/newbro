@@ -89,6 +89,7 @@ export type TabEvent =
   // closes the tab, Ctrl+J shows the next one).
   | { type: 'vim'; tabId: string; mode: 'command' | 'insert'; why: string }
   | { type: 'vim-command'; tabId: string; command: string }
+  | { type: 'vim-pending'; tabId: string; pending: string }
 
 interface TabRecord {
   tabId: string
@@ -2534,9 +2535,10 @@ export function installTabPreloadListeners(): void {
     const tabId = wcIdToTabId.get(event.sender.id)
     const rec = tabId ? tabs.get(tabId) : undefined
     if (!tabId || !rec || typeof raw !== 'object' || raw === null) return
-    const r = raw as { mode?: unknown; why?: unknown; command?: unknown }
+    const r = raw as { mode?: unknown; why?: unknown; command?: unknown; pending?: unknown }
     let evt: TabEvent | null = null
     if (typeof r.command === 'string') evt = { type: 'vim-command', tabId, command: r.command }
+    else if (typeof r.pending === 'string') evt = { type: 'vim-pending', tabId, pending: r.pending }
     else if (r.mode === 'command' || r.mode === 'insert') evt = { type: 'vim', tabId, mode: r.mode, why: typeof r.why === 'string' ? r.why : '' }
     if (evt) sendToWindowRenderer(rec.windowId, 'tab-event', evt)
   })

@@ -10,7 +10,8 @@ import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dro
 import { useVimSidebar } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { displayKeySequence, keysFor, type SidebarCommand, type VimKeymap } from '../lib/vim-keymap'
-import { SidebarHintBar } from './KeyHints'
+import { RowHint, SidebarHintBar } from './KeyHints'
+import { useHintLabels, useHintTargets } from '../lib/hint-labels'
 import { SplitGlyph } from './SplitPanes'
 import { isSplitShown, useSplitStore } from '../lib/split-view'
 
@@ -112,14 +113,22 @@ interface Props {
    *  the CmdOrCtrl+N quick-jump. Visible state is owned by App.tsx because
    *  it lives in the settings store. */
   showTabNumbers: boolean
-  /** Vim's Sidebar keys are live (Ctrl held in COMMAND): the keymap's Ctrl
-   *  chords act on the active row. */
+  /** Vim's Sidebar keys are live (one was just used in COMMAND): they act
+   *  on the active row. */
   vimActive: boolean
   /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
   vimKeymap: VimKeymap | null
+  /** Its rows wear two-letter labels that pick them (lib/hint-labels.ts):
+   *  Vim's COMMAND with the Sidebar open of itself, not shown by Ctrl. */
+  hintsOn: boolean
+  /** Keys typed so far of an unfinished COMMAND sequence. */
+  vimPending: string
 }
 
-export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props) {
+// Its rows' ids among the window's hint targets (the group page has its own).
+const hintId = (rowId: string): string => `sidebar:${rowId}`
+
+export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn, vimPending }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -469,12 +478,12 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
   }
 
   // ── Vim mode ──
-  // While Ctrl is held the (unmarked) cursor sits on the active row — the active
+  // While the Sidebar keys are live the (unmarked) cursor sits on the active row — the active
   // tab, the group we're parked on, or the header of the collapsed group
   // hiding the active tab. Ctrl+J/K step through the rows showing each — a
   // tab's page, or parked on a group, its tabs — so it follows what's shown;
   // folding a group leaves it on the header.
-  // Activating something else (a click, 1-9, Search) or letting Ctrl go
+  // Activating something else (a click, 1-9, Search) or the keys ending
   // brings it back to the active row.
   const [vimCursorOverride, setVimCursorOverride] = useState<string | null>(null)
   useEffect(() => { setVimCursorOverride(null) }, [activeTabId, activeTabGroupId, vimActive])
@@ -484,6 +493,19 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
   const vimCursorId = vimCursorOverride !== null && visibleRowIds.includes(vimCursorOverride)
     ? vimCursorOverride
     : activeRowId
+  // COMMAND's labels on every row showing, after the group page's.
+  useHintTargets('sidebar', 1, hintsOn
+    ? visibleRowIds.map((id) => ({
+      id: hintId(id),
+      activate: () => {
+        const ws = useAppStore.getState().getActiveWorkspace()
+        if (ws?.tabGroups.some((g) => g.id === id)) setActiveGroup(id)
+        else setActiveTab(id)
+      },
+    }))
+    : null)
+  const hintLabels = useHintLabels()
+
   // Listening whenever it's showing: the first Ctrl+J arrives before
   // vimActive does.
   const { runMenu } = useVimSidebar(visible, (cmd) => handleVimCommand(cmd))
@@ -1018,7 +1040,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
         {/* A numbered row keeps its stub clear of the 24×24 slot below. */}
         <span
           className="min-w-title-stub flex-1 truncate text-xs"
-          style={tabNumber !== undefined ? { ['--title-stub-reserve' as string]: '1.5rem' } : undefined}
+          style={tabNumber !== undefined || hintLabels.has(hintId(tab.id)) ? { ['--title-stub-reserve' as string]: '1.5rem' } : undefined}
           title={tab.title}
         >
           {tab.title}
@@ -1031,7 +1053,9 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
             stays easy to hit. */}
         <div className="absolute right-1 top-0 bottom-0 flex items-center">
           <div className="relative h-6 w-6 flex items-center justify-center">
-            {tabNumber !== undefined && (
+            {hintLabels.has(hintId(tab.id)) ? (
+              <RowHint mode="command" label={hintLabels.get(hintId(tab.id))} number={0} pending={vimPending} className="group-hover/tab:opacity-0" />
+            ) : tabNumber !== undefined && (
               <span
                 className="w-4 h-4 inline-flex items-center justify-center rounded bg-card/85 backdrop-blur-sm text-[10px] font-medium tabular-nums text-muted-foreground group-hover/tab:opacity-0 transition-opacity pointer-events-none"
                 title={tabNumberKeys ? `Switch to this tab — ${tabNumberKeys}` : undefined}
@@ -1178,6 +1202,11 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
             <span className="flex-1 min-w-0 truncate">{group.name}</span>
           )}
         </span>
+        {hintLabels.has(hintId(group.id)) && (
+          <div className="absolute right-2 top-0 bottom-0 flex items-center group-hover:opacity-0 pointer-events-none">
+            <RowHint mode="command" label={hintLabels.get(hintId(group.id))} number={0} pending={vimPending} />
+          </div>
+        )}
         {/* Action overlay — absolute right, sits ON TOP of the pill on
             hover so the pill underneath isn't squeezed by reserved button
             space. Each button has a card-tone background so the icons

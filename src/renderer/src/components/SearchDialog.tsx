@@ -10,7 +10,8 @@ import { CommentChip } from './CommentChip'
 import { GroupPill } from './GroupPill'
 import { ScopeSwitch } from './ScopeSwitch'
 import { InputField } from './InputField'
-import { Hint, HintBar, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
+import { hintIndex, usePopupHints } from '../lib/hint-labels'
 import { usePopupVimMode, type VimMode } from '../lib/vim-mode'
 import { displayKeySequence, keysFor, type VimKeymap } from '../lib/vim-keymap'
 
@@ -39,8 +40,6 @@ const VIM_FILTER_COMMAND_BY_TYPE: Record<FilterType, string> = {
   tabGroup: 'search-groups',
   tab: 'search-tabs',
 }
-// Results numbered for search-row-1…9.
-const VIM_NUMBERED_ROWS = 9
 
 const TYPE_ICONS: Record<string, typeof User> = {
   profile: User,
@@ -389,7 +388,15 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
   }, [flatResults, selectedIndex, handleSelect, onOpenChange, toggleScope, scopeApplies, handleFilterChord])
 
   // ── Vim COMMAND mode ──
+  // COMMAND mode's two-letter row labels (lib/hint-labels.ts).
+  const hints = usePopupHints(vimKeymap, flatResults.length)
   const runVimCommand = (command: string): void => {
+    const hinted = hintIndex(command)
+    if (hinted !== null) {
+      const item = flatResults[hinted]
+      if (item) handleSelect(item)
+      return
+    }
     const filterPick = VIM_FILTER_COMMANDS[command]
     if (filterPick) {
       selectFilter(filterPick)
@@ -412,7 +419,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
     }
   }
   const vim = usePopupVimMode({
-    keymap: vimKeymap,
+    keymap: hints.keymap,
     popup: popupWindow,
     box: inputRef,
     initial: 'insert',
@@ -538,7 +545,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
                   </div>
                   {groupItems.map((item) => {
                     const idx = flatIdx++
-                    const numberHint = vimMode === 'command' && idx < VIM_NUMBERED_ROWS ? idx + 1 : undefined
                     return (
                       <div
                         key={item.id}
@@ -550,18 +556,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
                         }`}
                         onClick={() => handleSelect(item)}
                       >
-                        {numberHint !== undefined && (
-                          // COMMAND mode's row number (search-row-N), as Runwa's
-                          // palette shows it: a keycap filling the row's left
-                          // padding, so the row's content never moves. A span:
-                          // the global kbd style's padding would widen it.
-                          <span
-                            aria-hidden="true"
-                            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 inline-flex items-center justify-center h-[18px] w-4 rounded-md border border-border bg-popover text-foreground font-mono font-medium text-[10px] leading-none shadow-[0_0_2px_rgb(0_0_0/0.1)] select-none pointer-events-none"
-                          >
-                            {numberHint}
-                          </span>
-                        )}
+                        <RowHint mode={vimMode} label={hints.labels[idx]} number={idx + 1} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
                         <span className="relative w-6 shrink-0 flex items-center">
                           {item.type === 'tab' ? (
                             <>
@@ -632,7 +627,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
               <>
                 <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
                 <Hint label="Open" keys={vimKeyCaps(vimKeymap, 'row-open')} />
-                <Hint label="Open row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${VIM_NUMBERED_ROWS}`)[0] ?? '9'}`]} />
+                {hints.labels[0] && <Hint label="Open row" keys={[`${hints.labels[0]}…`]} />}
                 <Hint label="Filter" keys={vimKeyCaps(vimKeymap, 'search-all', 'search-profiles', 'search-workspaces', 'search-groups', 'search-tabs')} />
                 {scopeApplies && <Hint label="Scope" keys={vimKeyCaps(vimKeymap, 'search-scope')} />}
                 <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />

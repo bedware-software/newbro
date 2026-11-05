@@ -687,6 +687,9 @@ function installVimPage(): void {
     (command, e) => {
       if (!e.repeat || VIM_REPEATABLE.has(command)) runCommand(command)
     },
+    // The keys of an unfinished sequence, for the window's showcmd and its
+    // hint labels' typed part.
+    (pending) => ipcRenderer.send('newbro-vim-page', { pending }),
   )
 
   const report = (next: 'command' | 'insert', why: string): void => {

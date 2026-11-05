@@ -2969,8 +2969,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       browser, the way Vimium does — scrolling, history, tabs, app commands; keys not
                       bound reach the page. INSERT: keys go to the page or the field you're typing in.
                       i goes into INSERT, Esc or Ctrl+[ comes back. Clicking a text field is INSERT,
-                      anywhere else COMMAND. Holding Ctrl brings up the Sidebar's keys: Ctrl+J/K step
-                      through the tabs. Replaces the regular shortcuts and the Vimium extension.
+                      anywhere else COMMAND. The arrows drive the Sidebar: ↓/↑ step through the tabs and
+                      groups, ←/→ fold and unfold. Replaces the regular shortcuts and the Vimium extension.
                     </p>
                   </div>
                   <button
@@ -2997,9 +2997,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       <div className="text-sm text-foreground">Hide the Sidebar</div>
                       <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
                         For a small screen: the page takes the whole width, and the Sidebar shows while
-                        you hold Ctrl in COMMAND mode — Ctrl+J/K step through the tabs, letting go stays
-                        on the one shown. Tapping Esc twice (or Toggle Sidebar) pins it open for the
-                        time being.
+                        its keys are in use in COMMAND mode — ↓/↑ step through the tabs, and it hides a
+                        second after the last one, staying on the tab shown. Tapping Esc twice (or Toggle
+                        Sidebar, Space) pins it open for the time being.
                       </p>
                     </div>
                     <button

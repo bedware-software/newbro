@@ -172,9 +172,13 @@ interface Props {
   vimKeymap: VimKeymap | null
   /** The window's Vim mode; null while Vim mode is off. */
   vimMode: VimMode | null
+  /** Keys typed so far of an unfinished COMMAND sequence. */
+  vimPending: string
+  /** The group page's rows may wear COMMAND's labels: no popup has its own up. */
+  groupHintsOn: boolean
 }
 
-export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeymap, vimMode }: Props) {
+export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeymap, vimMode, vimPending, groupHintsOn }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [errors, setErrors] = useState<Map<string, LoadError>>(new Map())
   const [certErrors, setCertErrors] = useState<Map<string, CertError>>(new Map())
@@ -670,7 +674,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
         <SplitPicker split={split} paneRef={emptyPaneRef} vimKeymap={splitPickerKeymap} focusTick={splitPickerFocusTick} />
       )}
 
-      {parkedGroup && <GroupPage group={parkedGroup} vimKeymap={vimKeymap} vimMode={vimMode} />}
+      {parkedGroup && <GroupPage group={parkedGroup} vimKeymap={vimKeymap} vimMode={vimMode} vimPending={vimPending} hintsOn={groupHintsOn} />}
 
       {activeInternalUrl && (internalPageOf(activeInternalUrl) === 'downloads'
         ? <DownloadsPage />

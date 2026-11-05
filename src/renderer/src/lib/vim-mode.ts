@@ -14,16 +14,18 @@ import { log } from './log'
 //   INSERT  — keys go where you type: a page field, the page itself (i),
 //             the URL bar, a rename box.
 // Clicking a text field is INSERT, anywhere else COMMAND; Esc (or Ctrl+[)
-// leaves INSERT. Holding Ctrl in COMMAND is the Sidebar's turn: a cursor on
-// the active tab (and a hidden Sidebar shown), its Ctrl chords stepping
-// through the tabs — with the keyboard kept in the chrome, so a page's text
-// field can't take it on the way; letting Ctrl go hands it to the page shown.
+// leaves INSERT. A Sidebar key in COMMAND (the arrows: ↓/↑ step through the
+// rows, ←/→ fold and unfold) is the Sidebar's turn: a cursor on the active
+// row (and a hidden Sidebar shown) — with the keyboard kept in the chrome,
+// so a page's text field can't take it on the way — until a pause, or Ctrl
+// let go after a Ctrl chord one (Ctrl+M, Ctrl+Shift+J/K), hands it to the
+// page shown. Ctrl alone does nothing, so its other chords never flash it.
 // This module holds the window's mode and tells main, which passes it on to
 // the pages.
 
 export type VimMode = 'command' | 'insert'
 
-// Set while Ctrl steps through the tabs: activating a tab then must not hand
+// Set while the Sidebar keys step through the tabs: activating a tab then must not hand
 // OS keyboard focus to its page (WebviewPanel), or the next keystroke would
 // go to the site — or a field of it — instead of the Sidebar's keys.
 let walkingTabs = false
@@ -32,14 +34,8 @@ export function keepsChromeKeyboard(): boolean {
   return walkingTabs
 }
 
-// Ctrl let go this soon is a tap: the Sidebar it brought up stays a moment
-// longer, for a second tap — Esc tapped twice pins it (App.tsx; a keyboard
-// that makes a lone Ctrl an Esc too sends one per tap) — so it doesn't drop
-// out in between.
-const CTRL_TAP_MS = 300
-const CTRL_TAP_LINGER_MS = 400
-// With no Ctrl held (a Sidebar command rebound to a plain key), how long the
-// Sidebar keys stay live after the last one.
+// With no Ctrl held (the arrows, or any plain key a Sidebar command is
+// bound to), how long the Sidebar keys stay live after the last one.
 const WALK_IDLE_MS = 1000
 // Commands that keep going while their key is held.
 const REPEATABLE = new Set([
@@ -326,8 +322,6 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
   const insertInChromeRef = useRef(false)
   const [sidebarKeys, setSidebarKeys] = useState(false)
   const ctrlDownRef = useRef(false)
-  const ctrlDownAtRef = useRef(0)
-  const ctrlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const walkIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // What the pages get (main passes it on): the mode, COMMAND's keys, and a
@@ -342,23 +336,26 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
 
   const onCommandRef = useRef(onCommand)
   onCommandRef.current = onCommand
-  const { pending, feed, reset } = useKeySequence(keymap, (command) => onCommandRef.current(command))
-  const pendingRef = useRef(pending)
-  pendingRef.current = pending
+  const { pending: chromePending, feed, reset } = useKeySequence(keymap, (command) => onCommandRef.current(command))
+  // An unfinished sequence typed in the active page, which runs COMMAND's
+  // keys itself.
+  const [pagePending, setPagePending] = useState('')
+  const pending = chromePending || pagePending
+  const pendingRef = useRef(chromePending)
+  pendingRef.current = chromePending
   const focusPageRef = useRef(focusPage)
   focusPageRef.current = focusPage
   const isActiveTabRef = useRef(isActiveTab)
   isActiveTabRef.current = isActiveTab
 
   const clearCtrlTimers = useCallback(() => {
-    if (ctrlTimerRef.current) clearTimeout(ctrlTimerRef.current)
     if (walkIdleTimerRef.current) clearTimeout(walkIdleTimerRef.current)
-    ctrlTimerRef.current = null
     walkIdleTimerRef.current = null
   }, [])
 
-  /** The Sidebar keys end: Ctrl let go (or the window lost it). The tab the
-   *  walk stopped on gets the keyboard. */
+  /** The Sidebar keys end: a pause after the last one, Ctrl let go after a
+   *  Ctrl chord one (or the window lost it). The tab the walk stopped on
+   *  gets the keyboard. */
   const endSidebarKeys = useCallback(() => {
     clearCtrlTimers()
     setSidebarKeys(false)
@@ -427,7 +424,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
       log.event('vim:tab walk', 'start')
       claimRendererFocus(true)
     }
-    // Rebound to a plain key: no Ctrl release will end it.
+    // A plain key (an arrow): no Ctrl release will end it.
     if (!ctrlDownRef.current) walkIdleTimerRef.current = setTimeout(endSidebarKeys, WALK_IDLE_MS)
   }, [clearCtrlTimers, endSidebarKeys])
 
@@ -507,7 +504,13 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     }
 
     const cleanupTabEvents = window.electronAPI.onTabEvent?.((raw) => {
-      const evt = raw as { type?: string; tabId?: string; byUser?: boolean; mode?: VimMode; why?: string; command?: string }
+      const evt = raw as { type?: string; tabId?: string; byUser?: boolean; mode?: VimMode; why?: string; command?: string; pending?: string }
+      // A sequence ending counts from any page — the one it was typed in may
+      // have stopped being the active one on the way.
+      if (evt.type === 'vim-pending' && !evt.pending) {
+        setPagePending('')
+        return
+      }
       if (!evt.tabId || !isActiveTabRef.current(evt.tabId)) return
       if (evt.type === 'focus') {
         if (evt.byUser) {
@@ -526,27 +529,19 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
         // The page moved itself along: i, a field focused or left, Esc.
         if (!walkingTabs) setMode(evt.mode, `page: ${evt.why ?? ''}`)
       } else if (evt.type === 'vim-command') {
+        setPagePending('')
         if (evt.command) onCommandRef.current(evt.command)
+      } else if (evt.type === 'vim-pending') {
+        setPagePending(evt.pending ?? '')
       }
     })
 
     // Ctrl pressed or let go anywhere in the window — the page or the
-    // chrome (main sees both) — or the window losing it.
+    // chrome (main sees both) — or the window losing it. Pressing it shows
+    // nothing; letting it go ends what a Ctrl chord Sidebar key started.
     const cleanupCtrl = window.electronAPI.onVimCtrl?.((down) => {
       ctrlDownRef.current = down
-      if (down) {
-        ctrlDownAtRef.current = Date.now()
-        clearCtrlTimers()
-        if (modeRef.current === 'command') setSidebarKeys(true)
-        return
-      }
-      const tap = !walkingTabs && Date.now() - ctrlDownAtRef.current <= CTRL_TAP_MS
-      if (!tap || modeRef.current !== 'command') {
-        endSidebarKeys()
-        return
-      }
-      clearCtrlTimers()
-      ctrlTimerRef.current = setTimeout(endSidebarKeys, CTRL_TAP_LINGER_MS)
+      if (!down && walkingTabs) endSidebarKeys()
     })
 
     window.addEventListener('keydown', onKeyDown, true)

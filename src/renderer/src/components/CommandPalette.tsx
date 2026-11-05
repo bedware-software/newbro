@@ -2,7 +2,8 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Command } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
-import { Hint, HintBar, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
+import { hintIndex, usePopupHints } from '../lib/hint-labels'
 import { useAppStore } from '../store/app-store'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { usePopupVimMode } from '../lib/vim-mode'
@@ -18,8 +19,6 @@ interface Props {
   vimKeymap: VimKeymap | null
 }
 
-// Rows numbered for search-row-1…9 in COMMAND mode.
-const VIM_NUMBERED_ROWS = 9
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
 
@@ -248,13 +247,21 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
   // Vim mode: the palette opens in INSERT — typing filters, like vim's `:`
   // command line. Esc goes to COMMAND, where j/k walk the list and 1–9 run
   // a numbered row; i types again, Esc closes.
+  // COMMAND mode's two-letter row labels (lib/hint-labels.ts).
+  const hints = usePopupHints(vimKeymap, rows.length)
   const vim = usePopupVimMode({
-    keymap: vimKeymap,
+    keymap: hints.keymap,
     popup: popupWindow,
     box: inputRef,
     initial: 'insert',
     open,
     onCommand: (command) => {
+      const hinted = hintIndex(command)
+      if (hinted !== null) {
+        const cmd = rows[hinted]
+        if (cmd) handleSelect(cmd)
+        return
+      }
       const row = /^search-row-(\d)$/.exec(command)
       if (row) {
         const cmd = rows[Number(row[1]) - 1]
@@ -344,7 +351,6 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
               {group.items.map((cmd) => {
                 const idx = flatIdx++
                 const isSelected = idx === selectedIndex
-                const numberHint = vim.mode === 'command' && idx < VIM_NUMBERED_ROWS ? idx + 1 : undefined
                 // The palette has room for one shortcut hint per row, so we
                 // surface only the first binding. The second binding still
                 // works — it just doesn't get advertised here. An explicit
@@ -361,17 +367,7 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
                     }`}
                     onClick={() => handleSelect(cmd)}
                   >
-                    {numberHint !== undefined && (
-                      // COMMAND mode's row number (search-row-N), the way
-                      // Search Everything shows it: a keycap in the row's
-                      // left padding, so the label never moves.
-                      <span
-                        aria-hidden="true"
-                        className="absolute left-0 top-1/2 -translate-y-1/2 z-10 inline-flex items-center justify-center h-[18px] w-4 rounded-md border border-border bg-popover text-foreground font-mono font-medium text-[10px] leading-none shadow-[0_0_2px_rgb(0_0_0/0.1)] select-none pointer-events-none"
-                      >
-                        {numberHint}
-                      </span>
-                    )}
+                    <RowHint mode={vim.mode} label={hints.labels[idx]} number={idx + 1} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
                     <span>{cmd.label}</span>
                     {hint && (
                       <span className="text-xs text-muted-foreground ml-4 shrink-0 flex items-center">
@@ -397,7 +393,7 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
               <>
                 <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
                 <Hint label="Run" keys={vimKeyCaps(vimKeymap, 'row-open')} />
-                <Hint label="Run row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${VIM_NUMBERED_ROWS}`)[0] ?? '9'}`]} />
+                {hints.labels[0] && <Hint label="Run row" keys={[`${hints.labels[0]}…`]} />}
                 <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
                 <Hint label="Close" keys={['Esc']} />
               </>

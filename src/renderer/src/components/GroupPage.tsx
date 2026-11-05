@@ -1,12 +1,14 @@
 // The page area while parked on a tab group (a click on its header, or
 // Ctrl+J/K in Vim mode stopping on it): the group's tabs, the split
-// picker's look laid out on the page. A row's number (1–9), Enter on the
-// selected one, or a click shows that tab; the box filters them.
+// picker's look laid out on the page. Enter on the selected one, or a
+// click, shows that tab; the box filters them.
 //
 // Vim mode: there's no tab view to run COMMAND's keys, so the page takes
 // them (lib/vim-mode.ts usePageKeys) — the keymap's scroll keys move
-// through the tabs, insert-mode (i) types in the box, and digits and Enter
-// come ahead of the keymap. Esc in the box goes back to COMMAND.
+// through the tabs, insert-mode (i) types in the box, and Enter comes ahead
+// of the keymap. In COMMAND each row wears a two-letter label that picks it
+// (lib/hint-labels.ts); typing in the box, just its number, to read. Esc in
+// the box goes back to COMMAND.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Globe, Search } from 'lucide-react'
@@ -15,7 +17,8 @@ import type { TabGroup } from '../store/types'
 import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
 import { InputField } from './InputField'
-import { Hint, HintBar, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
+import { useHintLabels, useHintTargets } from '../lib/hint-labels'
 import { fuzzyFilter } from '../lib/fuzzy'
 import { keyTokenFromEvent } from '../lib/vim-keymap'
 import { usePageKeys, type VimMode } from '../lib/vim-mode'
@@ -27,13 +30,17 @@ interface Props {
   vimKeymap: VimKeymap | null
   /** The window's Vim mode; null while Vim mode is off. */
   vimMode: VimMode | null
+  /** Keys typed so far of an unfinished COMMAND sequence. */
+  vimPending: string
+  /** Its rows may wear COMMAND's labels: no popup has its own up. */
+  hintsOn: boolean
 }
 
-// Rows numbered for a digit.
-const NUMBERED_ROWS = 9
 const HALF_PAGE_ROWS = 5
+// Its rows' ids among the window's hint targets (the Sidebar has the tabs').
+const hintId = (tabId: string): string => `group-page:${tabId}`
 
-export function GroupPage({ group, vimKeymap, vimMode }: Props) {
+export function GroupPage({ group, vimKeymap, vimMode, vimPending, hintsOn }: Props) {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -69,17 +76,17 @@ export function GroupPage({ group, vimKeymap, vimMode }: Props) {
     setSelected((i) => Math.max(0, Math.min(rows.length - 1, i + delta)))
   }
 
-  /** A row's number or Enter, typed outside the box. */
+  /** Enter, typed outside the box. */
   const rowKey = (e: KeyboardEvent): boolean => {
     if (e.metaKey || e.ctrlKey || e.altKey) return false
-    const token = keyTokenFromEvent(e)
-    if (token === '<CR>') return open(selected)
-    if (token && /^[1-9]$/.test(token)) {
-      open(Number(token) - 1)
-      return true
-    }
-    return false
+    return keyTokenFromEvent(e) === '<CR>' && open(selected)
   }
+
+  // COMMAND's labels, ahead of a pinned Sidebar's.
+  useHintTargets('group-page', 0, vimMode === 'command' && hintsOn
+    ? rows.map((tab, i) => ({ id: hintId(tab.id), activate: () => { open(i) } }))
+    : null)
+  const hintLabels = useHintLabels()
 
   usePageKeys({
     intercept: rowKey,
@@ -100,7 +107,7 @@ export function GroupPage({ group, vimKeymap, vimMode }: Props) {
     },
   })
 
-  // Without Vim mode: arrows, a row's number and Enter, outside the box.
+  // Without Vim mode: arrows and Enter, outside the box.
   // (In Vim's COMMAND the keys come through usePageKeys instead and never
   // get this far.)
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {})
@@ -142,7 +149,6 @@ export function GroupPage({ group, vimKeymap, vimMode }: Props) {
     }
   }
 
-  const typing = vimMode === 'insert'
   const caps = (...commands: string[]): string[] => vimKeyCaps(vimKeymap, ...commands)
 
   return (
@@ -186,7 +192,6 @@ export function GroupPage({ group, vimKeymap, vimMode }: Props) {
               </div>
             )}
             {rows.map((tab, idx) => {
-              const numberHint = !typing && idx < NUMBERED_ROWS ? idx + 1 : undefined
               return (
                 <div
                   key={tab.id}
@@ -197,14 +202,13 @@ export function GroupPage({ group, vimKeymap, vimMode }: Props) {
                     idx === selected ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
                   }`}
                 >
-                  {numberHint !== undefined && (
-                    <span
-                      aria-hidden="true"
-                      className="pointer-events-none absolute left-0.5 top-1/2 z-10 inline-flex h-[18px] w-4 -translate-y-1/2 select-none items-center justify-center rounded-md border border-border bg-background font-mono text-[10px] font-medium leading-none text-foreground shadow-[0_0_2px_rgb(0_0_0/0.1)]"
-                    >
-                      {numberHint}
-                    </span>
-                  )}
+                  <RowHint
+                    mode={vimMode}
+                    label={hintLabels.get(hintId(tab.id))}
+                    number={idx + 1}
+                    pending={vimPending}
+                    className="absolute left-0.5 top-1/2 -translate-y-1/2 bg-background"
+                  />
                   <span className="flex w-6 shrink-0 items-center">
                     {tab.favicon ? <TabFavicon favicon={tab.favicon} /> : <Globe size={16} className="text-muted-foreground/60" />}
                   </span>
@@ -228,14 +232,13 @@ export function GroupPage({ group, vimKeymap, vimMode }: Props) {
           <>
             <Hint label="Navigate" keys={caps('scroll-down', 'scroll-up')} />
             <Hint label="Open" keys={['Enter']} />
-            <Hint label="Row" keys={['1…9']} />
+            {rows[0] && hintLabels.get(hintId(rows[0].id)) && <Hint label="Pick" keys={[`${hintLabels.get(hintId(rows[0].id))}…`]} />}
             <Hint label="Filter" keys={caps('insert-mode')} />
           </>
         ) : (
           <>
             <Hint label="Navigate" keys={['↓', '↑']} />
             <Hint label="Open" keys={['Enter']} />
-            {!typing && <Hint label="Row" keys={['1…9']} />}
             {vimMode === 'insert' && <Hint label="Command mode" keys={['Esc']} />}
           </>
         )}

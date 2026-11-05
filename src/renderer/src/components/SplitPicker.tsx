@@ -10,7 +10,8 @@ import { DetachedWindow, type PopupPlacement } from './DetachedWindow'
 import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
 import { InputField } from './InputField'
-import { Hint, HintBar, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
+import { hintIndex, usePopupHints } from '../lib/hint-labels'
 import { SplitGlyph } from './SplitPanes'
 import { fuzzyFilter } from '../lib/fuzzy'
 import { isInternalUrl } from '../lib/internal-pages'
@@ -32,8 +33,6 @@ interface Props {
 const MAX_WIDTH = 620
 const MAX_HEIGHT = 480
 const MARGIN = 24
-// Rows numbered for search-row-1…9 in COMMAND mode.
-const NUMBERED_ROWS = 9
 const NEW_TAB_ROW = '__new-tab__'
 
 interface Row {
@@ -111,13 +110,20 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
     if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId)
   }
 
+  // COMMAND mode's two-letter row labels (lib/hint-labels.ts).
+  const hints = usePopupHints(vimKeymap, rows.length)
   const vim = usePopupVimMode({
-    keymap: vimKeymap,
+    keymap: hints.keymap,
     popup: popupWindow,
     box: inputRef,
     initial: 'command',
     open: true,
     onCommand: (command) => {
+      const hinted = hintIndex(command)
+      if (hinted !== null) {
+        pick(rows[hinted])
+        return
+      }
       const numbered = /^search-row-(\d)$/.exec(command)
       if (numbered) {
         pick(rows[Number(numbered[1]) - 1])
@@ -198,7 +204,6 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
         </div>
         <div ref={listRef} className="flex-1 overflow-y-auto min-h-0 py-1">
           {rows.map((row, idx) => {
-            const numberHint = vim.mode === 'command' && idx < NUMBERED_ROWS ? idx + 1 : undefined
             const isNew = row.id === NEW_TAB_ROW
             return (
               <div
@@ -209,14 +214,7 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
                   idx === selected ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
                 } ${isNew ? 'border-t border-border' : ''}`}
               >
-                {numberHint !== undefined && (
-                  <span
-                    aria-hidden="true"
-                    className="absolute left-0 top-1/2 -translate-y-1/2 z-10 inline-flex items-center justify-center h-[18px] w-4 rounded-md border border-border bg-popover text-foreground font-mono font-medium text-[10px] leading-none shadow-[0_0_2px_rgb(0_0_0/0.1)] select-none pointer-events-none"
-                  >
-                    {numberHint}
-                  </span>
-                )}
+                <RowHint mode={vim.mode} label={hints.labels[idx]} number={idx + 1} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
                 <span className="w-6 shrink-0 flex items-center">
                   {isNew ? <Plus size={16} className="text-muted-foreground" />
                     : row.favicon ? <TabFavicon favicon={row.favicon} />
@@ -240,7 +238,7 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
             <>
               <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
               <Hint label="Open here" keys={vimKeyCaps(vimKeymap, 'row-open')} />
-              <Hint label="Row" keys={[`${vimKeyCaps(vimKeymap, 'search-row-1')[0] ?? '1'}…${vimKeyCaps(vimKeymap, `search-row-${NUMBERED_ROWS}`)[0] ?? '9'}`]} />
+              {hints.labels[0] && <Hint label="Row" keys={[`${hints.labels[0]}…`]} />}
               <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
               <Hint label="Cancel split" keys={['Esc']} />
             </>

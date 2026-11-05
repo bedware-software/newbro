@@ -53,7 +53,7 @@ export function HintBar({ children, wrap = false, className }: BarProps) {
 }
 
 /** The Sidebar's keys, at the bottom of it — wrapping, since it's narrow.
- *  Faded until Ctrl is held, which brings them to life. */
+ *  Faded until one of them is used, which brings them to life. */
 export function SidebarHintBar({ keymap, active }: { keymap: VimKeymap; active: boolean }) {
   const caps = (...commands: string[]): string[] => vimKeyCaps(keymap, ...commands)
   return (
@@ -83,4 +83,36 @@ export function vimKeyCaps(map: VimKeymap | null, ...commands: string[]): string
  *  are all worth knowing (Find's j / n). */
 export function vimKeyCapsAll(map: VimKeymap | null, command: string): string[] {
   return map ? keysFor(map, command).map(displayKeySequence) : []
+}
+
+/** A list row's key in Vim mode, as a keycap filling the row's left padding
+ *  (positioned by the row, so its content never moves; a span, as the
+ *  global kbd style's padding would widen it): in COMMAND its two-letter
+ *  label — the part typed so far lit, rows it no longer fits faded — and in
+ *  INSERT just its number, to read. Nothing while Vim mode is off. */
+export function RowHint({ mode, label, number, pending, className }: {
+  mode: 'command' | 'insert' | null
+  label?: string
+  number: number
+  /** Keys typed so far of an unfinished sequence. */
+  pending?: string
+  className?: string
+}) {
+  if (!mode || (mode === 'command' && !label)) return null
+  const typed = mode === 'command' && pending && label?.startsWith(pending) ? pending.length : 0
+  const faded = mode === 'command' && !!pending && !typed
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'z-10 inline-flex items-center justify-center h-[18px] min-w-4 px-px rounded-md border border-border bg-popover text-foreground font-mono font-medium text-[10px] leading-none tabular-nums shadow-[0_0_2px_rgb(0_0_0/0.1)] select-none pointer-events-none transition-opacity',
+        faded && 'opacity-30',
+        className,
+      )}
+    >
+      {mode === 'command'
+        ? <><span className="text-primary">{label!.slice(0, typed)}</span>{label!.slice(typed)}</>
+        : number}
+    </span>
+  )
 }

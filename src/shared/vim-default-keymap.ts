@@ -30,25 +30,25 @@ half-page-down      d
 half-page-up        u
 page-top            gg
 page-bottom         G
-back                h [
-forward             l ]
+back                h <C-o>
+forward             l <C-i>
 insert-mode         i
 focus-input         gi
 help                ?
 
-" ── COMMAND: the Sidebar, with Ctrl held ──────────────────────────────
-" Holding Ctrl puts a cursor on the active row (and shows the Sidebar
-" while it's hidden — Settings → Keyboard Shortcuts). <C-j>/<C-k> step
-" through the rows, showing each: a tab's page, or a group's tabs; letting
-" Ctrl go stays on the one shown. row-fold folds the group the cursor is in
-" and goes to its header; row-unfold unfolds a folded group, or steps into
-" an unfolded one.
-cursor-down-show    <C-j>
-cursor-up-show      <C-k>
+" ── COMMAND: the Sidebar ──────────────────────────────────────────────
+" Its keys put a cursor on the active row (and show the Sidebar while it's
+" hidden — Settings → Keyboard Shortcuts) until a second passes without
+" one, or Ctrl is let go after a Ctrl chord. <Down>/<Up> step through the
+" rows, showing each: a tab's page, or a group's tabs. row-fold folds the
+" group the cursor is in and goes to its header; row-unfold unfolds a
+" folded group, or steps into an unfolded one.
+cursor-down-show    <Down>
+cursor-up-show      <Up>
 row-move-down       <C-S-j>
 row-move-up         <C-S-k>
-row-fold            <C-h>
-row-unfold          <C-l>
+row-fold            <Left>
+row-unfold          <Right>
 row-menu            <C-m>
 
 " ── COMMAND: split view ───────────────────────────────────────────────
@@ -75,11 +75,11 @@ close-window
 new-workspace       N
 next-tab
 prev-tab
-toggle-sidebar      \\
+toggle-sidebar      <Space>
 focus-url
 edit-url            e
 search              f
-command-palette     :
+command-palette     <C-p>
 copy-url            y
 paste-url
 paste-url-new-tab   P
@@ -110,25 +110,30 @@ toggle-bookshelf    B
 open-downloads      D
 
 " ── Search Everything and the Command Palette ─────────────────────────
-"Search Everything and the Command Palette open in INSERT; Esc goes to
+" Search Everything and the Command Palette open in INSERT; Esc goes to
 " COMMAND, and insert-mode (i) drops back into the box. Esc in
 " COMMAND closes the window. The scroll keys above (j/k, gg/G) move through
 " the results, Enter runs one. The filters are Search Everything's.
+" In COMMAND every result wears a two-letter label, home-row letters first
+" and only ones these keys leave free, and typing it picks the result
+" (vimium's hints); typing in the box, the results show their numbers, and
+" digits type. So do the group page and an open Sidebar (not one Ctrl
+" shows). search-row-N picks result N, when bound.
 search-all          a
 search-profiles     p
 search-workspaces   w
 search-groups       g
 search-tabs         t
 search-scope        <Tab>
-search-row-1        1
-search-row-2        2
-search-row-3        3
-search-row-4        4
-search-row-5        5
-search-row-6        6
-search-row-7        7
-search-row-8        8
-search-row-9        9
+search-row-1
+search-row-2
+search-row-3
+search-row-4
+search-row-5
+search-row-6
+search-row-7
+search-row-8
+search-row-9
 
 " ── Address editor (e) ───────────────────────────────────────────────
 " Opens typing (INSERT) over the whole address, selected, as other
@@ -203,7 +208,11 @@ export function contextOf(command: string): VimContext {
 // with row-fold only folding, and set-comment on gcc. v8 made the address
 // editor's keys vim's: u undoes (was U) and <C-r> redoes, up a level and the
 // site went behind g (gu, gt), the title's copy behind y (yt, was n), and
-// removing onto d (was r), D removing the whole address.
+// removing onto d (was r), D removing the whole address. v9 left results
+// to two-letter labels in COMMAND, unbinding the digits of search-row-N. v10
+// took the Sidebar off Ctrl held (it flashed on every Ctrl chord) and onto
+// the arrows, history onto <C-o>/<C-i> (was [ and ]), the Command Palette
+// onto <C-p> (was :) and toggling the Sidebar onto <Space> (was \).
 // A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
@@ -317,6 +326,23 @@ const V6_DEFAULT_KEYS: Record<string, string> = {
   'split-down': 'V',
 }
 
+/** v9 defaults of the commands v10 rebound. */
+const V9_DEFAULT_KEYS: Record<string, string> = {
+  back: 'h [',
+  forward: 'l ]',
+  'cursor-down-show': '<C-j>',
+  'cursor-up-show': '<C-k>',
+  'row-fold': '<C-h>',
+  'row-unfold': '<C-l>',
+  'toggle-sidebar': '\\',
+  'command-palette': ':',
+}
+
+/** v8 defaults of the commands v9 rebound: the results' digits. */
+const V8_DEFAULT_KEYS: Record<string, string> = Object.fromEntries(
+  [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`search-row-${n}`, String(n)]),
+)
+
 /** v7 defaults of the commands v8 rebound. */
 const V7_DEFAULT_KEYS: Record<string, string> = {
   'url-remove': 'r',
@@ -370,12 +396,12 @@ function sequencesClash(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1 to v7) over to the
+ * Carries a keymap saved under older defaults (v1 to v9) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
  * nothing to keep.
  */
-export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7): string | null {
+export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9): string | null {
   // What the owner had, by the old name.
   const mine = new Map<string, string>()
   for (const line of saved.split('\n')) {
@@ -392,12 +418,14 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 |
     (fromVersion <= 4 ? V4_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 5 ? V5_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 6 ? V6_DEFAULT_KEYS[command] : undefined) ??
-    V7_DEFAULT_KEYS[command] ??
+    (fromVersion <= 7 ? V7_DEFAULT_KEYS[command] : undefined) ??
+    (fromVersion <= 8 ? V8_DEFAULT_KEYS[command] : undefined) ??
+    V9_DEFAULT_KEYS[command] ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
   const existed = (command: string): boolean =>
-    NEW_IN_V8.has(command) || (fromVersion <= 6 && NEW_IN_V7.has(command)) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
+    (fromVersion <= 7 && NEW_IN_V8.has(command)) || (fromVersion <= 6 && NEW_IN_V7.has(command)) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
     : fromVersion >= 3
       ? !(command in RENAMED_IN_V3)
       : !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))

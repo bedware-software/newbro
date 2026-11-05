@@ -404,21 +404,23 @@ function migrateNewKeybindingDefaults(): void {
  * on Ctrl chords; v4: the tab numbers on Ctrl; v5: the address bar on e;
  * v6: the address editor on e, Search Everything's filters on w/t/p, new tab
  * on Enter; v7: V/S split like vim's, row-unfold on <C-l>, gcc comments;
- * v8: the address editor's u / <C-r> / gu / gt / yt / d / D — see
- * src/shared/vim-default-keymap.ts): a keymap saved under v1 to v7 keeps what its owner changed and takes the new defaults for
+ * v8: the address editor's u / <C-r> / gu / gt / yt / d / D; v9: results
+ * picked by two-letter labels, not digits; v10: the Sidebar on the arrows,
+ * not Ctrl held, <C-o>/<C-i>/<C-p>/<Space> — see
+ * src/shared/vim-default-keymap.ts): a keymap saved under v1 to v9 keeps what its owner changed and takes the new defaults for
  * everything else.
  * Once.
  */
 function migrateVimKeymap(): void {
   const raw = store as unknown as { get(key: string): unknown; set(key: string, value: unknown): void }
-  const marker = 'vim-keymap-v8'
+  const marker = 'vim-keymap-v10'
   const migratedList = raw.get('migratedKeybindingDefaults')
   const migrated = new Set(Array.isArray(migratedList) ? (migratedList as string[]) : [])
   if (migrated.has(marker)) return
 
   const saved = store.get('settings')
   if (saved && typeof saved.vimKeymap === 'string') {
-    const from = migrated.has('vim-keymap-v7') ? 7 : migrated.has('vim-keymap-v6') ? 6 : migrated.has('vim-keymap-v5') ? 5 : migrated.has('vim-keymap-v4') ? 4 : migrated.has('vim-keymap-v3') ? 3 : migrated.has('vim-keymap-v2') ? 2 : 1
+    const from = migrated.has('vim-keymap-v9') ? 9 : migrated.has('vim-keymap-v8') ? 8 : migrated.has('vim-keymap-v7') ? 7 : migrated.has('vim-keymap-v6') ? 6 : migrated.has('vim-keymap-v5') ? 5 : migrated.has('vim-keymap-v4') ? 4 : migrated.has('vim-keymap-v3') ? 3 : migrated.has('vim-keymap-v2') ? 2 : 1
     store.set('settings', { ...saved, vimKeymap: migrateVimKeymapText(saved.vimKeymap, from) })
   }
 
@@ -428,6 +430,8 @@ function migrateVimKeymap(): void {
   migrated.add('vim-keymap-v5')
   migrated.add('vim-keymap-v6')
   migrated.add('vim-keymap-v7')
+  migrated.add('vim-keymap-v8')
+  migrated.add('vim-keymap-v9')
   migrated.add(marker)
   raw.set('migratedKeybindingDefaults', [...migrated])
 }

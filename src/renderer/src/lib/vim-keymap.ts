@@ -87,8 +87,7 @@ export function vimCommandLabel(command: string): string {
 }
 
 /** Commands that act on the Sidebar's row under the cursor — the active
- *  tab's. Bound to Ctrl chords, so holding Ctrl shows the cursor (and a
- *  hidden Sidebar). */
+ *  tab's. Using one shows the cursor (and a hidden Sidebar). */
 export const SIDEBAR_COMMANDS = [
   'cursor-down-show',
   'cursor-up-show',

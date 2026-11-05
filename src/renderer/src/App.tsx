@@ -7,6 +7,7 @@ import { openAddress } from './lib/open-address'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
 import { useVimMode, dispatchSidebarCommand, dispatchPageCommand, type VimMode } from './lib/vim-mode'
+import { hintIndex, useHintKeymap } from './lib/hint-labels'
 import { parseVimKeymap, paletteKeymap, DEFAULT_VIM_KEYMAP, isPageCommand, isSidebarCommand } from './lib/vim-keymap'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
@@ -51,7 +52,7 @@ interface Settings {
   showTabNumbers: boolean
   /** Vim mode: COMMAND / INSERT modes, see lib/vim-mode.ts. */
   vimMode: boolean
-  /** With Vim mode on: the Sidebar hides, Ctrl held in COMMAND shows it. */
+  /** With Vim mode on: the Sidebar hides, its keys in COMMAND show it. */
   sidebarAutoHide: boolean
   /** How the mode's key cap shows its colour, see lib/vim-indicator.ts. */
   vimIndicator: VimIndicator
@@ -641,7 +642,7 @@ export default function App() {
   const { profileId: windowProfileId, workspaceId: windowWorkspaceId, tabId: windowTabId } = getWindowParams()
 
   // Settings → Keyboard Shortcuts → Hide the Sidebar (with Vim mode on): it
-  // stays out of the way, Ctrl held in COMMAND shows it, and toggling it (\,
+  // stays out of the way, its keys in COMMAND show it, and toggling it (Space,
   // the toolbar button, Esc tapped twice) pins it open for the time being.
   const sidebarAutoHide = settings?.vimMode === true && settings.sidebarAutoHide === true
   const sidebarAutoHideRef = useRef(sidebarAutoHide)
@@ -668,8 +669,8 @@ export default function App() {
   // The Vim mode API for the shortcut handler, which is registered once.
   const vimRef = useRef<ReturnType<typeof useVimMode> | null>(null)
 
-  // Esc tapped twice pins the hidden Sidebar, or lets it go — then at once:
-  // the Ctrl tap that sent the second Esc would keep it up a moment longer.
+  // Esc tapped twice pins the hidden Sidebar, or lets it go — then at once,
+  // a walk its keys were on included.
   useEffect(() => window.electronAPI.onVimEscDoubleTap?.(() => {
     if (!sidebarAutoHideRef.current) return
     setSidebarPinned((v) => !v)
@@ -1479,7 +1480,16 @@ export default function App() {
     window.electronAPI.tabFocus?.(s.activeTabId)
     return true
   }
+  // Two-letter labels on the rows the group page and a pinned Sidebar show
+  // in COMMAND (lib/hint-labels.ts), bound in the window's keymap — the one
+  // pages run too.
+  const hinted = useHintKeymap(vimEnabled ? vimKeymap.main : null)
   const runVimCommand = (command: string): void => {
+    const hint = hintIndex(command)
+    if (hint !== null) {
+      hinted.targets[hint]?.activate()
+      return
+    }
     // Parked on a group: its page takes the keys it knows (j/k, i).
     if (dispatchPageCommand(command)) return
     const pickFilter = VIM_PICK_FILTERS[command]
@@ -1517,7 +1527,7 @@ export default function App() {
   }
   const vim = useVimMode({
     enabled: vimEnabled,
-    keymap: vimKeymap.main,
+    keymap: hinted.keymap ?? vimKeymap.main,
     onCommand: runVimCommand,
     // The other split pane's page counts too: clicking into it focuses it.
     isActiveTab: (tabId) => useAppStore.getState().activeTabId === tabId || otherPaneTab() === tabId,
@@ -1525,8 +1535,11 @@ export default function App() {
   })
   vimRef.current = vim
   // Shown unless toggled off, or — hiding (Settings) — while pinned open or
-  // Ctrl is held.
+  // its keys are in use.
   const sidebarShown = sidebarAutoHide ? (sidebarPinned || vim.sidebarKeys) && !pageFullscreen : sidebarVisible
+  // A page this window draws (Downloads, Bangs) keeps COMMAND's plain keys
+  // for itself, so labels in the window couldn't be typed over it.
+  const activeIsInternal = useAppStore((s) => isInternalUrl(s.getActiveTab()?.url))
 
   // A popup window (Search, Command Palette, Settings) closing hands focus
   // back to this window — sometimes to the page view. In COMMAND mode the
@@ -1569,6 +1582,13 @@ export default function App() {
           showTabNumbers={settings?.showTabNumbers ?? true}
           vimActive={vim.sidebarKeys}
           vimKeymap={vimEnabled ? vimKeymap.main : null}
+          // Letters on its rows only while it's pinned open (Esc twice) — a
+          // mode of its own, as they take those letters from the pages; shown
+          // by its keys (the arrows) it keeps its numbers. Not while a popup has its own
+          // labels up, nor over a page this window draws.
+          hintsOn={vimEnabled && sidebarAutoHide && sidebarPinned && sidebarShown && !vim.sidebarKeys
+            && vim.mode === 'command' && !popupOpen && !activeIsInternal}
+          vimPending={vim.pending}
         />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
           <UrlEditor anchorRef={webviewColumnRef} vimKeymap={vimEnabled ? vimKeymap.url : null} />
@@ -1584,6 +1604,8 @@ export default function App() {
             splitPickerFocusTick={splitPickerFocusTick}
             vimKeymap={vimEnabled ? vimKeymap.main : null}
             vimMode={vim.mode}
+            vimPending={vim.pending}
+            groupHintsOn={!popupOpen}
           />
         </div>
         {/* Extension chrome.sidePanel column; hidden in cinema mode like the
