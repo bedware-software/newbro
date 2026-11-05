@@ -125,6 +125,45 @@ export function useVimSidebar(
   return { runMenu }
 }
 
+// ── A page drawn in the page's place ──
+//
+// The group page (a tab group parked on, its tabs in the page area) has no
+// tab view to run COMMAND's keys, so it takes them here: the keymap's
+// commands it knows (j/k move through its tabs, i types in its filter), and
+// a few keys of its own ahead of the keymap (a digit, Enter).
+
+export interface PageKeys {
+  /** A key ahead of the keymap; true when the page took it. */
+  intercept: (e: KeyboardEvent) => boolean
+  /** A COMMAND command; true when the page took it. */
+  command: (command: string) => boolean
+}
+
+let pageKeys: PageKeys | null = null
+
+/** Runs a COMMAND command on the page drawn in the page's place; false when
+ *  there's none or it doesn't take the command. */
+export function dispatchPageCommand(command: string): boolean {
+  return pageKeys?.command(command) ?? false
+}
+
+/** Hooks a page drawn in the page's place up to COMMAND's keys while it's
+ *  mounted. */
+export function usePageKeys(keys: PageKeys): void {
+  const keysRef = useRef(keys)
+  keysRef.current = keys
+  useEffect(() => {
+    const handler: PageKeys = {
+      intercept: (e) => keysRef.current.intercept(e),
+      command: (command) => keysRef.current.command(command),
+    }
+    pageKeys = handler
+    return () => {
+      if (pageKeys === handler) pageKeys = null
+    }
+  }, [])
+}
+
 // ── Key sequences ──
 
 /**
@@ -304,6 +343,8 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
   const onCommandRef = useRef(onCommand)
   onCommandRef.current = onCommand
   const { pending, feed, reset } = useKeySequence(keymap, (command) => onCommandRef.current(command))
+  const pendingRef = useRef(pending)
+  pendingRef.current = pending
   const focusPageRef = useRef(focusPage)
   focusPageRef.current = focusPage
   const isActiveTabRef = useRef(isActiveTab)
@@ -429,6 +470,12 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
       }
       // A page this renderer draws keeps its own plain keys.
       if (isInternalPage(e.target)) return
+      // One drawn in the page's place takes some ahead of the keymap.
+      if (!pendingRef.current && pageKeys?.intercept(e)) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
       // COMMAND mode owns every plain key in the chrome — an unbound one
       // must not reach a focused toolbar button (Enter/Space) or move focus
       // (Tab) either. Capture phase on window, so App's global Escape

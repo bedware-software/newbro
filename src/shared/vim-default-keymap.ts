@@ -37,23 +37,26 @@ focus-input         gi
 help                ?
 
 " ── COMMAND: the Sidebar, with Ctrl held ──────────────────────────────
-" Holding Ctrl puts a cursor on the active tab's row (and shows the
-" Sidebar while it's hidden — Settings → Keyboard Shortcuts). <C-j>/<C-k>
-" step through the tabs, showing each; letting Ctrl go stays on the one
-" shown. row-fold folds the group the cursor is in, or unfolds it.
+" Holding Ctrl puts a cursor on the active row (and shows the Sidebar
+" while it's hidden — Settings → Keyboard Shortcuts). <C-j>/<C-k> step
+" through the rows, showing each: a tab's page, or a group's tabs; letting
+" Ctrl go stays on the one shown. row-fold folds the group the cursor is in
+" and goes to its header; row-unfold unfolds a folded group, or steps into
+" an unfolded one.
 cursor-down-show    <C-j>
 cursor-up-show      <C-k>
 row-move-down       <C-S-j>
 row-move-up         <C-S-k>
 row-fold            <C-h>
+row-unfold          <C-l>
 row-menu            <C-m>
 
 " ── COMMAND: split view ───────────────────────────────────────────────
-" S splits the page area with a pane on the right, V with one below, and
-" offers the tabs to put there. <C-w> moves the focus to the other pane; q
+" V splits the page area with a pane on the right (vim's :vsplit), S with
+" one below (:split), and offers the tabs to put there. <C-w> moves the focus to the other pane; q
 " ends the split, keeping the focused pane's tab.
-split-right         S
-split-down          V
+split-right         V
+split-down          S
 split-focus         <C-w>
 split-close         q
 
@@ -97,6 +100,8 @@ tab-8               <C-8>
 tab-9               <C-9>
 duplicate-tab
 move-tab
+set-comment         gcc
+remove-comment
 rename-tab-group
 move-group
 duplicate-group
@@ -189,7 +194,9 @@ export function contextOf(command: string): VimContext {
 // onto e, moving the address editor to E. v6 put the address editor on e
 // (the plain address bar went unbound), opened Search Everything on one kind
 // of thing from w/t/p (pick-*), moved new-tab to <CR> and unbound paste-url,
-// next-tab and prev-tab, whose keys those took. A saved
+// next-tab and prev-tab, whose keys those took. v7 swapped the splits to
+// vim's (V side by side, S one above the other) and put row-unfold on <C-l>,
+// with row-fold only folding, and set-comment on gcc. A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
 // the rest, including commands it couldn't know about.
@@ -296,8 +303,17 @@ const V5_DEFAULT_KEYS: Record<string, string> = {
   'edit-url': 'E',
 }
 
+/** v6 defaults of the commands v7 rebound. */
+const V6_DEFAULT_KEYS: Record<string, string> = {
+  'split-right': 'S',
+  'split-down': 'V',
+}
+
 /** Commands v6 added; no older keymap mentions them. */
 const NEW_IN_V6 = new Set(['pick-workspace', 'pick-tab', 'pick-group', 'pick-profile'])
+
+/** Commands v7 added. */
+const NEW_IN_V7 = new Set(['row-unfold', 'set-comment', 'remove-comment'])
 
 /** Commands v3 added under new names; no older keymap mentions them. */
 const NEW_IN_V3 = new Set([
@@ -334,12 +350,12 @@ function sequencesClash(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1 to v5) over to the
+ * Carries a keymap saved under older defaults (v1 to v6) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
  * nothing to keep.
  */
-export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5): string | null {
+export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 | 6): string | null {
   // What the owner had, by the old name.
   const mine = new Map<string, string>()
   for (const line of saved.split('\n')) {
@@ -354,12 +370,13 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5):
     (fromVersion <= 2 ? V2_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 3 ? V3_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 4 ? V4_DEFAULT_KEYS[command] : undefined) ??
-    V5_DEFAULT_KEYS[command] ??
+    (fromVersion <= 5 ? V5_DEFAULT_KEYS[command] : undefined) ??
+    V6_DEFAULT_KEYS[command] ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
   const existed = (command: string): boolean =>
-    NEW_IN_V6.has(command) ? false
+    NEW_IN_V7.has(command) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
     : fromVersion >= 3
       ? !(command in RENAMED_IN_V3)
       : !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))

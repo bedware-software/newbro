@@ -60,7 +60,7 @@ export function SidebarHintBar({ keymap, active }: { keymap: VimKeymap; active: 
     <HintBar wrap className={cn('px-2 transition-opacity', !active && 'opacity-50')}>
       <Hint label="Switch" keys={caps('cursor-down-show', 'cursor-up-show')} />
       <Hint label="Move" keys={caps('row-move-down', 'row-move-up')} />
-      <Hint label="Fold" keys={caps('row-fold')} />
+      <Hint label="Fold" keys={caps('row-fold', 'row-unfold')} />
       <Hint label="Menu" keys={caps('row-menu')} />
       <Hint label="Close" keys={caps('close-tab')} />
     </HintBar>

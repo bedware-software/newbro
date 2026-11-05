@@ -3,7 +3,7 @@ import { useAppStore, consumeNewTabUrlFocus, consumeEagerLoad } from '../store/a
 import type { TabGroup } from '../store/types'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
-import { keepsChromeKeyboard } from '../lib/vim-mode'
+import { keepsChromeKeyboard, type VimMode } from '../lib/vim-mode'
 import { internalPageOf, isInternalUrl } from '../lib/internal-pages'
 import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, CircleAlert, type LucideIcon } from 'lucide-react'
 import type { PermissionKind } from '../lib/permissions'
@@ -11,6 +11,7 @@ import { DownloadsPage } from './DownloadsPage'
 import { OsBlockedPrompt, PermissionPrompt } from './PagePrompt'
 import { SplitFrames, insetForFrame, splitPaneRects } from './SplitPanes'
 import { SplitPicker } from './SplitPicker'
+import { GroupPage } from './GroupPage'
 import { isSplitShown, setSplitRatio, useSplitStore, workspaceTabs, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO } from '../lib/split-view'
 import type { VimKeymap } from '../lib/vim-keymap'
 
@@ -165,9 +166,14 @@ interface Props {
   splitPickerKeymap: VimKeymap | null
   /** Bumped to hand the keyboard back to the split view's tab picker. */
   splitPickerFocusTick: number
+  /** COMMAND mode's keys, for the group page's hints; null while Vim mode
+   *  is off. */
+  vimKeymap: VimKeymap | null
+  /** The window's Vim mode; null while Vim mode is off. */
+  vimMode: VimMode | null
 }
 
-export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick }: Props) {
+export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeymap, vimMode }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [errors, setErrors] = useState<Map<string, LoadError>>(new Map())
   const [certErrors, setCertErrors] = useState<Map<string, CertError>>(new Map())
@@ -188,8 +194,9 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick }: Props)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
-  // Parked on a tab group (Ctrl+Tab stops on group headers): no tab is
-  // active, so the group takes the page's place.
+  // Parked on a tab group (a click on its header; Ctrl+Tab, or Vim's
+  // Ctrl+J/K, stop on group headers): no tab is active, so the group's tabs
+  // take the page's place.
   const parkedGroup = useAppStore((s) => (s.activeTabId === null
     ? s.getActiveWorkspace()?.tabGroups.find((g) => g.id === s.activeTabGroupId)
     : undefined))
@@ -662,7 +669,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick }: Props)
         <SplitPicker split={split} paneRef={emptyPaneRef} vimKeymap={splitPickerKeymap} focusTick={splitPickerFocusTick} />
       )}
 
-      {parkedGroup && <ParkedGroupCard group={parkedGroup} />}
+      {parkedGroup && <GroupPage group={parkedGroup} vimKeymap={vimKeymap} vimMode={vimMode} />}
 
       {activeInternalUrl && (internalPageOf(activeInternalUrl) === 'downloads'
         ? <DownloadsPage />
@@ -711,30 +718,6 @@ function UnknownInternalPage({ url }: { url: string }) {
         <p className="text-sm leading-relaxed text-muted-foreground">
           <span className="font-mono text-foreground">{url}</span> isn&apos;t a Newbro page.
         </p>
-      </div>
-    </div>
-  )
-}
-
-/** The page area while parked on a tab group: the group's coloured name pill
- *  from the sidebar header, scaled up in the middle, so the stop reads at a
- *  glance as a group rather than a page. The header's tab-count badge stays
- *  in the sidebar. Colours come from the same [data-group-*] rules in
- *  globals.css that paint the sidebar. */
-function ParkedGroupCard({ group }: { group: TabGroup }) {
-  return (
-    <div className="absolute inset-0 z-50 flex select-none items-center justify-center bg-background">
-      <div
-        data-group-container=""
-        style={{ ['--gc' as string]: group.color }}
-        className="flex min-w-0 max-w-full -translate-y-[8vh] items-center px-8"
-      >
-        <span
-          data-group-pill=""
-          className="min-w-0 truncate rounded-xl px-4 py-1.5 text-3xl font-semibold tracking-tight"
-        >
-          {group.name}
-        </span>
       </div>
     </div>
   )

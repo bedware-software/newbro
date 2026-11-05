@@ -8,9 +8,10 @@
 // keeps only the site, n copies the page's title; i / A / I / C go to
 // typing. Enter goes there. It opens typing over the whole address,
 // selected, as other browsers' address bars do; Esc goes to COMMAND.
-// A pinned popup over the top of the page area, or wherever it was dragged
-// to, and modal: the window behind it takes no clicks or focus until it
-// closes. While it's up the toolbar shows workspace stats where the address
+// It drops down from the toolbar's address bar, edge to edge with it, the
+// way the address bar's suggestions do — a pinned popup (tab pages are
+// native views that paint over the app's DOM), not dragged anywhere — and
+// is modal: the window behind it takes no clicks or focus until it closes. While it's up the toolbar shows workspace stats where the address
 // bar was (Toolbar.tsx).
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -39,8 +40,12 @@ const INTENT_LABEL: Record<Intent, string> = { change: 'Change', remove: 'Remove
 // address.
 const INTENT_COMMAND: Record<Intent, string> = { change: 'url-change', remove: 'url-remove', copy: 'url-copy', paste: 'url-paste' }
 const MAX_WIDTH = 1100
+const MIN_WIDTH = 420
 const HEIGHT = 196
 const INSET_TOP = 20
+// Between the address bar and the editor dropping down from it — the
+// address bar's suggestions' gap (main/omnibox-popup.ts).
+const BAR_GAP = 4
 const FLASH_MS = 1600
 // The address at twice the usual size, shrinking to fit a long one — down
 // to the usual size, past which the box scrolls.
@@ -49,34 +54,6 @@ const MIN_FONT_PX = 14
 const PLACEHOLDER = 'Address'
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
-
-// Where the editor was dragged to: how far from its usual spot at the top
-// centre of the page area, so it moves along with the page area. Kept
-// across opens and restarts.
-const OFFSET_KEY = 'url-editor-offset'
-
-interface Offset {
-  x: number
-  y: number
-}
-
-function readOffset(): Offset {
-  try {
-    const v = JSON.parse(window.localStorage.getItem(OFFSET_KEY) ?? 'null') as Partial<Offset> | null
-    if (typeof v?.x === 'number' && typeof v.y === 'number' && Number.isFinite(v.x) && Number.isFinite(v.y)) return { x: v.x, y: v.y }
-  } catch {
-    /* corrupt entry — the usual spot */
-  }
-  return { x: 0, y: 0 }
-}
-
-function writeOffset(offset: Offset): void {
-  try {
-    window.localStorage.setItem(OFFSET_KEY, JSON.stringify(offset))
-  } catch (err) {
-    console.warn('UrlEditor: saving the position failed:', err)
-  }
-}
 
 /** First line, trimmed — what a paste means in a one-line box. */
 function oneLine(text: string): string {
@@ -114,8 +91,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   const lastSelRef = useRef<{ start: number; end: number } | null>(null)
   const [size, setSize] = useState<{ width: number } | null>(null)
   const [placement, setPlacement] = useState<PopupPlacement>()
-  // The usual spot as last measured, for telling a drop's offset from it.
-  const homeRef = useRef<PopupPlacement | null>(null)
   const [scrollLeft, setScrollLeft] = useState(0)
   const [marks, setMarks] = useState<Mark[]>([])
   const [fontPx, setFontPx] = useState(FONT_PX)
@@ -170,28 +145,37 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     if (open && target && activeTabId !== target.tabId) closeUrlEditor()
   }, [open, target, activeTabId])
 
-  // The top of the page area, as wide as fits (taken once: the popup's
-  // window keeps its size) — or as far from there as it was dragged, kept
-  // inside the window — following the page area around.
+  // Just under the address bar, edge to edge with it (its width taken once:
+  // the popup's window keeps its size), following it around. With no
+  // address bar showing (page fullscreen), at the top of the page area,
+  // centred, as wide as fits.
   useEffect(() => {
     const el = anchorRef.current
     if (!open || !el) return
+    const urlBar = (): DOMRect | null => {
+      const r = document.querySelector('[data-url-bar]')?.getBoundingClientRect()
+      return r && r.width > 0 ? r : null
+    }
     const measure = (): void => {
       const r = el.getBoundingClientRect()
-      const width = size?.width ?? Math.round(Math.max(420, Math.min(MAX_WIDTH, r.width - 48)))
+      const bar = urlBar()
+      const width = size?.width ?? Math.round(bar
+        ? Math.max(MIN_WIDTH, bar.width)
+        : Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, r.width - 48)))
       if (!size) setSize({ width })
-      const home = { left: r.left + (r.width - width) / 2, top: r.top + INSET_TOP }
-      homeRef.current = home
-      const offset = readOffset()
       const next = {
-        left: Math.round(Math.max(0, Math.min(window.innerWidth - width, home.left + offset.x))),
-        top: Math.round(Math.max(0, Math.min(window.innerHeight - HEIGHT, home.top + offset.y))),
+        left: Math.round(Math.max(0, Math.min(window.innerWidth - width,
+          bar ? bar.left + (bar.width - width) / 2 : r.left + (r.width - width) / 2))),
+        top: Math.round(Math.max(0, Math.min(window.innerHeight - HEIGHT,
+          bar ? bar.bottom + BAR_GAP : r.top + INSET_TOP))),
       }
       setPlacement((prev) => (prev?.left === next.left && prev.top === next.top ? prev : next))
     }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
+    const barEl = document.querySelector('[data-url-bar]')
+    if (barEl) ro.observe(barEl)
     window.addEventListener('resize', measure)
     return () => {
       ro.disconnect()
@@ -348,13 +332,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     }
   }, [setValue, showFlash, typeAt])
 
-  // Dropped somewhere new: it stays there, now and next time.
-  const onMoved = useCallback((spot: PopupPlacement) => {
-    const home = homeRef.current
-    if (home) writeOffset({ x: Math.round(spot.left - home.left), y: Math.round(spot.top - home.top) })
-    setPlacement(spot)
-  }, [])
-
   const go = useCallback((inNewTab: boolean) => {
     const text = valueRef.current.trim()
     const unchanged = target && text === target.url
@@ -472,14 +449,11 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       // In Vim mode Esc first leaves the box; the editor handles it.
       closeOnEscape={!vimKeymap}
       placement={placement}
-      onMoved={onMoved}
       onClose={closeUrlEditor}
       onWindowChange={setPopupWindow}
     >
-      {/* Dragged by anything but the box and the block keys; a press there
-          keeps the box's focus and selection. */}
+      {/* A press off the box keeps the box's focus and selection. */}
       <div
-        data-detached-drag-handle=""
         onMouseDown={(e) => { if (e.target !== inputRef.current) e.preventDefault() }}
         className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col"
       >
@@ -494,7 +468,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
         <div className="px-4 pt-2 shrink-0">
           {/* The address in a field, the mode at its end. A press anywhere
               in the field types at the end. */}
-          <div data-detached-no-drag="">
+          <div>
             <InputField
               inputRef={inputRef}
               onPress={() => typeAt(valueRef.current.length)}
@@ -546,7 +520,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
                   <kbd
                     className={`mt-0.5 font-mono text-[11px] transition-opacity ${intent ? 'opacity-100' : 'opacity-45'}`}
                     data-on-field={intent ? '' : undefined}
-                    data-detached-no-drag=""
                     onMouseDown={(e) => {
                       // A click on a block's key changes that block.
                       e.preventDefault()

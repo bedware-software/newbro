@@ -1437,6 +1437,8 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
         {/* URL bar with security indicator + tab title */}
         <div
           ref={urlBarRef}
+          // The address editor lines up with it (UrlEditor.tsx).
+          data-url-bar=""
           className="field flex-[5] min-w-0 flex items-center h-8 rounded-lg"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >

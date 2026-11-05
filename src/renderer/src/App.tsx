@@ -4,7 +4,7 @@ import { normalizeURL, setSearchEngine } from './lib/url'
 import { openAddress } from './lib/open-address'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
-import { useVimMode, dispatchSidebarCommand, type VimMode } from './lib/vim-mode'
+import { useVimMode, dispatchSidebarCommand, dispatchPageCommand, type VimMode } from './lib/vim-mode'
 import { parseVimKeymap, paletteKeymap, DEFAULT_VIM_KEYMAP, isPageCommand, isSidebarCommand } from './lib/vim-keymap'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
@@ -1447,6 +1447,8 @@ export default function App() {
     return true
   }
   const runVimCommand = (command: string): void => {
+    // Parked on a group: its page takes the keys it knows (j/k, i).
+    if (dispatchPageCommand(command)) return
     const pickFilter = VIM_PICK_FILTERS[command]
     if (pickFilter) {
       setSearchOpenFilter(pickFilter)
@@ -1547,6 +1549,8 @@ export default function App() {
           <WebviewPanel
             splitPickerKeymap={vimEnabled ? paletteKeymap(vimKeymap.search) : null}
             splitPickerFocusTick={splitPickerFocusTick}
+            vimKeymap={vimEnabled ? vimKeymap.main : null}
+            vimMode={vim.mode}
           />
         </div>
         {/* Extension chrome.sidePanel column; hidden in cinema mode like the

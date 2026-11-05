@@ -471,8 +471,9 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
   // ── Vim mode ──
   // While Ctrl is held the (unmarked) cursor sits on the active row — the active
   // tab, the group we're parked on, or the header of the collapsed group
-  // hiding the active tab. Ctrl+J/K step through the tabs showing each, so
-  // it follows the active tab; folding a group leaves it on the header.
+  // hiding the active tab. Ctrl+J/K step through the rows showing each — a
+  // tab's page, or parked on a group, its tabs — so it follows what's shown;
+  // folding a group leaves it on the header.
   // Activating something else (a click, 1-9, Search) or letting Ctrl go
   // brings it back to the active row.
   const [vimCursorOverride, setVimCursorOverride] = useState<string | null>(null)
@@ -861,30 +862,40 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
       }
       requestAnimationFrame(() => findVimRow(id)?.scrollIntoView({ block: 'nearest' }))
     }
-    // Ctrl+J/K: on to the next tab row that way — group headers have no
-    // page to show — and show it. The cursor follows the active tab.
-    const showNextTab = (dir: 1 | -1): void => {
-      for (let i = (at === -1 ? (dir === 1 ? -1 : visibleRowIds.length) : at) + dir; i >= 0 && i < visibleRowIds.length; i += dir) {
-        const id = visibleRowIds[i]
-        if (groupById(id)) continue
-        setActiveTab(id)
-        setVimCursorOverride(id)
-        return
-      }
+    // Ctrl+J/K: on to the next row that way, and show it — a tab's page,
+    // or parked on a group, its tabs (WebviewPanel's group page). The
+    // cursor follows.
+    const showRow = (id: string): void => {
+      if (groupById(id)) setActiveGroup(id)
+      else setActiveTab(id)
+      setVimCursorOverride(id)
+    }
+    const showNextRow = (dir: 1 | -1): void => {
+      const next = visibleRowIds[(at === -1 ? (dir === 1 ? -1 : visibleRowIds.length) : at) + dir]
+      if (next) showRow(next)
     }
     switch (cmd) {
-      case 'cursor-down-show': showNextTab(1); break
-      case 'cursor-up-show': showNextTab(-1); break
+      case 'cursor-down-show': showNextRow(1); break
+      case 'cursor-up-show': showNextRow(-1); break
       case 'row-move-down': moveRow(1); break
       case 'row-move-up': moveRow(-1); break
       case 'row-fold': {
         if (!vimCursorId) break
-        // A tab in a group folds (or unfolds) its group; the cursor goes to
-        // the header, where Ctrl+J steps into the group again.
+        // A group, or a tab in one, folds the group; the cursor goes to the
+        // header, where Ctrl+L unfolds it again.
         const group = groupById(vimCursorId) ?? groupById(findTabGroup(vimCursorId))
         if (!group) break
-        toggleTabGroupCollapse(group.id)
+        if (!group.isCollapsed) toggleTabGroupCollapse(group.id)
         setVimCursorOverride(group.id)
+        break
+      }
+      case 'row-unfold': {
+        // On a folded group's header it unfolds; on an unfolded one it
+        // steps onto the group's first tab, showing it.
+        const group = groupById(vimCursorId)
+        if (!group) break
+        if (group.isCollapsed) toggleTabGroupCollapse(group.id)
+        else if (group.tabs[0]) showRow(group.tabs[0].id)
         break
       }
       case 'row-menu': {
