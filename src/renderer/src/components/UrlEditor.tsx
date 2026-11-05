@@ -2,11 +2,12 @@
 // tab's address big in a field, cut into blocks — protocol, domain, port,
 // each path level, parameters, fragment — labelled underneath with the key
 // that names each one. In COMMAND mode an intent and a block's key act on
-// that block: c changes it (selects it to type over), r removes it, y
-// copies it, p pastes over it; the intent's key again (yy, cc, rr) acts on
-// the whole address, and P pastes over all of it. u goes up a level, t
-// keeps only the site, n copies the page's title; i / A / I / C go to
-// typing. Enter goes there. It opens typing over the whole address,
+// that block: c changes it (selects it to type over), d removes it, y
+// copies it, p pastes over it; the intent's key again (yy, cc) acts on the
+// whole address — a block's key wins, so dd is the domain and pp the
+// parameters, while D removes all of it and P pastes over all of it — and
+// yt copies the page's title. gu goes up a level, gt keeps only the site; u undoes and <C-r>
+// redoes, as in vim; i / A / I / C go to typing. Enter goes there. It opens typing over the whole address,
 // selected, as other browsers' address bars do; Esc goes to COMMAND.
 // It drops down from the toolbar's address bar, edge to edge with it, the
 // way the address bar's suggestions do — a pinned popup (tab pages are
@@ -39,7 +40,12 @@ const INTENT_LABEL: Record<Intent, string> = { change: 'Change', remove: 'Remove
 // The command that arms each intent: its key pressed again means the whole
 // address.
 const INTENT_COMMAND: Record<Intent, string> = { change: 'url-change', remove: 'url-remove', copy: 'url-copy', paste: 'url-paste' }
+// What acts on the whole address for each: the intent's key again, unless
+// that's a block's key (dd the domain, pp the parameters).
+const WHOLE_COMMAND: Record<Intent, string> = { change: 'url-change', remove: 'url-remove-all', copy: 'url-copy', paste: 'url-paste-all' }
 const MAX_WIDTH = 1100
+// After y, the page's title's key (yt), alongside the blocks'.
+const TITLE_KEY = 't'
 const MIN_WIDTH = 420
 const HEIGHT = 196
 const INSET_TOP = 20
@@ -87,6 +93,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Changes made in COMMAND mode, for U.
   const historyRef = useRef<string[]>([])
+  // What u took back, for <C-r>.
+  const redoRef = useRef<string[]>([])
   // Where typing left off, for i.
   const lastSelRef = useRef<{ start: number; end: number } | null>(null)
   const [size, setSize] = useState<{ width: number } | null>(null)
@@ -106,8 +114,10 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     return () => ro.disconnect()
   }, [inputEl])
 
+  /** Any change but an undo or redo's own drops what could be redone. */
   const setValue = useCallback((next: string, remember: boolean) => {
     if (remember && next !== valueRef.current) historyRef.current.push(valueRef.current)
+    if (next !== valueRef.current) redoRef.current = []
     valueRef.current = next
     setValueState(next)
   }, [])
@@ -133,6 +143,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     }
     setTarget({ tabId: tab.id, url: tab.url, title: tab.title, favicon: tab.favicon })
     historyRef.current = []
+    redoRef.current = []
     lastSelRef.current = null
     setValue(tab.url === 'about:blank' ? '' : tab.url, false)
     setIntentState(null)
@@ -332,6 +343,15 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     }
   }, [setValue, showFlash, typeAt])
 
+  const copyTitle = (): void => {
+    if (!target?.title) {
+      showFlash('This page has no title')
+      return
+    }
+    window.electronAPI.clipboardWriteText(target.title)
+    showFlash(`Copied the title: ${target.title}`)
+  }
+
   const go = useCallback((inNewTab: boolean) => {
     const text = valueRef.current.trim()
     const unchanged = target && text === target.url
@@ -343,17 +363,13 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     switch (command) {
       case 'url-change': arm('change'); break
       case 'url-remove': arm('remove'); break
+      case 'url-remove-all': applyWhole('remove'); break
       case 'url-copy': arm('copy'); break
       case 'url-paste': arm('paste'); break
       case 'url-paste-all': void pasteWhole(); break
       case 'url-up': setValue(upOneLevel(valueRef.current), true); break
       case 'url-site': setValue(siteOnly(valueRef.current), true); break
-      case 'url-copy-title':
-        if (target?.title) {
-          window.electronAPI.clipboardWriteText(target.title)
-          showFlash(`Copied the title: ${target.title}`)
-        }
-        break
+      case 'url-copy-title': copyTitle(); break
       case 'url-clear':
         setValue('', true)
         requestAnimationFrame(() => typeAt(0))
@@ -368,8 +384,25 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       }
       case 'url-undo': {
         const previous = historyRef.current.pop()
-        if (previous === undefined) showFlash('Nothing to undo')
-        else setValue(previous, false)
+        if (previous === undefined) {
+          showFlash('Nothing to undo')
+          break
+        }
+        const redo = [...redoRef.current, valueRef.current]
+        setValue(previous, false)
+        redoRef.current = redo
+        break
+      }
+      case 'url-redo': {
+        const redo = [...redoRef.current]
+        const next = redo.pop()
+        if (next === undefined) {
+          showFlash('Nothing to redo')
+          break
+        }
+        historyRef.current.push(valueRef.current)
+        setValue(next, false)
+        redoRef.current = redo
         break
       }
       case 'url-go': go(false); break
@@ -378,7 +411,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
 
   // After an intent, the next key names a block — or, the intent's own key
   // again, the whole address (vim's yy). A block key wins: p is the
-  // parameters', so pp pastes over them and P over the whole address.
+  // parameters', so pp pastes over them and P over the whole address. After
+  // y, t is the page's title.
   const intercept = (e: KeyboardEvent): boolean => {
     const kind = intentRef.current
     if (!kind) return false
@@ -386,6 +420,10 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     if (!token) return false
     disarm()
     if (token === '<Esc>') return true
+    if (kind === 'copy' && token === TITLE_KEY) {
+      copyTitle()
+      return true
+    }
     if (isBlockKey(token)) {
       void applyIntent(kind, token)
       return true
@@ -457,12 +495,26 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
         onMouseDown={(e) => { if (e.target !== inputRef.current) e.preventDefault() }}
         className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col"
       >
-        {/* The page's title — what n copies — centred over the address. */}
+        {/* The page's title — what yt copies, its key lit while y waits —
+            centred over the address. */}
         <div className="flex items-center justify-center gap-2 h-8 mt-2 px-4 shrink-0">
           <TabFavicon favicon={target.favicon} globeSize={16} />
           <span className="min-w-0 truncate text-sm font-medium text-foreground" title={target.title}>
             {target.title || 'Untitled'}
           </span>
+          {intent === 'copy' && (
+            <kbd
+              className="shrink-0 font-mono text-[11px]"
+              data-on-field=""
+              onMouseDown={(e) => {
+                e.preventDefault()
+                copyTitle()
+                disarm()
+              }}
+            >
+              {TITLE_KEY}
+            </kbd>
+          )}
         </div>
 
         <div className="px-4 pt-2 shrink-0">
@@ -541,7 +593,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
             <>
               {flash && <span>{flash} ·</span>}
               <span className="text-foreground">{INTENT_LABEL[intent]} — which block? Press its key above</span>
-              <Hint label="The whole address" keys={caps(intent === 'paste' ? 'url-paste-all' : INTENT_COMMAND[intent])} />
+              <Hint label="The whole address" keys={caps(WHOLE_COMMAND[intent])} />
+              {intent === 'copy' && <Hint label="The title" keys={[TITLE_KEY]} />}
               <Hint label="Cancel" keys={['Esc']} />
             </>
           ) : flash ? (
@@ -550,15 +603,17 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
             <>
               <Hint label="Change" keys={caps('url-change')} />
               <Hint label="Remove" keys={caps('url-remove')} />
+              <Hint label="Remove all" keys={caps('url-remove-all')} />
               <Hint label="Copy" keys={caps('url-copy')} />
               <Hint label="Paste" keys={caps('url-paste')} />
               <Hint label="Paste all" keys={caps('url-paste-all')} />
               <Hint label="Up" keys={caps('url-up')} />
               <Hint label="Site" keys={caps('url-site')} />
-              <Hint label="Title" keys={caps('url-copy-title')} />
+              <Hint label="Title" keys={caps('url-copy')[0] ? [`${caps('url-copy')[0]}${TITLE_KEY}`] : []} />
               <Hint label="Type" keys={caps('url-insert', 'url-append', 'url-insert-start')} />
               <Hint label="Clear" keys={caps('url-clear')} />
               <Hint label="Undo" keys={caps('url-undo')} />
+              <Hint label="Redo" keys={caps('url-redo')} />
               <Hint label="Go" keys={caps('url-go')} />
               <Hint label="Close" keys={['Esc']} />
             </>

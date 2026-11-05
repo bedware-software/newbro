@@ -136,23 +136,27 @@ search-row-9        9
 " The page's title, and its address big, cut into blocks with a key each:
 " h protocol, d domain, n port, 1–9 the path's levels, p parameters,
 " f fragment. An intent and a block's key act on that block — c changes it
-" (selects it to type over), r removes it, y copies it, p pastes over it;
-" the intent's key again acts on the whole address (yy, cc, rr — pp is the
-" parameters), and P pastes over all of it. <CR> goes there, Shift+<CR> in
-" a new tab; Esc leaves typing, then closes.
+" (selects it to type over), d removes it, y copies it, p pastes over it.
+" A block key wins over the intent's own key — dd is the domain, pp the
+" parameters — so yy and cc act on the whole address, D removes all of it,
+" P pastes over all of it and C clears it to type; yt copies the title.
+" gu goes up a level, gt keeps only the site; u undoes, <C-r> redoes.
+" <CR> goes there, Shift+<CR> in a new tab; Esc leaves typing, then closes.
 url-change          c
-url-remove          r
+url-remove          d
+url-remove-all      D
 url-copy            y
 url-paste           p
 url-paste-all       P
-url-up              u
-url-site            t
-url-copy-title      n
+url-up              gu
+url-site            gt
+url-copy-title
 url-clear           C
 url-append          A
 url-insert-start    I
 url-insert          i
-url-undo            U
+url-undo            u
+url-redo            <C-r>
 url-go              <CR>
 
 " ── Find in page ──────────────────────────────────────────────────────
@@ -196,7 +200,11 @@ export function contextOf(command: string): VimContext {
 // of thing from w/t/p (pick-*), moved new-tab to <CR> and unbound paste-url,
 // next-tab and prev-tab, whose keys those took. v7 swapped the splits to
 // vim's (V side by side, S one above the other) and put row-unfold on <C-l>,
-// with row-fold only folding, and set-comment on gcc. A saved
+// with row-fold only folding, and set-comment on gcc. v8 made the address
+// editor's keys vim's: u undoes (was U) and <C-r> redoes, up a level and the
+// site went behind g (gu, gt), the title's copy behind y (yt, was n), and
+// removing onto d (was r), D removing the whole address.
+// A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
 // the rest, including commands it couldn't know about.
@@ -309,11 +317,23 @@ const V6_DEFAULT_KEYS: Record<string, string> = {
   'split-down': 'V',
 }
 
+/** v7 defaults of the commands v8 rebound. */
+const V7_DEFAULT_KEYS: Record<string, string> = {
+  'url-remove': 'r',
+  'url-up': 'u',
+  'url-site': 't',
+  'url-copy-title': 'n',
+  'url-undo': 'U',
+}
+
 /** Commands v6 added; no older keymap mentions them. */
 const NEW_IN_V6 = new Set(['pick-workspace', 'pick-tab', 'pick-group', 'pick-profile'])
 
 /** Commands v7 added. */
 const NEW_IN_V7 = new Set(['row-unfold', 'set-comment', 'remove-comment'])
+
+/** Commands v8 added. */
+const NEW_IN_V8 = new Set(['url-redo', 'url-remove-all'])
 
 /** Commands v3 added under new names; no older keymap mentions them. */
 const NEW_IN_V3 = new Set([
@@ -350,12 +370,12 @@ function sequencesClash(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1 to v6) over to the
+ * Carries a keymap saved under older defaults (v1 to v7) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
  * nothing to keep.
  */
-export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 | 6): string | null {
+export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7): string | null {
   // What the owner had, by the old name.
   const mine = new Map<string, string>()
   for (const line of saved.split('\n')) {
@@ -371,12 +391,13 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 |
     (fromVersion <= 3 ? V3_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 4 ? V4_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 5 ? V5_DEFAULT_KEYS[command] : undefined) ??
-    V6_DEFAULT_KEYS[command] ??
+    (fromVersion <= 6 ? V6_DEFAULT_KEYS[command] : undefined) ??
+    V7_DEFAULT_KEYS[command] ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
   const existed = (command: string): boolean =>
-    NEW_IN_V7.has(command) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
+    NEW_IN_V8.has(command) || (fromVersion <= 6 && NEW_IN_V7.has(command)) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
     : fromVersion >= 3
       ? !(command in RENAMED_IN_V3)
       : !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))
