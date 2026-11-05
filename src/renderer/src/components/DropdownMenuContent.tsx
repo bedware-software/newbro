@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   PointerSensor,
@@ -13,7 +13,7 @@ import {
   User, Layout, Search, Settings, Download, Info, LogOut, Plus, Pencil, Trash2, Menu, Globe, Import,
   Upload, X, FolderPlus, FolderMinus, FolderInput, Folder, CopyPlus, MessageSquare,
   MessageSquareOff, FilePlus, Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose, Check,
-  FolderOpen, Link, Pause, Play, RotateCw, ListX,
+  FolderOpen, Link, Pause, Play, RotateCw, ListX, Zap,
 } from 'lucide-react'
 import type {
   DropdownAction,
@@ -30,7 +30,7 @@ const ICONS: Record<IconName, typeof User> = {
   User, Layout, Search, Settings, Download, Info, LogOut, Plus, Pencil, Trash2, Menu, Globe, Import,
   Upload, X, FolderPlus, FolderMinus, FolderInput, Folder, CopyPlus, MessageSquare,
   MessageSquareOff, FilePlus, Pin, PinOff, EyeOff, Puzzle, PanelLeft, PanelLeftClose,
-  FolderOpen, Link, Pause, Play, RotateCw, ListX,
+  FolderOpen, Link, Pause, Play, RotateCw, ListX, Zap,
 }
 
 function resolveIcon(name: IconName | undefined, fallback: typeof User = User): typeof User {
@@ -170,14 +170,60 @@ function ColorStrip({
   )
 }
 
+// The menu's own moves (j/k through the actions, h/l across the swatches),
+// which no action's key may take.
+const MOVE_KEYS = new Set(['j', 'k', 'h', 'l'])
+
+/** Each enabled action's one key, by index: its own `key`, else its
+ *  shortcut when that's one plain key (the Downloads page's f, c, x…), else
+ *  the first letter of a word of its label no other action has, else of
+ *  anywhere in it, else a digit. */
+export function menuKeys(actions: DropdownAction[]): Map<number, string> {
+  const keys = new Map<number, string>()
+  const taken = new Set(MOVE_KEYS)
+  actions.forEach((a, i) => {
+    const own = a.key ?? (a.shortcut?.length === 1 && /^[a-zA-Z0-9]$/.test(a.shortcut[0]) ? a.shortcut[0] : undefined)
+    if (a.disabled || !own || taken.has(own)) return
+    keys.set(i, own)
+    taken.add(own)
+  })
+  const free = (ch: string | undefined): string | null => {
+    const key = ch?.toLowerCase()
+    return key && /^[a-z]$/.test(key) && !taken.has(key) ? key : null
+  }
+  actions.forEach((a, i) => {
+    if (a.disabled || keys.has(i)) return
+    const words = a.label.split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+    const key = words.map((w) => free(w[0])).find(Boolean) ??
+      [...a.label].map((ch) => free(ch)).find(Boolean) ??
+      ['1', '2', '3', '4', '5', '6', '7', '8', '9'].find((d) => !taken.has(d)) ?? null
+    if (!key) return
+    keys.set(i, key)
+    taken.add(key)
+  })
+  return keys
+}
+
+/** The key an event stands for, by position on the keyboard (any input
+ *  language): a letter, capital with Shift, or a digit. */
+function positionalKey(e: KeyboardEvent): string | null {
+  const letter = /^Key([A-Z])$/.exec(e.code)
+  if (letter) return e.shiftKey ? letter[1] : letter[1].toLowerCase()
+  const digit = /^Digit([0-9])$/.exec(e.code)
+  return digit && !e.shiftKey ? digit[1] : null
+}
+
 function ActionRow({
   action,
   focused,
+  menuKey,
   onEmit,
 }: {
   action: DropdownAction
   /** Highlighted by keyboard navigation. */
   focused: boolean
+  /** Its one key, in a menu opened from the keyboard. */
+  menuKey?: string
   onEmit: (evt: DropdownEventBody) => void
 }) {
   const Icon = resolveIcon(action.iconName)
@@ -197,7 +243,13 @@ function ActionRow({
         <Icon size={14} className={action.destructive && !disabled ? '' : 'text-muted-foreground'} />
         <span>{action.label}</span>
       </span>
-      {action.shortcut && action.shortcut.length > 0 && (
+      {menuKey ? (
+        // From the keyboard its one key is what matters (the regular
+        // shortcuts are off in Vim mode anyway).
+        <span className="ml-4 inline-flex items-center text-muted-foreground">
+          <kbd className="font-mono">{menuKey}</kbd>
+        </span>
+      ) : action.shortcut && action.shortcut.length > 0 && (
         <span className="inline-flex items-center gap-0.5 text-muted-foreground">
           {action.shortcut.map((seg, i) => <kbd key={i}>{seg}</kbd>)}
         </span>
@@ -267,7 +319,8 @@ export function DropdownMenuContent({
 
   // Keyboard navigation for menus opened from the keyboard: j/k (or ↓/↑)
   // step through the enabled actions, h/l across the colour swatches, and
-  // Enter picks whichever was moved to last.
+  // Enter picks whichever was moved to last; an action's own key picks it.
+  const keys = useMemo(() => (spec.keyboard ? menuKeys(actions) : new Map<number, string>()), [spec, actions])
   const [keyFocus, setKeyFocus] = useState<{ zone: 'actions' | 'colors'; index: number } | null>(null)
   useEffect(() => {
     const first = actions.findIndex((a) => !a.disabled)
@@ -278,8 +331,19 @@ export function DropdownMenuContent({
     if (!spec.keyboard) return
     const handler = (e: KeyboardEvent): void => {
       if (e.metaKey || e.ctrlKey || e.altKey) return
+      const pressed = positionalKey(e)
+      if (pressed && !MOVE_KEYS.has(pressed)) {
+        for (const [index, key] of keys) {
+          if (key !== pressed) continue
+          e.preventDefault()
+          onEmit({ type: 'action', actionId: actions[index].id })
+          return
+        }
+      }
+      // The moves go by position too.
+      const move = pressed && MOVE_KEYS.has(pressed) ? pressed : e.key
       const enabled = actions.flatMap((a, i) => (a.disabled ? [] : [i]))
-      const step = e.key === 'j' || e.key === 'ArrowDown' ? 1 : e.key === 'k' || e.key === 'ArrowUp' ? -1 : 0
+      const step = move === 'j' || move === 'ArrowDown' ? 1 : move === 'k' || move === 'ArrowUp' ? -1 : 0
       if (step !== 0) {
         if (enabled.length === 0) return
         e.preventDefault()
@@ -291,7 +355,7 @@ export function DropdownMenuContent({
           }
           return { zone: 'actions', index: enabled[0] }
         })
-      } else if (e.key === 'h' || e.key === 'l') {
+      } else if (move === 'h' || move === 'l') {
         if (colors.length === 0) return
         e.preventDefault()
         setKeyFocus((prev) => {
@@ -299,7 +363,7 @@ export function DropdownMenuContent({
           const from = prev?.zone === 'colors'
             ? prev.index
             : colors.findIndex((c) => c.value.trim().toLowerCase() === spec.selectedColor?.trim().toLowerCase())
-          const at = from === -1 ? 0 : from + (e.key === 'l' ? 1 : -1)
+          const at = from === -1 ? 0 : from + (move === 'l' ? 1 : -1)
           return { zone: 'colors', index: Math.max(0, Math.min(colors.length - 1, at)) }
         })
       } else if (e.key === 'Enter' && keyFocus) {
@@ -315,7 +379,7 @@ export function DropdownMenuContent({
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [spec, actions, colors, keyFocus, onEmit])
+  }, [spec, actions, colors, keyFocus, keys, onEmit])
 
   const handleDragEnd = (event: DragEndEvent): void => {
     const { active, over } = event
@@ -411,6 +475,7 @@ export function DropdownMenuContent({
               <ActionRow
                 action={action}
                 focused={keyFocus?.zone === 'actions' && keyFocus.index === idx}
+                menuKey={keys.get(idx)}
                 onEmit={onEmit}
               />
             </div>

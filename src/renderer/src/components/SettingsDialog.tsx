@@ -12,6 +12,8 @@ import { VimModeBadge } from './VimModeBadge'
 import { useAppStore } from '../store/app-store'
 import { DEFAULT_VIM_KEYMAP, parseVimKeymap } from '../lib/vim-keymap'
 import { ACTION_LABELS } from '../lib/action-labels'
+import { SEARCH_ENGINES } from '../../../shared/search-engines'
+import { BANGS_URL } from '../lib/internal-pages'
 import {
   PERMISSION_KINDS,
   PERMISSION_LABEL,
@@ -41,6 +43,7 @@ interface Settings {
   defaultPageUrl: string
   searchEngine: string
   searchSuggestions: boolean
+  bangsEnabled: boolean
   proxy: ProxySettings
   dohMode: 'off' | 'automatic' | 'secure'
   authServerAllowlist: string
@@ -87,12 +90,6 @@ type UpdateStatus =
   | { phase: 'error'; message: string }
   | { phase: 'unsupported' }
 
-const SEARCH_ENGINES: Record<string, string> = {
-  Google: 'https://www.google.com/search?q=%s',
-  Yandex: 'https://yandex.ru/search/?text=%s',
-  DuckDuckGo: 'https://duckduckgo.com/?q=%s',
-  Unduck: 'https://unduck.link?q=%s',
-}
 
 const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   mode: 'system',
@@ -449,6 +446,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
   const [searchSuggestions, setSearchSuggestions] = useState(true)
+  const [bangsEnabled, setBangsEnabled] = useState(true)
   const [proxy, setProxy] = useState<ProxySettings>({ ...DEFAULT_PROXY_SETTINGS })
   const [dohMode, setDohMode] = useState<'off' | 'automatic' | 'secure'>('automatic')
   const [authServerAllowlist, setAuthServerAllowlist] = useState('')
@@ -832,6 +830,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
       setSearchSuggestions(settings.searchSuggestions !== false)
+      setBangsEnabled(settings.bangsEnabled !== false)
       setProxy({ ...DEFAULT_PROXY_SETTINGS, ...settings.proxy })
       setDohMode(
         settings.dohMode === 'off' || settings.dohMode === 'secure' ? settings.dohMode : 'automatic'
@@ -1330,6 +1329,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       defaultPageUrl: defaultUrl,
       searchEngine,
       searchSuggestions,
+      bangsEnabled,
       proxy: normalizedProxy,
       dohMode,
       authServerAllowlist: authServerAllowlist.trim(),
@@ -2379,6 +2379,31 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     className="h-4 w-4 accent-primary shrink-0"
                   />
                 </label>
+                <label className="flex items-center justify-between gap-4 mt-3 cursor-pointer">
+                  <span>
+                    <span className="block text-sm text-foreground">Bangs</span>
+                    <span className="block text-[11px] text-muted-foreground mt-0.5">
+                      <span className="font-mono">!w vim</span> or <span className="font-mono">vim !w</span> in the address bar goes straight to Wikipedia's search — resolved here in the browser, whichever engine is chosen.
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={bangsEnabled}
+                    onChange={(event) => setBangsEnabled(event.target.checked)}
+                    className="h-4 w-4 accent-primary shrink-0"
+                  />
+                </label>
+                <button
+                  onClick={() => {
+                    handleSave()
+                    useAppStore.getState().showInternalPage(BANGS_URL)
+                  }}
+                  className="mt-2 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-secondary"
+                  title="Save Settings and open the Bangs page (newbro://bangs)"
+                >
+                  Manage bangs…
+                  <ExternalLink size={12} />
+                </button>
               </div>
 
               {/* Default browser */}

@@ -82,6 +82,7 @@ import { registerOtherBrowserIpc } from './other-browser'
 import { registerDownloadsIpc } from './downloads'
 import { registerHistoryIpc, exportEntries, replaceEntries } from './history'
 import { registerOmniboxSuggestIpc } from './omnibox-suggest'
+import { registerBangsIpc } from './bangs-store'
 import { registerOmniboxPopupIpc } from './omnibox-popup'
 import { registerBookshelfIpc, exportShelves, importShelves } from './bookshelf'
 
@@ -1385,6 +1386,7 @@ function alive(p) {
   registerTabGroupsIpc()
   registerHistoryIpc()
   registerOmniboxSuggestIpc()
+  registerBangsIpc()
   registerOmniboxPopupIpc()
   registerBookshelfIpc()
 

@@ -40,6 +40,10 @@ export interface Settings {
   /** Fetch search suggestions from the default engine while typing in the
    *  address bar, as Chrome / Edge do (see omnibox-suggest.ts). */
   searchSuggestions: boolean
+  /** `!w vim` in the address bar opens Wikipedia's search for "vim" —
+   *  resolved locally from the bang table (bangs-store.ts), whatever the
+   *  search engine. */
+  bangsEnabled: boolean
   proxy: ProxySettings
   /** DNS-over-HTTPS mode.
    *  - 'off': use the OS resolver only (system DNS, hosts file, corp VPN's
@@ -137,12 +141,7 @@ export interface ProxySettings {
   proxyBypassRules: string
 }
 
-export const SEARCH_ENGINES: Record<string, string> = {
-  'Google': 'https://www.google.com/search?q=%s',
-  'Yandex': 'https://yandex.ru/search/?text=%s',
-  'DuckDuckGo': 'https://duckduckgo.com/?q=%s',
-  'Unduck': 'https://unduck.link?q=%s',
-}
+export { SEARCH_ENGINES } from '../shared/search-engines'
 
 export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'new-tab': ['CmdOrCtrl+T'],
@@ -227,6 +226,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
   searchSuggestions: true,
+  bangsEnabled: true,
   proxy: {
     mode: 'system',
     proxyRules: '',
@@ -473,6 +473,7 @@ export function loadSettings(): Settings {
       : DEFAULT_SETTINGS.vimIndicator,
     vimKeymap: normalizeVimKeymap(saved?.vimKeymap),
     searchSuggestions: saved?.searchSuggestions !== false,
+    bangsEnabled: saved?.bangsEnabled !== false,
     dohMode: KNOWN_DOH_MODES.has(saved?.dohMode as string)
       ? (saved!.dohMode as 'off' | 'automatic' | 'secure')
       : DEFAULT_SETTINGS.dohMode,
@@ -521,6 +522,7 @@ export function saveSettings(settings: Settings): void {
       : DEFAULT_SETTINGS.vimIndicator,
     vimKeymap: normalizeVimKeymap(settings.vimKeymap),
     searchSuggestions: settings.searchSuggestions !== false,
+    bangsEnabled: settings.bangsEnabled !== false,
     dohMode: KNOWN_DOH_MODES.has(settings.dohMode as string)
       ? settings.dohMode
       : DEFAULT_SETTINGS.dohMode,

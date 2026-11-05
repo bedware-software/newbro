@@ -5,9 +5,10 @@
 // and the web is a store change (retargetTab); WebviewPanel creates or drops
 // the tab's view to match.
 
-export type InternalPage = 'downloads'
+export type InternalPage = 'downloads' | 'bangs'
 
 export const DOWNLOADS_URL = 'newbro://downloads'
+export const BANGS_URL = 'newbro://bangs'
 
 /** Tab favicon marker for internal pages. TabFavicon draws the named icon
  *  instead of loading an image. */
@@ -15,6 +16,7 @@ export const INTERNAL_ICON_PREFIX = 'newbro-icon:'
 
 const PAGES: Record<InternalPage, { title: string; icon: string }> = {
   downloads: { title: 'Downloads', icon: 'download' },
+  bangs: { title: 'Bangs', icon: 'zap' },
 }
 
 /** Any newbro:// URL — known page or not, it must never reach a web view. */

@@ -22,7 +22,7 @@ import { VimModeBadge } from './VimModeBadge'
 import { WorkspaceStats } from './WorkspaceStats'
 import { useUrlEditorStore } from '../lib/url-editor'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
-import { DOWNLOADS_URL, internalPageOf } from '../lib/internal-pages'
+import { BANGS_URL, DOWNLOADS_URL, internalPageOf } from '../lib/internal-pages'
 import { requestExtensionInstall } from '../lib/extension-install'
 
 // Trigger-side icon registry. Only the icons used on dropdown trigger
@@ -640,6 +640,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
     'toggle-sidebar': onToggleSidebar,
     'search': onOpenSearch,
     'downloads': onOpenDownloads,
+    'bangs': () => useAppStore.getState().showInternalPage(BANGS_URL),
     'settings': onOpenSettings,
     'check-updates': () => { (window as any).electronAPI.checkForUpdates?.() },
     'install-update': () => { (window as any).electronAPI.installUpdate?.() },
@@ -675,6 +676,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
       // hides itself once the list is empty, so this row is what guarantees
       // the page is always reachable.
       { id: 'downloads', label: 'Downloads', iconName: 'Download', shortcut: shortcutFor('open-downloads') },
+      { id: 'bangs', label: 'Bangs & Search Engine', iconName: 'Zap' },
       { id: 'settings', label: 'Settings', iconName: 'Settings', shortcut: shortcutFor('settings') },
       updateReady
         ? {

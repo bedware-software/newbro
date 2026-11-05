@@ -38,4 +38,5 @@ export const ACTION_LABELS: Record<string, string> = {
   'add-to-bookshelf': 'Add to Bookshelf',
   'toggle-bookshelf': 'Toggle Bookshelf',
   'open-downloads': 'Open Downloads',
+  'open-bangs': 'Bangs & Search Engine',
 }

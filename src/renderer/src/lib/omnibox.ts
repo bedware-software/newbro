@@ -8,6 +8,8 @@
 
 import type { OmniboxRowKind } from '../components/omnibox-protocol'
 import { looksLikeSearch, normalizeURL, searchEngineName, searchUrlFor } from './url'
+import { bangCompletions, resolveBang } from './bangs'
+import { expandBang } from '../../../shared/bangs'
 
 /** Main's answer to one input (see HistoryQueryResult in src/main/history.ts). */
 export interface HistoryQueryResult {
@@ -45,6 +47,8 @@ export interface OmniboxMatch {
   typed: boolean
   /** Default match only: text appended after the input and shown selected. */
   inlineCompletion?: string
+  /** The bang it fires, as typed: `!w`. */
+  bang?: string
 }
 
 export const MAX_ROWS = 8
@@ -61,7 +65,26 @@ function urlKey(url: string): string {
   return host + (path === '/' ? '' : path)
 }
 
+function hostOf(url: string): string {
+  try { return new URL(url).host.replace(/^www\./, '') } catch { return url }
+}
+
 function searchMatch(query: string, kind: 'search' | 'search-history' | 'suggest', fill = query): OmniboxMatch {
+  const hit = resolveBang(query)
+  if (hit) {
+    // A bang goes straight to its site: "vim – Wikipedia  !w".
+    return {
+      kind: kind === 'search' ? 'bang' : kind,
+      destination: hit.url,
+      fill,
+      contents: hit.query || hit.bang.name,
+      description: hit.query ? hit.bang.name : hostOf(hit.url),
+      query,
+      typed: false,
+      bang: `!${hit.bang.trigger}`,
+      ...(kind === 'search-history' ? { removeTerm: query } : {}),
+    }
+  }
   return {
     kind,
     destination: searchUrlFor(query),
@@ -81,7 +104,7 @@ function searchMatch(query: string, kind: 'search' | 'search-history' | 'suggest
 export function whatYouTyped(text: string, opts: { ctrl?: boolean } = {}): OmniboxMatch | null {
   const trimmed = text.trim()
   if (!trimmed) return null
-  if (opts.ctrl && /^[^\s./:?#]+$/.test(trimmed)) {
+  if (opts.ctrl && /^[^\s./:?#!]+$/.test(trimmed)) {
     const url = `https://www.${trimmed}.com/`
     return { kind: 'navigate', destination: url, fill: `www.${trimmed}.com`, contents: `www.${trimmed}.com`, description: '', typed: true }
   }
@@ -144,6 +167,22 @@ export function buildMatches(text: string, history: HistoryQueryResult | null, s
   }))
   const pastSearches = (history?.searchTerms ?? []).map((t) => searchMatch(t.display, 'search-history'))
   const suggested = suggestions.map((s) => searchMatch(s, 'suggest'))
+  // `!w` being typed: the other bangs it could still become, right below.
+  // One row per bang, even where two land on the same site's home page.
+  for (const c of bangCompletions(text, 4)) {
+    if (rows.length >= MAX_ROWS) break
+    rows.push({
+      kind: 'bang',
+      destination: expandBang(c.bang, c.query),
+      fill: c.text,
+      contents: c.query || c.bang.name,
+      description: c.query ? c.bang.name : hostOf(expandBang(c.bang, '')),
+      typed: false,
+      bang: `!${c.bang.trigger}`,
+    })
+    seenUrls.add(urlKey(rows[rows.length - 1].destination))
+  }
+
   // "<input> – Search Google" stays on offer when the default opens a page.
   const verbatimSearch = SCHEME.test(trimmed) ? null : searchMatch(trimmed, 'search', text)
 

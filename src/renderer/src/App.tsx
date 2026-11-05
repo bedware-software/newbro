@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getVisibleTabOrder, getTabCycleOrder, type NewTabFocus } from './store/app-store'
 import { normalizeURL, setSearchEngine } from './lib/url'
+import { setBangs, setBangsEnabled } from './lib/bangs'
+import type { Bang } from '../../shared/bangs'
 import { openAddress } from './lib/open-address'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
@@ -29,7 +31,8 @@ import { OpenExternalLinkDialog } from './components/OpenExternalLinkDialog'
 import { CloudSyncSetupDialog } from './components/CloudSyncSetupDialog'
 import { HttpAuthDialog } from './components/HttpAuthDialog'
 import { DOWNLOADS_FIND_EVENT, DOWNLOADS_RELOAD_EVENT } from './components/DownloadsPage'
-import { DOWNLOADS_URL, internalPageOf, isInternalUrl } from './lib/internal-pages'
+import { BANGS_FIND_EVENT, BANGS_RELOAD_EVENT } from './components/BangsPage'
+import { BANGS_URL, DOWNLOADS_URL, internalPageOf, isInternalUrl } from './lib/internal-pages'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import { applyVimIndicator, normalizeVimIndicator, type VimIndicator } from './lib/vim-indicator'
 import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
@@ -57,6 +60,8 @@ interface Settings {
   defaultPageUrl: string
   searchEngine: string
   searchSuggestions: boolean
+  /** `!w vim` in the address bar — see lib/bangs.ts. */
+  bangsEnabled: boolean
   dohMode: 'off' | 'automatic' | 'secure'
   authServerAllowlist: string
   passwordManager: {
@@ -383,6 +388,10 @@ declare global {
       historyNoteTyped?: (tabId: string, url: string) => void
       historyClear?: () => Promise<boolean>
       omniboxSuggest?: (query: string, partition?: string) => Promise<string[]>
+      bangsList?: () => Promise<Bang[]>
+      bangsSave?: (bangs: Bang[]) => Promise<Bang[]>
+      bangsReset?: () => Promise<Bang[]>
+      onBangsUpdated?: (callback: (bangs: Bang[]) => void) => () => void
       omniboxPrewarm?: () => void
       omniboxShow?: (spec: unknown) => void
       omniboxHide?: () => void
@@ -761,9 +770,20 @@ export default function App() {
       setDefaultNewTabUrl(normalized.defaultPageUrl)
       setNewTabFocusPref(normalized.newTabFocus)
       setSearchEngine(normalized.searchEngine)
+      setBangsEnabled(normalized.bangsEnabled !== false)
     } catch (err) {
       log.error('failed to load settings', err)
     }
+  }, [])
+
+  // The bang table the address bar resolves `!w vim` against (main's
+  // bangs-store.ts), kept current as the Bangs page edits it.
+  useEffect(() => {
+    const api = window.electronAPI
+    api.bangsList?.()
+      .then((list) => setBangs(list))
+      .catch((err) => log.error('failed to load bangs', err))
+    return api.onBangsUpdated?.((list) => setBangs(list))
   }, [])
 
   useEffect(() => {
@@ -1007,11 +1027,18 @@ export default function App() {
             window.dispatchEvent(new Event(DOWNLOADS_FIND_EVENT))
             break
           }
+          if (internalPageOf(s.getActiveTab()?.url) === 'bangs') {
+            window.dispatchEvent(new Event(BANGS_FIND_EVENT))
+            break
+          }
           setFindBarOpen(true)
           setFindBarFocusTick((t) => t + 1)
           break
         case 'open-downloads':
           s.showInternalPage(DOWNLOADS_URL)
+          break
+        case 'open-bangs':
+          s.showInternalPage(BANGS_URL)
           break
         case 'split-right':
         case 'split-down': {
@@ -1049,6 +1076,10 @@ export default function App() {
           if (!s.activeTabId) break
           if (internalPageOf(s.getActiveTab()?.url) === 'downloads') {
             window.dispatchEvent(new Event(DOWNLOADS_RELOAD_EVENT))
+            break
+          }
+          if (internalPageOf(s.getActiveTab()?.url) === 'bangs') {
+            window.dispatchEvent(new Event(BANGS_RELOAD_EVENT))
             break
           }
           // Reload, not re-navigate. Going through tabNavigate(currentUrl)
@@ -1304,6 +1335,7 @@ export default function App() {
       setDefaultNewTabUrl(s.defaultPageUrl)
       setNewTabFocusPref(s.newTabFocus)
       setSearchEngine(s.searchEngine)
+      setBangsEnabled(s.bangsEnabled !== false)
     })
 
     const cleanupActivateTab = window.electronAPI.onActivateTab((tabId) => {
@@ -1413,6 +1445,7 @@ export default function App() {
     setDefaultNewTabUrl(normalized.defaultPageUrl)
     setNewTabFocusPref(normalized.newTabFocus)
     setSearchEngine(normalized.searchEngine)
+    setBangsEnabled(normalized.bangsEnabled !== false)
     await window.electronAPI.saveSettings(normalized)
   }
 

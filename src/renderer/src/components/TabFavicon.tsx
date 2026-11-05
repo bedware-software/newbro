@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Globe, Download, CircleAlert, type LucideIcon } from 'lucide-react'
+import { Globe, Download, CircleAlert, Zap, type LucideIcon } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { INTERNAL_ICON_PREFIX } from '../lib/internal-pages'
 
@@ -7,6 +7,7 @@ import { INTERNAL_ICON_PREFIX } from '../lib/internal-pages'
 // favicon marker — see lib/internal-pages.ts.
 const INTERNAL_ICONS: Record<string, LucideIcon> = {
   download: Download,
+  zap: Zap,
   alert: CircleAlert,
 }
 

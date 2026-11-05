@@ -68,6 +68,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'save-page', label: 'Save Page As…', category: 'Navigation' },
   { id: 'search', label: 'Search Everything', category: 'General' },
   { id: 'open-downloads', label: 'Open Downloads', category: 'General' },
+  { id: 'open-bangs', label: 'Bangs & Search Engine', category: 'General' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'View' },
   { id: 'split-right', label: 'Split Right', category: 'Split View' },
   { id: 'split-down', label: 'Split Down', category: 'Split View' },

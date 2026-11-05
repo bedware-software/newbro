@@ -8,6 +8,7 @@ import { internalPageOf, isInternalUrl } from '../lib/internal-pages'
 import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, CircleAlert, type LucideIcon } from 'lucide-react'
 import type { PermissionKind } from '../lib/permissions'
 import { DownloadsPage } from './DownloadsPage'
+import { BangsPage } from './BangsPage'
 import { OsBlockedPrompt, PermissionPrompt } from './PagePrompt'
 import { SplitFrames, insetForFrame, splitPaneRects } from './SplitPanes'
 import { SplitPicker } from './SplitPicker'
@@ -673,7 +674,9 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
 
       {activeInternalUrl && (internalPageOf(activeInternalUrl) === 'downloads'
         ? <DownloadsPage />
-        : <UnknownInternalPage url={activeInternalUrl} />)}
+        : internalPageOf(activeInternalUrl) === 'bangs'
+          ? <BangsPage />
+          : <UnknownInternalPage url={activeInternalUrl} />)}
 
       {showError && activeError && errorInfo && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">

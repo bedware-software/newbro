@@ -1,11 +1,21 @@
+import { resolveBang } from './bangs'
+
 let searchEngineUrl = 'https://www.google.com/search?q=%s'
 
 export function setSearchEngine(url: string): void {
   searchEngineUrl = url || 'https://www.google.com/search?q=%s'
 }
 
-/** Results page URL for a query on the default search engine. */
+/** Results page URL for a query: the bang's site when a `!word` in it names
+ *  one (lib/bangs.ts), else the default search engine. */
 export function searchUrlFor(query: string): string {
+  const bang = resolveBang(query)
+  if (bang) return bang.url
+  return engineSearchUrlFor(query)
+}
+
+/** Results page URL for a query on the default search engine, bangs or not. */
+export function engineSearchUrlFor(query: string): string {
   return searchEngineUrl.replace('%s', encodeURIComponent(query.trim()))
 }
 

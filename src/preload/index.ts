@@ -354,6 +354,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Search-engine suggestions for the address bar (src/main/omnibox-suggest.ts).
   omniboxSuggest: (query: string, partition?: string): Promise<string[]> =>
     ipcRenderer.invoke('omnibox:suggest', query, partition),
+  // Bangs — `!w vim` in the address bar (src/main/bangs-store.ts).
+  bangsList: (): Promise<unknown[]> => ipcRenderer.invoke('bangs:list'),
+  bangsSave: (bangs: unknown[]): Promise<unknown[]> => ipcRenderer.invoke('bangs:save', bangs),
+  bangsReset: (): Promise<unknown[]> => ipcRenderer.invoke('bangs:reset'),
+  onBangsUpdated: (callback: (bangs: unknown[]) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, bangs: unknown[]) => callback(bangs)
+    ipcRenderer.on('bangs:updated', handler)
+    return () => { ipcRenderer.removeListener('bangs:updated', handler) }
+  },
 
   // ── Address-bar suggestion popup (separate non-focusable window) ──
   // The Toolbar shows / updates / hides it and listens for its clicks; the

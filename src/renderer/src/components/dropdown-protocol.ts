@@ -5,6 +5,7 @@
 
 export type IconName =
   | 'User'
+  | 'Zap'
   | 'Layout'
   | 'Search'
   | 'Settings'
@@ -69,6 +70,12 @@ export interface DropdownAction {
   // a dev build).
   disabled?: boolean
   disabledTitle?: string
+  // A menu opened from the keyboard picks this action with one key (a
+  // letter — a capital is Shift — or a digit), shown on the right. Matched
+  // by position on the keyboard, so it works in any input language. j/k/h/l
+  // are the menu's own moves. Actions without one get the first free letter
+  // of their label (DropdownMenuContent's menuKeys).
+  key?: string
 }
 
 // Anchor rectangle in the *parent window's content-area* coordinates (CSS
@@ -129,7 +136,8 @@ export interface DropdownSpec {
   // Menu kind: opened from the keyboard (a panel's vim mode, or m on the
   // Downloads page). The first action starts highlighted; j/k (or the arrow
   // keys) move through the actions, h/l across the colour swatches, Enter
-  // picks the highlighted one.
+  // picks the highlighted one — and each action's own key (DropdownAction's
+  // key) picks it at once.
   keyboard?: boolean
 }
 

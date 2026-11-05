@@ -618,8 +618,8 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
       position: at,
       ...readThemeAttrs(),
       actions: [
-        { id: 'duplicate', label: `Duplicate ${target}`, iconName: 'CopyPlus' },
-        { id: 'close', label: `Close ${target}`, iconName: 'X', destructive: true, divider: 'before' },
+        { id: 'duplicate', label: `Duplicate ${target}`, iconName: 'CopyPlus', key: 'd' },
+        { id: 'close', label: `Close ${target}`, iconName: 'X', destructive: true, divider: 'before', key: 'x' },
       ],
     }, keyboard)
     if (!result || result.type !== 'action') return
@@ -664,6 +664,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
         id: 'close',
         label: useSelection ? `Close ${targetCount} Tabs` : 'Close Tab',
         iconName: 'X',
+        key: 'x',
         // Cmd/Ctrl+W only closes the active tab, so the shortcut hint
         // is only accurate in the single-target case. Suppress it for
         // multi-select to avoid misleading the user.
@@ -674,13 +675,14 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
       id: 'duplicate',
       label: useSelection ? `Duplicate ${targetCount} Tabs` : 'Duplicate Tab',
       iconName: 'CopyPlus',
+      key: 'd',
     })
     if (!isUngrouped) {
-      actions.push({ id: 'ungroup', label: 'Ungroup Tab', iconName: 'FolderMinus' })
+      actions.push({ id: 'ungroup', label: 'Ungroup Tab', iconName: 'FolderMinus', key: 'u' })
     } else if (!useSelection) {
       // The group menu's Convert to Comment, reversed. Single-tab only —
       // wrapping a whole selection is what "Add N Tabs to New Group…" is for.
-      actions.push({ id: 'convert-to-group', label: 'Convert to Group', iconName: 'Folder' })
+      actions.push({ id: 'convert-to-group', label: 'Convert to Group', iconName: 'Folder', key: 'g' })
     }
     actions.push({
       id: 'new-group',
@@ -688,20 +690,23 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
         ? `Add ${targetCount} Tabs to New Group…`
         : 'Add to New Group…',
       iconName: 'FolderPlus',
+      key: 'n',
     })
     actions.push({
       id: 'set-comment',
       label: hasComment ? 'Edit Comment…' : 'Set Comment…',
       iconName: 'MessageSquare',
+      key: 'c',
       divider: 'before',
     })
     if (hasComment) {
-      actions.push({ id: 'remove-comment', label: 'Remove Comment', iconName: 'MessageSquareOff' })
+      actions.push({ id: 'remove-comment', label: 'Remove Comment', iconName: 'MessageSquareOff', key: 'C' })
     }
     actions.push({
       id: 'move-tab',
       label: useSelection ? `Move ${targetCount} Tabs…` : 'Move Tab…',
       iconName: 'FolderInput',
+      key: 'm',
       divider: 'before',
     })
 
@@ -763,21 +768,22 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap }: Props
 
     const tabCount = group.tabs.length
     const actions: DropdownAction[] = [
-      { id: 'rename', label: 'Rename Group', iconName: 'Pencil' },
-      { id: 'add-tab', label: 'Add Tab to Group', iconName: 'FilePlus' },
-      { id: 'move-group', label: 'Move Group…', iconName: 'FolderInput', divider: 'before' },
-      { id: 'duplicate-group', label: 'Duplicate Group', iconName: 'CopyPlus' },
-      { id: 'ungroup-all', label: 'Ungroup All Tabs', iconName: 'FolderMinus', divider: 'before' },
+      { id: 'rename', label: 'Rename Group', iconName: 'Pencil', key: 'r' },
+      { id: 'add-tab', label: 'Add Tab to Group', iconName: 'FilePlus', key: 'a' },
+      { id: 'move-group', label: 'Move Group…', iconName: 'FolderInput', divider: 'before', key: 'm' },
+      { id: 'duplicate-group', label: 'Duplicate Group', iconName: 'CopyPlus', key: 'd' },
+      { id: 'ungroup-all', label: 'Ungroup All Tabs', iconName: 'FolderMinus', divider: 'before', key: 'u' },
     ]
     // A one-tab group is really just a labelled tab, so offer to turn the
     // label into the tab's comment (the tab menu's Convert to Group undoes it).
     if (tabCount === 1) {
-      actions.push({ id: 'convert-to-comment', label: 'Convert to Comment', iconName: 'MessageSquare' })
+      actions.push({ id: 'convert-to-comment', label: 'Convert to Comment', iconName: 'MessageSquare', key: 'c' })
     }
     actions.push({
       id: 'close-group',
       label: `Close Group (${tabCount} ${tabCount === 1 ? 'tab' : 'tabs'})`,
       iconName: 'X',
+      key: 'x',
       destructive: true,
     })
 

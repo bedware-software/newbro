@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store/app-store'
 import { isInternalUrl } from '../lib/internal-pages'
+import { resolveBang, withBang } from '../lib/bangs'
 import {
   MAX_ROWS,
   buildMatches,
@@ -57,6 +58,7 @@ function toRow(m: OmniboxMatch): OmniboxPopupRow {
     description: m.description,
     favicon: m.favicon,
     removable: !!(m.removeUrl || m.removeTerm),
+    ...(m.bang ? { bang: m.bang } : {}),
   }
 }
 
@@ -217,13 +219,19 @@ export function Omnibox({ tabId, tabUrl, anchorRef }: Props) {
   const requestSuggestions = useCallback((text: string) => {
     if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current)
     if (!wantsSearchSuggestions(text) || !window.electronAPI.omniboxSuggest) return
+    // With a bang the engine is asked about the query alone, and each answer
+    // keeps the bang: "!w vim" → "!w vim editor", still Wikipedia.
+    const bang = resolveBang(text)
+    if (bang && !bang.query.trim()) return
+    const asked = bang ? bang.query : text
     suggestTimerRef.current = setTimeout(() => {
       const id = ++suggestIdRef.current
-      void window.electronAPI.omniboxSuggest!(text, activePartition).then((items) => {
+      void window.electronAPI.omniboxSuggest!(asked, activePartition).then((items) => {
         if (id !== suggestIdRef.current || userTextRef.current !== text) return
-        suggestionsRef.current = { text, items: items || [] }
+        const list = items || []
+        suggestionsRef.current = { text, items: bang ? list.map((q) => withBang(bang, q)) : list }
         rebuild()
-      }).catch(() => {})
+      }).catch((err) => console.warn('Omnibox: search suggestions failed', err))
     }, SUGGEST_DELAY_MS)
   }, [activePartition, rebuild])
 

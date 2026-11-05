@@ -3,7 +3,7 @@
 // views that paint over the app's own DOM. The Toolbar sends the rows to
 // show; the popup never takes the keyboard and only reports clicks back.
 
-export type OmniboxRowKind = 'history' | 'navigate' | 'search' | 'search-history' | 'suggest'
+export type OmniboxRowKind = 'history' | 'navigate' | 'search' | 'search-history' | 'suggest' | 'bang'
 
 export interface OmniboxPopupRow {
   kind: OmniboxRowKind
@@ -13,6 +13,8 @@ export interface OmniboxPopupRow {
   description: string
   /** Page favicon URL for history rows. */
   favicon?: string
+  /** The bang the row fires (`!w`), shown as a chip. */
+  bang?: string
   /** Show the remove (X) button — a history URL or a past search. */
   removable: boolean
 }
