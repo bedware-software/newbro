@@ -265,10 +265,14 @@ export function BangsPage() {
   }, [selected?.id])
 
   // Take the keyboard when the page opens — unless Vim's Ctrl is stepping
-  // through tabs, or the user is typing somewhere (the URL bar).
+  // through tabs, or the user is typing somewhere (the URL bar). Only while
+  // the window has the keyboard: opened from a web page (od, ob), the
+  // renderer's focused element is a stale one, the URL bar it last had, and
+  // leaving it would hand the keys to the URL bar once the window takes
+  // them back.
   useEffect(() => {
     if (keepsChromeKeyboard()) return
-    if (isEditable(document.activeElement)) return
+    if (document.hasFocus() && isEditable(document.activeElement)) return
     rootRef.current?.focus({ preventScroll: true })
   }, [])
 
@@ -934,6 +938,32 @@ function BangEditor({
             <X size={13} />
           </button>
         </div>
+        <div className="mb-4 flex items-start justify-between gap-4 rounded-md bg-secondary/60 px-3 py-2.5">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-foreground">Turned on</div>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+              {draft.enabled
+                ? `!${trigger} in the address bar opens this site's search.`
+                : `Kept in the list, but the address bar ignores !${trigger} — it goes to the search engine as typed.`}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={draft.enabled}
+            aria-label="Turned on"
+            onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}
+            className={`relative mt-0.5 inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors ${
+              draft.enabled ? 'bg-primary' : 'bg-muted-foreground/30'
+            }`}
+          >
+            <span
+              className={`h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
+                draft.enabled ? 'translate-x-5' : 'translate-x-0'
+              }`}
+            />
+          </button>
+        </div>
         <div className="grid grid-cols-[140px_1fr] gap-3">
           <label className="block">
             <span className={label}>Trigger</span>
@@ -969,30 +999,19 @@ function BangEditor({
             className={`${field} font-mono`}
           />
         </label>
-        <div className="mt-3 grid grid-cols-[1fr_auto] items-end gap-3">
-          <label className="block">
-            <span className={label}>Category</span>
-            <input
-              value={draft.category}
-              onChange={(e) => setDraft({ ...draft, category: e.target.value })}
-              list="newbro-bang-categories"
-              placeholder="Other"
-              className={field}
-            />
-            <datalist id="newbro-bang-categories">
-              {categories.map((c) => <option key={c} value={c} />)}
-            </datalist>
-          </label>
-          <label className="flex h-9 cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={draft.enabled}
-              onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
-              className="h-4 w-4 accent-primary"
-            />
-            On
-          </label>
-        </div>
+        <label className="mt-3 block">
+          <span className={label}>Category</span>
+          <input
+            value={draft.category}
+            onChange={(e) => setDraft({ ...draft, category: e.target.value })}
+            list="newbro-bang-categories"
+            placeholder="Other"
+            className={field}
+          />
+          <datalist id="newbro-bang-categories">
+            {categories.map((c) => <option key={c} value={c} />)}
+          </datalist>
+        </label>
         <div className="mt-4 min-h-[2.5rem] rounded-md bg-secondary/60 px-3 py-2 text-[11px]">
           {tried && problem ? (
             <span className="text-destructive">{problem}</span>
@@ -1015,7 +1034,7 @@ function BangEditor({
             onClick={submit}
             className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
           >
-            {state.mode === 'add' ? 'Add' : 'Save'} <KeyCap>Enter</KeyCap>
+            {state.mode === 'add' ? 'Add' : 'Save'} <KeyCap onPrimary>Enter</KeyCap>
           </button>
         </div>
       </div>

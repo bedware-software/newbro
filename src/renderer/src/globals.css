@@ -442,6 +442,16 @@ kbd[data-on-field] {
   }
 }
 
+/* A cap on a primary button (a dialog's Save): the dark themes' cap fill
+ * under the button's dark text was unreadable, so it's a tint of that text
+ * instead, the text itself showing through. After the theme rules, which it
+ * overrides. */
+kbd[data-on-primary] {
+  color: inherit;
+  background: color-mix(in oklch, currentColor 14%, transparent);
+  border-color: color-mix(in oklch, currentColor 30%, transparent);
+}
+
 /* Vim's mode, shown as a key cap (VimModeBadge): the caps above, a little
  * bigger, one width for CMD / WEB / INS so a switch doesn't shift what's
  * beside it, and the mode's colour shown as Settings → Appearance says

@@ -107,7 +107,8 @@ move-group
 duplicate-group
 add-to-bookshelf
 toggle-bookshelf    B
-open-downloads      D
+open-downloads      od
+open-bangs          ob
 
 " ── Search Everything and the Command Palette ─────────────────────────
 " Search Everything and the Command Palette open in INSERT; Esc goes to
@@ -212,7 +213,8 @@ export function contextOf(command: string): VimContext {
 // to two-letter labels in COMMAND, unbinding the digits of search-row-N. v10
 // took the Sidebar off Ctrl held (it flashed on every Ctrl chord) and onto
 // the arrows, history onto <C-o>/<C-i> (was [ and ]), the Command Palette
-// onto <C-p> (was :) and toggling the Sidebar onto <Space> (was \).
+// onto <C-p> (was :) and toggling the Sidebar onto <Space> (was \). v11
+// put the browser's own pages behind o: od Downloads (was D), ob Bangs.
 // A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
@@ -338,6 +340,11 @@ const V9_DEFAULT_KEYS: Record<string, string> = {
   'command-palette': ':',
 }
 
+/** v10 defaults of the commands v11 rebound. */
+const V10_DEFAULT_KEYS: Record<string, string> = {
+  'open-downloads': 'D',
+}
+
 /** v8 defaults of the commands v9 rebound: the results' digits. */
 const V8_DEFAULT_KEYS: Record<string, string> = Object.fromEntries(
   [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`search-row-${n}`, String(n)]),
@@ -360,6 +367,9 @@ const NEW_IN_V7 = new Set(['row-unfold', 'set-comment', 'remove-comment'])
 
 /** Commands v8 added. */
 const NEW_IN_V8 = new Set(['url-redo', 'url-remove-all'])
+
+/** Commands v11 added to the keymap. */
+const NEW_IN_V11 = new Set(['open-bangs'])
 
 /** Commands v3 added under new names; no older keymap mentions them. */
 const NEW_IN_V3 = new Set([
@@ -396,12 +406,12 @@ function sequencesClash(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1 to v9) over to the
+ * Carries a keymap saved under older defaults (v1 to v10) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
  * nothing to keep.
  */
-export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9): string | null {
+export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10): string | null {
   // What the owner had, by the old name.
   const mine = new Map<string, string>()
   for (const line of saved.split('\n')) {
@@ -420,12 +430,13 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 |
     (fromVersion <= 6 ? V6_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 7 ? V7_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 8 ? V8_DEFAULT_KEYS[command] : undefined) ??
-    V9_DEFAULT_KEYS[command] ??
+    (fromVersion <= 9 ? V9_DEFAULT_KEYS[command] : undefined) ??
+    V10_DEFAULT_KEYS[command] ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
   const existed = (command: string): boolean =>
-    (fromVersion <= 7 && NEW_IN_V8.has(command)) || (fromVersion <= 6 && NEW_IN_V7.has(command)) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
+    NEW_IN_V11.has(command) || (fromVersion <= 7 && NEW_IN_V8.has(command)) || (fromVersion <= 6 && NEW_IN_V7.has(command)) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
     : fromVersion >= 3
       ? !(command in RENAMED_IN_V3)
       : !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))

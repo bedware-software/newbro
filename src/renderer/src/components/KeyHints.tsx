@@ -22,10 +22,16 @@ export function Hint({ label, keys }: { label: ReactNode; keys: ReactNode[] }) {
  *  on a button whose own text is bigger. `onField`: the cap sits on a text
  *  field, whose fill is the cap's own — it takes a lighter one so it reads
  *  as a cap, the way it does on the hint bar. */
-export function KeyCap({ children, onField = false }: { children: ReactNode; onField?: boolean }) {
+export function KeyCap({ children, onField = false, onPrimary = false }: {
+  children: ReactNode
+  onField?: boolean
+  /** On a primary (filled) button: a see-through cap in the button's own
+   *  text colour, readable in every theme. */
+  onPrimary?: boolean
+}) {
   return (
     <span className="inline-flex text-[11px] font-medium leading-none">
-      <kbd data-on-field={onField ? '' : undefined}>{children}</kbd>
+      <kbd data-on-field={onField ? '' : undefined} data-on-primary={onPrimary ? '' : undefined}>{children}</kbd>
     </span>
   )
 }

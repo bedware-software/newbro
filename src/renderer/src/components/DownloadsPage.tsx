@@ -297,10 +297,14 @@ export function DownloadsPage() {
   }, [selected?.id])
 
   // Take the keyboard when the page opens — unless Vim's Ctrl is stepping
-  // through tabs, or the user is typing somewhere (the URL bar).
+  // through tabs, or the user is typing somewhere (the URL bar). Only while
+  // the window has the keyboard: opened from a web page (od, ob), the
+  // renderer's focused element is a stale one, the URL bar it last had, and
+  // leaving it would hand the keys to the URL bar once the window takes
+  // them back.
   useEffect(() => {
     if (keepsChromeKeyboard()) return
-    if (isEditable(document.activeElement)) return
+    if (document.hasFocus() && isEditable(document.activeElement)) return
     rootRef.current?.focus({ preventScroll: true })
   }, [])
 
