@@ -1468,14 +1468,22 @@ export default function App() {
     () => parseVimKeymap(settings?.vimKeymap ?? DEFAULT_VIM_KEYMAP),
     [settings?.vimKeymap],
   )
-  const focusActivePage = (): boolean => {
+  const focusActivePage = (mode: VimMode = 'insert'): boolean => {
     const s = useAppStore.getState()
     if (!s.activeTabId) return false
-    // Internal pages are drawn by this renderer (data-vim-page).
+    // Internal pages are drawn by this renderer (data-vim-page). Focused,
+    // their own keys run, which is INSERT; in COMMAND they let go, and the
+    // window keeps the keys for COMMAND's.
     if (isInternalUrl(s.getActiveTab()?.url)) {
       const page = document.querySelector<HTMLElement>('[data-vim-page]')
-      page?.focus({ preventScroll: true })
-      return !!page
+      if (!page) return false
+      if (mode === 'insert') {
+        page.focus({ preventScroll: true })
+        return true
+      }
+      const focused = document.activeElement
+      if (focused instanceof HTMLElement && page.contains(focused)) focused.blur()
+      return false
     }
     window.electronAPI.tabFocus?.(s.activeTabId)
     return true

@@ -56,9 +56,16 @@ function isInternalPage(target: EventTarget | null): boolean {
 }
 
 /** The mode keyboard focus on `target` in this renderer stands for: a text
- *  field is INSERT, the rest COMMAND. */
+ *  field is INSERT, and so is a page this renderer draws (Downloads, Bangs)
+ *  — its own keys (j/k through its rows) are the page's, as a web page's are
+ *  in INSERT; the rest COMMAND. */
 function modeForRendererFocus(target: EventTarget | null): VimMode {
-  return isEditable(target) ? 'insert' : 'command'
+  return isEditable(target) || isInternalPage(target) ? 'insert' : 'command'
+}
+
+/** INSERT in the chrome (a URL bar, a rename) rather than in a page. */
+function isChromeField(target: EventTarget | null): boolean {
+  return isEditable(target) && !isInternalPage(target)
 }
 
 /** Move OS keyboard focus to this renderer, retrying while a tab view is
@@ -286,9 +293,11 @@ interface Options {
   /** A command from the keymap: an app action id, a Sidebar command or a
    *  vim command — also one the page's keys asked for. */
   onCommand: (command: string) => void
-  /** Hand the keyboard to the active tab's page. False when there is no
-   *  page to go to, e.g. while parked on a group. */
-  focusPage: () => boolean
+  /** Hand the keyboard to the active tab's page, for `mode`. False when there
+   *  is no page to go to, e.g. while parked on a group — or, in COMMAND, a
+   *  page this renderer draws, which lets go of the keys: the window keeps
+   *  them for COMMAND's. */
+  focusPage: (mode: VimMode) => boolean
   isActiveTab: (tabId: string) => boolean
 }
 
@@ -362,7 +371,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     if (!walkingTabs) return
     walkingTabs = false
     log.event('vim:tab walk', 'end')
-    if (modeRef.current === 'command') focusPageRef.current()
+    if (modeRef.current === 'command') focusPageRef.current('command')
   }, [clearCtrlTimers])
 
   useEffect(() => {
@@ -397,7 +406,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     // Set first: the page must learn its mode before it gets the keys.
     setMode('command', 'enter-command')
     pushState()
-    if (walkingTabs || !focusPageRef.current()) claimRendererFocus(force)
+    if (walkingTabs || !focusPageRef.current('command')) claimRendererFocus(force)
   }, [setMode, pushState])
 
   const enterInsert = useCallback(() => {
@@ -407,12 +416,12 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     // keyboard, and the page must learn its mode before keys arrive.
     const previous = modeRef.current
     setMode('insert', 'enter-insert')
-    if (!focusPageRef.current()) setMode(previous, 'no page to go to')
+    if (!focusPageRef.current('insert')) setMode(previous, 'no page to go to')
   }, [setMode])
 
   const returnToPage = useCallback(() => {
     if (modeRef.current !== 'command' || walkingTabs || isEditable(document.activeElement)) return
-    focusPageRef.current()
+    focusPageRef.current('command')
   }, [])
 
   const startTabWalk = useCallback(() => {
@@ -437,8 +446,8 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
       return
     }
     const initial = modeForRendererFocus(document.activeElement)
-    setMode(initial, 'enabled', initial === 'insert')
-    if (initial === 'command' && document.hasFocus()) focusPageRef.current()
+    setMode(initial, 'enabled', isChromeField(document.activeElement))
+    if (initial === 'command' && document.hasFocus()) focusPageRef.current('command')
   }, [enabled, setMode, reset])
 
   // Pages run COMMAND's keys themselves.
@@ -489,17 +498,19 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     const syncWithFocus = (): void => {
       if (!document.hasFocus()) return
       const next = modeForRendererFocus(document.activeElement)
-      setMode(next, 'renderer focus', next === 'insert')
+      setMode(next, 'renderer focus', isChromeField(document.activeElement))
     }
     const onWindowFocus = (): void => { setTimeout(syncWithFocus, 0) }
     const onFocusIn = (e: FocusEvent): void => {
-      if (isEditable(e.target)) setMode('insert', 'field focus', true)
+      if (isEditable(e.target)) setMode('insert', 'field focus', isChromeField(e.target))
+      else if (isInternalPage(e.target)) setMode('insert', 'page focus', false)
       else syncWithFocus()
     }
-    // Leaving a text field for nothing (Esc, Enter in a rename) is COMMAND;
-    // leaving it for the page is the page's focus event's to decide.
+    // Leaving a text field, or a page this renderer draws, for nothing (Esc,
+    // Enter in a rename) is COMMAND; leaving it for the page is the page's
+    // focus event's to decide.
     const onFocusOut = (e: FocusEvent): void => {
-      if (!isEditable(e.target) || e.relatedTarget) return
+      if (!(isEditable(e.target) || isInternalPage(e.target)) || e.relatedTarget) return
       setTimeout(syncWithFocus, 0)
     }
 
