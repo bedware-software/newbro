@@ -9,6 +9,8 @@ import { requestExtensionInstall } from '../lib/extension-install'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
 import { VIM_INDICATORS, DEFAULT_VIM_INDICATOR, normalizeVimIndicator, type VimIndicator } from '../lib/vim-indicator'
 import { VimModeBadge } from './VimModeBadge'
+import { ModeEdge } from './ModeEdge'
+import { VIM_EDGES, DEFAULT_VIM_EDGE, DEFAULT_VIM_EDGE_EVERYWHERE, normalizeVimEdge, type VimEdge } from '../lib/vim-edge'
 import { useAppStore } from '../store/app-store'
 import { DEFAULT_VIM_KEYMAP, parseVimKeymap } from '../lib/vim-keymap'
 import { ACTION_LABELS } from '../lib/action-labels'
@@ -38,6 +40,8 @@ interface Settings {
   vimMode: boolean
   sidebarAutoHide: boolean
   vimIndicator: VimIndicator
+  vimEdge: VimEdge
+  vimEdgeEverywhere: boolean
   /** Null = the built-in default keymap. */
   vimKeymap: string | null
   defaultPageUrl: string
@@ -78,6 +82,8 @@ interface AppearancePreview {
   darkVariant: string
   density: Density
   vimIndicator: VimIndicator
+  vimEdge: VimEdge
+  vimEdgeEverywhere: boolean
 }
 
 type UpdateStatus =
@@ -442,6 +448,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [vimMode, setVimMode] = useState(false)
   const [sidebarAutoHide, setSidebarAutoHide] = useState(false)
   const [vimIndicator, setVimIndicator] = useState<VimIndicator>(DEFAULT_VIM_INDICATOR)
+  const [vimEdge, setVimEdge] = useState<VimEdge>(DEFAULT_VIM_EDGE)
+  const [vimEdgeEverywhere, setVimEdgeEverywhere] = useState(DEFAULT_VIM_EDGE_EVERYWHERE)
   const [vimKeymapText, setVimKeymapText] = useState(DEFAULT_VIM_KEYMAP)
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
@@ -547,6 +555,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     darkVariant: DARK_VARIANTS[0].id,
     density: DEFAULT_DENSITY,
     vimIndicator: DEFAULT_VIM_INDICATOR,
+    vimEdge: DEFAULT_VIM_EDGE,
+    vimEdgeEverywhere: DEFAULT_VIM_EDGE_EVERYWHERE,
   })
   recordingRef.current = recordingTarget
 
@@ -816,6 +826,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       const dv = normalizeDarkVariant(settings.darkVariant)
       const dens = normalizeDensity(settings.density)
       const indicator = normalizeVimIndicator(settings.vimIndicator)
+      const edge = normalizeVimEdge(settings.vimEdge)
+      const edgeEverywhere = settings.vimEdgeEverywhere === true
       setTheme(settings.theme)
       setLightVariant(lv)
       setDarkVariant(dv)
@@ -825,8 +837,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setVimMode(settings.vimMode === true)
       setSidebarAutoHide(settings.sidebarAutoHide === true)
       setVimIndicator(indicator)
+      setVimEdge(edge)
+      setVimEdgeEverywhere(edgeEverywhere)
       setVimKeymapText(settings.vimKeymap ?? DEFAULT_VIM_KEYMAP)
-      originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens, vimIndicator: indicator }
+      originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens, vimIndicator: indicator, vimEdge: edge, vimEdgeEverywhere: edgeEverywhere }
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
       setSearchSuggestions(settings.searchSuggestions !== false)
@@ -1324,6 +1338,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       vimMode,
       sidebarAutoHide,
       vimIndicator,
+      vimEdge,
+      vimEdgeEverywhere,
       // Left at the default it stays null, so later default bindings reach it.
       vimKeymap: vimKeymapText === DEFAULT_VIM_KEYMAP ? null : vimKeymapText,
       defaultPageUrl: defaultUrl,
@@ -1350,7 +1366,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   }
 
   const previewAppearance = (next: Partial<AppearancePreview>): void => {
-    onAppearancePreview?.({ theme, lightVariant, darkVariant, density, vimIndicator, ...next })
+    onAppearancePreview?.({ theme, lightVariant, darkVariant, density, vimIndicator, vimEdge, vimEdgeEverywhere, ...next })
   }
 
   const handleResetKeybindings = () => {
@@ -1579,6 +1595,51 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </button>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {/* The mode as a light on the address bar's edge — only while
+                  Vim mode is on. */}
+              {vimMode && (
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground mb-1">Vim mode edge</h3>
+                  <p className="text-[11px] text-muted-foreground mb-3">
+                    A light moving round the address bar's edge in the mode's colours — cool for
+                    COMMAND, green for INSERT — fading from one to the other as the mode changes.
+                  </p>
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
+                    {VIM_EDGES.map((v) => (
+                      <button
+                        key={v.id}
+                        onClick={() => { setVimEdge(v.id); previewAppearance({ vimEdge: v.id }) }}
+                        title={v.hint}
+                        className={`flex flex-col items-stretch gap-3 rounded-lg border px-3 pt-3.5 pb-2.5 text-left transition-colors ${
+                          vimEdge === v.id
+                            ? 'border-primary bg-primary/10'
+                            : 'border-border hover:bg-secondary'
+                        }`}
+                      >
+                        {(['command', 'insert'] as const).map((mode) => (
+                          <span key={mode} className="field relative flex items-center justify-end h-6 rounded-md pr-1">
+                            <VimModeBadge mode={mode} />
+                            <ModeEdge mode={mode} edge={v.id} />
+                          </span>
+                        ))}
+                        <span className="text-xs font-medium text-foreground">{v.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <label className="mt-3 flex items-center gap-2 text-xs text-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={vimEdgeEverywhere}
+                      disabled={vimEdge === 'off'}
+                      onChange={(e) => { setVimEdgeEverywhere(e.target.checked); previewAppearance({ vimEdgeEverywhere: e.target.checked }) }}
+                      className="h-3.5 w-3.5 accent-primary"
+                    />
+                    On every field that shows the mode too — Search Everything, the Command Palette,
+                    Find, the address editor
+                  </label>
                 </div>
               )}
             </div>

@@ -36,6 +36,7 @@ import { BANGS_FIND_EVENT, BANGS_RELOAD_EVENT } from './components/BangsPage'
 import { BANGS_URL, DOWNLOADS_URL, internalPageOf, isInternalUrl } from './lib/internal-pages'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import { applyVimIndicator, normalizeVimIndicator, type VimIndicator } from './lib/vim-indicator'
+import { applyVimEdge, normalizeVimEdge, type VimEdge } from './lib/vim-edge'
 import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
 
 interface Settings {
@@ -56,6 +57,10 @@ interface Settings {
   sidebarAutoHide: boolean
   /** How the mode's key cap shows its colour, see lib/vim-indicator.ts. */
   vimIndicator: VimIndicator
+  /** How a field's edge shows the mode, see lib/vim-edge.ts. */
+  vimEdge: VimEdge
+  /** That edge on every field that shows the mode, not the address bar alone. */
+  vimEdgeEverywhere: boolean
   /** COMMAND-mode keymap text; null = DEFAULT_VIM_KEYMAP. */
   vimKeymap: string | null
   defaultPageUrl: string
@@ -210,6 +215,7 @@ declare global {
       vimRunInPage?: (tabId: string, command: string) => void
       /** Ctrl pressed (true) or let go (false) anywhere in this window. */
       onVimCtrl?: (callback: (down: boolean) => void) => () => void
+      onWindowActive?: (callback: (active: boolean) => void) => () => void
       /** Esc tapped twice in this window. */
       onVimEscDoubleTap?: (callback: () => void) => () => void
       reclaimWindowRendererFocus?: () => void
@@ -762,12 +768,14 @@ export default function App() {
         darkVariant: normalizeDarkVariant(s.darkVariant),
         density: normalizeDensity(s.density),
         vimIndicator: normalizeVimIndicator(s.vimIndicator),
+        vimEdge: normalizeVimEdge(s.vimEdge),
         newTabFocus: normalizeNewTabFocus(s.newTabFocus),
       }
       setSettings(normalized)
       applyTheme(normalized.theme, normalized.lightVariant, normalized.darkVariant)
       applyDensity(normalized.density)
       applyVimIndicator(normalized.vimIndicator)
+      applyVimEdge(normalized.vimEdge, normalized.vimEdgeEverywhere === true)
       setDefaultNewTabUrl(normalized.defaultPageUrl)
       setNewTabFocusPref(normalized.newTabFocus)
       setSearchEngine(normalized.searchEngine)
@@ -1327,12 +1335,14 @@ export default function App() {
         darkVariant: normalizeDarkVariant(raw.darkVariant),
         density: normalizeDensity(raw.density),
         vimIndicator: normalizeVimIndicator(raw.vimIndicator),
+        vimEdge: normalizeVimEdge(raw.vimEdge),
         newTabFocus: normalizeNewTabFocus(raw.newTabFocus),
       }
       setSettings(s)
       applyTheme(s.theme, s.lightVariant, s.darkVariant)
       applyDensity(s.density)
       applyVimIndicator(s.vimIndicator)
+      applyVimEdge(s.vimEdge, s.vimEdgeEverywhere === true)
       setDefaultNewTabUrl(s.defaultPageUrl)
       setNewTabFocusPref(s.newTabFocus)
       setSearchEngine(s.searchEngine)
@@ -1437,12 +1447,14 @@ export default function App() {
       darkVariant: normalizeDarkVariant(newSettings.darkVariant),
       density: normalizeDensity(newSettings.density),
       vimIndicator: normalizeVimIndicator(newSettings.vimIndicator),
+      vimEdge: normalizeVimEdge(newSettings.vimEdge),
       newTabFocus: normalizeNewTabFocus(newSettings.newTabFocus),
     }
     setSettings(normalized)
     applyTheme(normalized.theme, normalized.lightVariant, normalized.darkVariant)
     applyDensity(normalized.density)
     applyVimIndicator(normalized.vimIndicator)
+    applyVimEdge(normalized.vimEdge, normalized.vimEdgeEverywhere === true)
     setDefaultNewTabUrl(normalized.defaultPageUrl)
     setNewTabFocusPref(normalized.newTabFocus)
     setSearchEngine(normalized.searchEngine)
@@ -1672,7 +1684,7 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         settings={settings}
         onSave={handleSaveSettings}
-        onAppearancePreview={(p) => { applyTheme(p.theme, p.lightVariant, p.darkVariant); applyDensity(p.density); applyVimIndicator(p.vimIndicator) }}
+        onAppearancePreview={(p) => { applyTheme(p.theme, p.lightVariant, p.darkVariant); applyDensity(p.density); applyVimIndicator(p.vimIndicator); applyVimEdge(p.vimEdge, p.vimEdgeEverywhere) }}
         tabRequest={settingsTabRequest}
       />
       <CommandPalette

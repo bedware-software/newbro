@@ -72,6 +72,14 @@
   --field-edge-strong: oklch(0.9 0 0 / 0.3);
   --field-shadow: 0 0.25rem 1.25rem oklch(0 0 0 / 0.2);
   --field-shadow-strong: 0 0.25rem 1.25rem oklch(0 0 0 / 0.4);
+  /* Vim's mode on a field's edge (.mode-edge below): three colours a mode —
+   * COMMAND cool (blue, violet, cyan), INSERT fresh (green, lime, teal). */
+  --vim-edge-command-1: oklch(0.74 0.14 240);
+  --vim-edge-command-2: oklch(0.66 0.19 292);
+  --vim-edge-command-3: oklch(0.83 0.12 205);
+  --vim-edge-insert-1: oklch(0.80 0.18 142);
+  --vim-edge-insert-2: oklch(0.89 0.16 110);
+  --vim-edge-insert-3: oklch(0.77 0.13 182);
 }
 
 /* ── Light theme ── */
@@ -105,6 +113,12 @@
   --color-vim-command-text: oklch(0.48 0.12 235);
   --color-vim-insert: oklch(0.66 0.16 140);
   --color-vim-insert-text: oklch(0.48 0.15 140);
+  --vim-edge-command-1: oklch(0.60 0.15 242);
+  --vim-edge-command-2: oklch(0.53 0.20 292);
+  --vim-edge-command-3: oklch(0.66 0.13 210);
+  --vim-edge-insert-1: oklch(0.64 0.18 142);
+  --vim-edge-insert-2: oklch(0.74 0.17 112);
+  --vim-edge-insert-3: oklch(0.62 0.13 182);
 }
 
 /* ── System theme: auto-switch to light when OS prefers light ── */
@@ -139,6 +153,12 @@
     --color-vim-command-text: oklch(0.48 0.12 235);
     --color-vim-insert: oklch(0.66 0.16 140);
     --color-vim-insert-text: oklch(0.48 0.15 140);
+    --vim-edge-command-1: oklch(0.60 0.15 242);
+    --vim-edge-command-2: oklch(0.53 0.20 292);
+    --vim-edge-command-3: oklch(0.66 0.13 210);
+    --vim-edge-insert-1: oklch(0.64 0.18 142);
+    --vim-edge-insert-2: oklch(0.74 0.17 112);
+    --vim-edge-insert-3: oklch(0.62 0.13 182);
   }
 }
 
@@ -489,6 +509,135 @@ kbd.vim-mode[data-indicator="dot"]::before {
   height: 6px;
   border-radius: 50%;
   background: var(--vim-c);
+}
+
+/* ── Vim's mode on a field's edge (ModeEdge, lib/vim-edge.ts) ──
+ * A light that keeps moving round the address bar (and, when asked, the
+ * popups' boxes), in the mode's colours. Each field holds a layer per mode;
+ * a mode change crossfades them, so any look fades rather than jumps, and
+ * the hidden one stops being drawn once it has faded out. A layer is a box
+ * --pad bigger than the field all round, its content box — the field's own
+ * shape, --r its radius, set by ModeEdge — cut out by a mask: what it draws
+ * shows only outside the field, never over what's typed. In it a ring
+ * (1.5px out) and a glow (a blurred copy, 4px out), each a clipping box
+ * with a static background of its own and a mover inside.
+ *
+ * Everything that moves is a transform — a gradient drawn once, turned or
+ * slid — so the GPU runs it with no style, paint or raster per frame; a
+ * gradient's own angle or position animated would cost the window's main
+ * thread a frame's work 60 times a second, for as long as Vim mode is on. */
+@keyframes mode-edge-turn { to { rotate: 1turn; } }
+@keyframes mode-edge-slide { to { translate: -50% 0; } }
+@keyframes mode-edge-breathe {
+  0%, 100% { opacity: calc(var(--glow) * 0.4); }
+  50% { opacity: var(--glow); }
+}
+@keyframes mode-edge-glint {
+  0% { translate: -100% 0; }
+  55%, 100% { translate: 420% 0; }
+}
+
+.mode-edge {
+  --speed: 10s;
+  --glow: 0.55;
+  --pad: 24px;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.mode-edge > span {
+  position: absolute;
+  inset: calc(var(--pad) * -1);
+  padding: var(--pad);
+  border-radius: calc(var(--r, 8px) + var(--pad));
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 600ms ease, visibility 0s linear 600ms;
+}
+.mode-edge > span[data-on] {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 600ms ease, visibility 0s;
+}
+.mode-edge > [data-for="command"] { --c1: var(--vim-edge-command-1); --c2: var(--vim-edge-command-2); --c3: var(--vim-edge-command-3); }
+.mode-edge > [data-for="insert"] { --c1: var(--vim-edge-insert-1); --c2: var(--vim-edge-insert-2); --c3: var(--vim-edge-insert-3); }
+/* The ring and the glow: clipping boxes round the field. */
+.mode-edge > span > i {
+  position: absolute;
+  inset: calc(var(--pad) - 1.5px);
+  border-radius: calc(var(--r, 8px) + 1.5px);
+  overflow: hidden;
+  container-type: size;
+}
+.mode-edge > span > i + i {
+  inset: calc(var(--pad) - 4px);
+  border-radius: calc(var(--r, 8px) + 4px);
+  filter: blur(9px);
+  opacity: var(--glow);
+}
+/* The mover: for the turning looks a square as wide as the box's diagonal,
+ * centred, so it covers the box however it's turned — a conic gradient
+ * turned about its centre is the same gradient drawn from another angle. */
+.mode-edge > span > i > i {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: hypot(100cqw, 100cqh);
+  height: hypot(100cqw, 100cqh);
+  translate: -50% -50%;
+  animation: mode-edge-turn var(--speed) linear infinite;
+}
+
+/* Comet on rail: a comet over a faint ring of all three colours. */
+.mode-edge[data-edge="comet-rail"] > span > i {
+  background: linear-gradient(90deg, color-mix(in oklch, var(--c1) 40%, transparent), color-mix(in oklch, var(--c2) 40%, transparent), color-mix(in oklch, var(--c3) 40%, transparent));
+}
+.mode-edge[data-edge="comet-rail"] > span > i > i {
+  background: conic-gradient(transparent 0deg 200deg, color-mix(in oklch, var(--c2) 70%, transparent) 290deg, var(--c1) 348deg, transparent 360deg);
+}
+/* Comet: the comet alone. */
+.mode-edge[data-edge="comet"] > span > i > i {
+  background: conic-gradient(transparent 0deg 230deg, var(--c2) 290deg, var(--c1) 340deg, transparent 360deg);
+}
+/* Aurora: the three colours circling the whole edge. */
+.mode-edge[data-edge="aurora"] > span > i > i {
+  background: conic-gradient(var(--c1), var(--c2) 120deg, var(--c3) 240deg, var(--c1));
+  animation-duration: calc(var(--speed) * 1.5);
+}
+/* Living border: the colours drift to and fro — a strip twice the box's
+ * width sliding half its length — and the glow swells and fades. */
+.mode-edge[data-edge="living"] > span > i > i {
+  left: 0;
+  top: 0;
+  width: 200%;
+  height: 100%;
+  translate: 0 0;
+  background: linear-gradient(90deg, var(--c1), var(--c2), var(--c3), var(--c1), var(--c2));
+  animation: mode-edge-slide var(--speed) ease-in-out infinite alternate;
+}
+.mode-edge[data-edge="living"] > span > i + i {
+  animation: mode-edge-breathe calc(var(--speed) * 0.5) ease-in-out infinite;
+}
+/* Glint: a ring of the three colours, a glint passing along it now and then. */
+.mode-edge[data-edge="glint"] > span > i {
+  background: linear-gradient(90deg, var(--c1), var(--c2) 50%, var(--c3));
+}
+.mode-edge[data-edge="glint"] > span > i > i {
+  left: 0;
+  top: 0;
+  width: 24%;
+  height: 100%;
+  translate: -100% 0;
+  background: linear-gradient(100deg, transparent 15%, color-mix(in oklch, var(--c3) 35%, white) 50%, transparent 85%);
+  animation: mode-edge-glint calc(var(--speed) * 0.6) ease-in-out infinite;
+}
+
+/* Still while its window isn't the one in use (lib/vim-edge.ts), and for
+ * Reduce motion. */
+[data-window-inactive] .mode-edge i { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  .mode-edge i { animation-play-state: paused !important; }
 }
 
 /* ── Custom scrollbars ── */

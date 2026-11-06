@@ -7,6 +7,8 @@ import type { ReactNode, RefObject } from 'react'
 import { cn } from '../lib/utils'
 import type { VimMode } from '../lib/vim-mode'
 import { VimModeBadge } from './VimModeBadge'
+import { ModeEdge } from './ModeEdge'
+import { useVimEdge, useVimEdgeEverywhere } from '../lib/vim-edge'
 
 interface Props {
   /** What's in the box ahead of the mode: the input, and any icon or count
@@ -24,6 +26,10 @@ interface Props {
 }
 
 export function InputField({ children, inputRef, onPress, mode, pending, className }: Props) {
+  // With the mode's light on its edge too (Settings → Appearance, every
+  // field), it lets what spills past its edge show.
+  const edge = useVimEdge()
+  const edgeShown = useVimEdgeEverywhere() && mode !== null && edge !== 'off'
   return (
     <div
       onMouseDown={(e) => {
@@ -34,13 +40,15 @@ export function InputField({ children, inputRef, onPress, mode, pending, classNa
         else input.focus()
       }}
       className={cn(
-        'field flex items-center gap-2 min-w-0 overflow-hidden rounded-xl pl-3 cursor-text',
+        'field relative flex items-center gap-2 min-w-0 rounded-xl pl-3 cursor-text',
+        !edgeShown && 'overflow-hidden',
         !mode && 'pr-3',
         className,
       )}
     >
       {children}
       {mode && <VimModeBadge mode={mode} pending={pending} size="field" />}
+      <ModeEdge mode={mode} />
     </div>
   )
 }

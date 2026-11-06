@@ -30,6 +30,12 @@ export interface Settings {
    *  lib/vim-indicator.ts): 'rim-label', 'rim', 'label', 'tint', 'base',
    *  'dot' or 'plain'. */
   vimIndicator: string
+  /** How a field's edge shows Vim's mode (renderer lib/vim-edge.ts):
+   *  'comet-rail', 'comet', 'aurora', 'living', 'glint' or 'off'. */
+  vimEdge: string
+  /** The edge on every field that shows the mode, not the address bar
+   *  alone. */
+  vimEdgeEverywhere: boolean
   /** COMMAND-mode keymap as the user wrote it in Settings — plain text, one
    *  `<command> <keys>` binding per line, parsed by the renderer
    *  (lib/vim-keymap.ts). Null means the built-in default, so users who never
@@ -92,6 +98,7 @@ const KNOWN_LIGHT_VARIANTS = new Set(['light-default', 'light-bright', 'light-so
 const KNOWN_DARK_VARIANTS = new Set(['dark-default', 'dark-deep', 'dark-soft'])
 const KNOWN_DENSITIES = new Set(['compact', 'normal'])
 const KNOWN_VIM_INDICATORS = new Set(['rim-label', 'rim', 'label', 'tint', 'base', 'dot', 'plain'])
+const KNOWN_VIM_EDGES = new Set(['comet-rail', 'comet', 'aurora', 'living', 'glint', 'off'])
 const KNOWN_NEW_TAB_FOCUS = new Set(['site', 'url'])
 const KNOWN_DOH_MODES = new Set(['off', 'automatic', 'secure'])
 const KNOWN_PASSWORD_AUTOFILL = new Set(['automatic', 'on-focus', 'off'])
@@ -222,6 +229,8 @@ export const DEFAULT_SETTINGS: Settings = {
   vimMode: false,
   sidebarAutoHide: false,
   vimIndicator: 'rim-label',
+  vimEdge: 'comet-rail',
+  vimEdgeEverywhere: false,
   vimKeymap: null,
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
@@ -476,6 +485,10 @@ export function loadSettings(): Settings {
     vimIndicator: KNOWN_VIM_INDICATORS.has(saved?.vimIndicator as string)
       ? (saved!.vimIndicator as string)
       : DEFAULT_SETTINGS.vimIndicator,
+    vimEdge: KNOWN_VIM_EDGES.has(saved?.vimEdge as string)
+      ? (saved!.vimEdge as string)
+      : DEFAULT_SETTINGS.vimEdge,
+    vimEdgeEverywhere: saved?.vimEdgeEverywhere === true,
     vimKeymap: normalizeVimKeymap(saved?.vimKeymap),
     searchSuggestions: saved?.searchSuggestions !== false,
     bangsEnabled: saved?.bangsEnabled !== false,
@@ -525,6 +538,10 @@ export function saveSettings(settings: Settings): void {
     vimIndicator: KNOWN_VIM_INDICATORS.has(settings.vimIndicator)
       ? settings.vimIndicator
       : DEFAULT_SETTINGS.vimIndicator,
+    vimEdge: KNOWN_VIM_EDGES.has(settings.vimEdge)
+      ? settings.vimEdge
+      : DEFAULT_SETTINGS.vimEdge,
+    vimEdgeEverywhere: settings.vimEdgeEverywhere === true,
     vimKeymap: normalizeVimKeymap(settings.vimKeymap),
     searchSuggestions: settings.searchSuggestions !== false,
     bangsEnabled: settings.bangsEnabled !== false,

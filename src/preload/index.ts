@@ -34,6 +34,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('vim-ctrl', handler)
     return () => { ipcRenderer.removeListener('vim-ctrl', handler) }
   },
+  // This window became the one in use (true) or stopped being it (false).
+  onWindowActive: (callback: (active: boolean) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, active: unknown) => callback(active === true)
+    ipcRenderer.on('window-active', handler)
+    return () => { ipcRenderer.removeListener('window-active', handler) }
+  },
   // Esc tapped twice in this window, with Vim mode on.
   onVimEscDoubleTap: (callback: () => void) => {
     const handler = () => callback()

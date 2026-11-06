@@ -19,6 +19,7 @@ import {
 import type { DownloadEntry } from '../App'
 import type { VimMode } from '../lib/vim-mode'
 import { VimModeBadge } from './VimModeBadge'
+import { ModeEdge } from './ModeEdge'
 import { WorkspaceStats } from './WorkspaceStats'
 import { useUrlEditorStore } from '../lib/url-editor'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
@@ -1441,7 +1442,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           ref={urlBarRef}
           // The address editor lines up with it (UrlEditor.tsx).
           data-url-bar=""
-          className="field flex-[5] min-w-0 flex items-center h-8 rounded-lg"
+          className="field relative flex-[5] min-w-0 flex items-center h-8 rounded-lg"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           {security !== 'internal' && (<>
@@ -1478,6 +1479,8 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
             : <Omnibox tabId={activeTabId} tabUrl={activeTab?.url || ''} anchorRef={urlBarRef} />}
           {/* Vim's mode at the bar's end, as in every text field. */}
           {vimMode && <VimModeBadge mode={vimMode} pending={vimPending} size="field" />}
+          {/* And as a light moving round its edge (Settings → Appearance). */}
+          <ModeEdge mode={vimMode ?? null} addressBar />
         </div>
 
         {/* Extensions cluster sits at the far right of the toolbar so it

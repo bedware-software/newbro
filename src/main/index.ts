@@ -3283,6 +3283,9 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   lastActiveWorkspaceId = workspaceId
   saveLastUsedWorkspace(profileId, workspaceId)
   win.on('focus', () => {
+    // The renderer's own focus can't tell: it loses it to the page's view.
+    // The Vim mode edge only moves in the window in use (globals.css).
+    if (!win.isDestroyed()) win.webContents.send('window-active', true)
     lastActiveWorkspaceId = workspaceId
     // Resolve the profile at focus time — it may have been late-bound via
     // bindWebContentsToPartition after this window was created.
@@ -3291,7 +3294,9 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   installShortcutInterceptor(win.webContents, win)
   // A Ctrl let go in another window or app never reaches us.
   win.on('blur', () => {
-    if (!win.isDestroyed()) win.webContents.send('vim-ctrl', false)
+    if (win.isDestroyed()) return
+    win.webContents.send('vim-ctrl', false)
+    win.webContents.send('window-active', false)
   })
 
   // Route the mouse side buttons (XButton1/XButton2 on Windows, matching
