@@ -308,6 +308,27 @@ export function paletteKeymap(search: VimKeymap): VimKeymap {
   return map
 }
 
+/** The Vim help window's COMMAND keys, as help command → main command:
+ *  the page's scroll keys (j/k, d/u, gg/G) scroll the help, i types in its
+ *  filter. Straight from the page's map, as the help has no keys of its own
+ *  — Search Everything's map would lose gg to its g filter. */
+const HELP_COMMANDS: Record<string, string> = {
+  'insert-mode': 'insert-mode',
+  ...LIST_COMMANDS,
+  'half-page-down': 'half-page-down',
+  'half-page-up': 'half-page-up',
+}
+
+export function helpKeymap(parsed: ParsedVimKeymap): VimKeymap {
+  const fromMain = new Map(Object.entries(HELP_COMMANDS).map(([help, main]) => [main, help]))
+  const map: VimKeymap = new Map()
+  for (const [seq, command] of parsed.main) {
+    const help = fromMain.get(command)
+    if (help) map.set(seq, help)
+  }
+  return map
+}
+
 /** How `command` is bound in `map`, each sequence written out — for hints. */
 export function keysFor(map: VimKeymap, command: string): string[] {
   const out: string[] = []

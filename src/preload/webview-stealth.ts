@@ -741,10 +741,24 @@ function installVimPage(): void {
     console.log('[newbro-vim] state fetch failed:', err)
   })
 
+  // Keys whose press Vim took: their release is Vim's too. Pages act on some
+  // keys as they come up — YouTube plays and pauses on Space's, a focused
+  // button clicks on it — so a release let through would still do the
+  // page's thing (Space toggling the Sidebar paused the video).
+  const swallowedPresses = new Set<string>()
   const consume = (e: KeyboardEvent): void => {
     e.preventDefault()
     e.stopImmediatePropagation()
+    if (e.code) swallowedPresses.add(e.code)
   }
+  window.addEventListener('keyup', (e) => {
+    if (!e.isTrusted || !swallowedPresses.delete(e.code)) return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+  }, true)
+  // A release that went elsewhere (the press moved focus out of the page)
+  // must not cost a later one here.
+  window.addEventListener('blur', () => swallowedPresses.clear())
 
   // Esc out of INSERT: the field (or frame) with the keys lets them go.
   function leaveInsert(): void {
@@ -760,6 +774,8 @@ function installVimPage(): void {
 
   window.addEventListener('keydown', (e) => {
     if (!e.isTrusted || e.isComposing) return
+    // A fresh press is decided anew below.
+    if (!e.repeat) swallowedPresses.delete(e.code)
     const modified = e.metaKey || e.ctrlKey || e.altKey
     if (mode === 'insert') {
       if (e.key !== 'Escape' || modified || e.shiftKey) return
@@ -770,6 +786,8 @@ function installVimPage(): void {
     if (mode !== 'command') return
     if (hints) {
       hints.onKey(e)
+      // It takes every key while it's up.
+      if (e.code) swallowedPresses.add(e.code)
       return
     }
     // A field has the keys (focus moved there without a focus event we saw).

@@ -8,7 +8,7 @@ import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
 import { useVimMode, dispatchSidebarCommand, dispatchPageCommand, type VimMode } from './lib/vim-mode'
 import { hintIndex, useHintKeymap } from './lib/hint-labels'
-import { parseVimKeymap, paletteKeymap, DEFAULT_VIM_KEYMAP, isPageCommand, isSidebarCommand } from './lib/vim-keymap'
+import { parseVimKeymap, paletteKeymap, helpKeymap, DEFAULT_VIM_KEYMAP, isPageCommand, isSidebarCommand } from './lib/vim-keymap'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
@@ -1630,6 +1630,7 @@ export default function App() {
       <VimHelpDialog
         open={vimHelpFrom !== null}
         keymap={vimKeymap}
+        vimKeymap={vimEnabled ? helpKeymap(vimKeymap) : null}
         fromMode={vimHelpFrom ?? 'command'}
         onClose={() => setVimHelpFrom(null)}
       />
