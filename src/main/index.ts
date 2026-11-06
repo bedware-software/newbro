@@ -3615,6 +3615,18 @@ function buildMenu(): void {
           click: (_item, win) => sendShortcutToWindow(win, 'page-devtools'),
         },
         { type: 'separator' },
+        // Dark pages (main/dark-pages.ts).
+        {
+          label: 'Dark Pages On / Off',
+          accelerator: kb['dark-pages'],
+          click: (_item, win) => sendShortcutToWindow(win, 'dark-pages'),
+        },
+        {
+          label: 'Dark Pages on This Site',
+          accelerator: kb['dark-pages-site'],
+          click: (_item, win) => sendShortcutToWindow(win, 'dark-pages-site'),
+        },
+        { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },
         { role: 'zoomOut' },

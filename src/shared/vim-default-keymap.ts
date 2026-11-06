@@ -109,6 +109,9 @@ add-to-bookshelf
 toggle-bookshelf    B
 open-downloads      od
 open-bangs          ob
+" Dark pages: D turns them on or off for this site; dark-pages everywhere.
+dark-pages
+dark-pages-site     D
 
 " ── Search Everything and the Command Palette ─────────────────────────
 " Search Everything and the Command Palette open in INSERT; Esc goes to
@@ -371,6 +374,10 @@ const NEW_IN_V8 = new Set(['url-redo', 'url-remove-all'])
 /** Commands v11 added to the keymap. */
 const NEW_IN_V11 = new Set(['open-bangs'])
 
+/** Commands v12 added. A default key of theirs that an owner's own binding
+ *  already uses stays the owner's: the new command goes unbound. */
+const NEW_IN_V12 = new Set(['dark-pages', 'dark-pages-site'])
+
 /** Commands v3 added under new names; no older keymap mentions them. */
 const NEW_IN_V3 = new Set([
   'scroll-down', 'scroll-up', 'half-page-down', 'half-page-up', 'page-top', 'page-bottom',
@@ -406,12 +413,12 @@ function sequencesClash(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1 to v10) over to the
+ * Carries a keymap saved under older defaults (v1 to v11) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
  * nothing to keep.
  */
-export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10): string | null {
+export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11): string | null {
   // What the owner had, by the old name.
   const mine = new Map<string, string>()
   for (const line of saved.split('\n')) {
@@ -431,12 +438,12 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 |
     (fromVersion <= 7 ? V7_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 8 ? V8_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 9 ? V9_DEFAULT_KEYS[command] : undefined) ??
-    V10_DEFAULT_KEYS[command] ??
+    (fromVersion <= 10 ? V10_DEFAULT_KEYS[command] : undefined) ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
   const existed = (command: string): boolean =>
-    NEW_IN_V11.has(command) || (fromVersion <= 7 && NEW_IN_V8.has(command)) || (fromVersion <= 6 && NEW_IN_V7.has(command)) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
+    NEW_IN_V12.has(command) || (fromVersion <= 10 && NEW_IN_V11.has(command)) || (fromVersion <= 7 && NEW_IN_V8.has(command)) || (fromVersion <= 6 && NEW_IN_V7.has(command)) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
     : fromVersion >= 3
       ? !(command in RENAMED_IN_V3)
       : !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))
@@ -472,9 +479,22 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 |
     changed.push(command)
   })
 
+  // A command new to this version whose default key an owner's binding
+  // already uses goes unbound: the owner chose that key.
+  for (const command of NEW_IN_V12) {
+    const fresh = bindings.get(command)
+    if (!fresh || fresh.keys.length === 0) continue
+    const taken = fresh.keys.some((key) => changed.some((other) =>
+      contextOf(other) === contextOf(command) && bindings.get(other)!.keys.some((k) => sequencesClash(key, k))))
+    if (!taken) continue
+    fresh.keys = []
+    changed.push(command)
+  }
+
   // An owner's binding that clashes with another in its context goes back
   // to the default.
   for (const command of changed) {
+    if (NEW_IN_V12.has(command)) continue
     const own = bindings.get(command)!
     const clashes = own.keys.some((key) => [...bindings].some(([other, b]) =>
       other !== command && contextOf(other) === contextOf(command) && b.keys.some((k) => sequencesClash(key, k))))

@@ -26,6 +26,8 @@ interface CommandItem {
   id: string
   label: string
   category: string
+  /** Other words it's found by. */
+  keywords?: string
 }
 
 const COMMANDS: CommandItem[] = [
@@ -69,6 +71,9 @@ const COMMANDS: CommandItem[] = [
   { id: 'open-downloads', label: 'Open Downloads', category: 'General' },
   { id: 'open-bangs', label: 'Bangs & Search Engine', category: 'General' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'View' },
+  { id: 'dark-pages', label: 'Turn Dark Pages On / Off', category: 'Dark Pages', keywords: 'dark mode night theme' },
+  { id: 'dark-pages-site', label: 'Dark Pages on This Site', category: 'Dark Pages', keywords: 'dark mode site night theme' },
+  { id: 'dark-pages-settings', label: 'Dark Pages Settings…', category: 'Dark Pages', keywords: 'dark mode night theme brightness contrast' },
   { id: 'split-right', label: 'Split Right', category: 'Split View' },
   { id: 'split-down', label: 'Split Down', category: 'Split View' },
   { id: 'split-focus', label: 'Switch Split Pane', category: 'Split View' },
@@ -205,6 +210,7 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
         score: Math.max(
           fuzzyScore(query, cmd.label),
           fuzzyScore(query, cmd.category),
+          cmd.keywords ? fuzzyScore(query, cmd.keywords) : 0,
         ),
       }))
       .filter((x) => x.score > 0)
@@ -432,6 +438,8 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   'save-page': 'CmdOrCtrl+S',
   'toggle-bookshelf': 'CmdOrCtrl+Shift+B',
   'open-downloads': 'CmdOrCtrl+J',
+  'dark-pages': 'Alt+Shift+D',
+  'dark-pages-site': 'Alt+Shift+A',
 }
 
 function getDefaultBinding(id: string): string | undefined {

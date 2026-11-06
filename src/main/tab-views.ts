@@ -32,6 +32,7 @@ import { setupPartitionSession, shouldDropExtConsoleMessage } from './index'
 import { ensureExtensionInSession } from './extensions/manager'
 import { injectMatchingUserScripts } from './extensions/userscripts'
 import { getExtensionsFor, suppressLibrarySelectTab } from './chrome-extensions-bridge'
+import { trackDarkPages } from './dark-pages'
 
 export interface TabBounds {
   x: number
@@ -100,6 +101,10 @@ interface TabRecord {
   /** The last bounds assigned by the renderer. Cached so we can
    *  restore them when re-activating after hide (width=0 trick). */
   lastBounds: TabBounds
+  /** The view's colour where the page paints nothing, outside fullscreen:
+   *  see-through, or dark while Dark pages darkens the page over Newbro's
+   *  light theme (main/dark-pages.ts). */
+  restingBackground: string
 }
 
 const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
@@ -553,7 +558,7 @@ function leavePageFullscreen(rec: TabRecord, source: string): void {
   log.info('tab leave-html-full-screen', { tabId: rec.tabId, source })
   htmlFullscreenByWindow.delete(rec.windowId)
   const win = BrowserWindow.fromId(rec.windowId)
-  try { rec.view.setBackgroundColor(TAB_BG_TRANSPARENT) } catch { /* ignore */ }
+  try { rec.view.setBackgroundColor(rec.restingBackground) } catch { /* ignore */ }
   applyCurrentBounds(rec)
   reapplySplitPanes(rec.windowId)
   try { win?.setBackgroundColor(DEFAULT_WINDOW_BG) } catch { /* ignore */ }
@@ -916,6 +921,13 @@ function wireEvents(rec: TabRecord): void {
     childWindow.once('closed', () => {
       log.info('tab popup closed', { tabId: rec.tabId, childId: childWindow.id })
     })
+    // A sign-in popup is dark when its page is.
+    trackDarkPages(childWindow.webContents, {
+      opaque: true,
+      setBackground: (color) => {
+        if (!childWindow.isDestroyed()) childWindow.setBackgroundColor(color ?? '#ffffff')
+      },
+    })
   })
 
   // Close any open extension popup when the user clicks the page. We only
@@ -1026,7 +1038,7 @@ export function createTab(opts: {
   // hidden; if active and we already have bounds for the window, apply
   // them on activation below.
   view.setBounds(HIDDEN_BOUNDS)
-  view.setBackgroundColor('#00000000')
+  view.setBackgroundColor(TAB_BG_TRANSPARENT)
   win.contentView.addChildView(view)
 
   const rec: TabRecord = {
@@ -1036,10 +1048,20 @@ export function createTab(opts: {
     view,
     activated: false,
     lastBounds: HIDDEN_BOUNDS,
+    restingBackground: TAB_BG_TRANSPARENT,
   }
   tabs.set(opts.tabId, rec)
   wcIdToTabId.set(view.webContents.id, opts.tabId)
   wireEvents(rec)
+  // Dark pages, set up before the first load so the first paint is dark.
+  trackDarkPages(view.webContents, {
+    setBackground: (color) => {
+      rec.restingBackground = color ?? TAB_BG_TRANSPARENT
+      // Fullscreen keeps its black until it ends.
+      if (htmlFullscreenByWindow.get(rec.windowId) === rec.tabId) return
+      try { rec.view.setBackgroundColor(rec.restingBackground) } catch { /* view gone */ }
+    },
+  })
 
   // Register the tab with electron-chrome-extensions so chrome.tabs.*
   // sees it. The library auto-marks each newly-added tab as the
@@ -1285,7 +1307,7 @@ function hideOutgoingTab(windowId: number, nextTabId: string | null): void {
       prevRec.view.setBounds(HIDDEN_BOUNDS)
       // Drop any fullscreen black base — leave-html-full-screen isn't always
       // emitted when a fullscreen tab is switched away from.
-      try { prevRec.view.setBackgroundColor(TAB_BG_TRANSPARENT) } catch { /* ignore */ }
+      try { prevRec.view.setBackgroundColor(prevRec.restingBackground) } catch { /* ignore */ }
     }
   }
 }

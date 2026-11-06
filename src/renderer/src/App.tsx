@@ -37,6 +37,7 @@ import { BANGS_URL, DOWNLOADS_URL, internalPageOf, isInternalUrl } from './lib/i
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import { applyVimIndicator, normalizeVimIndicator, type VimIndicator } from './lib/vim-indicator'
 import { applyVimEdge, normalizeVimEdge, type VimEdge } from './lib/vim-edge'
+import { darkPagesActions } from './lib/dark-pages'
 import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
 
 interface Settings {
@@ -86,7 +87,7 @@ function normalizeNewTabFocus(value: string | undefined): NewTabFocus {
   return value === 'url' ? 'url' : 'site'
 }
 
-export type SyncCategory = 'state' | 'settings' | 'bookshelf' | 'history' | 'permissions' | 'extensions'
+export type SyncCategory = 'state' | 'settings' | 'bookshelf' | 'history' | 'permissions' | 'extensions' | 'darkPages'
 
 /** Combined config + runtime status for the synced-folder cloud sync. Returned
  *  by every cloud-sync IPC call and pushed on the onCloudSyncStatus channel. */
@@ -395,6 +396,15 @@ declare global {
       historyNoteTyped?: (tabId: string, url: string) => void
       historyClear?: () => Promise<boolean>
       omniboxSuggest?: (query: string, partition?: string) => Promise<string[]>
+      // Dark pages — Newbro's own dark mode for web pages (lib/dark-pages.ts).
+      darkPagesGet?: () => Promise<unknown>
+      darkPagesSet?: (patch: unknown) => Promise<unknown>
+      darkPagesSetSite?: (site: string, rule: 'dark' | 'light' | null) => Promise<unknown>
+      darkPagesSetPage?: (url: string, dark: boolean) => Promise<unknown>
+      darkPagesToggle?: () => Promise<unknown>
+      darkPagesToggleSite?: (url: string) => Promise<unknown>
+      darkPagesResetSites?: () => Promise<unknown>
+      onDarkPagesUpdated?: (callback: (state: unknown) => void) => () => void
       bangsList?: () => Promise<Bang[]>
       bangsSave?: (bangs: Bang[]) => Promise<Bang[]>
       bangsReset?: () => Promise<Bang[]>
@@ -990,6 +1000,18 @@ export default function App() {
         }
         case 'toggle-bookshelf':
           setBookshelfOpen((v) => !v)
+          break
+        case 'dark-pages':
+          darkPagesActions.toggle()
+          break
+        case 'dark-pages-site': {
+          const url = s.getActiveTab()?.url
+          if (url && !isInternalUrl(url)) darkPagesActions.toggleSite(url)
+          break
+        }
+        case 'dark-pages-settings':
+          setSettingsTabRequest({ tab: 'darkPages', v: Date.now() })
+          setSettingsOpen(true)
           break
         case 'duplicate-tab':
           if (s.activeTabId) s.duplicateTab(s.activeTabId)
@@ -1595,7 +1617,7 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => { setSearchOpenFilter(null); setSearchOpen(true) }} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => { setSearchOpenFilter(null); setSearchOpen(true) }} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} onOpenDarkPagesSettings={() => { setSettingsTabRequest({ tab: 'darkPages', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           visible={sidebarShown}
