@@ -83,6 +83,10 @@ app.whenReady().then(async () => {
     say('NAV', i)
     await sleep(opt.gap)
   }
+  // The page the tab ended on got Newbro's tab preload: its main-world part
+  // marks the window.
+  const preload = await wc.executeJavaScript('window.__newbroPseudoFullscreenInstalled === true').catch((e) => String(e))
+  say('NOTE', `tab preload ran on ${wc.getURL()}: ${preload}`)
   await sleep(400)
   say('END')
   app.exit(0)

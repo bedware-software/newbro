@@ -195,6 +195,7 @@ function runScenario(name, options) {
     let goSent = false
     let finished = false
     let navs = 0
+    const notes = []
 
     let borderless = 0
     let ended = false
@@ -265,6 +266,7 @@ function runScenario(name, options) {
           startCapture()
         }
         else if (line.startsWith('WF NAV ')) navs++
+        else if (line.startsWith('WF NOTE ')) notes.push(line.slice(8))
         else if (line === 'WF END') { ended = true; endedAt = Date.now() }
       }
     })
@@ -312,6 +314,7 @@ function runScenario(name, options) {
         red: count('R'), other: count('.'),
         sequence: s.replace(/B{6,}/g, (m) => `B{${m.length}}`),
         ffmpegErr: ffmpegErr.trim(),
+        notes,
         appLog: verdict === 'NO CAPTURE' ? appLog.slice(-30) : [],
       })
     }
@@ -339,6 +342,7 @@ for (const name of names.length ? names : Object.keys(scenarios)) {
   console.log(`   ${r.sequence}`)
   if (r.fps > 200) console.log(`   (${r.fps.toFixed(0)} fps: ffmpeg is repeating frames)`)
   if (r.ffmpegErr) console.log(`   ffmpeg: ${r.ffmpegErr.split('\n').slice(0, 5).join(' | ')}`)
+  for (const n of r.notes) console.log(`   ${n}`)
   for (const l of r.appLog) console.log(`   app: ${l}`)
 }
 xvfb?.kill()
