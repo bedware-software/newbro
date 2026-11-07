@@ -1,0 +1,1092 @@
+{
+ "concepts": [
+  {
+   "id": "chamfer-03-mode-line",
+   "name": "Mode Line",
+   "rationale": "Скошенная V, у которой левое плечо продолжается в горизонтальную полосу-modeline с hazard-штрихами, а правое отрезано трафаретным зазором и заканчивается клинком над полосой; дальше по строке — двоеточие и горящий блочный курсор `:▮`, по плечу идёт дорожка-рельс, сзади призрачный контур со сдвигом (хроматический сплит). Самая вимовская из четырёх: V, командная строка и курсор в одном знаке.",
+   "glitchIdea": "Призрачный контур расходится с заливкой (RGB-split), клинок правого плеча соскальзывает вдоль зазора, а смена режима гасит и зажигает курсор и перекрашивает hazard-штрихи полосы.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px читается как «V.» — V с подчёркиванием и розовым/янтарным курсором на конце; зазор между клинком и плечом виден на 20 и 24, на 16 курсор остаётся заметной точкой, силуэт плотный и на тёмной, и на светлой теме.",
+   "angle": "chamfer",
+   "angleTitle": "Chamfered cyber typography",
+   "review": {
+    "id": "chamfer-03-mode-line",
+    "scores": {
+     "vim": 5,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 4,
+     "glitchFit": 4,
+     "craft": 4
+    },
+    "verdict": "Лучший из набора: наклонная чамферная V с желобком и смещённым призрачным контуром плюс штрихованная планка, двоеточие и горячий блок-курсор — это буквально командная строка Vim «V:▮», и призрачный контур уже сам по себе глитч. Отлично держит светлую тему и обе тройки; малая версия на 16/20 читается как «V▮», разве что сросшаяся с V планка делает её чуть похожей на лигатуру «VL».",
+    "lintFixed": false,
+    "issues": [
+     "Small variant merges the baseline bar into the V's foot, so at 16–20px it can read as a 'VL' ligature or a serifed V rather than V + separate mode line",
+     "Small variant drops the ':' (correctly, it would vanish), so the strongest Vim cue lives only in the full mark; the hot square alone must carry the cursor idea",
+     "The composition is wide and right-heavy at the bottom (bar + colon + cursor to x≈61) with empty space top-right and bottom-left; fine as a lockup, slightly off-centre as a rounded-square app icon",
+     "No backplate: on very busy wallpapers/dock backgrounds the neon-only mark depends on the glow filter for separation (reads fine without it on plain backgrounds)"
+    ]
+   },
+   "judgeScore": 12,
+   "judgeReasons": [
+    {
+     "lens": "editor",
+     "rank": 1,
+     "reason": "V, «:» и блочный курсор в одной строке: самый вимовский знак, а малая «V▮» не похожа ни на одну фавиконку."
+    }
+   ],
+   "reviewAvg": 4.17
+  },
+  {
+   "id": "neon-04-colon-prompt",
+   "name": "Colon Prompt",
+   "rationale": "Неоновое «:V» — командная строка Vim как вывеска: двоеточие из двух hot-точек со стеклянным кольцом и ореолом, трубка V с разрывом на левом плече и тлеющими электродами, внизу плиты — статуслайн с блоком режима и делениями позиции, срезанные углы и сканлайны. Это буквально команда :v в Vim, поданная как вывеска из Акиры.",
+   "glitchIdea": "Двоеточие мигает как приглашение командной строки, верхний сегмент левого плеча рвётся и уезжает, статуслайн-блок меняет цвет на флипе режима с кадром сдвига всей плиты вниз.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — две розовые точки и жирная V, читается как «:V»; на 16px точки по 2px остаются видимыми рядом с V и не сливаются с ней, в табе смотрится как иконка командной строки.",
+   "angle": "neon",
+   "angleTitle": "Neon tube V",
+   "review": {
+    "id": "neon-04-colon-prompt",
+    "scores": {
+     "vim": 5,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 4,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Двоеточие, статусная строка с блоком режима и V — самый однозначно вимовский знак набора, и «:V» в табе и на кнопке читается как ex-промпт, ни с одним браузером не спутать. Разрыв трубки стоит неудачно: длинный фрагмент на 128 читается как галочка ✓, а короткий — как отдельный штрих, яркое двоеточие спорит с V за роль героя, а малая версия сдвинута вправо и подходит к краю на 2 единицы.",
+    "lintFixed": false,
+    "issues": [
+     "Lint: only the expected <filter> warning; verified the mark reads without filters.",
+     "The stencil break is placed low on the left arm, so the long tube (53,10 -> 36.5,48 -> 32,37.7) reads as a check mark and the short piece (20,10 -> 27.9,28.2) as a stray dash; moving the break to the right arm or higher up would restore the V as hero.",
+     "The colon dots (hot core r2.4 + ring r4.3 + halo r7, in --hot) are nearly as loud as the V and pull the eye left.",
+     "Small variant is off-centre: the V cap reaches x~62, about 2 units from the edge where the brief asks for ~3, and the group's optical centre sits ~2 units right of the viewBox centre.",
+     "Light theme: pastel plate like the rest of the series; the pink/amber dots on the pale plate stay legible but lose their neon halo."
+    ]
+   },
+   "judgeScore": 7,
+   "judgeReasons": [
+    {
+     "lens": "editor",
+     "rank": 6,
+     "reason": "«:V» как вывеска из «Акиры»: командная строка Vim читается с первого взгляда."
+    }
+   ],
+   "reviewAvg": 4.0
+  },
+  {
+   "id": "blade-04-lamellar",
+   "name": "Lamellar Armour V",
+   "rationale": "V как ламеллярный доспех: две верхние пластины, две средние и шеврон-пластина внизу, каждая своего тона трио, с фасками, бликами по верхней кромке, заклёпками и светящимися швами между пластинами; острие — отдельная горячая пластина, в шевроне ромб-самоцвет (Vim-ромб), на правой средней пластине hazard-штрихи, позади хроматический «призрак» V. Киберпанк — броня, неоновые швы, RGB-сдвиг.",
+   "glitchIdea": "Пластины расходятся по швам как по разрезам (каждая со своим смещением), призрак-двойник уезжает дальше, при смене режима швы вспыхивают и пластины перекрашиваются снизу вверх от острия.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — цельная жирная V с циановым горизонтальным швом и розовым остриём; самая тяжёлая и буквенная из четырёх, в кнопке и во вкладке читается как V с акцентом на кончике, шов на 16px — тонкая светлая линия, не мешает.",
+   "angle": "blade",
+   "angleTitle": "Cyber-samurai blade",
+   "review": {
+    "id": "blade-04-lamellar",
+    "scores": {
+     "vim": 4,
+     "cyber": 4,
+     "legibility16": 5,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 4
+    },
+    "verdict": "Лучший из четырёх: массивная V из ламеллярных пластин с заклёпками, светящимися швами, ромбом-гемом в шевроне, горячим остриём и встроенным хроматическим «призраком» — сложная, слоистая, без платы и при этом держится на светлой теме; малый вариант (тот же силуэт + розовое остриё) на 16 и 20px читается безупречно и как тот же знак. Слабое место — различимость: малая версия в одном цвете это просто жирная V (Vivaldi/Vue/Valorant-семейство), спасает только розовое остриё; штриховка на правой пластине выглядит как случайная текстура.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK, only the expected <filter> warning; no contract fix needed.",
+     "The small variant in c1 alone is close to a generic bold V (Vivaldi / Vue / Valorant family); the hot tip is what carries the identity at 16px, so it must stay.",
+     "The diagonal hatching (clipPath rm) exists only on the right middle plate: reads as a stray texture rather than deliberate asymmetry.",
+     "The built-in chromatic ghost (c2 and hot offset copies) may double up with the gallery's animated RGB-split; on light theme those ghosts become pale lilac/pink halos like print misregistration (acceptable, but worth checking in the animation).",
+     "Small variant: the c3 band is exactly 3 units tall and vanishes at 16px (0.75px); harmless, but it contributes nothing at that size."
+    ]
+   },
+   "judgeScore": 9,
+   "judgeReasons": [
+    {
+     "lens": "editor",
+     "rank": 4,
+     "reason": "Самый сильный силуэт: V из пластин брони с горячим остриём, в кнопке тулбара читается безупречно."
+    }
+   ],
+   "reviewAvg": 4.0
+  },
+  {
+   "id": "vimcyber-02-neon-terminal",
+   "name": "Neon Terminal",
+   "rationale": "Блок-курсор Vim, выросший в неоновое окно терминала: скошенные углы, двойная обводка-трубка с подсвеченной кромкой, тайтл-бар с 45° выемкой и индикаторами, сканлайны по тёмной панели, строка статуса в --c2 и командная строка с «:» в --hot и блочным курсором в --c3. Единственный глиф в буфере — V с фаской, бликом и разрывом на левом плече; окно, статусная строка и «:█» читаются как Vim, неон, панель и сканлайны — как cyberpunk.",
+   "glitchIdea": "Сканлайны прокатываются вниз, статусная полоса и тайтл-бар срезами сдвигаются в разные стороны, V рвётся по уже нарисованному шву; при смене режима сначала перекрашивается статусная полоса, потом трубка рамки.",
+   "hasWordmark": false,
+   "toolbarNote": "В кнопке 20px — узнаваемая рамка окна с толстой верхней полосой и V внутри, горячая точка «:» видна как розовый пиксель; в табе 16px рамка 1px, V 2px, читается как «окно с V».",
+   "angle": "vimcyber",
+   "angleTitle": "Vim symbols in cyber dress",
+   "review": {
+    "id": "vimcyber-02-neon-terminal",
+    "scores": {
+     "vim": 4,
+     "cyber": 4,
+     "legibility16": 5,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 4
+    },
+    "verdict": "Самый цельный киберпанк набора: чамферный терминал с неоновой кромкой, скан-линиями, статус-строкой, блок-курсором и горячими светодиодами, а малый вариант «окно с V» безупречно читается на 20 и 16px как тот же самый знак. Сама V внутри пока простовата по сравнению с рамой, и есть риск прочитаться как иконка любого терминального приложения.",
+    "lintFixed": false,
+    "issues": [
+     "The V inside is comparatively plain next to the rich frame; the hero letter could carry more structure (chamfer, notch, stencil break) so it is not just a gradient V.",
+     "Two 1.8-unit corner pixels (55.2,55.2 and 7,55.2) are invisible-to-stray at 128px; either enlarge or drop.",
+     "Window-with-V silhouette risks reading as a generic terminal app icon; the Vim cues (statusline, block cursor) are small.",
+     "Light theme: the inner plate goes very pale and the scanlines nearly vanish, so the light reading relies on the blue outline alone (acceptable, not washed out)."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 4.0
+  },
+  {
+   "id": "neon-02-cursor-tube",
+   "name": "Cursor Tube",
+   "rationale": "Трубка V перетекает прямым изгибом в прямоугольник блочного курсора во всю высоту — вывеска читается как «V▮», то есть Vi: курсор залит голографическим свечением и самый яркий на знаке. Кабинет вывески с асимметричными срезами углов, индикаторными полосками, патронами, клипсами и hot-электродом в разрыве левой трубки — Cyberpunk-2077 типографика в неоне.",
+   "glitchIdea": "Курсор мигает как настоящий блочный курсор и уезжает слайсом вправо, V на миг раздваивается RGB-сплитом, при флипе режима курсор меняет цвет первым, трубка догоняет с задержкой.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px читается «VI»: V из двух трубок с разрывом и сплошной голубой столбик курсора; в табе на 16px столбик остаётся отдельной 3px полосой, разрыв в V различим, ничего не слипается.",
+   "angle": "neon",
+   "angleTitle": "Neon tube V",
+   "review": {
+    "id": "neon-02-cursor-tube",
+    "scores": {
+     "vim": 4,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 4,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "V, перетекающая в блочный курсор, — один из самых убедительных Vim-знаков набора, а малая версия «VI» в табе и на кнопке 20px читается мгновенно и как тот же логотип. Но композиция тесная: V прижата к левой кромке кабинета, ореолы трубки и курсора сливаются в одно голубое пятно, а индикаторы, точки и патроны перегружают рамку.",
+    "lintFixed": false,
+    "issues": [
+     "Lint: only the expected <filter> warning; verified the mark reads without filters.",
+     "The V is crowded against the left bezel (tube axis at x=7, inner frame at x=5-6.5) while the cursor takes x=43-56; the mark reads left-heavy and the two halos merge into one blob at 128px.",
+     "To non-Vim eyes the tube-framed cursor at 128px reads as a lit panel or door; it is the small variant that makes the 'VI' + block-cursor reading obvious.",
+     "Readout bars at bottom-left sit inside the V's halo and get muddied; the three dots top-left crowd the socket.",
+     "Light theme: pastel plate, as with the whole series; the cursor gradient flattens to a mid-teal block but stays legible."
+    ]
+   },
+   "judgeScore": 11,
+   "judgeReasons": [
+    {
+     "lens": "editor",
+     "rank": 2,
+     "reason": "Неоновая вывеска «VI»: малая версия несёт идею, а не просто V, и просится под мерцание трубки."
+    }
+   ],
+   "reviewAvg": 3.83
+  },
+  {
+   "id": "blade-02-visor-plate",
+   "name": "Visor Helmet Plate",
+   "rationale": "Шлем-маска: фасочная пластина, разбитая швами на лоб, щёки и подбородок разных тонов, со светящейся V-образной прорезью визора (градиент c3→c1, сегментные засечки как у LED-козырька), горячий ромб-сенсор во лбу и вентиляционные щели на подбородке. V здесь — взгляд кибер-самурая; Vim — ромб и сама V, киберпанк — Ghost in the Shell / мехи.",
+   "glitchIdea": "Визор рвётся горизонтальными сканлайн-срезами и уезжает вбок, сенсор мигает, при смене режима прорезь перекрашивается с «пробегом» света от краёв к вершине, как комета на адресной строке.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — тёмная восьмиугольная маска с жирной циановой V и розовой точкой сверху, самая узнаваемая из четырёх: читается как лицо/шлем даже на 16px в вкладке, пиксельный зум чистый. На светлой теме пластина становится сиреневой, V и точка остаются контрастными.",
+   "angle": "blade",
+   "angleTitle": "Cyber-samurai blade",
+   "review": {
+    "id": "blade-02-visor-plate",
+    "scores": {
+     "vim": 4,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 4
+    },
+    "verdict": "Шлем-визор работает: фасетчатая плата (лоб / щёки / подбородок), сегментированная V-щель с подсветкой, ромб-сенсор и чин-readout дают слоистую киберпанк-структуру, а малый вариант — та же толстая V на плате с розовой точкой — чисто читается на 16 и 20px как тот же логотип. Минусы: в INSERT-трио плата уходит в грязно-коричневый, на светлой теме плата бледнеет до сиреневого, а силуэт «шеврон в шлеме/щите» близок к типовой военной эмблеме.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK, only the expected <filter> warning; no contract fix needed.",
+     "INSERT trio on dark: the plate (color-mix c1 36%/27% bg with green c1) comes out muddy olive-brown.",
+     "Light theme: the plate fills become pale lilac/peach and the white seam strokes dominate; the V and diamond carry it, the plate itself is washed out.",
+     "Small variant on dark: the plate (c1 34% bg) is nearly invisible against the toolbar button, so at 16–20px only the V and the pink dot read (acceptable, but the helmet silhouette is lost).",
+     "Chevron-inside-a-shield silhouette borders on a generic rank/military badge."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.83
+  },
+  {
+   "id": "shards-01-slice-drift",
+   "name": "Slice Drift",
+   "rationale": "Тяжёлая V с фасками разрезана на шесть горизонтальных полос с зазором в единицу; полосы сдвинуты на 1,5–4 единицы, две перекрашены во второй и третий цвет тройки, по срезу одной идёт горячая линия, за ними — тёмный силуэт исходной V и хроматические контуры c2/c3 как RGB-split. Это кадр datamosh-сбоя: V читается, но буква уже «едет», как видео с битым ключевым кадром; панель с косыми срезами, сканлайнами, HUD-скобками и mode-line с блочным курсором говорит о Vim и киберпанке одновременно.",
+   "glitchIdea": "Полосы — готовые слайсы: при глитче каждая полоса дёргается по горизонтали на свою величину, а хроматические контуры разъезжаются ещё дальше; при смене режима полосы перекрашиваются в новую тройку по одной сверху вниз, как перерисовка кадра.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px в кнопке тулбара — чистая V первого цвета с «уехавшим» вправо основанием третьего цвета: читается как V на сдвинутой подпорке, сдвиг и зазор видны; на 16px во вкладке зазор размывается, но смена цвета держит идею одной сдвинутой полосы.",
+   "angle": "shards",
+   "angleTitle": "Shattered & datamoshed",
+   "review": {
+    "id": "shards-01-slice-drift",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 5,
+     "craft": 4
+    },
+    "verdict": "Самый насыщенный из четырёх: чамферная плата, сканлайны, HUD-скобки, дрейфующие срезы и RGB-сдвиг дают настоящий голографический V, а геометрия уже «порезана» — слайс-глитч ляжет идеально. Минусы: чередование цветов по срезам делает V похожим на флаг, встроенный RGB-сдвиг задвоится с анимированным, а оторванный кончик в малом варианте уплощает V на 16px (читается, но силуэт тянет к «Y»).",
+    "lintFixed": false,
+    "issues": [
+     "Readout bar (rect x=7 y=56.5) starts 0.5 units from the bottom-left chamfer edge — in the 128px zoom it visually touches the frame.",
+     "RGB-split outlines (c2 at -2.4, c3 at +2.4) are baked into the mark; the gallery's animated RGB-split will stack on top of them and risk mud — slice glitch is the natural fit.",
+     "Light theme: the top c3 band and the lilac plate are both pale, the top of the V washes slightly (the dark ghost V keeps the outline readable).",
+     "Small variant: the detached c3 tip removes the V's apex; at 16px it reads as a V on a small block, borderline 'Y'/goblet silhouette, saved by the colour change.",
+     "Only Vim cue beyond the V is the tiny 4x3.6 hot 'cursor' on the readout bar — nearly invisible at 128px."
+    ]
+   },
+   "judgeScore": 8,
+   "judgeReasons": [
+    {
+     "lens": "editor",
+     "rank": 5,
+     "reason": "Глитч уже в геометрии: срезы V сами «едут», анимация смены режима ляжет идеально."
+    }
+   ],
+   "reviewAvg": 3.83
+  },
+  {
+   "id": "shards-04-stripe-tear",
+   "name": "Stripe Tear",
+   "rationale": "V, залитая чередующимися полосами по 2 единицы первого и третьего цвета (голографическая, лентикулярная заливка) поверх тёмной подложки той же формы; каждая четвёртая полоса вырвана, сдвинута на 3 единицы в сторону и перекрашена во второй цвет, одна — в горячий, и каждая тянет через всю панель tracking-линию, как помехи VHS. Блочный курсор после буквы тоже в полоску; киберпанк — Tron-линии, сканлайны, срезанная панель с HUD-метками.",
+   "glitchIdea": "Вырванные полосы ползут по горизонтали и перескакивают между строками, tracking-линии дрожат; при смене режима полосы перемигиваются в новую тройку через одну, как переключение чередования развёртки.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — V первого цвета, у которой обе верхушки оторваны и уехали вправо третьим цветом: читается как V с разорванной шапкой; сдвиг в 3 единицы на 16px даёт меньше пикселя, но двуцветность сохраняет «разрыв» и во вкладке.",
+   "angle": "shards",
+   "angleTitle": "Shattered & datamoshed",
+   "review": {
+    "id": "shards-04-stripe-tear",
+    "scores": {
+     "vim": 4,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 4
+    },
+    "verdict": "Штриховой V с разрывами трекинга, тёмным контуром-ореолом, статусной строкой и полосатым блочным курсором — цельная «VHS/hazard» идея, которая читается и без фильтра; малый вариант с оторванной верхушкой держит 16px и явно тот же логотип. Риски: муар 2-юнитовых полос на 48–96px и конфликт со сканлайн-глитчем галереи, розоватая плата на светлой теме спорит с сине-голубым V.",
+    "lintFixed": false,
+    "issues": [
+     "Horizontal 2-unit stripes (4px at 128px) will moiré at 48-96px icon sizes and can clash with the gallery's scanline glitch; the slice glitch itself fits perfectly.",
+     "Plate gradient ends in 22% c2 → pink/salmon on the light theme (peach in INSERT), fighting the blue/cyan V in COMMAND.",
+     "holo pattern at 0.07 opacity is invisible on light; the right-side readout ticks (x 57-60.5) are near-invisible at 128px.",
+     "Light theme: c1/c3 stripe contrast drops and the V reads as one mid-blue mass at 128px — the dark outline is what keeps the shape.",
+     "Small variant: the top half is offset +3 units (deliberate tear), so the mark spans x 9..61 and sits slightly off-centre; acceptable in the toolbar mock."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.83
+  },
+  {
+   "id": "neon-01-burnt-tube",
+   "name": "Burnt Tube",
+   "rationale": "Неоновая вывеска V на чамферной настенной плите: стеклянная трубка с тёмным ободом, ярким ядром и бликом, две отдельные трубки с разрывом на правом плече, верхний сегмент выгорел (тёмный газ, лишь кончик тлеет), hot-электрод в разрыве, клипсы крепления, патроны с проводами, винты, сканлайны и нижняя рейка с делениями. V — буква Vim, а полумёртвая вывеска с глюком — чистый Blade Runner.",
+   "glitchIdea": "Выгоревший сегмент мерцает и на миг вспыхивает целиком, hot-электрод искрит, плита рвётся горизонтальными слайсами, а флип режима меняет газ в трубке с синего на зелёный с одним кадром RGB-сдвига.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px в кнопке тулбара — жирная V с ясным разрывом на правом плече и розовой точкой электрода; читается как та же вывеска, разрыв виден и на 16px в табе, точка — 1px розового, не мешает.",
+   "angle": "neon",
+   "angleTitle": "Neon tube V",
+   "review": {
+    "id": "neon-01-burnt-tube",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 4
+    },
+    "verdict": "Самая цельная неоновая вывеска из четырёх: стеклянная трубка с перегоревшим сегментом, горячим электродом, клипсами, патронами и шасси с рельсом читается богато на 128, а малая версия с разрывом и точкой держится в 16px и узнаётся как тот же знак. Слабое место — вимовость держится только на самой V (квадратик-курсор у рельса на 128 выглядит случайным пикселем), а силуэт «V в скруглённом чамферном квадрате» близок к Vivaldi.",
+    "lintFixed": false,
+    "issues": [
+     "Lint: only the expected <filter> warning; verified the mark reads without filters (plain 9/7.5-unit halos carry the glow).",
+     "The only Vim cue beyond the V is the 4x4 square on the bottom rail; at 128px it reads as a stray pixel, not a block cursor.",
+     "Light theme: the plate is color-mixed with the light --bg and turns pastel lavender/peach, so the neon loses its glow (still legible, but no longer a lit sign).",
+     "Full-mark silhouette (V centred in a chamfered rounded square) is Vivaldi-adjacent; at 16px only the broken arm and hot dot keep it apart."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.67
+  },
+  {
+   "id": "hud-02-cut-panel",
+   "name": "Cut Panel",
+   "rationale": "Панель с асимметричными срезами углов и ступенькой на верхней кромке, двойная обводка, шапка со световыми индикаторами, линейка делений справа, полоса сканлайна, снизу две строки ридаутов. Внутри V с градиентом, фиолетовой кромкой и стенсильным срезом, а справа от неё блочный курсор с горячей верхней гранью — это буквально «V█» из командного режима. Все тона собраны поверх тёмной пластины через opacity, поэтому и COMMAND, и INSERT остаются чистыми по тону.",
+   "glitchIdea": "Панель рвётся горизонтальными срезами, V и курсор едут в разные стороны, шапка и ридауты мигают как перезагружающийся HUD; при смене режима курсор меняется с блока на тонкую линию и обратно.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — плотная восьмиугольная плашка в цвете c1 с вырезанной V и циановым квадратом курсора справа внизу; самый сильный малый знак в наборе, на 16px во вкладке читается как цельная иконка приложения.",
+   "angle": "hud",
+   "angleTitle": "Holographic HUD",
+   "review": {
+    "id": "hud-02-cut-panel",
+    "scores": {
+     "vim": 4,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 2,
+     "glitchFit": 4,
+     "craft": 4
+    },
+    "verdict": "Самый цельный знак из четырёх: чамферная панель с вырезом, LED-шапка, рейка тиков, блок-курсор рядом с V и шкала — и единственный, где малая версия на 16px держится идеально в обеих темах. Беда в том, что эта малая версия — «V в залитом квадрате», то есть структурно повторяет Vivaldi.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK, no contract fixes needed.",
+     "Small variant is structurally 'V knocked out of a filled rounded/chamfered square' — Vivaldi's exact scheme; the chamfers and the cyan cursor block differentiate only at 24px+, at 16px in the tab it is 'V in a blue square'.",
+     "Full mark's V is positive (gradient fill on a dark plate); the small variant's V is negative (evenodd knock-out) — acceptable as a favicon cut but it is an inversion, not a reduction.",
+     "Stencil cut on the left arm overhangs the arm edge onto the tinted/scanlined plate, visible as a short dark tick on the dark theme.",
+     "The V itself is the plainest of the four (gradient + bevel + one cut); the richness lives in the panel chrome, not in the hero letter.",
+     "Composition is left-heavy (V at x 9–45) with the cursor block balancing at right — works, but the inner double outline breaks awkwardly at x=58.5 between y 36–44 to clear the rail ticks."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.67
+  },
+  {
+   "id": "hud-03-bracket-window",
+   "name": "Bracket Window",
+   "rationale": "V зажата между двумя высокими скобками ] [ с фасками, как между кромками окна или сплит-панелей; на скобках насечки hjkl, одна горячая — текущая строка, внизу ридаут, сверху тонкая шапка. Через всю сцену проходит полоса сканлайна, в которой весь знак — и V, и скобки — вырван и сдвинут вправо: геометрия уже содержит разрыв.",
+   "glitchIdea": "Полоса разрыва ездит вверх-вниз по окну, унося с собой срез V и скобок; при смене режима горячая насечка прыгает на другую строку, а скобки на миг разъезжаются наружу.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px читается как «]V[»: жирная V и две циановые скобки с короткими лапками по 1.25px; на 16px во вкладке скобки упрощаются до вертикальных штрихов, но силуэт остаётся тем же.",
+   "angle": "hud",
+   "angleTitle": "Holographic HUD",
+   "review": {
+    "id": "hud-03-bracket-window",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 4,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "«]V[» с вырванной и сдвинутой на 3.5 полосой — глитч уже заложен в геометрию, и малая версия на 16px читается как тот же знак в обеих темах. Но «ножки» скобок смотрят наружу, так что это не HUD-рамка вокруг цели, а два двутавра, и фиолетовая полоса уходит в самый край.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK, no contract fixes needed.",
+     "Bracket feet point OUTWARD (']V[') instead of enclosing the V like HUD corner brackets; at 128px they read as I-beams / door jambs rather than a targeting window.",
+     "The torn band's violet tint rect spans x=0–64 — bleeds to 0 units from the edge (brief allows ~1); on light theme it shows as a lavender strip past both brackets.",
+     "The baked-in tear (band slid +3.5) will double up with the gallery's animated slice glitch — risks looking like a glitch that got stuck.",
+     "Stencil cut on the right arm overhangs the arm edge slightly over the halo.",
+     "No Vim cue beyond the V (brackets are '[' ']' motions only if you squint); no cursor/colon/tilde.",
+     "At 16px the bracket feet vanish and the small variant reads as '|V|' — still the same logo, but the bracket idea is lost."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.67
+  },
+  {
+   "id": "hud-04-holo-projector",
+   "name": "Holo Projector",
+   "rationale": "Голограмма V над проектором: V в циане с интерлейс-линиями и затуханием к верху, два среза V вырваны и сдвинуты в стороны в фиолетовом, над ними призрачный контур мерцания, вокруг четыре угловые скобки объёма проекции. Снизу скошенная база с горячим эмиттером, световым конусом и светодиодами. V — Vim, голографическая проекция со сканлайнами — чистый киберпанк.",
+   "glitchIdea": "Срезы V плывут по высоте и меняют сдвиг, интерлейс-линии дрожат, эмиттер мигает; при смене режима голограмма на кадр гаснет и перепроецируется в новой тройке цветов снизу вверх.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — V с одним тонким горизонтальным разрезом над скошенной базой-баром; читается как V на подставке, разрез на 16px во вкладке едва заметен и не ломает силуэт.",
+   "angle": "hud",
+   "angleTitle": "Holographic HUD",
+   "review": {
+    "id": "hud-04-holo-projector",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 3,
+     "distinct": 4,
+     "glitchFit": 5,
+     "craft": 3
+    },
+    "verdict": "Голограмма V с полосками, двумя сползшими срезами, призрачным контуром и проектором с горячим слотом — самый атмосферный и самый «глитчевый» из четырёх; анимация срезов и скан-линий ляжет на него как родная. Но это скорее сцена, чем знак: на светлой теме конус пропадает и полоски становятся белыми жалюзи, а в малой версии разрыв рук V на 16px превращается в два отдельных обрубка.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK, no contract fixes needed.",
+     "Small variant splits the V's arms with a 3-unit horizontal gap (y 21–24): at 16px it anti-aliases into a grey row and the top of the V reads as two detached stubs (a crown / 'Y' / 'Ψ'); in the tab it is 'V̲' with a ragged top.",
+     "Light cone (c3 35%→0) is nearly invisible on the light theme; the bg-coloured hologram lines turn into white stripes on light, which reads as a shuttered V rather than a glowing one.",
+     "Composition is an illustration (projector + hologram + corner brackets) more than a mark; strong as a 1024 app icon, but the base bar and brackets have no role below 32px.",
+     "The V's bottom (y=48) pokes below the lower corner brackets (y=45), so the 'projection volume' does not actually enclose the hologram.",
+     "Flicker line at y=22.6 spans x 8–56, well outside the V, and the ghost outline at -2 adds a faint double edge — fine at 128px, slightly noisy at 1024.",
+     "Baked-in tears + ghost already consume the glitch vocabulary; the animated glitch must be tuned so the static slices don't read as a frozen frame."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.67
+  },
+  {
+   "id": "shards-02-pixel-bleed",
+   "name": "Pixel Bleed",
+   "rationale": "Цельная V с диагональным градиентом c3→c1→c2 и световой гранью по внешнему ребру, у которой верх правого плеча рассыпается в пиксельную лестницу (ячейки 2,4 ед., чем выше ряд — тем больше ячеек улетело), затем в облако уменьшающихся квадратов, уносимых вправо, с горизонтальными шлейфами pixel-sort; после буквы стоит блочный курсор с горячей верхней кромкой. О Vim говорят V и курсор, о киберпанке — датамош-распад, неоновое свечение и панель с фасками.",
+   "glitchIdea": "Рвётся правое плечо: квадраты облака дрожат и уходят вправо по горизонтали, шлейфы удлиняются; при смене режима облако пересобирается — пиксели «вдуваются» обратно в плечо и перекрашиваются в новую тройку.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — плотная V с откушенным уголком правого плеча и двумя кубиками третьего цвета справа сверху: читается как V с пиксельной пылью, кубики видны как 1–2 пикселя; самый узнаваемый из четырёх малых вариантов и во вкладке на 16px тоже.",
+   "angle": "shards",
+   "angleTitle": "Shattered & datamoshed",
+   "review": {
+    "id": "shards-02-pixel-bleed",
+    "scores": {
+     "vim": 4,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Чистый сильный V с пиксельным распадом правой ветви и чётким блочным курсором — самый читаемый на 16px и самый «датамош» по духу; малый вариант точно тот же логотип. Но форма самого V почти примитив (сложность только в хвосте), а пиксель на x=63.8 вылезает за viewBox и обрезается краем холста — брак, который видно в зуме.",
+    "lintFixed": false,
+    "issues": [
+     "Stray pixel: <rect x=\"63.8\" width=\"1.75\"> lies outside the 64-unit viewBox and renders clipped at the canvas edge, outside the plate; rects at x=61 (w1.6) and x=61.4 (w1.5) overlap the plate stroke at x=62 — reads as overflow rather than a designed bleed.",
+     "The V body itself is a plain thick shape with one gradient; the bevel highlight exists only on the left arm, and the right arm stub (y 29.4-37.26) is so short that at mid sizes the mark reads as a checkmark with a pixel tail.",
+     "Closest of the four to a Vivaldi-style single bold V on a rounded plate; only the datamosh tail keeps it distinct.",
+     "Small variant: the two pixel squares (6x6, 5x5) are 1.25-1.5 px at 16px — faint dots, harmless but nearly invisible in the tab mock.",
+     "Light theme is slightly washed (radial c1 glow at 0.35 over a pale plate) though the saturated V holds."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.67
+  },
+  {
+   "id": "vimcyber-01-cyber-gem",
+   "name": "Cyber Gem",
+   "rationale": "Ромб Vim, огранённый как кибер-камень: восемь граней в тонах тройки (свет слева сверху, тень в тёмном циане, одна фиолетовая грань-акцент), стол с голограммными сканлайнами, неоновый ободок со свечением и горячий «кулет» на нижнем острие. Поверх граней «вырезана» двухплоскостная V с 45° фасками, тёмным зазором-прорезью, бликом по левой кромке и трафаретным разрывом на правом плече — ромб и V говорят Vim, огранка, неон и разрыв — cyberpunk.",
+   "glitchIdea": "Правое плечо V по линии разрыва уезжает вправо на пару единиц, грани ромба на миг расходятся по швам-фаскам, а при смене режима стол перекрашивается первым, а грани догоняют его по одной.",
+   "hasWordmark": false,
+   "toolbarNote": "В кнопке 20px — плотный ромб в два тона с чётко читаемой V-вырезкой, по весу похож на чип-иконку; в табе 16px V ещё различима, ромб не рассыпается.",
+   "angle": "vimcyber",
+   "angleTitle": "Vim symbols in cyber dress",
+   "review": {
+    "id": "vimcyber-01-cyber-gem",
+    "scores": {
+     "vim": 5,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 2,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Самый богатый по форме из четырёх: фасеты, скан-линии, неоновая кромка, горячий «камень» у вершины, и малый вариант уверенно держится на 20 и 16px. Но ромб с вырезанной V читается как перекрашенный логотип самого Vim, в INSERT-трио сердцевина уходит в грязно-бурый, а чёрные насечки швов у четырёх вершин ромба выглядят как случайные штрихи.",
+    "lintFixed": false,
+    "issues": [
+     "Structure (faceted diamond with a V cut into it) is essentially Vim's own logo restyled; distinctness is the weak point.",
+     "INSERT trio: the inner diamond gradient (gt: c1 42% / c3 16% mixed with bg) turns olive-brown and muddy under the green/lime trio, both themes.",
+     "The four bg-coloured seam strokes running from the inner diamond corners to the cut tips read as stray dark ticks at 128px.",
+     "Feel is closer to a crystal/gem app badge than cyberpunk; the neon rim and scanlines carry most of the cyber atmosphere.",
+     "Only the left V leg has a highlight line; the right leg reads flat by comparison (minor, may be intentional)."
+    ]
+   },
+   "judgeScore": 10,
+   "judgeReasons": [
+    {
+     "lens": "editor",
+     "rank": 3,
+     "reason": "Наследник ромба Vim: гранёный самоцвет с V, силуэт держится от иконки приложения до 16px."
+    }
+   ],
+   "reviewAvg": 3.67
+  },
+  {
+   "id": "neon-03-afterimage",
+   "name": "Afterimage Tear",
+   "rationale": "Тройная V: фиолетовый призрак смещён влево-вниз, толстая синяя трубка в центре, тонкая циановая трубка-послеобраз справа-сверху — три цвета трио в одном знаке, как RGB-сплит на экране. Вся трубка разорвана двумя горизонтальными слайсами со сдвигом, на срезе выпал hot-пиксель; экранная плита с HUD-скобками и сканлайнами — Ghost in the Shell.",
+   "glitchIdea": "Слайсы 27–34 и 40–43 ездят влево-вправо с разной скоростью, призрак и послеобраз расходятся ещё дальше, hot-пиксель прыгает по краю среза, а флип режима на кадр переставляет цвета трёх трубок местами.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — жирная V с циановой кромкой-послеобразом по правому верхнему краю, те же два цвета, что в большом знаке; на 16px кромка остаётся 1px светлой линией, V чистая, без рогов и слипания.",
+   "angle": "neon",
+   "angleTitle": "Neon tube V",
+   "review": {
+    "id": "neon-03-afterimage",
+    "scores": {
+     "vim": 3,
+     "cyber": 3,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 4
+    },
+    "verdict": "Самая атмосферная картинка: фиолетовый и циановый призраки, срезы со сдвигом, HUD-скобки и горячий пиксель уже выглядят как глитч, а жирная двухцветная V — лучшая по разборчивости в 16px. Но форма под эффектами — всё та же примитивная ломаная V без единого вимовского признака, кроме буквы; это именно то, на что жаловался владелец, просто накрытое эффектами.",
+    "lintFixed": false,
+    "issues": [
+     "Lint: only the expected <filter> warning; verified the mark reads without filters.",
+     "The underlying geometry is a plain 3-point polyline V; all complexity comes from ghost copies and clip slices, not from the form itself (no facets, inner structure or chamfers).",
+     "No Vim cue beyond the V; the small variant is a plain bold V, confusable with Vue (especially in the green INSERT trio) and Vivaldi-shaped at tab size.",
+     "The resting state is already torn, so an animated slice glitch stacks on a baked slice and may read as permanent noise rather than a glitch event; RGB-split, by contrast, matches the baked ghosts well.",
+     "The hot-pixel ghost relies on the SVG2 transform-origin attribute; renderers without it apply translate+scale from the origin and push the copy off-canvas (harmless, but not portable to all icon pipelines).",
+     "Light theme: pastel plate; the violet/lime ghost nearly disappears on light INSERT, though the main V still reads."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.5
+  },
+  {
+   "id": "chamfer-01-stencil-split",
+   "name": "Stencil Split",
+   "rationale": "Тяжёлая V с 45° фасками на тёмной скошенной пластине, разрезанная трафаретными зазорами на три плиты: левое плечо с ребристой hazard-полосой, правое плечо и клин вершины с квадратным вырезом-курсором; к этому заклёпки, двойной контур пластины и строка индикаторов по кромке — чистая Cyberpunk-2077-типографика. Про Vim говорят сама V и блочный квадрат, врезанный в вершину.",
+   "glitchIdea": "Три плиты съезжают каждая по своему зазору (левая вверх-влево, правая вправо, вершина вниз) с RGB-расщеплением, а смена режима перекрашивает hazard-полосу и бегущую строку индикаторов на пластине.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px читается как плотная V с голубым отколотым верхним левым плечом — тот же трафаретный разрез, но один; зазор 3.5 юнита виден на 20 и 24, на 16 становится цветным швом, силуэт V не плывёт ни на тёмной, ни на светлой теме.",
+   "angle": "chamfer",
+   "angleTitle": "Chamfered cyber typography",
+   "review": {
+    "id": "chamfer-01-stencil-split",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Чамферная табличка с рамкой, V из трёх трафаретных кусков, хазард-полосы и строка индикаторов — на 128 это уже настоящий кибер-бейдж, а малая версия с одним разрывом честно держится на 16 и читается как тот же знак. Слабые места: в INSERT-тройке табличка уходит в грязно-коричневый, на светлой теме становится пастельно-розовой «конфетой», а блок-курсор внутри V читается как дырка, а не как курсор.",
+    "lintFixed": false,
+    "issues": [
+     "INSERT trio on dark: the plate gradient (c1 30% + c2 16% over bg) turns a muddy brown instead of a cool dark backplate",
+     "Light theme: the plate goes pastel lavender/pink (plate is mixed from --bg rather than kept dark), so the cyber backplate feel is lost; the V itself still reads",
+     "The block cursor is a bg-tinted square inside the V: on dark it reads as a notch/hole, on light as a white hole; Vim cue is weak beyond the V",
+     "The 1.7-unit corner dots and the 4-dot readout row are ~3px at 128 and vanish in the app icon at smaller sizes (decorative only)",
+     "A V-on-a-square-plate layout is the Vivaldi template; the stencil split and colours keep it apart but the family resemblance is there",
+     "Small variant keeps only the left stencil split and merges the right arm; acceptable reduction, noted for consistency"
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.5
+  },
+  {
+   "id": "circuit-01-chip-apex",
+   "name": "Chip Apex",
+   "rationale": "Две тяжёлые медные дорожки V сходятся в чип у вершины, на концах — виа-пады, сбоку под 45° подведены две тонкие трассы (одна горячая) к ножкам чипа; всё на тёмной фасочной плате со штриховкой земли. V — буква Vim и единственная крупная форма; киберпанк — в печатной плате, свечении, чипе с ножками и бегущих по дорожкам «пакетах».",
+   "glitchIdea": "Срезы рвут плату горизонтально вместе с дорожками, «пакеты» на дорожках сползают к чипу, а при смене режима чип на миг мигает горячим цветом и пады переключают цвет.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px в кнопке стоит чистая V с циановым блоком у вершины: читается как V, блок виден как «подножие», кольца падов на концах различимы с 24px, на 16px сливаются в утолщённые концы — это нормально.",
+   "angle": "circuit",
+   "angleTitle": "PCB traces & cyberdeck",
+   "review": {
+    "id": "circuit-01-chip-apex",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 3,
+     "craft": 4
+    },
+    "verdict": "Самая «живая» плата из четырёх: V из двух медных дорожек с виа наверху и чипом в вершине, боковая hot-трасса, штриховка и свечение дают реальную глубину, а малый вариант (V + чип + два виа) честно держится на 16px и в тулбаре. Минусы: Vim здесь только буква V, «плата с чипом» — расхожий tech-троп, геометрия не подсказывает разрыва для глитча, а на светлой теме корпус чипа выцветает в бледный квадрат.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK (only the filter warning); no contract fix needed.",
+     "On the light theme the chip body (c3 45–15% mixed with --bg) loses contrast and reads as a pale box; the hatch pattern is nearly invisible there.",
+     "The silkscreen footprint rect at top-right (42,6.5) overlaps the top-right via halo and reads as a stray detail.",
+     "At 16px the ring vias at the arm tips collapse to solid blobs, giving a slight tuning-fork / Y reading; still reads as V.",
+     "Nothing in the mark beyond the V itself says Vim (no cursor, colon, tilde)."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.5
+  },
+  {
+   "id": "circuit-02-silk-chip",
+   "name": "Silk Chip",
+   "rationale": "DIP‑микросхема с тремя ножками по бокам (первая — горячая), вырезом pin‑1 и асимметричными фасками; на корпусе шелкографией напечатана жирная V с трафаретным разрывом правой ветви, внутренней тёмной линией, тонкими bond‑трассами к ножкам и «штрихкодом». Vim — это сама V и точка pin‑1 как курсор; киберпанк — чип, неон шелкографии, двойной контур и бевел корпуса.",
+   "glitchIdea": "V расслаивается на RGB‑копии и трафаретный разрыв «едет» вверх‑вниз по ветви, а при смене режима ножки по очереди вспыхивают, как при подаче питания.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — сплошной чип c1 с выбитой тёмной V: силуэт микросхемы с ножками и буква видны даже на 16px в табе; это классическая фавиконка «инверсией», подпись к большому знаку узнаётся по форме, а не по цветам.",
+   "angle": "circuit",
+   "angleTitle": "PCB traces & cyberdeck",
+   "review": {
+    "id": "circuit-02-silk-chip",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Корпус DIP-микросхемы с шелкографической V со стенсильным разрывом — самая сложная форма самой буквы из четырёх, и малый вариант (сплошной чип с вырезанной V) на 16px и 20px узнаётся как тот же логотип лучше всех. Но это скорее «иконка процессора с буквой», чем Vim: на светлой теме полупрозрачный ореол размывает букву, в INSERT корпус уходит в болотно-коричневый, а в табе сплошной синий блок громковат рядом с текстом.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK (only the filter warning); no contract fix needed.",
+     "Light theme: the 25%-opacity halo fill plus 3-unit stroke around the silk V gives the letter a muddy pastel outline instead of a glow.",
+     "INSERT trio on dark: the body gradient (c2 lime 30% mixed with --bg) turns olive-brown and dulls the chip.",
+     "The inner dark V line (c1 45% mixed) reads as cracks inside the letter rather than as a second outline, especially on INSERT.",
+     "Small variant: pins span x=3..61, so the 16px tab icon is a heavy solid block with stair-stepped pins; it holds but overpowers neighbouring favicons.",
+     "Chip-with-letter is a common 'processor / AI' icon pattern; only the V keeps it from generic."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.5
+  },
+  {
+   "id": "circuit-04-cursor-pad",
+   "name": "Cursor Pad",
+   "rationale": "V как единая трасса с плоской фасочной вершиной (как у киберпанк‑шрифтов), внутри неё — тонкая горячая парная дорожка; обе входят снизу в блочный курсор со сканлайнами, стоящий в конце строк «текста» в горле буквы, старт — виа‑пады слева. Vim — блок‑курсор над буфером; киберпанк — плата, дифференциальная пара, CRT‑курсор и HUD‑скобки.",
+   "glitchIdea": "Курсор мигает и на срезах уезжает вправо, строки «текста» сдвигаются как при пиксельной сортировке, а при смене режима блок‑курсор сжимается в тонкую черту INSERT и горячая дорожка гаснет.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — V с фасочной вершиной и циановым блоком справа сверху: читается как V с курсором, блок отчётлив и на 16px в табе, виа слева видна как утолщённый конец; та же конструкция, что и у большого знака.",
+   "angle": "circuit",
+   "angleTitle": "PCB traces & cyberdeck",
+   "review": {
+    "id": "circuit-04-cursor-pad",
+    "scores": {
+     "vim": 4,
+     "cyber": 4,
+     "legibility16": 3,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Самый «вимовский» из набора: V, обрывающаяся в блочный курсор со сканлайнами, строки буфера в раскрыве и hot-пара внутри дорожки — хорошая история и отличная почва для глитча. Но укороченное правое плечо читается как галочка ✓ (особенно на 16–20px, где курсор сливается с концом плеча), композиция перегружена справа сверху и пуста справа снизу, а хвостовая трасса к виа у края — лишняя деталь.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK (only the filter warning); no contract fix needed.",
+     "The right arm stops at y≈26 while the left starts at y=12, so the V reads as a check mark / tick at 16px, 20px and even at 128px on a quick glance.",
+     "Small variant: the right arm's round cap (48,27 + r5) butts against the cursor rect (bottom y=28); at 16px they merge into one shape.",
+     "Composition is top-right heavy (cursor + three buffer lines + tail trace + via) with an empty bottom-right holding only a thin bracket; optical centre drifts up-left.",
+     "The tail trace from the cursor to a via at (59,11.5) hugs the plate edge and reads as a stray.",
+     "Could be mistaken for a 'verified / done' product icon because of the tick reading."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.5
+  },
+  {
+   "id": "hud-01-reticle-v",
+   "name": "Reticle V",
+   "rationale": "Прицел-ретикул: разорванное на четыре дуги кольцо с диагональными насечками, внутреннее кольцо делений, перекрестие, внизу ридаут из пяти сегментов с одним горячим. В центре V из двух лент с разными градиентами, правая ложится на левую у вершины, со стенсильным срезом поперёк правой руки и полосой сканлайна через весь диск. V — герой Vim, а кольцо-прицел и ридаут — чистый HUD из Ghost in the Shell / Deus Ex.",
+   "glitchIdea": "Дуги кольца проворачиваются на несколько градусов в разные стороны и рвутся по диагональным зазорам, полоса сканлайна сдвигает ленту V вбок, при смене режима ридаут перещёлкивает сегменты и горячая точка перепрыгивает на другой конец.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px читается как «(V)»: сплошная V плюс две циановые скобки-дуги по бокам в 1–1.5px; на 16px во вкладке дуги тонкие, но ещё видны, V крепкая.",
+   "angle": "hud",
+   "angleTitle": "Holographic HUD",
+   "review": {
+    "id": "hud-01-reticle-v",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 3,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 4
+    },
+    "verdict": "Прицел с двумя лентами V, фаской, трафаретным срезом и шкалой читается как настоящий HUD; обе темы и обе тройки держатся, малая «(V)» узнаваема. Но кольцо-прицел — самый штампованный sci-fi приём, а кроме самой V ничего «вимовского» (курсор, двоеточие, тильда) тут нет.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK, no contract fixes needed.",
+     "Small variant reads as '(V)': the two arcs eat the width, so the V is only ~8px tall at 16px and the apex notch collapses; it holds in the 20px toolbar button but is the weakest of the four at 16.",
+     "Stencil-cut rect (14 units long) overhangs the right arm by ~1 unit on both sides; on dark it shows as a black tick over the halo glow.",
+     "Secondary thin ring (r=30.5, stroke 1) reaches 1 unit from the viewBox edge; the south crosshair tick is replaced by the readout bar — deliberate asymmetry but the ring reads slightly top-heavy.",
+     "The scanline band (y 27–32) crosses the dashed tick ring and the W/E crosshair ticks, adding visual noise at 128px.",
+     "Only Vim cue is the V itself; a reticle ring is a generic sci-fi device — the ribbon fold at the apex and the readout bar are what keep it from being a stock badge."
+    ]
+   },
+   "judgeScore": 5,
+   "judgeReasons": [
+    {
+     "lens": "editor",
+     "rank": 8,
+     "reason": "V в прицеле: самый «интерфейсный» знак, малая версия — узнаваемый круг среди квадратных иконок."
+    }
+   ],
+   "reviewAvg": 3.5
+  },
+  {
+   "id": "blade-01-crossed-katana",
+   "name": "Crossed Katana Badge",
+   "rationale": "Две катаны остриями вниз образуют V, кончики перекрещиваются под вершиной, в точке скрещения — ромб-искра; на рукоятях ромбы оплётки (Vim-ромб), гарды-цубы, дол светится фиолетовым, через клинки проходит горячий световой росчерк. Знак сидит на тёмной фасочной табличке с внутренней рамкой и ридаут-штрихами, как эмблема корпорации из Cyberpunk 2077: кибер-самурай, неон в стали.",
+   "glitchIdea": "Клинки при глитче разъезжаются по срезам в противоположные стороны (левый вверх, правый вниз), росчерк и искра рвутся RGB-сплитом; при смене режима гарды и ромбы на рукоятях вспыхивают цветом нового трио.",
+   "hasWordmark": false,
+   "toolbarNote": "В кнопке 20px — плотная острая V из двух сужающихся клинков с двумя светлыми перекладинами-гардами сверху; читается как V, перекрестье кончиков на 16px сливается в острие, гарды дают узнаваемую «шапку». На светлой теме так же чисто.",
+   "angle": "blade",
+   "angleTitle": "Cyber-samurai blade",
+   "review": {
+    "id": "blade-01-crossed-katana",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Самый богатый по форме из четырёх: катаны с фасками, цубы, засечки, неоновая кромка, плата с readout и диагональный разрез — это настоящий кибер-самурай, и малый вариант (V с цубами-засечками) чисто держится на 16px. Но композиция перегружена: рукояти вылезают за углы платы, разрез упирается во внутреннюю рамку, ромб-искра лежит на остриях, а на светлой теме плата превращается в пастельно-розовое пятно; и читается это сначала как «скрещённые мечи» (гильдейский бейдж), а V — вторым взглядом.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK, only the expected <filter> warning; no contract fix needed.",
+     "Pommels of both swords stick out above the plate's top chamfers (y≈1.7) and crowd the corners; the slash's left end runs over the inner frame at x=10.",
+     "The hot diamond spark sits on top of the two blade tips, so the apex of the V is visually muddled at 128px.",
+     "Light theme: the plate gradient + radial wash read as a washed-out pastel pink/lilac card; the mark holds only because the blades keep contrast.",
+     "Crossed-swords-in-a-shield is a well-worn game-badge trope; the V reading depends on the small variant's serif guards."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.5
+  },
+  {
+   "id": "chamfer-02-neon-inlay",
+   "name": "Neon Inlay",
+   "rationale": "Широкая шевронная V-пластина со скосами, двойным контуром и сканлайнами, в которую врезана тонкая неоновая V-трубка с градиентом c3→c1→c2, трафаретным разрывом на правом плече и горячим квадратом-курсором под вершиной. Это визор или наплечник кибер-самурая с неоновой вставкой, а V и курсор держат Vim.",
+   "glitchIdea": "Неоновая трубка моргает и рвётся в месте разрыва на правом плече, сканлайны пластины ползут вниз, а при смене режима пластина на миг вспыхивает цветом трубки.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — плотная V с более светлой V-вставкой внутри, тот же шеврон-в-шевроне; вставка начата ниже верхней кромки, чтобы четыре штриха сверху не читались как W; на 16 паз сливается в тонкий шов, но вставка остаётся видна.",
+   "angle": "chamfer",
+   "angleTitle": "Chamfered cyber typography",
+   "review": {
+    "id": "chamfer-02-neon-inlay",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 3,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Самый «неоново-вывесочный» из четырёх: V-образная табличка с двойным контуром, сканлайнами, неоновой трубкой с разрывом и горячим курсором в вершине — на 128 богато и атмосферно. Но малая версия — две тонкие вложенные V (≈1px на 16px), на вкладке она мылится в размытый двойной шеврон и к тому же похожа на логотип Vue; светлая тема бледно-пастельная.",
+    "lintFixed": false,
+    "issues": [
+     "Small variant: both shapes are thin outlines (~4.3 and ~4.8 units perpendicular, i.e. ~1–1.2px at 16px); passes the 3-unit rule but anti-aliases to a fuzzy double chevron in the tab mock, against the spirit of '1–3 strong shapes'",
+     "Small variant (outer V with a nested inner V) is structurally the Vue.js logo; developers will see Vue before Vimperium",
+     "Light theme: the plate (c1 26% over bg) and the 12% scanline pattern become a pale pink/lavender striped field; the inlay still reads but the mark looks washed and 'sugary'",
+     "Vim cue is only the hot block at the vertex; no colon/tilde/mode signal",
+     "0.7–0.9-unit outlines are fine at 128+ but disappear below ~48px, so the full mark has no mid-size fallback between the icon and the small variant"
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.33
+  },
+  {
+   "id": "chamfer-04-diamond-reborn",
+   "name": "Diamond Reborn",
+   "rationale": "Тяжёлая скошенная V с трафаретным надрезом и квадратным вырезом в вершине образует нижнюю половину ромба, верхнюю достраивает голографическая Λ-каркас (сканлайны, двойной контур, проволока, разрыв на ноге); в ромбе-счётчике между ними горит блочный курсор. Это ромб Vim, пересобранный как HUD-голограмма, где V — единственная твёрдая, светящаяся часть.",
+   "glitchIdea": "Голограмма Λ дрожит и расслаивается полосами сканлайнов, V остаётся твёрдой, а при смене режима ромб на миг схлопывается — Λ и V сдвигаются к центру и расходятся обратно.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px читается как двухцветный ромб Vim с точкой-курсором, а не как буква: V — нижняя, более толстая половина, Λ — тонкая крыша; это самый «не-V» из малых вариантов, но он безошибочно узнаваем как Vim и как тот же знак, что и большой.",
+   "angle": "chamfer",
+   "angleTitle": "Chamfered cyber typography",
+   "review": {
+    "id": "chamfer-04-diamond-reborn",
+    "scores": {
+     "vim": 4,
+     "cyber": 3,
+     "legibility16": 4,
+     "distinct": 2,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Ромб из проволочной Λ со штриховкой сверху и цельной V снизу с горячим курсором в центре — идея «переродить» ромб Vim понятна, разрыв между каркасом и телом хорошо примет слайс-глитч, а малая версия на 16 предельно чёткая. Но это слишком близко к собственному логотипу Vim, на 16 превращается в обычную иконку «гем/ромб» без V, а стыки каркаса с плечами V на 128 выглядят захламлённо.",
+    "lintFixed": false,
+    "issues": [
+     "Too close to Vim's own logo: a diamond whose lower half is a V is read as a Vim remix, not as a new brand",
+     "Small variant at 16px reads as a generic diamond/gem icon (cf. Sketch, Ruby, 'premium' badges); the V hero is lost because both halves have equal weight",
+     "Shoulder junctions are cluttered: the wireframe chevron overlaps the V arm ends by ~7 units (y 29–36) and the left arm is split into two wedge bands plus an extra inner diagonal path, producing a spaghetti of lines at the left shoulder at 128",
+     "Cyber feel relies on the hatch pattern and glow over what is otherwise a geometric primitive; without the filter the mark is flatter than 01/02/03",
+     "The bg-coloured square at the bottom of the V reads as a hole (white on light), not as a cursor; the hot block in the centre carries the cursor idea instead"
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.33
+  },
+  {
+   "id": "circuit-03-triple-trace",
+   "name": "Triple Trace",
+   "rationale": "Каждая ветвь V — пучок из трёх параллельных дорожек, которые геометрически складываются в три вложенных шеврона: внешний толстый медный, средний яркий сигнальный, внутренний тонкий; сверху ряд виа, у вершины горячая виа, снизу — золотые контакты краевого разъёма. V — хозяин кадра и Vim; киберпанк — ранговые шевроны, Tron‑линии, поле точек и разъём платы.",
+   "glitchIdea": "Три шеврона разъезжаются по горизонтали на разные величины (параллакс среза), средний мигает ярче, а при смене режима горячая виа у вершины «переключает» цвет и золотые контакты перекрашиваются один за другим.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — толстая V с циановым внутренним шевроном и горячей точкой у вершины: V читается мгновенно, внутренний шеврон на 16px превращается в яркое пятно в горле буквы, горячая точка остаётся видна — знак узнаваем и отличим от соседей.",
+   "angle": "circuit",
+   "angleTitle": "PCB traces & cyberdeck",
+   "review": {
+    "id": "circuit-03-triple-trace",
+    "scores": {
+     "vim": 3,
+     "cyber": 4,
+     "legibility16": 4,
+     "distinct": 2,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Три вложенные дорожки с рядом виа, золотыми контактами и hot-виа в вершине — чисто, ритмично, параллельные трассы сами просятся под RGB-split, и малый вариант (V + внутренняя V + точка) держит 16px. Главная беда — в зелёной INSERT-трио это почти логотип Vue.js, а вложенные шевроны вообще родовой знак; плюс тонкая внутренняя дорожка на светлой INSERT почти пропадает, а hot-засветка снизу на светлом фоне выглядит розовым пятном.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK (only the filter warning); no contract fix needed.",
+     "Distinctness: nested V's in the INSERT (green) trio look strongly like the Vue.js logo; in blue they still read as a generic stacked-chevron icon. The small variant (two nested V's + dot) carries the same problem into the tab.",
+     "The innermost trace (v3, stroke 2.4, opacity 0.9) nearly vanishes against the lime/green on INSERT light.",
+     "The --hot radial wash at the bottom reads as a pink/orange stain on the light theme.",
+     "Plate cut corners (top-left, bottom-right) are asymmetric under a perfectly symmetric V; reads a little arbitrary.",
+     "The V itself is a plain stroked polyline; the form complexity comes from repetition and decoration, not from the letter."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.33
+  },
+  {
+   "id": "vimcyber-03-tilde-wave",
+   "name": "Tilde Wave",
+   "rationale": "Крупная V с 45° фасками, бликом и двумя трафаретными разрывами, под ней вимовские «~» пустых строк буфера: первая — неоновая трубка в --c3 с размытым ореолом и ярким ядром, вторая тусклее в --c2 с RGB-смещением, слева тики номеров строк, справа на первой строке горячий блочный курсор. Тильды и курсор — чистый Vim, неон, фаски и хроматическое смещение — cyberpunk.",
+   "glitchIdea": "Фиолетовое эхо-контур V и вторая тильда уезжают по горизонтали как RGB-split, куски V по линиям разрывов сдвигаются на кадр, курсор мигает; при смене режима волна «перебегает» слева направо новым цветом.",
+   "hasWordmark": false,
+   "toolbarNote": "В кнопке 20px — жирная V с волной-подчёркиванием, самый лёгкий и воздушный из четырёх; в табе 16px волна становится 1px-штрихом, но V крупная и читается сразу.",
+   "angle": "vimcyber",
+   "angleTitle": "Vim symbols in cyber dress",
+   "review": {
+    "id": "vimcyber-03-tilde-wave",
+    "scores": {
+     "vim": 3,
+     "cyber": 3,
+     "legibility16": 4,
+     "distinct": 3,
+     "glitchFit": 4,
+     "craft": 3
+    },
+    "verdict": "Чамферная V с призрачным контуром-сдвигом и неоновые «волны» выглядят эффектно и заведомо хорошо глитчатся, малый вариант V+тильда держится на 16px. Но волны читаются как море, а не как тильда Vim (композиция смахивает на яхтенный или пляжный бренд), горячая полоска и штрихи по краям кажутся приклеенными, а блок-курсор у ножки V слишком мелкий и похож на артефакт.",
+    "lintFixed": false,
+    "issues": [
+     "The two full-width smooth waves read as water, not as Vim's ~ tilde; a shorter, single, more tilde-shaped stroke would say Vim instead of sailing.",
+     "Loose composition: the hot bar at the right edge (x 58-62) and the two small ticks at the left edge (x 2-5) feel stuck on rather than part of the mark.",
+     "The bg-coloured block cursor at the V's foot (rect 30.3,39.8 3.4x2.6) is too small at 128px and reads as a rendering notch/artifact, especially on light.",
+     "INSERT trio: the lower wave (c2 lime mixed 70% with bg) turns mustard-olive on dark.",
+     "Small variant wave is 5 units thick: at 16px it becomes a ragged 1-2px squiggle, faint on light; still readable but near the limit."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.33
+  },
+  {
+   "id": "vimcyber-04-hjkl-cross",
+   "name": "HJKL Cross",
+   "rationale": "Большая V с фасками, сканлайнами и разрывом, вокруг вершины — четыре неоновых кейкапа hjkl со скошенными углами и «губой» клавиши: k сидит в вырезе между плечами, h и l прижаты к плечам, j подвешена под остриём на горячем проводе и светится в --hot. hjkl — самая вимовская из всех подписей, аркадные неоновые клавиши и свечение — cyberpunk.",
+   "glitchIdea": "Клавиши по очереди «нажимаются» (уезжают вниз на единицу и гаснут), j мигает и рвёт провод, V расходится по шву на правом плече; при смене режима подсветка перепрыгивает с j на k.",
+   "hasWordmark": false,
+   "toolbarNote": "В кнопке 20px — V с фиолетовым чипом в вырезе и розовым под остриём, узнаётся как тот же знак; в табе 16px чипы вырождаются в две цветные точки, V остаётся главным — самый слабый из четырёх на 16px.",
+   "angle": "vimcyber",
+   "angleTitle": "Vim symbols in cyber dress",
+   "review": {
+    "id": "vimcyber-04-hjkl-cross",
+    "scores": {
+     "vim": 4,
+     "cyber": 3,
+     "legibility16": 3,
+     "distinct": 4,
+     "glitchFit": 3,
+     "craft": 3
+    },
+    "verdict": "hjkl вокруг V, разложенные как настоящая раскладка, дают самый явный и самобытный Vim-сигнал в наборе. Но кейкапы читаются как стикеры геймерской клавиатуры, а не киберпанк, «L» заглавная среди строчных h/k/j, а малый вариант теряет h и l: на 16px фиолетовая кнопка забивает вырез V и знак превращается в «V с двумя точками».",
+    "lintFixed": false,
+    "issues": [
+     "Glyph inconsistency: the l key is drawn as an uppercase L while h, k, j are lowercase.",
+     "Small variant drops h and l, so the cross idea disappears; at 16px the violet cap sits inside the V's notch touching both legs and the mark reads as a Y/face with a pink dot, not clearly the same logo.",
+     "Keycaps read as gaming-keyboard stickers; no plate, HUD or atmosphere ties the five pieces together, so the composition feels scattered.",
+     "Light theme: the keycap glow filters (c1/c2 at 50%) become pale halos that look like white sticker outlines.",
+     "Scattered separate pieces will turn to noise under slice glitches; only the V itself has a built-in split (right-leg stencil break)."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.33
+  },
+  {
+   "id": "shards-03-cracked-glass",
+   "name": "Cracked Glass",
+   "rationale": "V из одиннадцати стеклянных осколков с зазорами в 1,3 единицы, тонкими светлыми кромками и ступенями тона по градиенту; верхний левый осколок отъехал вверх-влево, осколок правого плеча выдвинут и горит горячим цветом, нижний осколок апекса опустился, а трещины продолжаются тонкими линиями по тёмной панели. Это V как разбитый голографический визор (Blade Runner / Deus Ex), при этом силуэт буквы держит тёмная V-подложка под осколками.",
+   "glitchIdea": "Осколки — независимые слои: при глитче два-три осколка подпрыгивают и возвращаются на место, горячий осколок мигает; при смене режима осколки перекрашиваются «волной» вдоль трещин, как перезапуск визора.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — V первого цвета с отколотым верхним левым уголком, сам осколок третьего цвета лежит чуть выше и левее: читается как V с отбитым краем; на 16px во вкладке зазор сливается, но светлый уголок остаётся заметен и отличает знак от простой V.",
+   "angle": "shards",
+   "angleTitle": "Shattered & datamoshed",
+   "review": {
+    "id": "shards-03-cracked-glass",
+    "scores": {
+     "vim": 3,
+     "cyber": 3,
+     "legibility16": 3,
+     "distinct": 4,
+     "glitchFit": 3,
+     "craft": 3
+    },
+    "verdict": "Самая сложная форма из четырёх: фасетчатая мозаика с приподнятыми осколками, горячим фрагментом и трещинами по плате, ни с одним браузером не спутать. Но читается скорее как витраж/лоу-поли кристалл, чем как киберпанк, на светлой теме плата и «швы» уходят в пастельное мыло, а в малом варианте отколотый осколок на 16px превращается в мазок и перекашивает V вправо.",
+    "lintFixed": false,
+    "issues": [
+     "Light theme: pastel pink plate plus cream 'grout' between shards reads washed-out; the radial glow adds nothing on light.",
+     "The lifted hot shard overhangs the right arm's outer edge by ~2 units (points 52.27,24 and 49.44,29.95 are outside the V silhouette) — reads as deliberate displacement but makes the mark right-heavy.",
+     "Facet strokes are 0.7 units: fine at 128+, gone at 64, and many small polygons will shimmer under RGB-split/slice glitch rather than tear cleanly.",
+     "Small variant: the detached shard tapers to ~2.5 units at its tip (below the 3-unit minimum, lint does not check thickness) and becomes a smudge at 16px; the truncated left arm shifts the V's optical centre right.",
+     "No Vim cue beyond the V itself — no cursor, colon, tilde or readout."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 3.17
+  },
+  {
+   "id": "blade-03-triple-claw",
+   "name": "Triple Claw Slash",
+   "rationale": "Три сужающихся когтя-лезвия с каждой стороны (средний длиннее, внутренняя кромка вогнутая, как у мантис-блейдов), средние сходятся в горячей звезде-ромбе удара; всё на тёмной фасочной табличке с внутренней рамкой и ридаут-штрихами. V — след удара, Vim — ромб в вершине, киберпанк — клинки богомола и неоновая искра.",
+   "glitchIdea": "Когти «проскальзывают» по своим осям с разной задержкой (как три кадра одного удара), искра двоится RGB-сплитом, при смене режима внешние когти перекрашиваются первыми, средний — последним.",
+   "hasWordmark": false,
+   "toolbarNote": "На 20px — острая V из двух широких когтей с розовым ромбом в вершине; тонкие кончики на 16px держатся благодаря тупому срезу 2.6 ед., ромб читается как точка-акцент. Самая «лёгкая» по весу из четырёх, но чистая в кнопке и во вкладке.",
+   "angle": "blade",
+   "angleTitle": "Cyber-samurai blade",
+   "review": {
+    "id": "blade-03-triple-claw",
+    "scores": {
+     "vim": 3,
+     "cyber": 3,
+     "legibility16": 3,
+     "distinct": 2,
+     "glitchFit": 3,
+     "craft": 3
+    },
+    "verdict": "Шесть сходящихся когтей дают сильную V и ощущение движения, но по сути это те же клинья-примитивы, разложенные по трём цветам поверх платы, скопированной из 01, — на 128px это читается как типовая игровая эмблема «коготь на пластине», а не как Vim. Малый вариант (две сужающиеся лопасти + розовый ромб) на 16px держится, хотя к острию арки истончаются до 1px и розовый ромб размазывается; без фильтра под искрой остаётся плоский бирюзовый диск.",
+    "lintFixed": false,
+    "issues": [
+     "Lint OK, only the expected <filter> warning; no contract fix needed.",
+     "With filters dropped (brief: the mark must still read without them) the apex glow becomes a hard flat teal disc r=9 at 35% opacity: it reads as a stray blob behind the spark.",
+     "The chamfered plate, inner outline, corner accents and readout ticks are the same template as blade-01, so the two concepts are visually siblings rather than alternatives.",
+     "Outer claw bases on both sides poke over the inner frame line at the top; the triple parallel blades already look like an RGB-split, so an animated split may read as mush rather than a glitch.",
+     "Small variant: the blades taper to ~5 units (≈1.25px at 16px) near the apex, and the top edge of each blade reaches y≈2.9, slightly under the ~3-unit margin.",
+     "Claw-slash + plate is a generic gaming/sci-fi badge; it does not say Vim beyond the V and a 4-point star that is not quite the Vim diamond."
+    ]
+   },
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": 2.83
+  },
+  {
+   "id": "iso-01-megastructure",
+   "name": "Megastructure V",
+   "rationale": "V как мегаструктура из Blade Runner: объёмная выдавленная буква с этажами-полосами, антенной с горячим огнём на макушке и тёмной гранью справа. Одно из немногих направлений с настоящей глубиной.",
+   "glitchIdea": "Этажи-полосы сдвигаются срезами, огонь антенны мигает, при смене режима грань перекрашивается сверху вниз.",
+   "hasWordmark": false,
+   "toolbarNote": "Малая версия — чистая V с тёмной гранью справа, на 16px читается как объёмная V.",
+   "angle": "iso",
+   "angleTitle": "Depth & isometry",
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": null
+  },
+  {
+   "id": "iso-02-monument-plinth",
+   "name": "Monument Plinth",
+   "rationale": "V как монумент Imperium на светящемся постаменте, сбоку шкала-линейка HUD; три огня постамента — статусная строка Vim.",
+   "glitchIdea": "Постамент вспыхивает огнями режима, V на кадр проваливается вниз и встаёт обратно.",
+   "hasWordmark": false,
+   "toolbarNote": "V с подчёркиванием-постаментом; на 16px постамент читается как строка под курсором.",
+   "angle": "iso",
+   "angleTitle": "Depth & isometry",
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": null
+  },
+  {
+   "id": "iso-03-v-canyon",
+   "name": "V Canyon",
+   "rationale": "V вырезана в объёмном блоке как каньон: негативное пространство вместо буквы, сканлайны по лицевой грани, три огня-индикатора. Самый сдержанный из кибер-знаков.",
+   "glitchIdea": "Сканлайны бегут по грани, стенки каньона на кадр расходятся цветовым сплитом.",
+   "hasWordmark": false,
+   "toolbarNote": "Малая версия — тёмная плитка с врезанной V, на 16px держится как клавиша-значок.",
+   "angle": "iso",
+   "angleTitle": "Depth & isometry",
+   "judgeScore": 6,
+   "judgeReasons": [
+    {
+     "lens": "editor",
+     "rank": 7,
+     "reason": "Единственная V, вырезанная из массы: объём и негативное пространство, спокойно и дорого."
+    }
+   ],
+   "reviewAvg": null
+  },
+  {
+   "id": "iso-04-parallax-stack",
+   "name": "Parallax Stack",
+   "rationale": "Три слоя V со сдвигом, как параллакс в голограмме: лицевая V, штрихованная тень и горячая точка-курсор у острия.",
+   "glitchIdea": "Слои разъезжаются по глубине, как при рассинхроне голограммы, и схлопываются обратно.",
+   "hasWordmark": false,
+   "toolbarNote": "Малая версия — V с фиолетовым краем, на 16px читается как V с объёмом.",
+   "angle": "iso",
+   "angleTitle": "Depth & isometry",
+   "judgeScore": 0,
+   "judgeReasons": [],
+   "reviewAvg": null
+  }
+ ],
+ "critic": {
+  "fieldNotes": "Поле честно отвечает на запрос «сложнее и cyberpunk»: примитивов больше нет, почти каждый знак держит фаски, двойные контуры, разрывы и внутреннюю структуру, и на 128px это читается как Cyberpunk 2077 / Blade Runner. Сильнейшие — chamfer-03-mode-line (V, «:» и блочный курсор в одной геометрии, самая вимовская и чистейшая на 16px), neon-02-cursor-tube (вывеска «VI» — редкий случай, когда малая версия несёт идею, а не просто V), blade-04-lamellar (три цвета тройки работают структурно как пластины брони, а 16px читается идеально) и shards-01-slice-drift (лучшая посадка под глитч-движок, панель и срезы уже «едут»). Проблема поля — однородность: примерно 15 из 28 знаков собраны по одному рецепту «тёмная фасочная плита + V + горячая точка + полоска индикаторов», поэтому оценки distinct низкие, а малые варианты почти у всех вырождаются в одинаковую гладкую V с точкой — фавиконки двадцати концептов неразличимы. Ни один знак не использует глубину (все плоские), движение/световой след (хотя приложение уже анимирует «комету на рельсе» в этих же тройках) и негативное пространство (V ни разу не вырезана из массы), и ни у кого нет wordmark — именно туда стоит бить во втором раунде.",
+  "gaps": [
+   {
+    "key": "comet",
+    "title": "Comet Rail — the V as the app's own light trail",
+    "brief": "Nobody drew motion. The app already animates Vim's mode as a 'comet on rail' around the address bar in the trio colours; no mark in the field makes the V that rail, and the brief's Akira / Tron light lines are uncovered (neon-03 is a static RGB split, not a trail). Build the V as a track with a light head and a fading tail, so the logo IS the mode comet frozen mid-run. The small variant must be a V stroke plus a bead, which is the only favicon in the field that is not a plain V.\n\n1. RAIL COMET. V as a double rail: two 1.5-unit rails 3 units apart on a 9-unit dark bed (color-mix c1 25% bg) from (8,8) and (56,8) to the apex (32,54), 45° chamfered terminals 8x5 at both arm tops with a 2x1 indicator each; sleepers 1 unit thick every 5 units across the bed. The comet head is a 7-unit faceted bead (hexagon, c3 with a 2.5-unit --hot core) sitting on the right arm at about (44,26); the tail runs from the head down to the apex and up the left arm as a 5-unit stroke whose opacity fades 1 -> 0.12 over 45 units via a gradient c3 -> c1 -> c2; 3 speed streaks (1-unit lines, 6–10 units long) trail behind the head parallel to the arm. One feGaussianBlur halo on the head only; the rails and bed must carry the mark when filters are dropped.\n2. TRON LIGHT WALL. V as a 4-unit ribbon of light (c3 leading edge) with a translucent 10-unit wall hanging below it along the whole path (c1 at 35% opacity, scanlines every 2 units), like a light-cycle trail seen from above; the leading end on the right arm is a 6-unit wedge in --hot, the wall is cut into 5 segments with 1-unit gaps that the glitch engine can slide. Apex at (32,52), arm tops at (6,8)/(58,8).\n3. AKIRA CONVERGENCE. Two trails rushing into the apex from the arm tops, each a tapered path (2 units at the top, 8 units at the apex), the collision at (32,52) a 10-unit hot star/diamond with a 1-unit ring; two ghost copies of the trails offset (-2,+1) in c2 and (+2,-1) in c3 at 45% opacity as motion afterimage; a thin 1-unit perspective floor grid (5 lines) behind, fading upward. No backplate: the trails must read on light via the solid c1 cores.\n4. OSCILLOSCOPE TRACE. V as a CRT beam path on a 60x60 dark screen with 45° cut corners, 1-unit graticule every 8 units at 15% opacity; the beam is a 3-unit line with phosphor persistence drawn as 6 stacked copies of the path at decreasing opacity and increasing width (3 -> 11 units), the beam dot at the right arm top a 5-unit --hot circle with a 1-unit cross flare 12 units wide; a 2-unit readout bar at the bottom with the mode block in c2.\n\nSMALL VARIANT (16px): one 7-unit V stroke in c1 (arm tops (10,12)/(54,12), apex (32,52), square or chamfered ends) + one 6-unit bead at the right arm top in --hot or c3 (square, diamond or circle, nothing thinner than 3 units); optionally a third shape, a 3-unit tail segment in c3 on the arm just below the bead. No filters, no gradients. The head must survive at 16px as a distinct second-colour pixel cluster, check the pixel zoom. Both trios: the bead reads in COMMAND magenta and INSERT amber; both themes: on light, ideas 1 and 4 keep their dark bed/screen, ideas 2 and 3 need a solid c1 core thick enough (>= 4 units) that the trail is not just glow.\n"
+   },
+   {
+    "key": "iso",
+    "title": "Isometric Monolith — the V with real depth",
+    "brief": "Every mark in the field is flat: chamfers and double outlines, but no faces, no extrusion, no negative space. Give the V a third dimension so the three trio colours become three faces of one solid (front c1, side c2, top c3) — a megastructure from Blade Runner / Akira's Neo-Tokyo, and the only route where the 'Imperium' half of the name (a monument, an empire) shows up. Depth must come from faces, not from filters.\n\n1. EXTRUDED V. Front face: polygon (6,8) (24,8) (32,24) (40,8) (58,8) (32,50) in c1 with a 1.5-unit c3 neon strip along the top edges of both arms. Extrude by (+6,+4): the visible right-facing side faces in c2, bottom-facing faces in color-mix(c2 55% bg), inner faces of the notch in color-mix(c1 45% bg) so the counter reads as a cavity. Rows of 2x1 lit windows on the big right side face every 4 units, one window in --hot; a 1-unit mast 8 units tall on the left arm top with a 2-unit blinking --hot light. Keep the silhouette inside 2 units of the edge.\n2. MONUMENT ON A PLINTH. Same extruded V stood on its apex on a chamfered base plate 44x6 at y 54–60 (color-mix c1 30% bg, 45° corners, 3 underglow slits in c3); a 2-unit hairline ground reflection of the V below the plate at 25% opacity; a HUD altitude ruler of 1-unit ticks down the left margin. The base and reflection give the mark a horizon, which no concept has.\n3. V CANYON (negative space). A 56x56 isometric slab (rhombus with 10-unit visible thickness, top face color-mix(c1 20% bg), side faces darker) with a V-shaped channel cut down through the top face from (14,14)/(50,14) to the apex (32,44), channel 9 units wide at the top tapering to 6; the cut walls show 3 strata lines (c1 / c2 / dark) and the channel floor glows c3 with a --hot core at the apex; scanlines on the top face every 2 units at 10% opacity. This is the only negative V in the field and it carries its own plate on light.\n4. STACKED PARALLAX. Three V plates in depth, offset (−4,+2) each: front solid c1 with 45° chamfers, middle outlined c2 at 1.5 units with scanlines, rear outlined c3 at 1 unit, all three joined by 1-unit vertical struts at the arm tops like a holographic z-stack; the front plate has a 5x5 square cursor notch at the apex. Reads as the mode flip (COMMAND / INSERT) already in flight.\n\nSMALL VARIANT (16px): two shapes maximum for ideas 1, 2, 4 — the front V face in c1 (arm tops (9,11)/(55,11), apex (32,53), stroke ~9 units) plus ONE side-face polygon in c2 offset by (+4,+3) along the right edge, nothing thinner than 3 units, so the favicon has a visible second colour and a shadow that no other favicon in the field has. For idea 3 one even-odd path: a 52x52 chamfered dark square (color-mix c1 25% bg) with the V knocked out at 7+ units wide — on light this is the strongest small mark possible because it brings its own plate. No filters, no gradients. Check both trios: in INSERT the c1/c2 pair is green/lime, which is closer in luminance than blue/violet, so the side face may need color-mix(c2 65% bg) rather than raw c2 to keep the depth; check both themes: on light the neon edge strips must sit on a face, not on bare background."
+   }
+  ]
+ },
+ "judges": [
+  {
+   "lens": "editor",
+   "overall": "Это уже не примитивы: у каждого знака фаски, разрывы, слои и своя деталь, а на 128px поле читается как Cyberpunk 2077 и Blade Runner. Сильнее всего работают знаки, где Vim зашит в саму геометрию (курсор, «:», ромб), а не только в букву V. Слабое место поля: у половины знаков малая версия вырождается в одинаковую V с точкой, у лидеров шорт-листа она своя.",
+   "ranking": [
+    {
+     "id": "chamfer-03-mode-line",
+     "reason": "V, «:» и блочный курсор в одной строке: самый вимовский знак, а малая «V▮» не похожа ни на одну фавиконку."
+    },
+    {
+     "id": "neon-02-cursor-tube",
+     "reason": "Неоновая вывеска «VI»: малая версия несёт идею, а не просто V, и просится под мерцание трубки."
+    },
+    {
+     "id": "vimcyber-01-cyber-gem",
+     "reason": "Наследник ромба Vim: гранёный самоцвет с V, силуэт держится от иконки приложения до 16px."
+    },
+    {
+     "id": "blade-04-lamellar",
+     "reason": "Самый сильный силуэт: V из пластин брони с горячим остриём, в кнопке тулбара читается безупречно."
+    },
+    {
+     "id": "shards-01-slice-drift",
+     "reason": "Глитч уже в геометрии: срезы V сами «едут», анимация смены режима ляжет идеально."
+    },
+    {
+     "id": "neon-04-colon-prompt",
+     "reason": "«:V» как вывеска из «Акиры»: командная строка Vim читается с первого взгляда."
+    },
+    {
+     "id": "iso-03-v-canyon",
+     "reason": "Единственная V, вырезанная из массы: объём и негативное пространство, спокойно и дорого."
+    },
+    {
+     "id": "hud-01-reticle-v",
+     "reason": "V в прицеле: самый «интерфейсный» знак, малая версия — узнаваемый круг среди квадратных иконок."
+    }
+   ]
+  }
+ ]
+}

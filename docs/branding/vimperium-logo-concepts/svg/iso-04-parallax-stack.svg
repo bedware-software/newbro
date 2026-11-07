@@ -1,0 +1,25 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="front" gradientUnits="userSpaceOnUse" x1="0" y1="7" x2="0" y2="49">
+<stop offset="0" stop-color="var(--c1, #7aa2f7)"/><stop offset="1" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 70%, var(--bg, #1a1a1a))"/>
+</linearGradient>
+<pattern id="scan" width="2" height="2" patternUnits="userSpaceOnUse"><rect width="2" height="1" fill="var(--c2, #bb9af7)"/></pattern>
+<filter id="glow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="1.2"/></filter>
+</defs>
+<!-- rear plate -->
+<path d="M4 14L7 11L18 11L21 13L28 27L35 13L38 11L49 11L52 14L28 53Z" fill="color-mix(in oklch, var(--c3, #7dcfff) 18%, var(--bg, #1a1a1a))" stroke="var(--c3, #7dcfff)" stroke-width="1.5" stroke-linejoin="miter" opacity=".9"/>
+<!-- middle plate -->
+<path d="M8 12L11 9L22 9L25 11L32 25L39 11L42 9L53 9L56 12L32 51Z" fill="url(#scan)" opacity=".6"/>
+<path d="M8 12L11 9L22 9L25 11L32 25L39 11L42 9L53 9L56 12L32 51Z" fill="none" stroke="var(--c2, #bb9af7)" stroke-width="1.5" stroke-linejoin="miter"/>
+<!-- depth rails -->
+<g fill="none" stroke="color-mix(in oklch, var(--c3, #7dcfff) 60%, var(--fg, #e0e0e0))" stroke-width="1.5" opacity=".9"><path d="M12,10L4,14"/><path d="M60,10L52,14"/><path d="M26,7L18,11"/><path d="M46,7L38,11"/></g>
+<!-- front plate -->
+<path d="M12 10L15 7L26 7L29 9L36 23L43 9L46 7L57 7L60 10L38.86 44L33.14 44Z" fill="url(#front)"/>
+<path d="M15.75 8.5H26M46 8.5H56.25" stroke="color-mix(in oklch, var(--c3, #7dcfff) 55%, var(--fg, #e0e0e0))" stroke-width="1.5" fill="none"/>
+<path d="M30.2 11.5L36 23.1L41.8 11.5" fill="none" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 30%, var(--bg, #1a1a1a))" stroke-width="1.5" opacity=".8"/>
+<path d="M13.3 12L34 44.5M58.7 12L38 44.5" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="1.5" opacity=".45"/>
+<!-- the block cursor in the apex cut -->
+<rect x="32.5" y="43.5" width="7" height="7" fill="var(--hot, #ff5fb0)" opacity=".5" filter="url(#glow)"/>
+<rect x="33.5" y="44" width="5" height="5" fill="var(--hot, #ff5fb0)"/>
+<rect x="35" y="45.5" width="2" height="2" fill="color-mix(in oklch, var(--hot, #ff5fb0) 30%, var(--fg, #e0e0e0))" opacity=".9"/>
+</svg>

@@ -1,0 +1,69 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="pl" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 24%, var(--bg, #1a1a1a))"/>
+      <stop offset="1" stop-color="color-mix(in oklch, var(--c2, #bb9af7) 10%, var(--bg, #1a1a1a))"/>
+    </linearGradient>
+    <radialGradient id="wash" cx="0.5" cy="0.85" r="0.6">
+      <stop offset="0" stop-color="var(--hot, #ff5fb0)" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="var(--hot, #ff5fb0)" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dots" width="4" height="4" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="0.8" fill="var(--c3, #7dcfff)" opacity="0.16"/>
+    </pattern>
+    <clipPath id="pc"><path d="M11 2H60L62 4V50L56 56H4L2 54V11Z"/></clipPath>
+    <path id="v1" d="M9.5 9L32 51L54.5 9"/>
+    <path id="v2" d="M16.5 9L32 38L47.5 9"/>
+    <path id="v3" d="M23.5 9L32 25L40.5 9"/>
+    <filter id="f" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.6"/></filter>
+  </defs>
+  <!-- board plate with a cut corner, via field, hot wash -->
+  <path d="M11 2H60L62 4V50L56 56H4L2 54V11Z" fill="url(#pl)" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 48%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+  <g clip-path="url(#pc)">
+    <rect x="2" y="2" width="60" height="54" fill="url(#dots)"/>
+    <rect x="2" y="2" width="60" height="54" fill="url(#wash)"/>
+    <g fill="none" filter="url(#f)" stroke-linejoin="round">
+      <use href="#v2" stroke="var(--c3, #7dcfff)" stroke-width="9" opacity="0.45"/>
+      <use href="#v1" stroke="var(--c1, #7aa2f7)" stroke-width="9" opacity="0.3"/>
+    </g>
+  </g>
+  <path d="M2 11L11 2M62 50L56 56" stroke="var(--c1, #7aa2f7)" stroke-width="1.5" opacity="0.7"/>
+  <!-- gold fingers: edge connector -->
+  <g fill="color-mix(in oklch, var(--c2, #bb9af7) 65%, var(--bg, #1a1a1a))">
+    <rect x="10" y="56" width="5" height="6"/><rect x="17" y="56" width="5" height="6"/><rect x="24" y="56" width="5" height="6"/>
+    <rect x="35" y="56" width="5" height="6"/><rect x="42" y="56" width="5" height="6"/><rect x="49" y="56" width="5" height="6"/>
+  </g>
+  <rect x="29.5" y="56" width="5" height="6" fill="var(--c2, #bb9af7)"/>
+  <!-- silkscreen bits -->
+  <g fill="none" stroke="color-mix(in oklch, var(--c3, #7dcfff) 50%, var(--bg, #1a1a1a))" stroke-width="1.5">
+    <path d="M6 44V50H12"/><path d="M56 40V46H50"/>
+  </g>
+  <!-- plain halos (reads without the filter) -->
+  <g fill="none" stroke-linejoin="round" opacity="0.2">
+    <use href="#v1" stroke="var(--c1, #7aa2f7)" stroke-width="9"/>
+    <use href="#v2" stroke="var(--c3, #7dcfff)" stroke-width="7"/>
+  </g>
+  <!-- three nested traces: relief, then cores. middle one is the bright signal -->
+  <g fill="none" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 28%, var(--bg, #1a1a1a))" stroke-linejoin="round">
+    <use href="#v1" stroke-width="8"/><use href="#v2" stroke-width="6.5"/><use href="#v3" stroke-width="5"/>
+  </g>
+  <use href="#v1" fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="5" stroke-linejoin="round"/>
+  <use href="#v2" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="3.6" stroke-linejoin="round"/>
+  <use href="#v3" fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="2.4" stroke-linejoin="round" opacity="0.9"/>
+  <!-- data packets on the outer trace -->
+  <g fill="none" stroke="var(--c3, #7dcfff)" stroke-width="2.2" stroke-linecap="round">
+    <path d="M15.3 19.8L18 24.8"/><path d="M45.7 25.4L43.6 29.4"/>
+  </g>
+  <!-- via row on top, hot via at the apex -->
+  <g fill="var(--c3, #7dcfff)">
+    <circle cx="9.5" cy="9" r="3.4"/><circle cx="16.5" cy="9" r="3"/><circle cx="23.5" cy="9" r="2.6"/>
+    <circle cx="54.5" cy="9" r="3.4"/><circle cx="47.5" cy="9" r="3"/><circle cx="40.5" cy="9" r="2.6"/>
+  </g>
+  <g fill="color-mix(in oklch, var(--c1, #7aa2f7) 24%, var(--bg, #1a1a1a))">
+    <circle cx="9.5" cy="9" r="1.4"/><circle cx="16.5" cy="9" r="1.2"/><circle cx="23.5" cy="9" r="1"/>
+    <circle cx="54.5" cy="9" r="1.4"/><circle cx="47.5" cy="9" r="1.2"/><circle cx="40.5" cy="9" r="1"/>
+  </g>
+  <circle cx="32" cy="51" r="6.5" fill="var(--hot, #ff5fb0)" opacity="0.3"/>
+  <circle cx="32" cy="51" r="3.8" fill="var(--hot, #ff5fb0)"/>
+  <circle cx="32" cy="51" r="1.5" fill="color-mix(in oklch, var(--c1, #7aa2f7) 24%, var(--bg, #1a1a1a))"/>
+</svg>

@@ -1,0 +1,5 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<path d="M6 10L21 10L32 34.2L17 34.2ZM47 34.2L38 54L26 54L17 34.2ZM32 34.2L39.82 17L54.82 17L47 34.2ZM39.82 17L43 10L50 10L50 17Z" fill="var(--c1, #7aa2f7)"/>
+<rect x="52" y="6" width="6" height="6" fill="var(--c3, #7dcfff)"/>
+<rect x="56" y="15" width="5" height="5" fill="var(--c3, #7dcfff)"/>
+</svg>

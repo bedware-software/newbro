@@ -1,0 +1,8 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <!-- rhombus body -->
+  <path d="M32 3 61 32 32 61 3 32Z" fill="var(--c1, #7aa2f7)"/>
+  <!-- cut facet, lower right -->
+  <path d="M32 32H61L32 61Z" fill="var(--c2, #bb9af7)"/>
+  <!-- V knocked out, sits on the wide equator of the rhombus -->
+  <path d="M15 23H24L32 40.3 40 23H49L36.5 50H27.5Z" fill="var(--bg, #1a1a1a)"/>
+</svg>

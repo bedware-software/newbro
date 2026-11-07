@@ -1,0 +1,42 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="pl" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 14%, var(--bg, #1a1a1a))"/><stop offset="1" stop-color="color-mix(in oklch, var(--c2, #bb9af7) 10%, var(--bg, #1a1a1a))"/>
+  </linearGradient>
+  <linearGradient id="vz" gradientUnits="userSpaceOnUse" x1="0" y1="8" x2="0" y2="47">
+    <stop offset="0" stop-color="var(--c3, #7dcfff)"/><stop offset="1" stop-color="var(--c1, #7aa2f7)"/>
+  </linearGradient>
+  <clipPath id="pc"><polygon points="14,2 50,2 62,14 62,36 42,62 22,62 2,36 2,14"/></clipPath>
+  <filter id="gl" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2"/></filter>
+</defs>
+<polygon points="14,2 50,2 62,14 62,36 42,62 22,62 2,36 2,14" fill="url(#pl)"/>
+<g stroke="var(--bg, #1a1a1a)" stroke-width="1.5" stroke-linejoin="round">
+  <polygon points="14,2 50,2 62,14 62,19 2,19 2,14" fill="color-mix(in oklch, var(--c1, #7aa2f7) 36%, var(--bg, #1a1a1a))"/>
+  <polygon points="2,20.5 31.25,20.5 31.25,62 22,62 2,36" fill="color-mix(in oklch, var(--c1, #7aa2f7) 27%, var(--bg, #1a1a1a))"/>
+  <polygon points="32.75,20.5 62,20.5 62,36 42,62 32.75,62" fill="color-mix(in oklch, var(--c2, #bb9af7) 24%, var(--bg, #1a1a1a))"/>
+  <polygon points="23.5,50 40.5,50 40.5,62 23.5,62" fill="color-mix(in oklch, var(--c1, #7aa2f7) 18%, var(--bg, #1a1a1a))"/>
+</g>
+<!-- cheek facet highlights -->
+<path d="M4 22L4 34.5" stroke="color-mix(in oklch, var(--c3, #7dcfff) 55%, var(--bg, #1a1a1a))" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M60 22L60 34.5" stroke="color-mix(in oklch, var(--c3, #7dcfff) 55%, var(--bg, #1a1a1a))" stroke-width="1.5" stroke-linecap="round"/>
+<!-- visor slit: cut, glow, band, core, segment ticks -->
+<g clip-path="url(#pc)" fill="none">
+  <path d="M-2 8.5L32 47L66 8.5" stroke="var(--c3, #7dcfff)" stroke-width="10" opacity=".55" filter="url(#gl)"/>
+  <path d="M-2 8.5L32 47L66 8.5" stroke="var(--bg, #1a1a1a)" stroke-width="11.5" stroke-linejoin="miter"/>
+  <path d="M-2 8.5L32 47L66 8.5" stroke="url(#vz)" stroke-width="8" stroke-linejoin="miter"/>
+  <path d="M-2 8.5L32 47L66 8.5" stroke="var(--c3, #7dcfff)" stroke-width="1.8" stroke-linejoin="miter" opacity=".95" transform="translate(0 -2.4)"/>
+  <g stroke="var(--bg, #1a1a1a)" stroke-width="1.5" opacity=".85"><path d="M13.75 18.78L6.25 25.4"/><path d="M20.75 26.7L13.25 33.32"/><path d="M27.75 34.63L20.25 41.25"/><path d="M57.75 25.4L50.25 18.78"/><path d="M50.75 33.32L43.25 26.7"/><path d="M43.75 41.25L36.25 34.63"/></g>
+</g>
+<!-- forehead sensor: the diamond -->
+<circle cx="32" cy="11.5" r="5" fill="var(--hot, #ff5fb0)" opacity=".3"/>
+<polygon points="32,8.7 34.8,11.5 32,14.3 29.2,11.5" fill="var(--hot, #ff5fb0)"/>
+<polygon points="32,10.2 33.3,11.5 32,12.8 30.7,11.5" fill="color-mix(in oklch, var(--hot, #ff5fb0) 30%, var(--fg, #e0e0e0))"/>
+<!-- chin vents, rivets, readout -->
+<g fill="color-mix(in oklch, var(--c3, #7dcfff) 60%, var(--bg, #1a1a1a))">
+  <rect x="27" y="52.5" width="10" height="1.6"/><rect x="27" y="55.5" width="10" height="1.6"/><rect x="27" y="58.5" width="6" height="1.6"/>
+  <rect x="34.5" y="58.5" width="2.5" height="1.6" fill="var(--hot, #ff5fb0)"/>
+</g>
+<g fill="color-mix(in oklch, var(--c3, #7dcfff) 65%, var(--bg, #1a1a1a))"><rect x="4.3" y="15.6" width="1.8" height="1.8"/><rect x="57.9" y="15.6" width="1.8" height="1.8"/><rect x="4.3" y="35.1" width="1.8" height="1.8"/><rect x="57.9" y="35.1" width="1.8" height="1.8"/></g>
+<g fill="color-mix(in oklch, var(--c1, #7aa2f7) 60%, var(--bg, #1a1a1a))"><rect x="17" y="5" width="1.6" height="1.6"/><rect x="20" y="5" width="1.6" height="1.6"/><rect x="23" y="5" width="1.6" height="1.6"/></g>
+<polygon points="14,2 50,2 62,14 62,36 42,62 22,62 2,36 2,14" fill="none" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 55%, var(--bg, #1a1a1a))" stroke-width="1.5" stroke-linejoin="round"/>
+</svg>
