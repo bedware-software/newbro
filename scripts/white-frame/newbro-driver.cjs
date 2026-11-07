@@ -1,5 +1,5 @@
-// Drives the built Newbro for scripts/white-frame/record.mjs --newbro:
-// record.mjs runs a copy of out/main/index.js with this file required first.
+// Drives the built Newbro for scripts/white-frame/record.mjs --newbro, which
+// runs out/main/white-frame.js: this file, then Newbro's out/main/index.js.
 // It opens a black page in a tab and goes back and forth between it and a
 // black page on another site — the way Newbro's own back/forward does
 // ('back': the IPC its mouse side buttons send), the page sending itself
@@ -41,7 +41,13 @@ app.whenReady().then(async () => {
   }
   if (!win) { say('FAIL no window'); app.exit(1); return }
   win.setBounds({ x: 40, y: 40, width: 880, height: 620 }) // fits a 1024x768 screen
+  // On top for the recording, as app.cjs's window is: nothing else on the
+  // runner's screen may cover it.
+  win.setAlwaysOnTop(true)
+  win.show()
+  win.focus()
   await sleep(4000)
+  say('NOTE', `window ${JSON.stringify(win.getBounds())}, visible ${win.isVisible()}, screen ${JSON.stringify(screen.getPrimaryDisplay().bounds)}`)
   win.webContents.send('open-url-as-tab', A)
   let wc
   for (let i = 0; i < 200 && !wc; i++) {

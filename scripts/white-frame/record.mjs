@@ -7,17 +7,19 @@
 //   w  white over 2–90% of it
 //   R  the window's dark red, through a see-through view
 //   .  anything else
-// A scenario whose frames mostly lack the window's red border, or a page,
-// is reported as NO CAPTURE rather than clean: the recording wasn't of it.
+// A scenario is WHITE if any frame is W or w; "other gaps" counts the runs of
+// R or . between pages. One whose frames mostly lack the window's red border,
+// or that doesn't show the page before its first navigation, is reported as
+// NO CAPTURE rather than clean: the recording wasn't of it.
 //
 //   node scripts/white-frame/record.mjs [scenario ...] [--fps=60] [--out=dir]
 //   node scripts/white-frame/record.mjs --newbro   (after npm run build)
 //
 // Runs every scenario (see SCENARIOS) unless some are named; --newbro records
-// the built Newbro instead (NEWBRO_SCENARIOS). Needs ffmpeg on
-// PATH. Linux: an X display — it starts Xvfb on :99 when DISPLAY is unset;
-// macOS: Screen Recording permission for the terminal; Windows: nothing more.
-// Frames it labels W, plus a black and a red one, are saved as PNGs under
+// the built Newbro instead (NEWBRO_SCENARIOS). Needs ffmpeg on PATH. Linux: an
+// X display — it starts Xvfb on :99 when DISPLAY is unset; macOS: Screen
+// Recording permission for the terminal; Windows: nothing more. Frames it
+// labels W, plus a black and a red one, are saved as PNGs under
 // out/white-frame/<platform>/ (or --out).
 
 import { spawn, spawnSync } from 'node:child_process'
@@ -145,6 +147,23 @@ function label(frame, w, h, inset) {
   return { lab, pure: pure / n, border: !inset || edgeRed / edge >= 0.8 }
 }
 
+/** A frame in 32 x 10 characters (B black, W white, R the window's red,
+ *  . other) — what a rejected recording showed. */
+function thumbnail(frame, w, h) {
+  const rows = []
+  for (let cy = 0; cy < 10; cy++) {
+    let row = ''
+    for (let cx = 0; cx < 32; cx++) {
+      const x = Math.floor((cx + 0.5) * w / 32), y = Math.floor((cy + 0.5) * h / 10)
+      const i = (y * w + x) * 3
+      const r = frame[i], g = frame[i + 1], b = frame[i + 2]
+      row += r >= 250 && g >= 250 && b >= 250 ? 'W' : r <= 12 && g <= 12 && b <= 12 ? 'B' : isRed(r, g, b) ? 'R' : '.'
+    }
+    rows.push(row)
+  }
+  return rows
+}
+
 // ── Capture ──────────────────────────────────────────────────────────────
 let macScreen = null
 function captureInput({ x, y, w, h }) {
@@ -200,9 +219,11 @@ function runScenario(name, options) {
     let borderless = 0
     let ended = false
     let endedAt = 0
+    let firstFrame = []
     const onFrame = (frame) => {
       if (ended) return // the window is going away
       const { lab, pure, border } = label(frame, rect.w, rect.h, rect.inset)
+      if (!labels.length) firstFrame = thumbnail(frame, rect.w, rect.h)
       labels.push(lab)
       if (!border) { borderless++; if (process.env.WF_DEBUG) console.log(`   [${name}] frame ${labels.length - 1} (${lab}) without border`) }
       if (!started) {
@@ -315,6 +336,7 @@ function runScenario(name, options) {
         sequence: s.replace(/B{6,}/g, (m) => `B{${m.length}}`),
         ffmpegErr: ffmpegErr.trim(),
         notes,
+        firstFrame: verdict === 'NO CAPTURE' ? firstFrame : [],
         appLog: verdict === 'NO CAPTURE' ? appLog.slice(-30) : [],
       })
     }
@@ -343,6 +365,7 @@ for (const name of names.length ? names : Object.keys(scenarios)) {
   if (r.fps > 200) console.log(`   (${r.fps.toFixed(0)} fps: ffmpeg is repeating frames)`)
   if (r.ffmpegErr) console.log(`   ffmpeg: ${r.ffmpegErr.split('\n').slice(0, 5).join(' | ')}`)
   for (const n of r.notes) console.log(`   ${n}`)
+  if (r.firstFrame.length) console.log(`   first frame:\n${r.firstFrame.map((l) => `     ${l}`).join('\n')}`)
   for (const l of r.appLog) console.log(`   app: ${l}`)
 }
 xvfb?.kill()
