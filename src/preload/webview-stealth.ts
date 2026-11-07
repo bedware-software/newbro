@@ -605,6 +605,47 @@ if (STEALTH_ENABLED) {
   }
 }
 
+// ── Dark pages: the comfort filter ─────────────────────────────────────────
+// Dark pages (main/dark-pages.ts) darkens the page through Chromium; the
+// comfort sliders (brightness, contrast, warmth) are a CSS filter on the root,
+// asked for here as the document starts — synchronously, so the first paint
+// already has it — and swapped when the sliders move or the page's look
+// changes. An injected stylesheet, not in the DOM: the page can't see it or
+// take it out. Author origin, not user — Electron's removeInsertedCSS only
+// finds author sheets, so a user one could never be swapped. The top frame
+// only: the root's filter covers its frames too.
+if ((STEALTH_ENABLED || location.protocol === 'chrome-extension:') && window.top === window) {
+  try {
+    installDarkPagesComfort()
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.log('[newbro-dark-pages] comfort filter wiring failed:', err)
+  }
+}
+
+function installDarkPagesComfort(): void {
+  // The preload can run twice in a page (session preload and the view's own).
+  const flag = '__newbroDarkPagesComfort'
+  const scope = globalThis as unknown as Record<string, boolean>
+  if (scope[flag]) return
+  scope[flag] = true
+
+  let current = ''
+  let key: string | null = null
+  const apply = (css: string): void => {
+    if (css === current) return
+    if (key) {
+      try { webFrame.removeInsertedCSS(key) } catch { /* document gone */ }
+      key = null
+    }
+    current = css
+    if (css) key = webFrame.insertCSS(css)
+  }
+  const initial: unknown = ipcRenderer.sendSync('dark-pages:comfort-css', location.href)
+  apply(typeof initial === 'string' ? initial : '')
+  ipcRenderer.on('newbro-dark-pages-css', (_e, css: unknown) => apply(typeof css === 'string' ? css : ''))
+}
+
 // ── Mouse side buttons → host navigation ──────────────────────────────────
 // Chromium inside a tab's guest webContents doesn't reliably surface
 // XButton1 / XButton2 (mouse back/forward) as a WM_APPCOMMAND, so neither

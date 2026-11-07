@@ -209,6 +209,10 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   // newbro://downloads tab. New keys fall back to their default on existing
   // installs through the loadSettings merge, so no seeding migration.
   'open-downloads': ['CmdOrCtrl+J'],
+  // Dark pages (main/dark-pages.ts) — Dark Reader's keys, so hands that
+  // knew the extension still find them: on/off everywhere, and this site.
+  'dark-pages': ['Alt+Shift+D'],
+  'dark-pages-site': ['Alt+Shift+A'],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -415,21 +419,22 @@ function migrateNewKeybindingDefaults(): void {
  * on Enter; v7: V/S split like vim's, row-unfold on <C-l>, gcc comments;
  * v8: the address editor's u / <C-r> / gu / gt / yt / d / D; v9: results
  * picked by two-letter labels, not digits; v10: the Sidebar on the arrows,
- * not Ctrl held, <C-o>/<C-i>/<C-p>/<Space>; v11: od Downloads, ob Bangs — see
- * src/shared/vim-default-keymap.ts): a keymap saved under v1 to v10 keeps what its owner changed and takes the new defaults for
+ * not Ctrl held, <C-o>/<C-i>/<C-p>/<Space>; v11: od Downloads, ob Bangs;
+ * v12: D Dark pages on this site — see
+ * src/shared/vim-default-keymap.ts): a keymap saved under v1 to v11 keeps what its owner changed and takes the new defaults for
  * everything else.
  * Once.
  */
 function migrateVimKeymap(): void {
   const raw = store as unknown as { get(key: string): unknown; set(key: string, value: unknown): void }
-  const marker = 'vim-keymap-v11'
+  const marker = 'vim-keymap-v12'
   const migratedList = raw.get('migratedKeybindingDefaults')
   const migrated = new Set(Array.isArray(migratedList) ? (migratedList as string[]) : [])
   if (migrated.has(marker)) return
 
   const saved = store.get('settings')
   if (saved && typeof saved.vimKeymap === 'string') {
-    const from = migrated.has('vim-keymap-v10') ? 10 : migrated.has('vim-keymap-v9') ? 9 : migrated.has('vim-keymap-v8') ? 8 : migrated.has('vim-keymap-v7') ? 7 : migrated.has('vim-keymap-v6') ? 6 : migrated.has('vim-keymap-v5') ? 5 : migrated.has('vim-keymap-v4') ? 4 : migrated.has('vim-keymap-v3') ? 3 : migrated.has('vim-keymap-v2') ? 2 : 1
+    const from = migrated.has('vim-keymap-v11') ? 11 : migrated.has('vim-keymap-v10') ? 10 : migrated.has('vim-keymap-v9') ? 9 : migrated.has('vim-keymap-v8') ? 8 : migrated.has('vim-keymap-v7') ? 7 : migrated.has('vim-keymap-v6') ? 6 : migrated.has('vim-keymap-v5') ? 5 : migrated.has('vim-keymap-v4') ? 4 : migrated.has('vim-keymap-v3') ? 3 : migrated.has('vim-keymap-v2') ? 2 : 1
     store.set('settings', { ...saved, vimKeymap: migrateVimKeymapText(saved.vimKeymap, from) })
   }
 
@@ -442,6 +447,7 @@ function migrateVimKeymap(): void {
   migrated.add('vim-keymap-v8')
   migrated.add('vim-keymap-v9')
   migrated.add('vim-keymap-v10')
+  migrated.add('vim-keymap-v11')
   migrated.add(marker)
   raw.set('migratedKeybindingDefaults', [...migrated])
 }

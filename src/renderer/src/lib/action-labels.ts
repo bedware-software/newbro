@@ -39,4 +39,6 @@ export const ACTION_LABELS: Record<string, string> = {
   'toggle-bookshelf': 'Toggle Bookshelf',
   'open-downloads': 'Open Downloads',
   'open-bangs': 'Bangs & Search Engine',
+  'dark-pages': 'Dark Pages On / Off',
+  'dark-pages-site': 'Dark Pages on This Site',
 }

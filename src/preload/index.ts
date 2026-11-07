@@ -360,6 +360,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Search-engine suggestions for the address bar (src/main/omnibox-suggest.ts).
   omniboxSuggest: (query: string, partition?: string): Promise<string[]> =>
     ipcRenderer.invoke('omnibox:suggest', query, partition),
+  // Dark pages — Newbro's own dark mode for web pages (src/main/dark-pages.ts).
+  darkPagesGet: (): Promise<unknown> => ipcRenderer.invoke('dark-pages:get'),
+  darkPagesSet: (patch: unknown): Promise<unknown> => ipcRenderer.invoke('dark-pages:set', patch),
+  darkPagesSetSite: (site: string, rule: 'dark' | 'light' | null): Promise<unknown> =>
+    ipcRenderer.invoke('dark-pages:set-site', site, rule),
+  darkPagesSetPage: (url: string, dark: boolean): Promise<unknown> => ipcRenderer.invoke('dark-pages:set-page', url, dark),
+  darkPagesToggle: (): Promise<unknown> => ipcRenderer.invoke('dark-pages:toggle'),
+  darkPagesToggleSite: (url: string): Promise<unknown> => ipcRenderer.invoke('dark-pages:toggle-site', url),
+  darkPagesResetSites: (): Promise<unknown> => ipcRenderer.invoke('dark-pages:reset-sites'),
+  onDarkPagesUpdated: (callback: (state: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, state: unknown) => callback(state)
+    ipcRenderer.on('dark-pages:updated', handler)
+    return () => { ipcRenderer.removeListener('dark-pages:updated', handler) }
+  },
   // Bangs — `!w vim` in the address bar (src/main/bangs-store.ts).
   bangsList: (): Promise<unknown[]> => ipcRenderer.invoke('bangs:list'),
   bangsSave: (bangs: unknown[]): Promise<unknown[]> => ipcRenderer.invoke('bangs:save', bangs),

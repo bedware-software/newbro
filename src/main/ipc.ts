@@ -5,6 +5,7 @@ import * as path from 'path'
 import { spawn } from 'child_process'
 import { loadState, saveState, loadLastUsedWorkspace } from './store'
 import { loadSettings, saveSettings, type Settings } from './settings-store'
+import { applySyncedDarkPages, getDarkPagesConfig, refreshDarkPagesTheme, registerDarkPagesIpc } from './dark-pages'
 import { setupPartitionSession, createWorkspaceWindow, getOpenWorkspaceWindows, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest, getPartitionForSession, partitionForBrowserWindow } from './index'
 import { listGrants, setGrant, clearGrant, clearAllGrants, exportGrants, replaceGrants, type PermissionKind, type PermissionDecision } from './permissions-store'
 import { listCredentials, deleteCredential, clearAllCredentials } from './credentials-store'
@@ -352,6 +353,8 @@ function applyIncomingSettings(settings: Settings): void {
   saveSettings(settings)
   applyProxySettingsToAllSessions(settings)
   rebuildMenu()
+  // Dark pages can follow Newbro's theme.
+  refreshDarkPagesTheme()
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('settings:updated', settings)
   }
@@ -1389,6 +1392,7 @@ function alive(p) {
   registerBangsIpc()
   registerOmniboxPopupIpc()
   registerBookshelfIpc()
+  registerDarkPagesIpc()
 
   // ── Cloud sync ──
   // Wire each data set's read/apply adapter, then expose the cloud-sync IPC.
@@ -1430,6 +1434,10 @@ function alive(p) {
     write: (data) => applyExtensionManifest(data),
     // Per-extension ledger merge — see exportExtensionManifest.
     merge: true,
+  })
+  registerSyncCategory('darkPages', {
+    read: () => getDarkPagesConfig(),
+    write: (data) => applySyncedDarkPages(data),
   })
   registerCloudSyncIpc()
 }

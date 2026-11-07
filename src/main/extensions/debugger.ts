@@ -10,6 +10,12 @@
 //
 // Only tab targets: Newbro has no chrome.debugger for extension or
 // browser targets.
+//
+// Dark pages (main/dark-pages.ts) may hold the same session — Electron has
+// one per page (main/tab-debugger.ts). The extension then shares it: it gets
+// the page's events, but not those of the frames Dark pages looks after
+// unless it asked for frames itself (Target.setAutoAttach), and its detach
+// leaves the session to Dark pages.
 
 import type { WebContents } from 'electron'
 import { log } from '../log'
@@ -17,6 +23,8 @@ import { registerExtensionApiHandler, type ExtensionApiCaller } from './api-ipc'
 import { sendToExtensionWorkers } from './sw-bridge'
 import { extensionHasPermission, onExtensionDeactivated } from './manager'
 import { getWebContentsByChromeTabId, listChromeTabs } from '../tab-views'
+import { holdDebugger, releaseDebugger } from '../tab-debugger'
+import { patchExtensionDebuggerCommand } from '../dark-pages'
 
 interface Attachment {
   tabId: number
@@ -24,7 +32,16 @@ interface Attachment {
   caller: ExtensionApiCaller
   onMessage: (event: unknown, method: string, params: unknown, sessionId?: string) => void
   onDetach: (event: unknown, reason: string) => void
+  /** The extension turned on Target.setAutoAttach: frame targets are its
+   *  business too. */
+  autoAttach: boolean
+  /** The extension turned on Target.setDiscoverTargets. */
+  discover: boolean
+  /** Child sessions the extension knows: ones it attached, or saw attach. */
+  sessions: Set<string>
 }
+
+const TARGET_LIFECYCLE_EVENTS = new Set(['Target.attachedToTarget', 'Target.detachedFromTarget'])
 
 /** One extension per tab, as in Chrome. Keyed by Chrome tab id. */
 const attachments = new Map<number, Attachment>()
@@ -50,24 +67,45 @@ function release(att: Attachment): void {
   att.wc.debugger.removeListener('detach', att.onDetach)
 }
 
+/** Whether an event on the shared session is the extension's to see: the
+ *  page's own, and frames' only when it asked for frames. */
+function isExtensionsEvent(att: Attachment, method: string, params: unknown, sessionId?: string): boolean {
+  if (sessionId) return att.sessions.has(sessionId)
+  if (!TARGET_LIFECYCLE_EVENTS.has(method) && method !== 'Target.targetInfoChanged') return true
+  const childSession = (params as { sessionId?: unknown } | null)?.sessionId
+  if (method === 'Target.attachedToTarget') {
+    if (!att.autoAttach || typeof childSession !== 'string') return false
+    att.sessions.add(childSession)
+    return true
+  }
+  if (method === 'Target.detachedFromTarget') {
+    return typeof childSession === 'string' && att.sessions.delete(childSession)
+  }
+  return att.autoAttach || att.discover
+}
+
 function attach(caller: ExtensionApiCaller, args: Record<string, unknown>): void {
   const tabId = targetTabId(args.target)
   const wc = getWebContentsByChromeTabId(tabId)
   if (!wc) throw new Error(`No tab with given id ${tabId}.`)
-  if (attachments.has(tabId) || wc.debugger.isAttached()) {
+  if (attachments.has(tabId) || !holdDebugger(wc, 'extension')) {
     throw new Error(`Another debugger is already attached to the tab with id: ${tabId}.`)
   }
-  wc.debugger.attach(typeof args.requiredVersion === 'string' ? args.requiredVersion : '1.3')
   const att: Attachment = {
     tabId,
     wc,
     caller,
+    autoAttach: false,
+    discover: false,
+    sessions: new Set(),
     onMessage: (_event, method, params, sessionId) => {
+      if (!isExtensionsEvent(att, method, params, sessionId)) return
       emit(caller, 'debugger-event', { source: sessionId ? { tabId, sessionId } : { tabId }, method, params })
     },
     onDetach: (_event, reason) => {
       if (attachments.get(tabId) !== att) return
       release(att)
+      releaseDebugger(wc, 'extension')
       log.info('debugger: detached by target', { extensionId: caller.extensionId, tabId, reason })
       // Electron says "target closed" / "Render process gone." — Chrome's
       // vocabulary is target_closed / canceled_by_user.
@@ -93,13 +131,10 @@ function ownAttachment(caller: ExtensionApiCaller, target: unknown): Attachment 
 function detach(caller: ExtensionApiCaller, args: Record<string, unknown>): void {
   const att = ownAttachment(caller, args.target)
   // An explicit detach fires no onDetach in Chrome — drop our listeners
-  // before Electron emits its own 'detach'.
+  // before Electron emits its own 'detach'. The session itself goes only
+  // when Dark pages doesn't hold it too.
   release(att)
-  try {
-    att.wc.debugger.detach()
-  } catch (err) {
-    log.warn('debugger: detach threw', { tabId: att.tabId, err: String(err) })
-  }
+  releaseDebugger(att.wc, 'extension')
   log.info('debugger: detached', { extensionId: caller.extensionId, tabId: att.tabId })
 }
 
@@ -107,8 +142,20 @@ async function sendCommand(caller: ExtensionApiCaller, args: Record<string, unkn
   const att = ownAttachment(caller, args.target)
   if (typeof args.method !== 'string') throw new Error('sendCommand requires a method.')
   const sessionId = (args.target as { sessionId?: unknown }).sessionId
-  const params = args.params && typeof args.params === 'object' ? args.params : {}
-  return att.wc.debugger.sendCommand(args.method, params, typeof sessionId === 'string' ? sessionId : undefined)
+  const target = typeof sessionId === 'string' ? sessionId : undefined
+  const params = patchExtensionDebuggerCommand(
+    att.wc,
+    args.method,
+    (args.params && typeof args.params === 'object' ? args.params : {}) as Record<string, unknown>,
+    target,
+  )
+  if (args.method === 'Target.setAutoAttach' && !target) att.autoAttach = params.autoAttach === true
+  if (args.method === 'Target.setDiscoverTargets' && !target) att.discover = params.discover === true
+  const result = await att.wc.debugger.sendCommand(args.method, params, target)
+  // A target the extension attached to itself is its session.
+  const attached = (result as { sessionId?: unknown } | null)?.sessionId
+  if (args.method === 'Target.attachToTarget' && typeof attached === 'string') att.sessions.add(attached)
+  return result
 }
 
 function getTargets(): unknown[] {
@@ -148,7 +195,7 @@ export function registerDebuggerIpc(): void {
     for (const att of [...attachments.values()]) {
       if (att.caller.extensionId !== extensionId) continue
       release(att)
-      try { if (!att.wc.isDestroyed()) att.wc.debugger.detach() } catch { /* already gone */ }
+      releaseDebugger(att.wc, 'extension')
     }
   })
 }
