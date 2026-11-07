@@ -569,12 +569,13 @@ function enterPageFullscreen(rec: TabRecord, source: string, pageMetrics?: unkno
 /** Calls `colour` as a main-frame navigation commits in a renderer frame of
  *  its own — another site, an error page — in the same task, before anything
  *  is drawn. Chromium puts such a page behind a new view (its
- *  RenderWidgetHostView), which starts out solid white: Electron gives the
- *  page's colour only to the view being replaced. Chromium covers the new view
- *  with the old page until the new one's first frame, but only when the user
- *  had interacted with the old page — so back/forward, a page sending itself
- *  elsewhere or a site slow to paint showed a blank white frame, sandboxed or
- *  not. Navigations that keep the frame keep its view and colour. */
+ *  RenderWidgetHostView), which starts out solid white on Windows and Linux
+ *  (see-through on macOS): Electron gives the page's colour only to the view
+ *  being replaced. Chromium covers the new view with the old page until the
+ *  new one's first frame, but only when the user had interacted with the old
+ *  page — so back/forward, a page sending itself elsewhere or a site slow to
+ *  paint showed a blank white frame, sandboxed or not. Navigations that keep
+ *  the frame keep its view and colour. */
 function onMainFrameSwap(wc: WebContents, colour: () => void): void {
   const frameKey = (): string | null => {
     try { return `${wc.mainFrame.processId}:${wc.mainFrame.frameToken}` } catch { return null }
