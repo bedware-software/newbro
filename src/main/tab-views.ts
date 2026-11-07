@@ -113,6 +113,19 @@ const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
 // holds on to unsaved work is asked "Reload site?" rather than "Leave site?".
 const reloadingTabs = new Set<string>()
 
+// The history entry a tab's back/forward is going to, until its navigation
+// starts (goThroughHistory, wireEvents).
+const historyNavigationTarget = new Map<string, string>()
+
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    const origin = new URL(a).origin
+    return origin !== 'null' && origin === new URL(b).origin
+  } catch {
+    return false
+  }
+}
+
 const HIDDEN_BOUNDS: TabBounds = { x: 0, y: 0, width: 0, height: 0 }
 
 // Tab views are normally transparent so the renderer shows through during
@@ -553,6 +566,12 @@ function enterPageFullscreen(rec: TabRecord, source: string, pageMetrics?: unkno
   sendToWindowRenderer(rec.windowId, 'tab-event', evt)
 }
 
+/** The colour the tab's view has now: black while its page is fullscreen,
+ *  its resting colour otherwise. */
+function viewBackground(rec: TabRecord): string {
+  return htmlFullscreenByWindow.get(rec.windowId) === rec.tabId ? TAB_BG_FULLSCREEN : rec.restingBackground
+}
+
 function leavePageFullscreen(rec: TabRecord, source: string): void {
   if (htmlFullscreenByWindow.get(rec.windowId) !== rec.tabId) return
   log.info('tab leave-html-full-screen', { tabId: rec.tabId, source })
@@ -635,6 +654,21 @@ function wireEvents(rec: TabRecord): void {
   wc.on('did-start-navigation', (details) => {
     if (details.isMainFrame && !details.isSameDocument) reloadingTabs.delete(rec.tabId)
   })
+  // Back/forward (goThroughHistory) is the user's own doing on the page they
+  // leave, as an address-bar navigation is — and Electron's loadURL counts
+  // that one as a user activation on the page. Count back/forward too, once
+  // beforeunload has had its say (so no new "Leave site?"): Chromium then
+  // keeps the page up until the next one has painted, as it does for a
+  // clicked link, instead of the tab's bare colour in between
+  // (colourSwappedView, below). Same-origin pages get that without asking.
+  wc.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame) return
+    const target = historyNavigationTarget.get(rec.tabId)
+    historyNavigationTarget.delete(rec.tabId)
+    if (details.isSameDocument || target !== details.url || wc.isCrashed()) return
+    if (sameOrigin(details.url, wc.getURL())) return
+    wc.mainFrame.executeJavaScript('void 0', true).catch(() => { /* page gone */ })
+  })
   wc.on('unresponsive', () => {
     log.warn('tab unresponsive', {
       tabId: rec.tabId,
@@ -709,7 +743,24 @@ function wireEvents(rec: TabRecord): void {
       })
     }
   })
+  // A navigation that moves the page to another renderer process — another
+  // site, an error page — swaps in a new view for it (Chromium's
+  // RenderWidgetHostView), and that view starts out solid white: Electron
+  // gives the tab's colour only to the view being replaced. Until the new
+  // page's first frame Chromium covers it with the old page, but only when
+  // the user had interacted with that page — so back/forward, a page sending
+  // itself elsewhere or a site slow to paint showed a blank white frame,
+  // sandboxed or not. These events fire as the swap commits, before anything
+  // is drawn: the new view takes the tab's own colour (see-through, onto
+  // Newbro's background), what it shows where a page paints nothing.
+  const colourSwappedView = (): void => {
+    try { rec.view.setBackgroundColor(viewBackground(rec)) } catch { /* view gone */ }
+  }
+  wc.on('did-fail-provisional-load', (_e, _code, _description, _url, isMainFrame) => {
+    if (isMainFrame) colourSwappedView()
+  })
   wc.on('did-navigate', (_e, url) => {
+    colourSwappedView()
     emit({ type: 'did-navigate', tabId: rec.tabId, url })
     emitNavState()
     // Record the visit for the address bar's history — typed when the
@@ -922,11 +973,22 @@ function wireEvents(rec: TabRecord): void {
       log.info('tab popup closed', { tabId: rec.tabId, childId: childWindow.id })
     })
     // A sign-in popup is dark when its page is.
+    let popupBackground = '#ffffff'
     trackDarkPages(childWindow.webContents, {
       opaque: true,
       setBackground: (color) => {
-        if (!childWindow.isDestroyed()) childWindow.setBackgroundColor(color ?? '#ffffff')
+        popupBackground = color ?? '#ffffff'
+        if (!childWindow.isDestroyed()) childWindow.setBackgroundColor(popupBackground)
       },
+    })
+    // As a tab's view (colourSwappedView above): the view swapped in for
+    // another site's page takes the popup's colour, not a blank white.
+    const colourPopupView = (): void => {
+      if (!childWindow.isDestroyed()) childWindow.setBackgroundColor(popupBackground)
+    }
+    childWindow.webContents.on('did-navigate', colourPopupView)
+    childWindow.webContents.on('did-fail-provisional-load', (_e, _code, _description, _url, isMainFrame) => {
+      if (isMainFrame) colourPopupView()
     })
   })
 
@@ -1376,6 +1438,7 @@ export function destroyTab(tabId: string): void {
   }
   tabs.delete(tabId)
   wcIdToTabId.delete(wcId)
+  historyNavigationTarget.delete(tabId)
   splitByWindow.get(rec.windowId)?.delete(tabId)
   if (activeTabByWindow.get(rec.windowId) === tabId) {
     activeTabByWindow.delete(rec.windowId)
@@ -1415,11 +1478,23 @@ export function tabNavigate(tabId: string, url: string): void {
   focusTabPage(rec)
 }
 
+/** Back or forward one entry — the toolbar, the keys, the mouse's side
+ *  buttons and the swipe all come here. Notes the entry it goes to, so the
+ *  page being left stays up until the next one paints (see wireEvents). */
+function goThroughHistory(rec: TabRecord, offset: -1 | 1): void {
+  const nav = rec.view.webContents.navigationHistory
+  if (!nav.canGoToOffset(offset)) return
+  const entry = nav.getEntryAtIndex(nav.getActiveIndex() + offset)
+  if (entry?.url) historyNavigationTarget.set(rec.tabId, entry.url)
+  else historyNavigationTarget.delete(rec.tabId)
+  if (offset < 0) nav.goBack()
+  else nav.goForward()
+}
+
 export function tabGoBack(tabId: string): void {
   const rec = tabs.get(tabId)
   if (!rec) return
-  const nav = rec.view.webContents.navigationHistory
-  if (nav.canGoBack()) nav.goBack()
+  goThroughHistory(rec, -1)
   // Back/forward/reload used to rely on focusOnNavigation to move keyboard
   // focus to the page once the navigation committed. With that disabled we
   // focus explicitly — these are user actions (toolbar button, shortcut,
@@ -1430,8 +1505,7 @@ export function tabGoBack(tabId: string): void {
 export function tabGoForward(tabId: string): void {
   const rec = tabs.get(tabId)
   if (!rec) return
-  const nav = rec.view.webContents.navigationHistory
-  if (nav.canGoForward()) nav.goForward()
+  goThroughHistory(rec, 1)
   focusTabPage(rec)
 }
 

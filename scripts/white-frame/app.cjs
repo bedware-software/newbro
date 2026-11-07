@@ -85,6 +85,14 @@ app.whenReady().then(async () => {
     log('navigated', url, 'pid', wc.getOSProcessId())
   })
   wc.on('render-process-gone', (_e, d) => log('gone', JSON.stringify(d)))
+  // hold: the history navigation counts as the user's on the page it leaves,
+  // so Chromium keeps that page up until the next one paints.
+  let holdNext = false
+  wc.on('did-start-navigation', (d) => {
+    if (!holdNext || !d.isMainFrame || d.isSameDocument) return
+    holdNext = false
+    wc.mainFrame.executeJavaScript('void 0', true).catch(() => {})
+  })
 
   await wc.loadURL(A)
   if (opt.how === 'back') {
@@ -105,6 +113,7 @@ app.whenReady().then(async () => {
 
   for (let i = 0; i < opt.navs; i++) {
     if (opt.how === 'back') {
+      holdNext = !!opt.hold
       if (i % 2 === 0) wc.navigationHistory.goBack()
       else wc.navigationHistory.goForward()
     } else if (opt.how === 'js') {

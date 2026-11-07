@@ -32,6 +32,7 @@ const SCENARIOS = {
   'back':                { how: 'back' },
   'back-sandboxed':      { how: 'back', sandbox: true },
   'back-fixed':          { how: 'back', fix: true },
+  'back-held':           { how: 'back', hold: true },
   // The page navigates itself, without a user gesture.
   'js':                  { how: 'js' },
   'js-sandboxed':        { how: 'js', sandbox: true },
@@ -42,6 +43,7 @@ const SCENARIOS = {
   'slow-back':           { how: 'back', stallMs: 300, navs: 6 },
   'slow-back-sandboxed': { how: 'back', sandbox: true, stallMs: 300, navs: 6 },
   'slow-back-fixed':     { how: 'back', fix: true, stallMs: 300, navs: 6 },
+  'slow-back-held':      { how: 'back', hold: true, stallMs: 300, navs: 6 },
 }
 
 const args = process.argv.slice(2)
@@ -164,7 +166,16 @@ function runScenario(name, options) {
       if (keep && goSent) saved.push({ lab, index: labels.length - 1, pure, png: png(rect.w, rect.h, Buffer.from(frame)) })
     }
 
+    // No frames at all (capture refused, wrong screen): don't hold the app
+    // for good — let it run, the result says so.
+    let noFrames = null
     const startCapture = () => {
+      noFrames = setTimeout(() => {
+        if (!goSent) {
+          goSent = true
+          app.stdin.write('GO\n')
+        }
+      }, 20_000)
       ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...captureInput(rect), '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
         { stdio: ['pipe', 'pipe', 'pipe'] })
       const size = rect.w * rect.h * 3
@@ -202,6 +213,8 @@ function runScenario(name, options) {
     const finish = () => {
       if (finished) return
       finished = true
+      clearTimeout(noFrames)
+      clearTimeout(giveUp)
       const duration = (Date.now() - started) / 1000
       const s = labels.join('')
       const whiteRuns = [...s.matchAll(/[Ww]+/g)].map((m) => m[0].length)
@@ -211,7 +224,7 @@ function runScenario(name, options) {
       mkdirSync(OUT, { recursive: true })
       for (const f of saved) writeFileSync(join(OUT, `${name}-${String(f.index).padStart(4, '0')}-${f.lab}.png`), f.png)
       resolve({
-        name, options, verdict, frames: labels.length, fps: labels.length / (duration || 1), navs,
+        name, options, verdict, rect, frames: labels.length, fps: labels.length / (duration || 1), navs,
         whiteRuns, white: count('W') + count('w'), pureWhite: saved.filter((f) => f.lab === 'W' && f.pure > 0.9).length,
         red: count('R'), other: count('.'),
         sequence: s.replace(/B{6,}/g, (m) => `B{${m.length}}`),
@@ -230,7 +243,7 @@ function runScenario(name, options) {
         } else finish()
       }, 300)
     })
-    setTimeout(() => { if (!finished) { app.kill(); } }, 120_000)
+    const giveUp = setTimeout(() => { if (!finished) app.kill() }, 120_000)
   })
 }
 
@@ -239,7 +252,7 @@ const results = []
 for (const name of names.length ? names : Object.keys(SCENARIOS)) {
   const r = await runScenario(name, SCENARIOS[name])
   results.push(r)
-  console.log(`\n== ${name} ${JSON.stringify(r.options)}`)
+  console.log(`\n== ${name} ${JSON.stringify(r.options)} view ${JSON.stringify(r.rect)}`)
   console.log(`   ${r.verdict}: ${r.frames} frames at ${r.fps.toFixed(1)} fps, ${r.navs} navigations, ` +
     `${r.whiteRuns.length} white runs ${JSON.stringify(r.whiteRuns)}, ${r.red} frames of the window behind`)
   console.log(`   ${r.sequence}`)
