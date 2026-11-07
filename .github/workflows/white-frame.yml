@@ -2,8 +2,9 @@ name: White frame check
 
 # Records the screen while a tab-like view goes back and forth between two
 # black pages on different sites, and counts the frames where the page's area
-# is blank white (scripts/white-frame/record.mjs). Runs on every platform
-# Newbro ships on; the frames it flags are uploaded as an artifact.
+# is blank white (scripts/white-frame/record.mjs) — a minimal Electron app,
+# then Newbro itself. Runs on every platform Newbro ships on; the frames it
+# flags are uploaded as an artifact.
 
 on:
   workflow_dispatch:
@@ -46,8 +47,14 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg xvfb
 
-      - name: Record
+      - name: Record (minimal Electron app)
         run: node scripts/white-frame/record.mjs
+
+      - name: Build Newbro
+        run: npm run build
+
+      - name: Record (Newbro)
+        run: node scripts/white-frame/record.mjs --newbro
 
       - name: Upload frames
         if: always()

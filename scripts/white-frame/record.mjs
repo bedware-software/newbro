@@ -11,8 +11,10 @@
 // is reported as NO CAPTURE rather than clean: the recording wasn't of it.
 //
 //   node scripts/white-frame/record.mjs [scenario ...] [--fps=60] [--out=dir]
+//   node scripts/white-frame/record.mjs --newbro   (after npm run build)
 //
-// Runs every scenario (see SCENARIOS) unless some are named. Needs ffmpeg on
+// Runs every scenario (see SCENARIOS) unless some are named; --newbro records
+// the built Newbro instead (NEWBRO_SCENARIOS). Needs ffmpeg on
 // PATH. Linux: an X display — it starts Xvfb on :99 when DISPLAY is unset;
 // macOS: Screen Recording permission for the terminal; Windows: nothing more.
 // Frames it labels W, plus a black and a red one, are saved as PNGs under
@@ -22,7 +24,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import zlib from 'node:zlib'
 
@@ -49,7 +51,18 @@ const SCENARIOS = {
   'slow-back-held':      { how: 'back', hold: true, stallMs: 300, navs: 6 },
 }
 
+// --newbro: the built Newbro itself (npm run build first), a tab of it going
+// between the two pages — Newbro's own back/forward, the page sending itself
+// elsewhere, a clicked link (scripts/white-frame/newbro-driver.cjs).
+const NEWBRO_SCENARIOS = {
+  'newbro-back':  { how: 'back' },
+  'newbro-js':    { how: 'js' },
+  'newbro-click': { how: 'click' },
+}
+
 const args = process.argv.slice(2)
+const NEWBRO = args.includes('--newbro')
+const scenarios = NEWBRO ? NEWBRO_SCENARIOS : SCENARIOS
 const flag = (name, def) => {
   const a = args.find((x) => x.startsWith(`--${name}=`))
   return a ? a.slice(name.length + 3) : def
@@ -57,7 +70,16 @@ const flag = (name, def) => {
 const FPS = Number(flag('fps', 60))
 const OUT = flag('out', join(here, '../../out/white-frame', process.platform))
 const names = args.filter((a) => !a.startsWith('--'))
-for (const n of names) if (!SCENARIOS[n]) throw new Error(`unknown scenario ${n}`)
+for (const n of names) if (!scenarios[n]) throw new Error(`unknown scenario ${n}`)
+
+/** out/main/white-frame.js: the driver, then Newbro's main as built. */
+function newbroMain() {
+  const main = join(here, '../../out/main/index.js')
+  if (!existsSync(main)) throw new Error('no out/main/index.js: run npm run build first')
+  const wrapper = join(dirname(main), 'white-frame.js')
+  writeFileSync(wrapper, `require(${JSON.stringify(join(here, 'newbro-driver.cjs'))})\nrequire('./index.js')\n`)
+  return wrapper
+}
 
 // ── PNG (no dependencies) ────────────────────────────────────────────────
 const CRC = new Int32Array(256).map((_, n) => {
@@ -113,13 +135,14 @@ function label(frame, w, h, inset) {
   }
   let edge = 0, edgeRed = 0
   const y = Math.floor(inset / 2)
-  for (let x = inset; x < w - inset; x += 8) {
+  for (let x = inset; inset && x < w - inset; x += 8) {
     const i = (y * w + x) * 3
     edge++
     if (isRed(frame[i], frame[i + 1], frame[i + 2])) edgeRed++
   }
   const lab = white / n >= 0.9 ? 'W' : white / n >= 0.02 ? 'w' : black / n >= 0.9 ? 'B' : red / n >= 0.9 ? 'R' : '.'
-  return { lab, pure: pure / n, border: edgeRed / edge >= 0.8 }
+  // No inset: Newbro's own window around the tab, no border to check.
+  return { lab, pure: pure / n, border: !inset || edgeRed / edge >= 0.8 }
 }
 
 // ── Capture ──────────────────────────────────────────────────────────────
@@ -156,7 +179,8 @@ function runScenario(name, options) {
     const goDir = mkdtempSync(join(tmpdir(), 'white-frame-'))
     const goFile = join(goDir, 'go')
     const go = () => writeFileSync(goFile, 'go')
-    const app = spawn(electronPath, [...(process.platform === 'linux' ? ['--no-sandbox'] : []), join(here, 'app.cjs')], {
+    const main = NEWBRO ? newbroMain() : join(here, 'app.cjs')
+    const app = spawn(electronPath, [...(process.platform === 'linux' ? ['--no-sandbox'] : []), main], {
       env: { ...process.env, WF_OPTIONS: JSON.stringify(options), WF_GO_FILE: goFile, ELECTRON_ENABLE_LOGGING: '' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -204,11 +228,11 @@ function runScenario(name, options) {
           go()
         }
       }, 20_000)
-      // passthrough: every captured frame once — by default ffmpeg pads a
-      // source with fine-grained timestamps (macOS) to a constant rate,
+      // passthrough on macOS: every captured frame once — by default ffmpeg
+      // pads avfoundation's fine-grained timestamps to a constant rate,
       // repeating frames by the thousand.
       ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...captureInput(rect),
-        '-fps_mode', 'passthrough', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+        ...(process.platform === 'darwin' ? ['-fps_mode', 'passthrough'] : []), '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
         { stdio: ['pipe', 'pipe', 'pipe'] })
       const size = rect.w * rect.h * 3
       ffmpeg.stdout.on('data', (d) => {
@@ -272,15 +296,19 @@ function runScenario(name, options) {
       const s = labels.join('')
       const whiteRuns = [...s.matchAll(/[Ww]+/g)].map((m) => m[0].length)
       const count = (c) => s.split(c).length - 1
-      const black = count('B')
-      // Most frames must show the window (its red border) and a page in it.
-      const verdict = !labels.length || borderless > labels.length * 0.2 || black < labels.length * 0.5
+      // The recording must show the window (its red border) and, before the
+      // first navigation, the page in it.
+      const pageShown = labels.slice(0, 20).filter((l) => l === 'B').length >= 15
+      const verdict = !labels.length || borderless > labels.length * 0.2 || !pageShown
         ? 'NO CAPTURE' : whiteRuns.length ? 'WHITE' : 'clean'
+      // Frames between two pages that aren't white: the window behind or
+      // anything else.
+      const gapRuns = [...s.matchAll(/[R.]+/g)].map((m) => m[0].length)
       mkdirSync(OUT, { recursive: true })
       for (const f of saved) writeFileSync(join(OUT, `${name}-${String(f.index).padStart(4, '0')}-${f.lab}.png`), f.png)
       resolve({
         name, options, verdict, rect, borderless, frames: labels.length, fps: labels.length / (duration || 1), navs,
-        whiteRuns, white: count('W') + count('w'), pureWhite: saved.filter((f) => f.lab === 'W' && f.pure > 0.9).length,
+        whiteRuns, gapRuns, white: count('W') + count('w'), pureWhite: saved.filter((f) => f.lab === 'W' && f.pure > 0.9).length,
         red: count('R'), other: count('.'),
         sequence: s.replace(/B{6,}/g, (m) => `B{${m.length}}`),
         ffmpegErr: ffmpegErr.trim(),
@@ -300,9 +328,9 @@ function runScenario(name, options) {
 
 const xvfb = startXvfb()
 const results = []
-for (const name of names.length ? names : Object.keys(SCENARIOS)) {
+for (const name of names.length ? names : Object.keys(scenarios)) {
   console.log(`\n-- ${name}`)
-  const r = await runScenario(name, SCENARIOS[name])
+  const r = await runScenario(name, scenarios[name])
   results.push(r)
   console.log(`\n== ${name} ${JSON.stringify(r.options)} view ${JSON.stringify(r.rect)}`)
   console.log(`   ${r.verdict}: ${r.frames} frames at ${r.fps.toFixed(1)} fps, ${r.navs} navigations, ` +
@@ -315,8 +343,9 @@ for (const name of names.length ? names : Object.keys(SCENARIOS)) {
 }
 xvfb?.kill()
 
-console.log(`\n${'scenario'.padEnd(22)}verdict      white runs / navigations   frames   fps`)
+console.log(`\n${'scenario'.padEnd(22)}verdict      white runs / navigations   other gaps   frames   fps`)
 for (const r of results) {
-  console.log(`${r.name.padEnd(22)}${r.verdict.padEnd(13)}${`${r.whiteRuns.length} / ${r.navs}`.padEnd(27)}${String(r.frames).padEnd(9)}${r.fps.toFixed(1)}`)
+  console.log(`${r.name.padEnd(22)}${r.verdict.padEnd(13)}${`${r.whiteRuns.length} / ${r.navs}`.padEnd(27)}` +
+    `${String(r.gapRuns.length).padEnd(13)}${String(r.frames).padEnd(9)}${r.fps.toFixed(1)}`)
 }
 console.log(`\nframes saved to ${OUT}`)
