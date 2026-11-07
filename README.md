@@ -13,6 +13,7 @@ A workspace-based desktop browser built with Electron, React and TypeScript. Org
 - **Command palette** — fuzzy-search all commands
 - **Tab comments** — annotate any tab with a short note
 - **Import workspace** — bring tab groups in from exported browser bookmarks
+- **Dark pages** — a built-in dark mode for web pages: Chromium darkens each page as it paints (no white flash, no slowdown, frames included), sites with a dark theme of their own show it, and the moon in the address bar sets it per site, with brightness, contrast and warmth
 
 <details>
 <summary>More screenshots</summary>

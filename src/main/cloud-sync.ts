@@ -26,6 +26,7 @@ export type SyncCategory =
   | 'history'
   | 'permissions'
   | 'extensions'
+  | 'darkPages'
 
 export const SYNC_CATEGORIES: readonly SyncCategory[] = [
   'state',
@@ -34,6 +35,7 @@ export const SYNC_CATEGORIES: readonly SyncCategory[] = [
   'history',
   'permissions',
   'extensions',
+  'darkPages',
 ] as const
 
 /** Adapter a category provides: read its current local payload, and apply an
@@ -159,7 +161,7 @@ function buildSetupPromptInfo(claim: boolean): SetupPromptInfo {
 }
 
 function defaultCategories(): Record<SyncCategory, boolean> {
-  return { state: true, settings: true, bookshelf: true, history: true, permissions: true, extensions: true }
+  return { state: true, settings: true, bookshelf: true, history: true, permissions: true, extensions: true, darkPages: true }
 }
 
 const store = new Store<{ config: SyncConfig }>({

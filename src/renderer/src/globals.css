@@ -709,6 +709,49 @@ kbd.vim-mode[data-indicator="dot"]::before {
   .brand-mark > svg { animation: none !important; }
 }
 
+/* ── Sliders (Dark pages' comfort, components/DarkPagesControls.tsx) ──
+ * A thin track filled up to the thumb in the primary colour (--fill, set by
+ * the slider), a tick where the default sits (--rest), a round thumb that
+ * swells a touch while held. */
+input[type="range"].slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"].slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 9999px;
+  background:
+    linear-gradient(to right, transparent calc(var(--rest, -10%) - 1px), var(--color-muted-foreground) calc(var(--rest, -10%) - 1px), var(--color-muted-foreground) calc(var(--rest, -10%) + 1px), transparent calc(var(--rest, -10%) + 1px)),
+    linear-gradient(to right, var(--color-primary) var(--fill, 0%), var(--color-secondary) var(--fill, 0%));
+}
+input[type="range"].slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: 9999px;
+  background: oklch(1 0 0);
+  border: 3px solid var(--color-primary);
+  box-shadow: 0 1px 4px oklch(0 0 0 / 0.35);
+  transition: transform 120ms ease;
+}
+input[type="range"].slider:hover::-webkit-slider-thumb,
+input[type="range"].slider:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.1);
+}
+input[type="range"].slider:active::-webkit-slider-thumb {
+  transform: scale(1.25);
+}
+input[type="range"].slider:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 /* ── Custom scrollbars ── */
 ::-webkit-scrollbar {
   width: 10px;

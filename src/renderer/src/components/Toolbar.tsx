@@ -5,6 +5,7 @@ import { InputDialog } from './InputDialog'
 import { Omnibox } from './Omnibox'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CertificatePopup } from './CertificatePopup'
+import { DarkPagesButton } from './DarkPagesButton'
 import { ImportWorkspaceDialog } from './ImportWorkspaceDialog'
 import { ExportWorkspaceDialog } from './ExportWorkspaceDialog'
 import type { Workspace, WorkspaceCandidate } from '../store/types'
@@ -68,6 +69,8 @@ interface Props {
   onOpenAbout: () => void
   onOpenSearch: () => void
   onManageExtensions: () => void
+  /** Settings, at Dark pages. */
+  onOpenDarkPagesSettings: () => void
 }
 
 // Stable opener id per Dropdown / AppMenu instance. Echoed back on every
@@ -777,7 +780,7 @@ function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onO
   )
 }
 
-export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vimMode, vimPending, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions }: Props) {
+export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vimMode, vimPending, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions, onOpenDarkPagesSettings }: Props) {
   const isMac = navigator.platform.includes('Mac')
   const urlEditorOpen = useUrlEditorStore((s) => s.open)
   const profiles = useAppStore((s) => s.profiles)
@@ -1482,6 +1485,8 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           {urlEditorOpen
             ? <WorkspaceStats />
             : <Omnibox tabId={activeTabId} tabUrl={activeTab?.url || ''} anchorRef={urlBarRef} />}
+          {/* Dark pages: the page dark or not, and its popover. */}
+          {!urlEditorOpen && <DarkPagesButton url={activeTab?.url || ''} onOpenSettings={onOpenDarkPagesSettings} />}
           {/* Vim's mode at the bar's end, as in every text field. */}
           {vimMode && <VimModeBadge mode={vimMode} pending={vimPending} size="field" />}
           {/* And as a light moving round its edge (Settings → Appearance). */}

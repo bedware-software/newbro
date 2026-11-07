@@ -4,6 +4,7 @@ import type { LucideIcon } from 'lucide-react'
 import type { CloudSyncInfo, SyncCategory, SavedCredentialInfo, PasswordEntryInfo, PasskeyInfo, PasswordImportResult, EdgePasswordSourceInfo, EdgePasswordImportResult, OtherBrowser } from '../App'
 import { DetachedWindow } from './DetachedWindow'
 import { ConfirmDialog } from './ConfirmDialog'
+import { DarkPagesSettings } from './DarkPagesSettings'
 import { ExtensionPermissionList } from './ExtensionPermissionList'
 import { requestExtensionInstall } from '../lib/extension-install'
 import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, DEFAULT_DENSITY, type ThemeChoice, type Density } from '../lib/theme'
@@ -145,6 +146,8 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'add-to-bookshelf': [],
   'toggle-bookshelf': ['CmdOrCtrl+Shift+B'],
   'open-downloads': ['CmdOrCtrl+J'],
+  'dark-pages': ['Alt+Shift+D'],
+  'dark-pages-site': ['Alt+Shift+A'],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -290,7 +293,7 @@ function formatAccelerator(accel: string): React.ReactNode {
   )
 }
 
-export type SettingsTab = 'general' | 'appearance' | 'passwords' | 'network' | 'enterprise' | 'shortcuts' | 'extensions' | 'permissions' | 'sync' | 'about'
+export type SettingsTab = 'general' | 'appearance' | 'darkPages' | 'passwords' | 'network' | 'enterprise' | 'shortcuts' | 'extensions' | 'permissions' | 'sync' | 'about'
 type Tab = SettingsTab
 
 /** Order + labels for the Cloud Sync category checkboxes. */
@@ -301,6 +304,7 @@ const SYNC_CATEGORY_LABELS: { id: SyncCategory; label: string; hint: string }[] 
   { id: 'history', label: 'History', hint: 'Address-bar autocomplete history' },
   { id: 'permissions', label: 'Site permissions', hint: 'Per-site mic / camera / location decisions' },
   { id: 'extensions', label: 'Extensions', hint: 'Installed extensions (re-downloaded per device)' },
+  { id: 'darkPages', label: 'Dark pages', hint: 'On / off, style, comfort and per-site rules' },
 ]
 
 function syncStatusLabel(info: CloudSyncInfo | null): string {
@@ -1422,6 +1426,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 [
                   { id: 'general', label: 'General', icon: SlidersHorizontal },
                   { id: 'appearance', label: 'Appearance', icon: Palette },
+                  { id: 'darkPages', label: 'Dark pages', icon: Moon },
                   { id: 'passwords', label: 'Passwords', icon: KeyRound },
                   { id: 'network', label: 'Network', icon: Wifi },
                   { id: 'enterprise', label: 'Enterprise', icon: Building2 },
@@ -1644,6 +1649,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </div>
               )}
             </div>
+          )}
+
+          {activeTab === 'darkPages' && (
+            <DarkPagesSettings hintSettings={{ vimMode, vimKeymap: vimKeymapText, keybindings }} />
           )}
 
           {activeTab === 'passwords' && (
