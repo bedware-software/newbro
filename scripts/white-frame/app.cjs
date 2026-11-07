@@ -14,11 +14,15 @@
 //            preload), as a slow site would
 //   fix      re-apply the view's background colour when a navigation commits
 //            (what src/main/tab-views.ts does for tabs)
+//   hold     count a history navigation as the user's on the page it leaves
+//            (what tab-views.ts does for Newbro's back/forward)
 //
-// It talks to record.mjs over stdio: prints "WF RECT {x,y,w,h}" (the view, in
-// screen pixels) and "WF READY", waits for "GO" on stdin, navigates, prints
-// "WF END" and quits.
+// It talks to record.mjs: prints "WF RECT {x,y,w,h,inset}" (the window's
+// content in screen pixels, and the view's margin in it) and "WF READY",
+// waits for the file WF_GO_FILE to appear, navigates, prints "WF END" and
+// quits.
 const { app, BrowserWindow, WebContentsView, ipcMain, screen } = require('electron')
+const fs = require('node:fs')
 const http = require('node:http')
 const path = require('node:path')
 
@@ -104,11 +108,18 @@ app.whenReady().then(async () => {
   const vb = view.getBounds()
   const sf = screen.getDisplayMatching(cb).scaleFactor
   const px = (v) => Math.round(v * sf)
-  say('RECT', JSON.stringify({ x: px(cb.x + vb.x), y: px(cb.y + vb.y), w: px(vb.width), h: px(vb.height), scaleFactor: sf }))
+  // The whole window, its border included: a capture that doesn't show the
+  // border's red isn't of this window.
+  say('RECT', JSON.stringify({ x: px(cb.x), y: px(cb.y), w: px(cb.width), h: px(cb.height), inset: px(vb.x), scaleFactor: sf }))
   say('READY')
+  // record.mjs creates WF_GO_FILE once it's recording. (Not stdin: on Windows
+  // Electron's main process never reads it.)
   await new Promise((resolve) => {
-    let buf = ''
-    process.stdin.on('data', (d) => { buf += d; if (buf.includes('GO')) resolve() })
+    const poll = setInterval(() => {
+      if (!fs.existsSync(process.env.WF_GO_FILE)) return
+      clearInterval(poll)
+      resolve()
+    }, 20)
   })
 
   for (let i = 0; i < opt.navs; i++) {

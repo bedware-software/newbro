@@ -566,6 +566,32 @@ function enterPageFullscreen(rec: TabRecord, source: string, pageMetrics?: unkno
   sendToWindowRenderer(rec.windowId, 'tab-event', evt)
 }
 
+/** Calls `colour` as a main-frame navigation commits in a renderer frame of
+ *  its own — another site, an error page — in the same task, before anything
+ *  is drawn. Chromium puts such a page behind a new view (its
+ *  RenderWidgetHostView), which starts out solid white: Electron gives the
+ *  page's colour only to the view being replaced. Chromium covers the new view
+ *  with the old page until the new one's first frame, but only when the user
+ *  had interacted with the old page — so back/forward, a page sending itself
+ *  elsewhere or a site slow to paint showed a blank white frame, sandboxed or
+ *  not. Navigations that keep the frame keep its view and colour. */
+function onMainFrameSwap(wc: WebContents, colour: () => void): void {
+  const frameKey = (): string | null => {
+    try { return `${wc.mainFrame.processId}:${wc.mainFrame.frameToken}` } catch { return null }
+  }
+  let current = frameKey()
+  const committed = (): void => {
+    const key = frameKey()
+    if (key === null || key === current) return
+    current = key
+    colour()
+  }
+  wc.on('did-navigate', committed)
+  wc.on('did-fail-provisional-load', (_e, _code, _description, _url, isMainFrame) => {
+    if (isMainFrame) committed()
+  })
+}
+
 /** The colour the tab's view has now: black while its page is fullscreen,
  *  its resting colour otherwise. */
 function viewBackground(rec: TabRecord): string {
@@ -660,7 +686,7 @@ function wireEvents(rec: TabRecord): void {
   // beforeunload has had its say (so no new "Leave site?"): Chromium then
   // keeps the page up until the next one has painted, as it does for a
   // clicked link, instead of the tab's bare colour in between
-  // (colourSwappedView, below). Same-origin pages get that without asking.
+  // (onMainFrameSwap). Same-origin pages get that without asking.
   wc.on('did-start-navigation', (details) => {
     if (!details.isMainFrame) return
     const target = historyNavigationTarget.get(rec.tabId)
@@ -743,24 +769,13 @@ function wireEvents(rec: TabRecord): void {
       })
     }
   })
-  // A navigation that moves the page to another renderer process — another
-  // site, an error page — swaps in a new view for it (Chromium's
-  // RenderWidgetHostView), and that view starts out solid white: Electron
-  // gives the tab's colour only to the view being replaced. Until the new
-  // page's first frame Chromium covers it with the old page, but only when
-  // the user had interacted with that page — so back/forward, a page sending
-  // itself elsewhere or a site slow to paint showed a blank white frame,
-  // sandboxed or not. These events fire as the swap commits, before anything
-  // is drawn: the new view takes the tab's own colour (see-through, onto
-  // Newbro's background), what it shows where a page paints nothing.
-  const colourSwappedView = (): void => {
+  // The new view of a navigation that swapped renderers takes the tab's own
+  // colour (see onMainFrameSwap): see-through, onto Newbro's background — what
+  // it shows where a page paints nothing.
+  onMainFrameSwap(wc, () => {
     try { rec.view.setBackgroundColor(viewBackground(rec)) } catch { /* view gone */ }
-  }
-  wc.on('did-fail-provisional-load', (_e, _code, _description, _url, isMainFrame) => {
-    if (isMainFrame) colourSwappedView()
   })
   wc.on('did-navigate', (_e, url) => {
-    colourSwappedView()
     emit({ type: 'did-navigate', tabId: rec.tabId, url })
     emitNavState()
     // Record the visit for the address bar's history — typed when the
@@ -981,14 +996,10 @@ function wireEvents(rec: TabRecord): void {
         if (!childWindow.isDestroyed()) childWindow.setBackgroundColor(popupBackground)
       },
     })
-    // As a tab's view (colourSwappedView above): the view swapped in for
-    // another site's page takes the popup's colour, not a blank white.
-    const colourPopupView = (): void => {
+    // As a tab's: the view swapped in for another site's page takes the
+    // popup's colour, not a blank white.
+    onMainFrameSwap(childWindow.webContents, () => {
       if (!childWindow.isDestroyed()) childWindow.setBackgroundColor(popupBackground)
-    }
-    childWindow.webContents.on('did-navigate', colourPopupView)
-    childWindow.webContents.on('did-fail-provisional-load', (_e, _code, _description, _url, isMainFrame) => {
-      if (isMainFrame) colourPopupView()
     })
   })
 

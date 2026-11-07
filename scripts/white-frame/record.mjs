@@ -7,6 +7,8 @@
 //   w  white over 2–90% of it
 //   R  the window's dark red, through a see-through view
 //   .  anything else
+// A scenario whose frames mostly lack the window's red border, or a page,
+// is reported as NO CAPTURE rather than clean: the recording wasn't of it.
 //
 //   node scripts/white-frame/record.mjs [scenario ...] [--fps=60] [--out=dir]
 //
@@ -20,7 +22,8 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import zlib from 'node:zlib'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -91,20 +94,32 @@ function png(w, h, rgb) {
 }
 
 // ── Frame labels ─────────────────────────────────────────────────────────
-function label(frame, w, h) {
-  const m = Math.min(8, Math.floor(Math.min(w, h) / 10))
+const isRed = (r, g, b) => r >= 0x28 && r <= 0x60 && g <= 0x18 && b <= 0x18
+
+/** Labels the view's area of a frame of the window (w x h, the view `inset`
+ *  from its edges); `border` says whether the window's red margin is there —
+ *  if not, the capture isn't showing this window. */
+function label(frame, w, h, inset) {
+  const m = Math.min(8, Math.floor(inset / 2))
   let n = 0, white = 0, pure = 0, black = 0, red = 0
-  for (let y = m; y < h - m; y += 4) {
-    for (let x = m, i = (y * w + m) * 3; x < w - m; x += 4, i += 12) {
+  for (let y = inset + m; y < h - inset - m; y += 4) {
+    for (let x = inset + m, i = (y * w + x) * 3; x < w - inset - m; x += 4, i += 12) {
       const r = frame[i], g = frame[i + 1], b = frame[i + 2]
       n++
       if (r >= 250 && g >= 250 && b >= 250) { white++; if (r === 255 && g === 255 && b === 255) pure++ }
       else if (r <= 12 && g <= 12 && b <= 12) black++
-      else if (r >= 0x28 && r <= 0x60 && g <= 0x18 && b <= 0x18) red++
+      else if (isRed(r, g, b)) red++
     }
   }
+  let edge = 0, edgeRed = 0
+  const y = Math.floor(inset / 2)
+  for (let x = inset; x < w - inset; x += 8) {
+    const i = (y * w + x) * 3
+    edge++
+    if (isRed(frame[i], frame[i + 1], frame[i + 2])) edgeRed++
+  }
   const lab = white / n >= 0.9 ? 'W' : white / n >= 0.02 ? 'w' : black / n >= 0.9 ? 'B' : red / n >= 0.9 ? 'R' : '.'
-  return { lab, pure: pure / n }
+  return { lab, pure: pure / n, border: edgeRed / edge >= 0.8 }
 }
 
 // ── Capture ──────────────────────────────────────────────────────────────
@@ -118,10 +133,11 @@ function captureInput({ x, y, w, h }) {
       '-offset_x', String(x), '-offset_y', String(y), '-video_size', `${w}x${h}`, '-i', 'desktop']
   }
   if (macScreen === null) {
-    const list = spawnSync('ffmpeg', ['-hide_banner', '-f', 'avfoundation', '-list_devices', 'true', '-i', ''], { encoding: 'utf8' })
-    const m = /\[(\d+)\] Capture screen 0/.exec(list.stderr)
-    if (!m) throw new Error(`no screen among avfoundation devices:\n${list.stderr}`)
-    macScreen = m[1]
+    const list = spawnSync('ffmpeg', ['-hide_banner', '-f', 'avfoundation', '-list_devices', 'true', '-i', ''],
+      { encoding: 'utf8', timeout: 20_000 })
+    const m = /\[(\d+)\] Capture screen 0/.exec(list.stderr ?? '')
+    console.log(`avfoundation devices:\n${(list.stderr ?? '').trim() || list.error}`)
+    macScreen = m ? m[1] : 'Capture screen 0'
   }
   return ['-f', 'avfoundation', '-framerate', String(FPS), '-capture_cursor', '0', '-pixel_format', 'bgr0', '-i', `${macScreen}:none`,
     '-vf', `crop=${w}:${h}:${x}:${y}`]
@@ -137,9 +153,12 @@ function startXvfb() {
 
 function runScenario(name, options) {
   return new Promise((resolve) => {
+    const goDir = mkdtempSync(join(tmpdir(), 'white-frame-'))
+    const goFile = join(goDir, 'go')
+    const go = () => writeFileSync(goFile, 'go')
     const app = spawn(electronPath, [...(process.platform === 'linux' ? ['--no-sandbox'] : []), join(here, 'app.cjs')], {
-      env: { ...process.env, WF_OPTIONS: JSON.stringify(options), ELECTRON_ENABLE_LOGGING: '' },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, WF_OPTIONS: JSON.stringify(options), WF_GO_FILE: goFile, ELECTRON_ENABLE_LOGGING: '' },
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
     const appLog = []
     let rect = null
@@ -153,13 +172,22 @@ function runScenario(name, options) {
     let finished = false
     let navs = 0
 
+    let borderless = 0
+    let ended = false
+    let endedAt = 0
     const onFrame = (frame) => {
-      const { lab, pure } = label(frame, rect.w, rect.h)
+      if (ended) return // the window is going away
+      const { lab, pure, border } = label(frame, rect.w, rect.h, rect.inset)
       labels.push(lab)
-      if (!started) started = Date.now()
+      if (!border) { borderless++; if (process.env.WF_DEBUG) console.log(`   [${name}] frame ${labels.length - 1} (${lab}) without border`) }
+      if (!started) {
+        started = Date.now()
+        console.log(`   [${name}] first frame`)
+      }
       if (!goSent && labels.length >= 20) {
         goSent = true
-        app.stdin.write('GO\n')
+        console.log(`   [${name}] go`)
+        go()
       }
       const keep = lab === 'W' ? saved.filter((s) => s.lab === 'W').length < 4
         : (lab === 'B' || lab === 'R') && !saved.some((s) => s.lab === lab)
@@ -173,10 +201,14 @@ function runScenario(name, options) {
       noFrames = setTimeout(() => {
         if (!goSent) {
           goSent = true
-          app.stdin.write('GO\n')
+          go()
         }
       }, 20_000)
-      ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...captureInput(rect), '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+      // passthrough: every captured frame once — by default ffmpeg pads a
+      // source with fine-grained timestamps (macOS) to a constant rate,
+      // repeating frames by the thousand.
+      ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...captureInput(rect),
+        '-fps_mode', 'passthrough', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
         { stdio: ['pipe', 'pipe', 'pipe'] })
       const size = rect.w * rect.h * 3
       ffmpeg.stdout.on('data', (d) => {
@@ -190,7 +222,7 @@ function runScenario(name, options) {
       ffmpeg.on('exit', () => {
         if (!goSent) {
           goSent = true
-          app.stdin.write('GO\n') // let the app finish; the result says capture failed
+          go() // let the app finish; the result says capture failed
         }
       })
     }
@@ -204,27 +236,50 @@ function runScenario(name, options) {
         lineBuf = lineBuf.slice(i + 1)
         appLog.push(line)
         if (line.startsWith('WF RECT ')) rect = JSON.parse(line.slice(8))
-        else if (line === 'WF READY') startCapture()
+        else if (line === 'WF READY') {
+          console.log(`   [${name}] window ${JSON.stringify(rect)}, capturing`)
+          startCapture()
+        }
         else if (line.startsWith('WF NAV ')) navs++
+        else if (line === 'WF END') { ended = true; endedAt = Date.now() }
       }
     })
     app.stderr.on('data', (d) => appLog.push(String(d).trimEnd()))
+
+    // Stop reading and stop ffmpeg — for good: one left capturing would hold
+    // the screen and the CPU from the next scenario.
+    const stopCapture = () => {
+      const proc = ffmpeg
+      if (!proc) return
+      proc.stdout.removeAllListeners('data')
+      proc.stdout.destroy()
+      if (proc.exitCode !== null || proc.signalCode !== null) return
+      if (process.platform === 'win32') proc.kill()
+      else proc.kill('SIGINT')
+      setTimeout(() => {
+        if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL')
+      }, 1500).unref()
+    }
 
     const finish = () => {
       if (finished) return
       finished = true
       clearTimeout(noFrames)
       clearTimeout(giveUp)
-      const duration = (Date.now() - started) / 1000
+      stopCapture()
+      rmSync(goDir, { recursive: true, force: true })
+      const duration = ((endedAt || Date.now()) - started) / 1000
       const s = labels.join('')
       const whiteRuns = [...s.matchAll(/[Ww]+/g)].map((m) => m[0].length)
       const count = (c) => s.split(c).length - 1
       const black = count('B')
-      const verdict = !labels.length || black < labels.length * 0.5 ? 'NO CAPTURE' : whiteRuns.length ? 'WHITE' : 'clean'
+      // Most frames must show the window (its red border) and a page in it.
+      const verdict = !labels.length || borderless > labels.length * 0.2 || black < labels.length * 0.5
+        ? 'NO CAPTURE' : whiteRuns.length ? 'WHITE' : 'clean'
       mkdirSync(OUT, { recursive: true })
       for (const f of saved) writeFileSync(join(OUT, `${name}-${String(f.index).padStart(4, '0')}-${f.lab}.png`), f.png)
       resolve({
-        name, options, verdict, rect, frames: labels.length, fps: labels.length / (duration || 1), navs,
+        name, options, verdict, rect, borderless, frames: labels.length, fps: labels.length / (duration || 1), navs,
         whiteRuns, white: count('W') + count('w'), pureWhite: saved.filter((f) => f.lab === 'W' && f.pure > 0.9).length,
         red: count('R'), other: count('.'),
         sequence: s.replace(/B{6,}/g, (m) => `B{${m.length}}`),
@@ -233,29 +288,28 @@ function runScenario(name, options) {
       })
     }
 
-    app.on('exit', () => {
-      setTimeout(() => {
-        if (ffmpeg && ffmpeg.exitCode === null) {
-          ffmpeg.on('exit', finish)
-          if (process.platform === 'win32') ffmpeg.kill()
-          else ffmpeg.kill('SIGINT')
-          setTimeout(finish, 3000)
-        } else finish()
-      }, 300)
-    })
-    const giveUp = setTimeout(() => { if (!finished) app.kill() }, 120_000)
+    app.on('exit', () => setTimeout(finish, 300))
+    const giveUp = setTimeout(() => {
+      if (finished) return
+      console.log(`   [${name}] no end after 120 s, stopping it`)
+      app.kill()
+      setTimeout(finish, 3000)
+    }, 120_000)
   })
 }
 
 const xvfb = startXvfb()
 const results = []
 for (const name of names.length ? names : Object.keys(SCENARIOS)) {
+  console.log(`\n-- ${name}`)
   const r = await runScenario(name, SCENARIOS[name])
   results.push(r)
   console.log(`\n== ${name} ${JSON.stringify(r.options)} view ${JSON.stringify(r.rect)}`)
   console.log(`   ${r.verdict}: ${r.frames} frames at ${r.fps.toFixed(1)} fps, ${r.navs} navigations, ` +
-    `${r.whiteRuns.length} white runs ${JSON.stringify(r.whiteRuns)}, ${r.red} frames of the window behind`)
+    `${r.whiteRuns.length} white runs ${JSON.stringify(r.whiteRuns)}, ${r.red} frames of the window behind` +
+    (r.borderless ? `, ${r.borderless} frames without the window's border` : ''))
   console.log(`   ${r.sequence}`)
+  if (r.fps > 200) console.log(`   (${r.fps.toFixed(0)} fps: ffmpeg is repeating frames)`)
   if (r.ffmpegErr) console.log(`   ffmpeg: ${r.ffmpegErr.split('\n').slice(0, 5).join(' | ')}`)
   for (const l of r.appLog) console.log(`   app: ${l}`)
 }
