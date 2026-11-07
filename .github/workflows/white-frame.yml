@@ -1,0 +1,58 @@
+name: White frame check
+
+# Records the screen while a tab-like view goes back and forth between two
+# black pages on different sites, and counts the frames where the page's area
+# is blank white (scripts/white-frame/record.mjs). Runs on every platform
+# Newbro ships on; the frames it flags are uploaded as an artifact.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/**']
+    paths:
+      - 'scripts/white-frame/**'
+      - '.github/workflows/white-frame.yml'
+
+jobs:
+  record:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Install ffmpeg and Xvfb (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg xvfb
+
+      - name: Record
+        run: node scripts/white-frame/record.mjs
+
+      - name: Upload frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: white-frame-${{ runner.os }}
+          path: out/white-frame
+          if-no-files-found: ignore
