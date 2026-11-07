@@ -640,6 +640,75 @@ kbd.vim-mode[data-indicator="dot"]::before {
   .mode-edge i { animation-play-state: paused !important; }
 }
 
+/* ── The app's mark on the Menu button (BrandMark) ──
+ * Two katanas crossed into a V, in Vim's mode's colours: COMMAND's blue and
+ * cyan (off's too), INSERT's green and teal. Three copies; a change of mode
+ * (data-glitch, half a second) tears it — bands of the front copy jump
+ * sideways while the two behind, in the other mode's colours and the mode's
+ * third, flash through the gaps. Moves by transform and clip alone. */
+.brand-mark {
+  --c1: var(--vim-edge-command-1);
+  --c2: var(--vim-edge-command-2);
+  --c3: var(--vim-edge-command-3);
+  --a1: var(--vim-edge-insert-1);
+  --a3: var(--vim-edge-insert-3);
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+.brand-mark[data-mode="insert"] {
+  --c1: var(--vim-edge-insert-1);
+  --c2: var(--vim-edge-insert-2);
+  --c3: var(--vim-edge-insert-3);
+  --a1: var(--vim-edge-command-1);
+  --a3: var(--vim-edge-command-3);
+}
+.brand-mark > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.brand-mark > svg + svg { opacity: 0; }
+.brand-mark > svg:nth-child(2) { --c1: var(--a1); --c3: var(--a3); }
+.brand-mark > svg:nth-child(3) { --c1: var(--c2); --c3: var(--c2); }
+.brand-mark[data-glitch] > svg:nth-child(1) { animation: brand-glitch-front 560ms steps(1) both; }
+.brand-mark[data-glitch] > svg:nth-child(2) { animation: brand-glitch-back 560ms steps(1) both; }
+.brand-mark[data-glitch] > svg:nth-child(3) { animation: brand-glitch-third 560ms steps(1) both; }
+@keyframes brand-glitch-front {
+  0% { clip-path: inset(0 0 50% 0); translate: 0 0; }
+  15% { clip-path: inset(0 0 0 0); translate: 6% 0; }
+  30% { opacity: 0; }
+  45% { opacity: 1; clip-path: inset(35% 0 0 0); translate: -8% 0; }
+  60% { clip-path: inset(0 0 0 0); translate: 0 0; }
+  75% { clip-path: inset(0 0 30% 0); translate: 3% 0; }
+  100% { clip-path: inset(0 0 0 0); translate: 0 0; opacity: 1; }
+}
+@keyframes brand-glitch-back {
+  0% { opacity: 1; clip-path: inset(50% 0 0 0); translate: 10% 0; }
+  15% { opacity: 1; clip-path: inset(20% 0 50% 0); translate: -12% 0; }
+  30% { opacity: 1; clip-path: inset(0 0 0 0); translate: 0 0; }
+  45% { opacity: 1; clip-path: inset(0 0 65% 0); translate: 8% 0; }
+  60% { opacity: 0; }
+  75% { opacity: 1; clip-path: inset(70% 0 0 0); translate: -6% 0; }
+  100% { opacity: 0; }
+}
+@keyframes brand-glitch-third {
+  0% { opacity: 0; }
+  15% { opacity: 1; clip-path: inset(50% 0 20% 0); translate: 14% 0; }
+  30% { opacity: 0; }
+  45% { opacity: 1; clip-path: inset(60% 0 0 0); translate: -14% 0; }
+  60% { opacity: 0; }
+  75% { opacity: 1; clip-path: inset(0 0 72% 0); translate: 12% 0; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-mark > svg { animation: none !important; }
+}
+
 /* ── Sliders (Dark pages' comfort, components/DarkPagesControls.tsx) ──
  * A thin track filled up to the thumb in the primary colour (--fill, set by
  * the slider), a tick where the default sits (--rest), a round thumb that

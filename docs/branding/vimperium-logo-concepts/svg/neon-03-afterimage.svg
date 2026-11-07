@@ -1,0 +1,57 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="pl" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 16%, var(--bg, #1a1a1a))"/>
+      <stop offset="1" stop-color="color-mix(in oklch, var(--c2, #bb9af7) 12%, var(--bg, #1a1a1a))"/>
+    </linearGradient>
+    <radialGradient id="wash" cx="0.5" cy="0.55" r="0.5">
+      <stop offset="0" stop-color="var(--c1, #7aa2f7)" stop-opacity="0.36"/>
+      <stop offset="1" stop-color="var(--c1, #7aa2f7)" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="pc"><rect x="2" y="2" width="60" height="60" rx="6"/></clipPath>
+    <clipPath id="cA"><path d="M0 0H64V27H0ZM0 34H64V40.5H0ZM0 43.5H64V64H0Z"/></clipPath>
+    <clipPath id="cB"><rect x="0" y="27" width="64" height="7"/></clipPath>
+    <clipPath id="cC"><rect x="0" y="40.5" width="64" height="3"/></clipPath>
+    <path id="v" d="M14 13L32 52L50 13" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="w" d="M15.8 11.4L33.8 50.4L51.8 11.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <filter id="f" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.7"/></filter>
+    <g id="tube">
+      <!-- violet ghost, left-down -->
+      <use href="#v" stroke="var(--c2, #bb9af7)" stroke-width="4.6" opacity="0.5" transform="translate(-3 2.2)"/>
+      <!-- halos -->
+      <use href="#v" stroke="var(--c1, #7aa2f7)" stroke-width="15" opacity="0.24" filter="url(#f)"/>
+      <use href="#v" stroke="var(--c1, #7aa2f7)" stroke-width="10" opacity="0.3"/>
+      <!-- glass edge, core -->
+      <use href="#v" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 35%, var(--bg, #1a1a1a))" stroke-width="7"/>
+      <use href="#v" stroke="var(--c1, #7aa2f7)" stroke-width="4.4"/>
+      <!-- cyan afterimage tube, right-up, with its own glass -->
+      <use href="#w" stroke="color-mix(in oklch, var(--c3, #7dcfff) 45%, var(--bg, #1a1a1a))" stroke-width="3.2" opacity="0.9"/>
+      <use href="#w" stroke="var(--c3, #7dcfff)" stroke-width="1.8"/>
+    </g>
+  </defs>
+  <!-- screen plate -->
+  <rect x="2" y="2" width="60" height="60" rx="6" fill="url(#pl)" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 45%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+  <g clip-path="url(#pc)">
+    <rect x="2" y="2" width="60" height="60" fill="url(#wash)"/>
+    <g stroke="var(--c3, #7dcfff)" stroke-width="1.5" opacity="0.07">
+      <path d="M2 7H62M2 11H62M2 15H62M2 19H62M2 23H62M2 27H62M2 31H62M2 35H62M2 39H62M2 43H62M2 47H62M2 51H62M2 55H62M2 59H62"/>
+    </g>
+  </g>
+  <!-- HUD brackets + readout -->
+  <g fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="1.5" stroke-linecap="round" opacity="0.75">
+    <path d="M6 14V6H14"/><path d="M50 6H58V14"/><path d="M6 50V58H14"/><path d="M58 50V58H50"/>
+  </g>
+  <g fill="color-mix(in oklch, var(--c1, #7aa2f7) 55%, var(--bg, #1a1a1a))">
+    <rect x="23" y="57" width="6" height="1.6"/><rect x="31" y="57" width="3" height="1.6"/><rect x="36" y="57" width="6" height="1.6"/>
+  </g>
+  <!-- the tube, torn into three slices -->
+  <g clip-path="url(#cA)"><use href="#tube"/></g>
+  <g clip-path="url(#cB)"><use href="#tube" transform="translate(4.5 0)"/></g>
+  <g clip-path="url(#cC)"><use href="#tube" transform="translate(-3 0)"/></g>
+  <!-- tear edges + one hot dropped pixel -->
+  <g stroke="var(--c3, #7dcfff)" stroke-width="1.5" opacity="0.35">
+    <path d="M8 27H56M8 34H56"/>
+  </g>
+  <rect x="53" y="28.5" width="4" height="4" fill="var(--hot, #ff5fb0)"/>
+  <rect x="53" y="28.5" width="4" height="4" fill="var(--hot, #ff5fb0)" opacity="0.35" transform="translate(-2 -2) scale(1.5)" transform-origin="55 30.5"/>
+</svg>

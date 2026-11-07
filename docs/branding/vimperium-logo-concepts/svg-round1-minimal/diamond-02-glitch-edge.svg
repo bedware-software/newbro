@@ -1,0 +1,11 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <!-- local rhombus: centre 32,32 half-diag 26; whole composition re-centred by (-2,+2) -->
+  <g transform="translate(-2 2)">
+    <!-- rhombus minus a 10-unit band along its top-right edge -->
+    <path d="M32 6V20.14L43.86 32H58L32 58 6 32Z" fill="var(--c1, #7aa2f7)"/>
+    <!-- that band, slipped 4 units out along the diagonal: the glitched tile -->
+    <path d="M36 2 62 28H47.86L36 16.14Z" fill="var(--c2, #bb9af7)"/>
+    <!-- V knocked out, fixed in place; its right corner bites the slipped band -->
+    <path d="M17 24H25L32 39.3 39 24H47L36 48H28Z" fill="var(--bg, #1a1a1a)"/>
+  </g>
+</svg>

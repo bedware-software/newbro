@@ -1,0 +1,31 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="gp" gradientUnits="userSpaceOnUse" x1="4" y1="4" x2="60" y2="60"><stop offset="0" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 20%, var(--bg, #1a1a1a))"/><stop offset="1" stop-color="color-mix(in oklch, var(--c2, #bb9af7) 12%, var(--bg, #1a1a1a))"/></linearGradient>
+<linearGradient id="gv" gradientUnits="userSpaceOnUse" x1="0" y1="16" x2="0" y2="44"><stop offset="0" stop-color="color-mix(in oklch, var(--c3, #7dcfff) 80%, var(--fg, #e0e0e0))"/><stop offset="0.4" stop-color="var(--c3, #7dcfff)"/><stop offset="1" stop-color="var(--c1, #7aa2f7)"/></linearGradient>
+<radialGradient id="gw" gradientUnits="userSpaceOnUse" cx="32" cy="30" r="30"><stop offset="0" stop-color="var(--c1, #7aa2f7)" stop-opacity="0.28"/><stop offset="1" stop-color="var(--c1, #7aa2f7)" stop-opacity="0"/></radialGradient>
+<filter id="fl" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.8"/></filter>
+<filter id="fh" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.1"/></filter>
+<pattern id="sl" width="64" height="2.4" patternUnits="userSpaceOnUse"><rect width="64" height="1.2" fill="var(--c3, #7dcfff)"/></pattern>
+<clipPath id="cp"><polygon points="8,8 49.4,8 56,14.6 56,56 14.6,56 8,49.4"/></clipPath>
+<g id="v"><polygon points="32,32.1 32,32.1 39.8,16.5 45.6,16.5 46.93,18.65 34.5,43.5 32,43.5"/><polygon points="17.07,18.65 18.4,16.5 24.2,16.5 28.96,26.02 32.3,24.35 32.3,24.35 22.4,29.3"/><polygon points="29.72,27.54 32,32.1 32.3,31.5 32.3,43.5 29.5,43.5 23.16,30.82"/></g>
+</defs>
+<polygon points="4,5.5 5.5,4 51,4 60,13 60,58.5 58.5,60 13,60 4,51" fill="url(#gp)"/>
+<g clip-path="url(#cp)"><rect x="4" y="4" width="56" height="56" fill="url(#gw)"/><rect x="4" y="13" width="56" height="47" fill="url(#sl)" opacity=".13"/></g>
+<polygon points="4,5.5 5.5,4 51,4 60,13 60,58.5 58.5,60 13,60 4,51" fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="3" opacity=".6" filter="url(#fl)"/>
+<polygon points="4,5.5 5.5,4 51,4 60,13 60,58.5 58.5,60 13,60 4,51" fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M4 30V7L7 4H28" fill="none" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 55%, var(--fg, #e0e0e0))" stroke-width="1.5" opacity=".85" stroke-linecap="round"/>
+<polygon points="8,8 49.4,8 56,14.6 56,56 14.6,56 8,49.4" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="1.5" opacity=".45"/>
+<polygon points="6,6 38,6 43,12.5 6,12.5" fill="var(--c1, #7aa2f7)"/>
+<polygon points="41.5,6 50.8,6 58,13.2 58,12.5 45,12.5" fill="color-mix(in oklch, var(--c1, #7aa2f7) 55%, var(--bg, #1a1a1a))"/>
+<g fill="var(--bg, #1a1a1a)"><rect x="9" y="8.2" width="2.2" height="2.2"/><rect x="12.6" y="8.2" width="2.2" height="2.2"/><rect x="16.2" y="8.2" width="2.2" height="2.2"/><rect x="22" y="8.5" width="9" height="1.6"/></g>
+<use href="#v" fill="var(--c3, #7dcfff)" opacity=".55" filter="url(#fh)"/>
+<polygon points="17.07,18.65 18.4,16.5 24.2,16.5 32,32.1 39.8,16.5 45.6,16.5 46.93,18.65 34.5,43.5 29.5,43.5" fill="none" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 20%, var(--bg, #1a1a1a))" stroke-width="2" stroke-linejoin="round"/>
+<use href="#v" fill="url(#gv)"/>
+<line x1="43.4" y1="20.6" x2="31.6" y2="42" stroke="color-mix(in oklch, var(--c3, #7dcfff) 60%, var(--fg, #e0e0e0))" stroke-width="1.5" opacity=".85"/>
+<rect x="10" y="46.5" width="44" height="3.2" fill="color-mix(in oklch, var(--c2, #bb9af7) 60%, var(--bg, #1a1a1a))"/>
+<rect x="10" y="46.5" width="12" height="3.2" fill="var(--c2, #bb9af7)"/>
+<g fill="var(--bg, #1a1a1a)" opacity=".8"><rect x="25" y="47.3" width="6" height="1.6"/><rect x="33" y="47.3" width="3" height="1.6"/><rect x="46" y="47.3" width="5" height="1.6"/></g>
+<g fill="var(--hot, #ff5fb0)"><rect x="10.4" y="50.6" width="3" height="3" filter="url(#fh)" opacity=".9"/><rect x="10.4" y="50.6" width="3" height="3"/><rect x="10.4" y="54.4" width="3" height="3" filter="url(#fh)" opacity=".9"/><rect x="10.4" y="54.4" width="3" height="3"/></g>
+<rect x="16.2" y="50.6" width="4.4" height="6.8" fill="var(--c3, #7dcfff)"/>
+<g fill="var(--c3, #7dcfff)"><rect x="55.2" y="55.2" width="1.8" height="1.8"/><rect x="7" y="55.2" width="1.8" height="1.8"/></g>
+</svg>

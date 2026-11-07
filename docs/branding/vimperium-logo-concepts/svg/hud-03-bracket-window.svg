@@ -1,0 +1,66 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="vg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="var(--c3, #7dcfff)"/>
+      <stop offset="1" stop-color="var(--c1, #7aa2f7)"/>
+    </linearGradient>
+    <linearGradient id="bg1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="var(--c1, #7aa2f7)"/>
+      <stop offset="1" stop-color="var(--c2, #bb9af7)"/>
+    </linearGradient>
+    <radialGradient id="wash" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="var(--c1, #7aa2f7)" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="var(--c1, #7aa2f7)" stop-opacity="0"/>
+    </radialGradient>
+    <path id="v" d="M13 15L16 12H23L32 37.7L41 12H48L51 15L37 52H27Z"/>
+    <clipPath id="rows"><rect x="0" y="0" width="64" height="29"/><rect x="0" y="33.5" width="64" height="30.5"/></clipPath>
+    <clipPath id="band"><rect x="0" y="29" width="64" height="4.5"/></clipPath>
+    <filter id="f" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.8"/></filter>
+    <!-- the whole window: brackets, ticks, V -->
+    <g id="scene">
+      <g fill="url(#bg1)">
+        <path d="M2 6L4 4H10V60H4L2 58V56H6V8H2Z"/>
+        <path d="M62 6L60 4H54V60H60L62 58V56H58V8H62Z"/>
+      </g>
+      <path d="M11.5 10V54M52.5 10V54" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="1" opacity="0.6"/>
+      <g fill="none" stroke="var(--c3, #7dcfff)" stroke-width="1.6" stroke-linecap="square">
+        <path d="M10 16H14.5M10 21H13M10 43H13M10 48H14.5"/>
+        <path d="M54 16H49.5M54 21H51M54 43H51M54 48H49.5"/>
+      </g>
+      <path d="M10 38H15M54 38H49" fill="none" stroke="var(--hot, #ff5fb0)" stroke-width="2"/>
+      <use href="#v" fill="url(#vg)"/>
+      <path d="M23 12L32 37.7L41 12H37L32 26.3L27 12Z" fill="var(--bg, #1a1a1a)" opacity="0.14"/>
+      <use href="#v" fill="none" stroke="var(--c2, #bb9af7)" stroke-width="1.1" opacity="0.9"/>
+      <g fill="none" stroke="var(--c3, #7dcfff)" stroke-width="1.5" stroke-linecap="round">
+        <path d="M16 17.5L26.5 47" opacity="0.9"/>
+        <path d="M48 17.5L37.5 47" opacity="0.5"/>
+      </g>
+      <rect x="-6.5" y="-0.9" width="13" height="1.8" transform="translate(44.7 20.3) rotate(19.3)" fill="var(--bg, #1a1a1a)" opacity="0.92"/>
+    </g>
+  </defs>
+  <ellipse cx="32" cy="32" rx="26" ry="28" fill="url(#wash)"/>
+  <!-- glow + plain halo for the no-filter case -->
+  <use href="#v" fill="var(--c1, #7aa2f7)" opacity="0.6" filter="url(#f)"/>
+  <use href="#v" fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="3" opacity="0.2"/>
+  <!-- the window, with one band torn out and slid 3.5 to the right -->
+  <use href="#scene" clip-path="url(#rows)"/>
+  <g clip-path="url(#band)">
+    <use href="#scene" transform="translate(3.5 0)"/>
+    <rect x="0" y="29" width="64" height="4.5" fill="var(--c2, #bb9af7)" opacity="0.25"/>
+  </g>
+  <!-- scanline band -->
+  <rect x="10" y="29" width="44" height="4.5" fill="color-mix(in oklch, var(--c3, #7dcfff) 40%, transparent)"/>
+  <rect x="10" y="29" width="44" height="0.9" fill="var(--c3, #7dcfff)" opacity="0.7"/>
+  <!-- readout bar at the sill -->
+  <g>
+    <rect x="21" y="56" width="4" height="2.6" fill="var(--c3, #7dcfff)"/>
+    <rect x="26" y="56" width="4" height="2.6" fill="var(--c3, #7dcfff)" opacity="0.75"/>
+    <rect x="31" y="56" width="4" height="2.6" fill="var(--c3, #7dcfff)" opacity="0.5"/>
+    <rect x="36" y="56" width="4" height="2.6" fill="var(--c3, #7dcfff)" opacity="0.3"/>
+    <rect x="41" y="56" width="2.6" height="2.6" fill="var(--hot, #ff5fb0)"/>
+  </g>
+  <!-- header hairline + tiny blocks -->
+  <rect x="14" y="5.5" width="36" height="1" fill="var(--c1, #7aa2f7)" opacity="0.6"/>
+  <rect x="14" y="8" width="6" height="1.6" fill="var(--c3, #7dcfff)" opacity="0.7"/>
+  <rect x="44" y="8" width="6" height="1.6" fill="var(--c3, #7dcfff)" opacity="0.7"/>
+</svg>

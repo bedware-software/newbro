@@ -1,0 +1,78 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="pl" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="color-mix(in oklch, var(--c2, #bb9af7) 20%, var(--bg, #1a1a1a))"/>
+      <stop offset="1" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 8%, var(--bg, #1a1a1a))"/>
+    </linearGradient>
+    <radialGradient id="wash" cx="0.55" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="var(--c1, #7aa2f7)" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="var(--c1, #7aa2f7)" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="hg">
+      <stop offset="0" stop-color="var(--hot, #ff5fb0)" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="var(--hot, #ff5fb0)" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="pc"><path d="M9 2H62V55L55 62H2V9Z"/></clipPath>
+    <path id="a" d="M53 10L36.5 48L32 37.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path id="b" d="M27.9 28.2L20 10" fill="none" stroke-linecap="round"/>
+    <filter id="f" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.6"/></filter>
+  </defs>
+  <!-- plate with two cut corners, scanlines, statusline strip -->
+  <path d="M9 2H62V55L55 62H2V9Z" fill="url(#pl)" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 45%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+  <g clip-path="url(#pc)">
+    <rect x="2" y="2" width="60" height="60" fill="url(#wash)"/>
+    <g stroke="var(--c3, #7dcfff)" stroke-width="1.5" opacity="0.07">
+      <path d="M2 6H62M2 10H62M2 14H62M2 18H62M2 22H62M2 26H62M2 30H62M2 34H62M2 38H62M2 42H62M2 46H62M2 50H62"/>
+    </g>
+    <rect x="2" y="54" width="60" height="8" fill="color-mix(in oklch, var(--c1, #7aa2f7) 26%, var(--bg, #1a1a1a))"/>
+    <rect x="2" y="54" width="60" height="1.5" fill="color-mix(in oklch, var(--c1, #7aa2f7) 50%, var(--bg, #1a1a1a))"/>
+  </g>
+  <!-- statusline: mode block, position ticks -->
+  <rect x="6" y="56.5" width="9" height="3" fill="var(--c1, #7aa2f7)" opacity="0.9"/>
+  <g fill="color-mix(in oklch, var(--c1, #7aa2f7) 60%, var(--bg, #1a1a1a))">
+    <rect x="18" y="56.5" width="5" height="3"/><rect x="25" y="56.5" width="2" height="3"/>
+    <rect x="38" y="56.5" width="4" height="3"/><rect x="44" y="56.5" width="6" height="3"/>
+  </g>
+  <path d="M55 62L62 55" stroke="var(--c1, #7aa2f7)" stroke-width="1.5" opacity="0.6"/>
+  <path d="M2 9L9 2" stroke="var(--c1, #7aa2f7)" stroke-width="1.5" opacity="0.6"/>
+  <!-- sockets + feed wires -->
+  <g fill="color-mix(in oklch, var(--c1, #7aa2f7) 50%, var(--bg, #1a1a1a))">
+    <rect x="17.5" y="3" width="5" height="4.5" rx="0.8"/><rect x="50.5" y="3" width="5" height="4.5" rx="0.8"/>
+  </g>
+  <g stroke="color-mix(in oklch, var(--c1, #7aa2f7) 50%, var(--bg, #1a1a1a))" stroke-width="1.5">
+    <path d="M20 7V11"/><path d="M53 7V11"/>
+  </g>
+  <!-- halos -->
+  <g fill="none" filter="url(#f)" clip-path="url(#pc)">
+    <use href="#a" stroke="var(--c1, #7aa2f7)" stroke-width="14" opacity="0.26"/>
+    <use href="#b" stroke="var(--c1, #7aa2f7)" stroke-width="14" opacity="0.26"/>
+  </g>
+  <g fill="none">
+    <use href="#a" stroke="var(--c1, #7aa2f7)" stroke-width="9" opacity="0.32"/>
+    <use href="#b" stroke="var(--c1, #7aa2f7)" stroke-width="9" opacity="0.32"/>
+  </g>
+  <!-- glass, core, highlight -->
+  <g stroke="color-mix(in oklch, var(--c1, #7aa2f7) 35%, var(--bg, #1a1a1a))" stroke-width="6" fill="none">
+    <use href="#a"/><use href="#b"/>
+  </g>
+  <use href="#a" stroke="var(--c1, #7aa2f7)" stroke-width="3.8"/>
+  <use href="#b" stroke="var(--c1, #7aa2f7)" stroke-width="3.8"/>
+  <use href="#a" stroke="var(--c3, #7dcfff)" stroke-width="1.8"/>
+  <use href="#b" stroke="var(--c3, #7dcfff)" stroke-width="1.8"/>
+  <!-- mounting clips -->
+  <g fill="color-mix(in oklch, var(--c1, #7aa2f7) 60%, var(--bg, #1a1a1a))">
+    <rect x="-1.3" y="-4.8" width="2.6" height="9.6" rx="0.8" transform="translate(23.6 18.3) rotate(113.5)"/>
+    <rect x="-1.3" y="-4.8" width="2.6" height="9.6" rx="0.8" transform="translate(45.6 27) rotate(66.5)"/>
+  </g>
+  <!-- the colon: two hot neon dots, glass ring + halo -->
+  <g>
+    <circle cx="11" cy="26" r="7" fill="url(#hg)"/><circle cx="11" cy="40" r="7" fill="url(#hg)"/>
+    <circle cx="11" cy="26" r="4.3" fill="color-mix(in oklch, var(--hot, #ff5fb0) 35%, var(--bg, #1a1a1a))"/>
+    <circle cx="11" cy="40" r="4.3" fill="color-mix(in oklch, var(--hot, #ff5fb0) 35%, var(--bg, #1a1a1a))"/>
+    <circle cx="11" cy="26" r="2.4" fill="var(--hot, #ff5fb0)"/><circle cx="11" cy="40" r="2.4" fill="var(--hot, #ff5fb0)"/>
+  </g>
+  <!-- electrode tips at the break -->
+  <g fill="color-mix(in oklch, var(--c3, #7dcfff) 70%, var(--bg, #1a1a1a))">
+    <circle cx="27.9" cy="28.2" r="1.3"/><circle cx="32" cy="37.7" r="1.3"/>
+  </g>
+</svg>

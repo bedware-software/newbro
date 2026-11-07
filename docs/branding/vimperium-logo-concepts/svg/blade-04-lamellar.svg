@@ -1,0 +1,38 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="g3" x1="0" y1="0" x2=".35" y2="1"><stop offset="0" stop-color="var(--c3, #7dcfff)"/><stop offset="1" stop-color="color-mix(in oklch, var(--c3, #7dcfff) 66%, var(--bg, #1a1a1a))"/></linearGradient><linearGradient id="g1" x1="0" y1="0" x2=".35" y2="1"><stop offset="0" stop-color="var(--c1, #7aa2f7)"/><stop offset="1" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 66%, var(--bg, #1a1a1a))"/></linearGradient><linearGradient id="g2" x1="0" y1="0" x2=".35" y2="1"><stop offset="0" stop-color="var(--c2, #bb9af7)"/><stop offset="1" stop-color="color-mix(in oklch, var(--c2, #bb9af7) 66%, var(--bg, #1a1a1a))"/></linearGradient>
+  <linearGradient id="gh" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--hot, #ff5fb0)"/><stop offset="1" stop-color="color-mix(in oklch, var(--hot, #ff5fb0) 70%, var(--bg, #1a1a1a))"/></linearGradient>
+  <filter id="gl" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.5"/></filter>
+  <clipPath id="rm"><polygon points="48.45,20.98 36.57,15.69 32.71,24.37 44.58,29.66"/></clipPath>
+  <g id="lp">
+<polygon points="11.45,6 23.05,6 26.82,14.32 14.94,19.61 11.12,11.02" fill="url(#g3)"/>
+<polygon points="15.55,20.98 27.43,15.69 31.29,24.37 19.42,29.66" fill="url(#g1)"/>
+<path d="M12.05,6.9L22.25,6.9" stroke="color-mix(in oklch, var(--c3, #7dcfff) 50%, var(--fg, #e0e0e0))" stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".9"/>
+<path d="M16.65,21.47L27.06,16.84" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 50%, var(--fg, #e0e0e0))" stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".9"/>
+<path d="M15.31,18.46L25.72,13.82" stroke="color-mix(in oklch, var(--c3, #7dcfff) 45%, var(--bg, #1a1a1a))" stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".9"/>
+<path d="M19.78,28.51L30.2,23.87" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 45%, var(--bg, #1a1a1a))" stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".9"/>
+<g fill="var(--bg, #1a1a1a)" opacity=".8"><rect x="13.26" y="10.3" width="1.8" height="1.8"/><rect x="20.2" y="7.21" width="1.8" height="1.8"/><rect x="18.42" y="21.9" width="1.8" height="1.8"/><rect x="25.36" y="18.81" width="1.8" height="1.8"/><rect x="22.9" y="31.95" width="1.8" height="1.8"/></g>
+  </g>
+</defs>
+<!-- chromatic ghost -->
+<polygon points="8.85,6 23.05,6 32,26 40.95,6 55.15,6 32,58" fill="var(--c2, #bb9af7)" opacity=".45" transform="translate(-2.4 1.6)"/>
+<polygon points="8.85,6 23.05,6 32,26 40.95,6 55.15,6 32,58" fill="var(--hot, #ff5fb0)" opacity=".25" transform="translate(2 -1)"/>
+<!-- seam light under the plates -->
+<g fill="none" stroke="var(--c3, #7dcfff)" stroke-width="3" opacity=".7" filter="url(#gl)"><path d="M14.7,20.54L27.67,14.76"/><path d="M19.17,30.58L32.15,24.81"/><g transform="matrix(-1 0 0 1 64 0)"><path d="M14.7,20.54L27.67,14.76"/><path d="M19.17,30.58L32.15,24.81"/></g><path d="M25 45.75L39 45.75"/></g>
+<g fill="none" stroke="color-mix(in oklch, var(--c3, #7dcfff) 35%, var(--fg, #e0e0e0))" stroke-width="2.4"><path d="M14.7,20.54L27.67,14.76"/><path d="M19.17,30.58L32.15,24.81"/><g transform="matrix(-1 0 0 1 64 0)"><path d="M14.7,20.54L27.67,14.76"/><path d="M19.17,30.58L32.15,24.81"/></g><path d="M25 45.75L39 45.75"/></g>
+<!-- plates -->
+<polygon points="20.03,31.03 31.9,25.74 32.1,25.74 43.97,31.03 37.79,45 26.21,45" fill="url(#g2)"/>
+<path d="M20.39,31.85L32.27,26.56" stroke="color-mix(in oklch, var(--c2, #bb9af7) 50%, var(--fg, #e0e0e0))" stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".9"/>
+<g transform="matrix(-1 0 0 1 64 0)"><path d="M20.39,31.85L32.27,26.56" stroke="color-mix(in oklch, var(--c2, #bb9af7) 50%, var(--fg, #e0e0e0))" stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".9"/></g>
+<path d="M27.2 44.1L36.8 44.1" stroke="color-mix(in oklch, var(--c2, #bb9af7) 45%, var(--bg, #1a1a1a))" stroke-width="1.5" stroke-linecap="round" opacity=".9"/>
+<use href="#lp"/>
+<use href="#lp" transform="matrix(-1 0 0 1 64 0)"/>
+<g clip-path="url(#rm)" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 40%, var(--bg, #1a1a1a))" stroke-width="2" fill="none"><path d="M34 30L46 18"/><path d="M38 32L50 20"/><path d="M42 34L54 22"/></g>
+<!-- the hot tip -->
+<polygon points="26.88,46.5 37.12,46.5 32,58" fill="var(--hot, #ff5fb0)" opacity=".6" filter="url(#gl)"/>
+<polygon points="26.88,46.5 37.12,46.5 32,58" fill="url(#gh)"/>
+<path d="M28.2 47.4L35.8 47.4" stroke="color-mix(in oklch, var(--hot, #ff5fb0) 45%, var(--fg, #e0e0e0))" stroke-width="1.5" stroke-linecap="round" opacity=".9"/>
+<!-- diamond gem in the chevron -->
+<polygon points="32,32.9 35.2,36.5 32,40.1 28.8,36.5" fill="var(--bg, #1a1a1a)" opacity=".85"/>
+<polygon points="32,34 34.1,36.5 32,39 29.9,36.5" fill="var(--c3, #7dcfff)"/>
+</svg>

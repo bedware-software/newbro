@@ -1,0 +1,31 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="pg" gradientUnits="userSpaceOnUse" x1="2" y1="2" x2="62" y2="62"><stop offset="0" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 24%, var(--bg, #1a1a1a))"/><stop offset="1" stop-color="color-mix(in oklch, var(--c2, #bb9af7) 12%, var(--bg, #1a1a1a))"/></linearGradient>
+<linearGradient id="vg" gradientUnits="userSpaceOnUse" x1="0" y1="12" x2="0" y2="52"><stop offset="0" stop-color="var(--c3, #7dcfff)"/><stop offset=".55" stop-color="var(--c1, #7aa2f7)"/><stop offset="1" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 78%, var(--bg, #1a1a1a))"/></linearGradient>
+<pattern id="sc" width="64" height="3" patternUnits="userSpaceOnUse"><rect width="64" height="1" fill="var(--c1, #7aa2f7)" opacity=".09"/></pattern>
+<filter id="f" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="1.7"/></filter>
+<path id="v" d="M11 12L20 12L32 37.26L44 12L53 12L55.03 14.03L37 52L27 52L8.97 14.03Z"/>
+<clipPath id="vc"><use href="#v"/></clipPath>
+<clipPath id="pc"><polygon points="2,2 52,2 62,12 62,62 12,62 2,52"/></clipPath>
+<clipPath id="b0"><rect x="-8" y="12" width="80" height="7"/></clipPath><clipPath id="b1"><rect x="-8" y="20" width="80" height="6"/></clipPath><clipPath id="b2"><rect x="-8" y="27" width="80" height="5"/></clipPath><clipPath id="b3"><rect x="-8" y="33" width="80" height="5"/></clipPath><clipPath id="b4"><rect x="-8" y="39" width="80" height="6"/></clipPath><clipPath id="b5"><rect x="-8" y="46" width="80" height="6"/></clipPath>
+<g id="vb"><rect x="0" y="8" width="64" height="48" fill="url(#vg)"/><polygon points="15.75,12 20,12 32,37.26 27.75,37.26" fill="var(--bg, #1a1a1a)" opacity=".12"/><polygon points="32,37.26 44,12 48.25,12 36.25,37.26" fill="var(--bg, #1a1a1a)" opacity=".12"/><path d="M9.63 11.23L28.63 51.23M54.37 11.23L35.37 51.23" stroke="color-mix(in oklch, var(--c3, #7dcfff) 55%, var(--fg, #e0e0e0))" stroke-width="1.5" opacity=".75"/></g>
+</defs>
+<polygon points="2,2 52,2 62,12 62,62 12,62 2,52" fill="url(#pg)"/>
+<rect width="64" height="64" fill="url(#sc)" clip-path="url(#pc)"/>
+<polygon points="2,2 52,2 62,12 62,62 12,62 2,52" fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="1.3" opacity=".55"/>
+<path d="M5 14V5H14" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="1.5" opacity=".9"/>
+<path d="M59 50V59H50" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="1.5" opacity=".9"/>
+<use href="#v" fill="var(--c1, #7aa2f7)" opacity=".55" filter="url(#f)"/>
+<use href="#v" fill="none" stroke="var(--c2, #bb9af7)" stroke-width="1.2" opacity=".6" transform="translate(-2.4 0)"/>
+<use href="#v" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="1.2" opacity=".6" transform="translate(2.4 0)"/>
+<use href="#v" fill="color-mix(in oklch, var(--c1, #7aa2f7) 38%, var(--bg, #1a1a1a))"/>
+<g clip-path="url(#b0)"><g transform="translate(0 0)" clip-path="url(#vc)"><use href="#vb"/><rect x="0" y="12" width="64" height="1.2" fill="color-mix(in oklch, var(--c3, #7dcfff) 40%, var(--fg, #e0e0e0))" opacity="0.55"/></g></g>
+<g clip-path="url(#b1)"><g transform="translate(3 0)" clip-path="url(#vc)"><rect x="0" y="8" width="64" height="48" fill="var(--c2, #bb9af7)"/><polygon points="15.75,12 20,12 32,37.26 27.75,37.26" fill="var(--bg, #1a1a1a)" opacity=".12"/><polygon points="32,37.26 44,12 48.25,12 36.25,37.26" fill="var(--bg, #1a1a1a)" opacity=".12"/><rect x="0" y="20" width="64" height="1.2" fill="color-mix(in oklch, var(--c3, #7dcfff) 40%, var(--fg, #e0e0e0))" opacity="0.55"/></g></g>
+<g clip-path="url(#b2)"><g transform="translate(-2.5 0)" clip-path="url(#vc)"><use href="#vb"/><rect x="0" y="27" width="64" height="1.2" fill="color-mix(in oklch, var(--c3, #7dcfff) 40%, var(--fg, #e0e0e0))" opacity="0.55"/></g></g>
+<g clip-path="url(#b3)"><g transform="translate(4 0)" clip-path="url(#vc)"><use href="#vb"/><rect x="0" y="33" width="64" height="1.2" fill="color-mix(in oklch, var(--c3, #7dcfff) 40%, var(--fg, #e0e0e0))" opacity="0"/><rect x="0" y="33" width="64" height="1.6" fill="var(--hot, #ff5fb0)"/></g></g>
+<g clip-path="url(#b4)"><g transform="translate(-1.5 0)" clip-path="url(#vc)"><rect x="0" y="8" width="64" height="48" fill="var(--c3, #7dcfff)"/><polygon points="15.75,12 20,12 32,37.26 27.75,37.26" fill="var(--bg, #1a1a1a)" opacity=".12"/><polygon points="32,37.26 44,12 48.25,12 36.25,37.26" fill="var(--bg, #1a1a1a)" opacity=".12"/><rect x="0" y="39" width="64" height="1.2" fill="color-mix(in oklch, var(--c3, #7dcfff) 40%, var(--fg, #e0e0e0))" opacity="0.55"/></g></g>
+<g clip-path="url(#b5)"><g transform="translate(1.5 0)" clip-path="url(#vc)"><use href="#vb"/><rect x="0" y="46" width="64" height="1.2" fill="color-mix(in oklch, var(--c3, #7dcfff) 40%, var(--fg, #e0e0e0))" opacity="0.55"/></g></g>
+<rect x="7" y="56.5" width="24" height="1.6" fill="var(--c1, #7aa2f7)" opacity=".6"/>
+<rect x="33" y="56.5" width="6" height="1.6" fill="var(--c1, #7aa2f7)" opacity=".3"/>
+<rect x="41" y="55.5" width="4" height="3.6" fill="var(--hot, #ff5fb0)"/>
+</svg>

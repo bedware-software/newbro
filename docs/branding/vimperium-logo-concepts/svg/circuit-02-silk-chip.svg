@@ -1,0 +1,56 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="color-mix(in oklch, var(--c2, #bb9af7) 30%, var(--bg, #1a1a1a))"/>
+      <stop offset="1" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 12%, var(--bg, #1a1a1a))"/>
+    </linearGradient>
+    <radialGradient id="die" cx="0.5" cy="0.45" r="0.5">
+      <stop offset="0" stop-color="var(--c1, #7aa2f7)" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="var(--c1, #7aa2f7)" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="color-mix(in oklch, var(--c3, #7dcfff) 55%, var(--bg, #1a1a1a))"/>
+      <stop offset="1" stop-color="var(--c3, #7dcfff)"/>
+    </linearGradient>
+    <linearGradient id="pinr" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0" stop-color="color-mix(in oklch, var(--c3, #7dcfff) 55%, var(--bg, #1a1a1a))"/>
+      <stop offset="1" stop-color="var(--c3, #7dcfff)"/>
+    </linearGradient>
+    <path id="silk" d="M18 15H24L32 37L35.8 26.5H41.8L35 45H29ZM40 15H46L42.7 24H36.7Z"/>
+    <filter id="f" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.8"/></filter>
+  </defs>
+  <!-- pins: three a side, pin 1 hot -->
+  <g>
+    <rect x="3" y="13.5" width="10" height="5" rx="1.2" fill="var(--hot, #ff5fb0)"/>
+    <rect x="3" y="29.5" width="10" height="5" rx="1.2" fill="url(#pin)"/>
+    <rect x="3" y="45.5" width="10" height="5" rx="1.2" fill="url(#pin)"/>
+    <rect x="51" y="13.5" width="10" height="5" rx="1.2" fill="url(#pinr)"/>
+    <rect x="51" y="29.5" width="10" height="5" rx="1.2" fill="url(#pinr)"/>
+    <rect x="51" y="45.5" width="10" height="5" rx="1.2" fill="url(#pinr)"/>
+    <rect x="1" y="12" width="14" height="8" rx="2" fill="var(--hot, #ff5fb0)" opacity="0.28"/>
+  </g>
+  <!-- body: chamfered package, double outline, notch -->
+  <path d="M15 5H46L52 11V56L49 59H18L12 53V8Z" fill="url(#body)" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 60%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+  <rect x="12" y="5" width="40" height="54" fill="url(#die)"/>
+  <path d="M17 8H45L49.5 12.5V53.5L47 56H19L14.5 51.5V10.5Z" fill="none" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 32%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+  <path d="M12 53V8L15 5H46" fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="1.5" opacity="0.5"/>
+  <path d="M52 11V56L49 59H18" fill="none" stroke="color-mix(in oklch, var(--c2, #bb9af7) 55%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+  <g fill="none" stroke="color-mix(in oklch, var(--c3, #7dcfff) 60%, var(--bg, #1a1a1a))" stroke-width="1.5" stroke-linejoin="round">
+    <path d="M14 32H18L21.5 28.5"/><path d="M50 32H46L42.5 35.5"/>
+  </g>
+  <g fill="color-mix(in oklch, var(--c3, #7dcfff) 80%, var(--bg, #1a1a1a))"><circle cx="21.5" cy="28.5" r="1.5"/><circle cx="42.5" cy="35.5" r="1.5"/></g>
+  <path d="M28 5A4 4 0 0 0 36 5" fill="var(--bg, #1a1a1a)" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 60%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+  <!-- silkscreen: glow, then the V with a stencil break -->
+  <use href="#silk" fill="var(--c3, #7dcfff)" opacity="0.55" filter="url(#f)"/>
+  <use href="#silk" fill="var(--c3, #7dcfff)" opacity="0.25" stroke="var(--c3, #7dcfff)" stroke-width="3" stroke-linejoin="round"/>
+  <use href="#silk" fill="var(--c3, #7dcfff)"/>
+  <!-- inner stroke of the silk: a second, darker V inside the letter -->
+  <path d="M21.5 18L29.6 40.5M42.5 18L39.3 26.5M36 26.5L32.5 41.5" fill="none" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 45%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+  <!-- silkscreen marks: pin-1 dot, label box, barcode -->
+  <circle cx="18.5" cy="12" r="1.7" fill="var(--hot, #ff5fb0)"/>
+  <g fill="color-mix(in oklch, var(--c3, #7dcfff) 65%, var(--bg, #1a1a1a))">
+    <rect x="18" y="49" width="2" height="4"/><rect x="21.5" y="49" width="1.5" height="4"/><rect x="24.5" y="49" width="3" height="4"/><rect x="29" y="49" width="1.5" height="4"/>
+    <rect x="38" y="51.5" width="8" height="1.5"/><rect x="41" y="48.5" width="5" height="1.5"/>
+  </g>
+  <rect x="38" y="8.5" width="8" height="4" fill="none" stroke="color-mix(in oklch, var(--c3, #7dcfff) 55%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+</svg>

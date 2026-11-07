@@ -1,0 +1,63 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="pl" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="color-mix(in oklch, var(--c1, #7aa2f7) 22%, var(--bg, #1a1a1a))"/>
+      <stop offset="1" stop-color="color-mix(in oklch, var(--c2, #bb9af7) 10%, var(--bg, #1a1a1a))"/>
+    </linearGradient>
+    <linearGradient id="cur" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="var(--c3, #7dcfff)"/>
+      <stop offset="1" stop-color="color-mix(in oklch, var(--c3, #7dcfff) 70%, var(--c1, #7aa2f7))"/>
+    </linearGradient>
+    <radialGradient id="wash" cx="0.78" cy="0.25" r="0.5">
+      <stop offset="0" stop-color="var(--c3, #7dcfff)" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="var(--c3, #7dcfff)" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="hatch" width="3" height="3" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)">
+      <rect width="1.5" height="3" fill="var(--c2, #bb9af7)" opacity="0.07"/>
+    </pattern>
+    <clipPath id="pc"><path d="M16 2H59L62 5V59L59 62H5L2 59V16Z"/></clipPath>
+    <path id="v" d="M11 12L29.5 48.5H34.5L48 26"/>
+    <path id="w" d="M19 12L32.5 41.5L43 24"/>
+    <filter id="f" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.6"/></filter>
+  </defs>
+  <!-- board -->
+  <path d="M16 2H59L62 5V59L59 62H5L2 59V16Z" fill="url(#pl)" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 48%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+  <g clip-path="url(#pc)">
+    <rect x="2" y="2" width="60" height="60" fill="url(#hatch)"/>
+    <rect x="2" y="2" width="60" height="60" fill="url(#wash)"/>
+    <g fill="none" filter="url(#f)" stroke-linejoin="round">
+      <use href="#v" stroke="var(--c1, #7aa2f7)" stroke-width="11" opacity="0.3"/>
+      <rect x="40" y="6" width="17" height="23" fill="var(--c3, #7dcfff)" stroke="none" opacity="0.4"/>
+    </g>
+  </g>
+  <path d="M2 16L16 2" stroke="var(--c1, #7aa2f7)" stroke-width="1.5" opacity="0.7"/>
+  <!-- buffer text lines inside the mouth of the V, and a tail trace from the cursor -->
+  <g fill="color-mix(in oklch, var(--c1, #7aa2f7) 50%, var(--bg, #1a1a1a))">
+    <rect x="28" y="11" width="12" height="2.5" rx="0.6"/><rect x="31" y="17" width="9" height="2.5" rx="0.6"/><rect x="34" y="23" width="6" height="2.5" rx="0.6"/>
+  </g>
+  <path d="M54 14H56.5L59 11.5" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="2.2" stroke-linejoin="round" opacity="0.8"/>
+  <!-- silkscreen bracket, bottom-right -->
+  <path d="M52 56H58V50" fill="none" stroke="color-mix(in oklch, var(--c3, #7dcfff) 50%, var(--bg, #1a1a1a))" stroke-width="1.5"/>
+  <g fill="color-mix(in oklch, var(--c3, #7dcfff) 55%, var(--bg, #1a1a1a))"><rect x="8" y="54" width="2" height="4"/><rect x="12" y="54" width="2" height="4"/><rect x="16" y="54" width="2" height="4"/></g>
+  <!-- plain halo so it reads without the filter -->
+  <use href="#v" fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="9" stroke-linejoin="round" opacity="0.2"/>
+  <!-- the V trace: relief + copper core; inner hot pair -->
+  <use href="#v" fill="none" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 30%, var(--bg, #1a1a1a))" stroke-width="8" stroke-linejoin="round"/>
+  <use href="#w" fill="none" stroke="color-mix(in oklch, var(--c1, #7aa2f7) 30%, var(--bg, #1a1a1a))" stroke-width="5" stroke-linejoin="round"/>
+  <use href="#v" fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="5" stroke-linejoin="round"/>
+  <use href="#w" fill="none" stroke="var(--hot, #ff5fb0)" stroke-width="2.2" stroke-linejoin="round"/>
+  <g fill="none" stroke="var(--c3, #7dcfff)" stroke-width="2.2" stroke-linecap="round">
+    <path d="M17.8 25.4L20.5 30.8"/><path d="M42.4 35.3L40.3 38.8"/>
+  </g>
+  <!-- block cursor: glow ring, body, scanlines -->
+  <rect x="40.5" y="6.5" width="16" height="22" rx="1" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="1.5" opacity="0.45"/>
+  <rect x="43" y="9" width="11" height="17" fill="url(#cur)"/>
+  <g fill="color-mix(in oklch, var(--c1, #7aa2f7) 22%, var(--bg, #1a1a1a))"><rect x="43" y="14" width="11" height="1.5"/><rect x="43" y="20" width="11" height="1.5"/></g>
+  <!-- pads: via at the start of the V, hot via for the pair, via at the tail -->
+  <circle cx="11" cy="12" r="7" fill="var(--c3, #7dcfff)" opacity="0.22"/>
+  <circle cx="11" cy="12" r="4.6" fill="var(--c3, #7dcfff)"/>
+  <circle cx="11" cy="12" r="1.9" fill="color-mix(in oklch, var(--c1, #7aa2f7) 22%, var(--bg, #1a1a1a))"/>
+  <circle cx="19" cy="12" r="2.9" fill="var(--hot, #ff5fb0)"/>
+  <circle cx="19" cy="12" r="1.2" fill="color-mix(in oklch, var(--c1, #7aa2f7) 22%, var(--bg, #1a1a1a))"/>
+  <circle cx="59" cy="11.5" r="2.4" fill="var(--c3, #7dcfff)"/>
+</svg>

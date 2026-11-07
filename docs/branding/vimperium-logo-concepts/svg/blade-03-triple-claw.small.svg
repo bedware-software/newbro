@@ -1,0 +1,5 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<path d="M-7.5 0L7.5 -1.5Q1.88 21.6 2.6 48L-2.6 48Z" fill="var(--c1, #7aa2f7)" transform="matrix(-1 0 0 1 64 0) translate(11.5 7.5) rotate(-25.5)"/>
+<path d="M-7.5 0L7.5 -1.5Q1.88 21.6 2.6 48L-2.6 48Z" fill="var(--c1, #7aa2f7)" transform="translate(11.5 7.5) rotate(-25.5)"/>
+<path d="M32 43.5L38.5 52L32 61L25.5 52Z" fill="var(--hot, #ff5fb0)"/>
+</svg>

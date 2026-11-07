@@ -11,6 +11,7 @@ import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normal
 import { VIM_INDICATORS, DEFAULT_VIM_INDICATOR, normalizeVimIndicator, type VimIndicator } from '../lib/vim-indicator'
 import { VimModeBadge } from './VimModeBadge'
 import { ModeEdge } from './ModeEdge'
+import { BADGE_URL } from '../lib/brand-badge'
 import { VIM_EDGES, DEFAULT_VIM_EDGE, DEFAULT_VIM_EDGE_EVERYWHERE, normalizeVimEdge, type VimEdge } from '../lib/vim-edge'
 import { useAppStore } from '../store/app-store'
 import { DEFAULT_VIM_KEYMAP, parseVimKeymap } from '../lib/vim-keymap'
@@ -3422,12 +3423,17 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
             <div className="flex flex-col gap-8 max-w-2xl">
               {/* App identity + version + storage paths in one divided card. */}
               <section>
-                <h2 className="text-sm font-semibold text-foreground mb-1">
-                  {appPaths?.appName || 'Newbro'}
-                </h2>
-                <p className="text-xs text-muted-foreground mb-3">
-                  Workspace-based browser with profiles and tab groups.
-                </p>
+                <div className="flex items-center gap-3 mb-3">
+                  <img src={BADGE_URL} alt="" width={48} height={48} className="shrink-0 select-none" draggable={false} />
+                  <div>
+                    <h2 className="text-sm font-semibold text-foreground mb-1">
+                      {appPaths?.appName || 'Newbro'}
+                    </h2>
+                    <p className="text-xs text-muted-foreground">
+                      Workspace-based browser with profiles and tab groups.
+                    </p>
+                  </div>
+                </div>
                 <div className="flex flex-col divide-y divide-border border border-input rounded-md bg-card overflow-hidden">
                   <div className="flex items-center justify-between gap-4 px-4 py-3">
                     <div className="text-sm font-medium text-foreground">Version</div>

@@ -1,0 +1,67 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="cone" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="var(--c3, #7dcfff)" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="var(--c3, #7dcfff)" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="holo" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="var(--c3, #7dcfff)"/>
+      <stop offset="0.6" stop-color="var(--c3, #7dcfff)" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="var(--c1, #7aa2f7)" stop-opacity="0.75"/>
+    </linearGradient>
+    <linearGradient id="base" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="var(--c1, #7aa2f7)"/>
+      <stop offset="1" stop-color="var(--c2, #bb9af7)"/>
+    </linearGradient>
+    <pattern id="lines" width="4" height="3" patternUnits="userSpaceOnUse">
+      <rect width="4" height="1" fill="var(--bg, #1a1a1a)" opacity="0.35"/>
+    </pattern>
+    <path id="v" d="M12 13L15 10H22L32 35.3L42 10H49L52 13L37 48H27Z"/>
+    <clipPath id="rows"><rect x="0" y="0" width="64" height="18"/><rect x="0" y="23" width="64" height="10"/><rect x="0" y="36.5" width="64" height="27.5"/></clipPath>
+    <clipPath id="bandA"><rect x="0" y="18" width="64" height="5"/></clipPath>
+    <clipPath id="bandB"><rect x="0" y="33" width="64" height="3.5"/></clipPath>
+    <filter id="f" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2"/></filter>
+  </defs>
+  <!-- light cone from the projector slot -->
+  <path d="M25 52H39L58 6H6Z" fill="url(#cone)"/>
+  <!-- corner brackets of the projection volume -->
+  <g fill="none" stroke="var(--c1, #7aa2f7)" stroke-width="2.5" opacity="0.8">
+    <path d="M3 12V3H12M52 3H61V12M3 36V45H12M52 45H61V36"/>
+  </g>
+  <!-- glow + halo -->
+  <use href="#v" fill="var(--c3, #7dcfff)" opacity="0.55" filter="url(#f)"/>
+  <use href="#v" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="3" opacity="0.18"/>
+  <!-- hologram body (rows between the torn bands) -->
+  <g clip-path="url(#rows)">
+    <use href="#v" fill="url(#holo)"/>
+    <use href="#v" fill="url(#lines)"/>
+    <path d="M22 10L32 35.3L42 10H38L32 25.2L26 10Z" fill="var(--bg, #1a1a1a)" opacity="0.14"/>
+    <use href="#v" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="1" opacity="0.9"/>
+  </g>
+  <!-- ghost slices: two bands of the V slide sideways in violet -->
+  <g clip-path="url(#bandA)" transform="translate(3.5 0)">
+    <use href="#v" fill="var(--c2, #bb9af7)" opacity="0.9"/>
+    <use href="#v" fill="url(#lines)"/>
+  </g>
+  <g clip-path="url(#bandB)" transform="translate(-3 0)">
+    <use href="#v" fill="var(--c2, #bb9af7)" opacity="0.9"/>
+    <use href="#v" fill="url(#lines)"/>
+  </g>
+  <!-- flicker ghost above the mark -->
+  <use href="#v" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="0.8" opacity="0.35" transform="translate(0 -2)"/>
+  <!-- bright flicker line at the edge of the upper tear -->
+  <rect x="8" y="22.6" width="48" height="0.8" fill="var(--c3, #7dcfff)" opacity="0.7"/>
+  <!-- projector base: chamfered bar, slot, status leds -->
+  <path d="M6 54L9 51H55L58 54V59L56 61H8L6 59Z" fill="url(#base)"/>
+  <path d="M9 51H55L58 54H6Z" fill="var(--c3, #7dcfff)" opacity="0.35"/>
+  <rect x="25" y="52.5" width="14" height="2" fill="var(--hot, #ff5fb0)" opacity="0.7" filter="url(#f)"/>
+  <rect x="25" y="52.5" width="14" height="2" fill="var(--hot, #ff5fb0)"/>
+  <g fill="var(--bg, #1a1a1a)" opacity="0.55">
+    <rect x="10" y="56.5" width="3" height="2"/><rect x="14.5" y="56.5" width="3" height="2"/><rect x="19" y="56.5" width="3" height="2"/>
+    <rect x="45" y="56.5" width="9" height="2"/>
+  </g>
+  <rect x="10" y="56.5" width="3" height="2" fill="var(--c3, #7dcfff)"/>
+  <rect x="14.5" y="56.5" width="3" height="2" fill="var(--c3, #7dcfff)" opacity="0.6"/>
+  <!-- base feet -->
+  <path d="M8 61H14M50 61H56" fill="none" stroke="var(--c2, #bb9af7)" stroke-width="2" opacity="0.8"/>
+</svg>

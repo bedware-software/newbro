@@ -21,6 +21,7 @@ import type { DownloadEntry } from '../App'
 import type { VimMode } from '../lib/vim-mode'
 import { VimModeBadge } from './VimModeBadge'
 import { ModeEdge } from './ModeEdge'
+import { BrandMark } from './BrandMark'
 import { WorkspaceStats } from './WorkspaceStats'
 import { useUrlEditorStore } from '../lib/url-editor'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
@@ -581,9 +582,12 @@ function ExtensionActions({
   )
 }
 
-function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onOpenDownloads }: { sidebarVisible: boolean; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void; onOpenDownloads: () => void }) {
+function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onOpenDownloads }: { sidebarVisible: boolean; vimMode: VimMode | null; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void; onOpenDownloads: () => void }) {
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
+  // The mark on the button glitches as the pointer comes onto it, as it
+  // does when Vim's mode changes.
+  const [markGlitch, setMarkGlitch] = useState(0)
   const [menuLabel, setMenuLabel] = useState('Menu')
   // Live updater phase, surfaced as a small badge on the Menu button (replacing
   // the old floating toast): 'checking' → spinner, an update in flight
@@ -740,7 +744,8 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
       <button
         onMouseDown={() => { pressedOpenRef.current = open }}
         onClick={handleToggle}
-        className="h-8 px-2 shrink-0 flex items-center gap-1 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium"
+        onPointerEnter={() => setMarkGlitch((n) => n + 1)}
+        className="h-8 px-2 shrink-0 flex items-center gap-1.5 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium"
         title={
           updateChecking ? 'Checking for updates…'
             : updateReady ? 'Update ready — open menu to restart & install'
@@ -748,7 +753,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
             : menuLabel
         }
       >
-        <Menu size={15} />
+        <BrandMark mode={vimMode} glitchKey={markGlitch} />
         <span>{menuLabel}</span>
       </button>
       {/* Update status badge — mirrors the downloads button. Spinner while
@@ -1323,7 +1328,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
         } as React.CSSProperties}
       >
         {/* App menu */}
-        <AppMenu sidebarVisible={sidebarVisible} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} onOpenDownloads={openDownloadsPage} />
+        <AppMenu sidebarVisible={sidebarVisible} vimMode={vimMode ?? null} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} onOpenDownloads={openDownloadsPage} />
 
         {/* Profile selector */}
         <Dropdown

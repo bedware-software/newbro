@@ -1,0 +1,7 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<g transform="translate(32 32) scale(.95) translate(-32 -32)">
+<polygon points="14,2 50,2 62,14 62,36 42,62 22,62 2,36 2,14" fill="color-mix(in oklch, var(--c1, #7aa2f7) 34%, var(--bg, #1a1a1a))"/>
+<path d="M6 14L32 44L58 14" fill="none" stroke="var(--c3, #7dcfff)" stroke-width="9.5" stroke-linejoin="miter"/>
+<polygon points="32,6.9 35.6,10.5 32,14.1 28.4,10.5" fill="var(--hot, #ff5fb0)"/>
+</g>
+</svg>
