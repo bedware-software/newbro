@@ -56,7 +56,17 @@ app.whenReady().then(async () => {
   }
   if (!wc) { say('FAIL no tab'); app.exit(1); return }
   if (opt.how === 'back') await wc.loadURL(B)
-  await sleep(2000)
+  // A new tab focuses the address bar, whose suggestions open in a window of
+  // their own over the page: give the page the keyboard, and put away any
+  // other window of Newbro's still showing.
+  wc.focus()
+  await sleep(1000)
+  for (const other of BrowserWindow.getAllWindows()) {
+    if (other === win || other.isDestroyed() || !other.isVisible()) continue
+    say('NOTE', `hid another window: ${other.webContents.getURL().slice(0, 80)} ${JSON.stringify(other.getBounds())}`)
+    other.hide()
+  }
+  await sleep(1000)
 
   const view = win.contentView.children.find((v) => v.webContents === wc)
   const cb = win.getContentBounds()
