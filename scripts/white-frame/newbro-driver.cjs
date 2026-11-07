@@ -63,6 +63,7 @@ app.whenReady().then(async () => {
   const vb = view.getBounds()
   const sf = screen.getDisplayMatching(cb).scaleFactor
   const px = (v) => Math.round(v * sf)
+  say('NOTE', `content ${JSON.stringify(cb)}, tab view ${JSON.stringify(vb)}, tabs ${win.contentView.children.length} views`)
   // The tab's own area: no border of ours around it to check (inset 0).
   say('RECT', JSON.stringify({ x: px(cb.x + vb.x), y: px(cb.y + vb.y), w: px(vb.width), h: px(vb.height), inset: 0, scaleFactor: sf }))
   say('READY')

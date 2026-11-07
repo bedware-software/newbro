@@ -185,6 +185,33 @@ function captureInput({ x, y, w, h }) {
     '-vf', `crop=${w}:${h}:${x}:${y}`]
 }
 
+/** One frame of the whole screen, coarsely (48 x 24 characters, as
+ *  thumbnail()): where things are when a recording of a part of it fails. */
+function screenThumbnail() {
+  const input = process.platform === 'win32' ? ['-f', 'gdigrab', '-i', 'desktop']
+    : process.platform === 'darwin' ? ['-f', 'avfoundation', '-pixel_format', 'bgr0', '-i', `${macScreen ?? '0'}:none`]
+    : ['-f', 'x11grab', '-i', process.env.DISPLAY]
+  const shot = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...input, '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'ppm', '-'],
+    { timeout: 20_000, maxBuffer: 64 * 1024 * 1024 })
+  const buf = shot.stdout
+  const m = buf && /^P6\s+(\d+)\s+(\d+)\s+255\s/.exec(buf.subarray(0, 40).toString('latin1'))
+  if (!m) return [`(no screenshot: ${String(shot.stderr ?? shot.error).trim().slice(0, 200)})`]
+  const w = Number(m[1]), h = Number(m[2])
+  const px = buf.subarray(m[0].length)
+  const rows = [`screen ${w}x${h}, each character ${Math.round(w / 48)}x${Math.round(h / 24)} px:`]
+  for (let cy = 0; cy < 24; cy++) {
+    let row = ''
+    for (let cx = 0; cx < 48; cx++) {
+      const x = Math.floor((cx + 0.5) * w / 48), y = Math.floor((cy + 0.5) * h / 24)
+      const i = (y * w + x) * 3
+      const r = px[i], g = px[i + 1], b = px[i + 2]
+      row += r >= 250 && g >= 250 && b >= 250 ? 'W' : r <= 12 && g <= 12 && b <= 12 ? 'B' : isRed(r, g, b) ? 'R' : '.'
+    }
+    rows.push(row)
+  }
+  return rows
+}
+
 function startXvfb() {
   if (process.platform !== 'linux' || process.env.DISPLAY) return null
   const xvfb = spawn('Xvfb', [':99', '-screen', '0', '1280x800x24', '-nolisten', 'tcp'], { stdio: 'ignore' })
@@ -324,6 +351,7 @@ function runScenario(name, options) {
       const pageShown = labels.slice(0, 20).filter((l) => l === 'B').length >= 15
       const verdict = !labels.length || borderless > labels.length * 0.2 || !pageShown
         ? 'NO CAPTURE' : whiteRuns.length ? 'WHITE' : 'clean'
+      if (verdict === 'NO CAPTURE') firstFrame = [...firstFrame, ...screenThumbnail()]
       // Frames between two pages that aren't white: the window behind or
       // anything else.
       const gapRuns = [...s.matchAll(/[R.]+/g)].map((m) => m[0].length)
