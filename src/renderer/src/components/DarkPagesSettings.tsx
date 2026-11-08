@@ -240,7 +240,7 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
           <span className="flex items-center gap-2">This site <Caps keys={keysFor('dark-pages-site', 'Alt+Shift+A')} /></span>
         </div>
         <p className="mt-2 text-[11px] text-muted-foreground">
-          Rebind them under Keyboard Shortcuts{hintSettings.vimMode ? ' — in Vim mode, in the keymap there' : ''}.
+          Rebind them in the Vim keymap, under Keyboard Shortcuts.
         </p>
       </div>
     </div>

@@ -779,6 +779,9 @@ function installVimPage(): void {
       sequencer.reset()
       hints?.close()
     }
+    // Ctrl+[ (a trip out of INSERT on purpose) is vim's Esc: a prefix pending
+    // in COMMAND goes too — no timeout drops it any more.
+    if (mode === 'command' && leaving) sequencer.reset()
     if (mode === 'command' && leaving && keysBelongToElement(deepActiveElement())) {
       // Out of INSERT on purpose (Ctrl+[): the field lets go of the keys.
       leaveInsert()
@@ -817,8 +820,17 @@ function installVimPage(): void {
     e.stopImmediatePropagation()
   }, true)
   // A release that went elsewhere (the press moved focus out of the page)
-  // must not cost a later one here.
-  window.addEventListener('blur', () => swallowedPresses.clear())
+  // must not cost a later one here. A prefix waits for its next key however
+  // long, but only while the keys stay in the page: losing them (to the
+  // browser's chrome, a popup, a frame, another app) drops it — and reports
+  // that, so the window's showcmd and which-key strip go too.
+  window.addEventListener('blur', () => {
+    swallowedPresses.clear()
+    sequencer.reset()
+  })
+  // So does the page going away mid-sequence (a navigation): no later
+  // report would ever clear it.
+  window.addEventListener('pagehide', () => sequencer.reset())
 
   // Esc out of INSERT: the field (or frame) with the keys lets them go.
   function leaveInsert(): void {
@@ -899,6 +911,9 @@ function installVimPage(): void {
   window.addEventListener('mousedown', (e) => {
     const target = e.composedPath()[0]
     if (target instanceof Element) lastClicked = target
+    // A click is the hand going elsewhere: a half-typed sequence goes.
+    // Only a real one — pages dispatch their own.
+    if (e.isTrusted) sequencer.reset()
   }, true)
 
   function runCommand(command: string): void {

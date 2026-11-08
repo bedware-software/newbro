@@ -2,9 +2,10 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Command } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
-import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, LEAVE_INSERT_CAP, RowHint, vimKeyCaps } from './KeyHints'
 import { hintIndex, usePopupHints } from '../lib/hint-labels'
 import { useAppStore } from '../store/app-store'
+import { isInternalUrl } from '../lib/internal-pages'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { usePopupVimMode } from '../lib/vim-mode'
 import type { VimKeymap } from '../lib/vim-keymap'
@@ -212,6 +213,9 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
       // A tab in a group (not the group header parked with no active tab).
       if (cmd.id === 'ungroup-tab') return !!activeTab && !!activeTabGroupId
       if (cmd.id === 'split-focus' || cmd.id === 'split-close') return splitShown
+      // An address to edit: not parked on a group, nor on a page of the
+      // browser's own (openUrlEditor refuses those).
+      if (cmd.id === 'edit-url') return !!activeTab && !isInternalUrl(activeTab.url)
       return true
     })
   }, [activeTab, activeTabGroupId, splitShown, vimKeymap])
@@ -278,8 +282,8 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
   }, [onAction])
 
   // Vim mode: the palette opens in INSERT — typing filters, like vim's `:`
-  // command line. Esc goes to COMMAND, where j/k walk the list and 1–9 run
-  // a numbered row; i types again, Esc closes.
+  // command line. Ctrl+C goes to COMMAND, where j/k walk the list and a
+  // row's label runs it; i types again. Esc closes from either.
   // COMMAND mode's two-letter row labels (lib/hint-labels.ts).
   const hints = usePopupHints(vimKeymap, rows.length)
   const vim = usePopupVimMode({
@@ -324,15 +328,10 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
       e.preventDefault()
       if (rows[selectedIndex]) handleSelect(rows[selectedIndex])
     } else if (e.key === 'Escape') {
-      // Vim: Esc leaves the box for COMMAND mode; Esc there closes.
-      if (vim.modeRef.current) {
-        e.preventDefault()
-        inputRef.current?.blur()
-      } else {
-        onOpenChange(false)
-      }
+      // In Vim mode Esc never gets here: the palette's Vim keys close it.
+      onOpenChange(false)
     }
-  }, [rows, selectedIndex, handleSelect, onOpenChange, vim.modeRef])
+  }, [rows, selectedIndex, handleSelect, onOpenChange])
 
   if (!open) return null
 
@@ -346,7 +345,7 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
       height={640}
       closeOnBlur
       matchRunwaPalette
-      // In Vim mode Esc first leaves the box; the palette handles it.
+      // In Vim mode Esc is the palette's Vim keys' (usePopupVimMode), which close it.
       closeOnEscape={!vimKeymap}
       onClose={() => onOpenChange(false)}
       onWindowChange={setPopupWindow}
@@ -434,7 +433,8 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
               <>
                 <Hint label="Navigate" keys={['↓', '↑']} />
                 <Hint label="Run" keys={['Enter']} />
-                <Hint label={vim.mode ? 'Command mode' : 'Close'} keys={['Esc']} />
+                {vim.mode && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
+                <Hint label="Close" keys={['Esc']} />
               </>
             )}
             {appVersion && <span className="text-muted-foreground/60 tabular-nums">v{appVersion}</span>}

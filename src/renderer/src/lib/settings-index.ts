@@ -5,7 +5,6 @@
 // of them. A setting added to SettingsDialog belongs here too.
 
 import { fuzzyFilter } from './fuzzy'
-import { ACTION_LABELS } from './action-labels'
 import { PERMISSION_KINDS, PERMISSION_LABEL } from './permissions'
 
 export type SettingsSection =
@@ -46,9 +45,6 @@ export interface SettingsIndexEntry {
 
 /** What decides which settings exist right now. */
 export interface SettingsIndexContext {
-  /** Vim mode, as the switch in Settings has it (not as saved): its keymap
-   *  replaces the list of regular shortcuts. */
-  vimMode: boolean
   /** The other-browser picker (macOS and Windows). */
   otherBrowser: boolean
 }
@@ -57,7 +53,6 @@ const STATIC: SettingsIndexEntry[] = [
   // General
   { section: 'general', item: 'general:default-url', title: 'Default New Tab URL', keywords: 'new tab page home start blank' },
   { section: 'general', item: 'general:new-tab-focus', title: 'Focus on New Tab', keywords: 'site url bar address keyboard' },
-  { section: 'general', item: 'general:tab-badges', title: 'Tab Number Badges', keywords: 'sidebar numbers show hide' },
   { section: 'general', item: 'general:search-engine', title: 'Default Search Engine', keywords: 'google yandex duckduckgo bing unduck' },
   { section: 'general', item: 'general:custom-engine', title: 'Custom search engine', keywords: 'url template %s', fallback: 'general:search-engine' },
   { section: 'general', item: 'general:suggestions', title: 'Show search suggestions', keywords: 'address bar autocomplete' },
@@ -99,10 +94,11 @@ const STATIC: SettingsIndexEntry[] = [
   // Enterprise
   { section: 'enterprise', item: 'enterprise:sso', title: 'Integrated Windows Authentication (SSO)', keywords: 'ntlm kerberos allowlist hosts' },
   { section: 'enterprise', item: 'enterprise:clear-creds', title: 'Saved sign-ins', keywords: 'http auth credentials remember', fallback: 'enterprise:sso' },
-  // Keyboard Shortcuts
-  { section: 'shortcuts', item: 'shortcuts:vim', title: 'Vim Mode', keywords: 'vim keys command insert vimium' },
-  { section: 'shortcuts', item: 'shortcuts:hide-sidebar-insert', title: 'Hide the Sidebar in INSERT', keywords: 'vim sidebar insert', fallback: 'shortcuts:vim' },
-  { section: 'shortcuts', item: 'shortcuts:vim-keymap', title: 'Vim keymap', keywords: 'vim keys bindings config', fallback: 'shortcuts:vim' },
+  // Keyboard Shortcuts — Vim's: it's the only mode, so there's no switch to
+  // land on and no list of regular shortcuts; the keymap takes Vim Mode's
+  // words.
+  { section: 'shortcuts', item: 'shortcuts:hide-sidebar-insert', title: 'Hide the Sidebar in INSERT', keywords: 'vim sidebar insert' },
+  { section: 'shortcuts', item: 'shortcuts:vim-keymap', title: 'Vim keymap', keywords: 'vim mode keys bindings shortcuts command insert vimium esc escape ctrl popup config' },
   // Extensions
   { section: 'extensions', item: 'ext:install-input', title: 'Install an extension', keywords: 'chrome web store crx id' },
   { section: 'extensions', item: 'ext:store-chrome', title: 'Chrome Web Store', keywords: 'extensions store' },
@@ -118,6 +114,9 @@ const STATIC: SettingsIndexEntry[] = [
   { section: 'about', item: 'about:update', title: 'Check for updates', keywords: 'version update install release' },
   { section: 'about', item: 'about:path:User data', title: 'User data folder', keywords: 'paths storage copy' },
   { section: 'about', item: 'about:path:Logs', title: 'Logs folder', keywords: 'paths log copy' },
+  { section: 'about', item: 'about:author:dmitry', title: 'Made by', keywords: 'credits authors creators dmitry surin claude anthropic' },
+  // The list's first row (lib/credits.ts).
+  { section: 'about', item: 'about:oss:electron', title: 'Open source', keywords: 'credits libraries licenses oss third party acknowledgements thanks vim vimium' },
 ]
 
 /** The sync categories Settings → Cloud Sync lists, by id. Mirrored from
@@ -134,23 +133,12 @@ const SYNC_CATEGORIES: Array<{ id: string; title: string }> = [
 
 /** Every setting there is now. */
 export function settingsIndex(ctx: SettingsIndexContext): SettingsIndexEntry[] {
-  const out = STATIC.filter((entry) => {
-    if (entry.item === 'general:other-browser') return ctx.otherBrowser
-    if (entry.item === 'shortcuts:hide-sidebar-insert' || entry.item === 'shortcuts:vim-keymap') return ctx.vimMode
-    if (entry.section === 'appearance' && entry.item.startsWith('appearance:vim-')) return ctx.vimMode
-    return true
-  })
+  const out = STATIC.filter((entry) => entry.item !== 'general:other-browser' || ctx.otherBrowser)
   for (const { id, title } of SYNC_CATEGORIES) {
     out.push({ section: 'sync', item: `sync-cat:${id}`, title, keywords: 'what to sync', fallback: 'sync:enabled' })
   }
   for (const kind of PERMISSION_KINDS) {
     out.push({ section: 'permissions', item: `perm-default:${kind}`, title: `${PERMISSION_LABEL[kind]} permission`, keywords: 'default behavior ask allow block' })
-  }
-  // Out of Vim mode, each regular shortcut has a row of its own.
-  if (!ctx.vimMode) {
-    for (const [action, label] of Object.entries(ACTION_LABELS)) {
-      out.push({ section: 'shortcuts', item: `shortcut:${action}`, title: `${label} shortcut`, keywords: action, fallback: 'shortcuts:filter' })
-    }
   }
   return out
 }

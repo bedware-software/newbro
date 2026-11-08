@@ -55,11 +55,12 @@ interface Settings {
   darkVariant: string
   density: Density
   newTabFocus: NewTabFocus
-  showTabNumbers: boolean
-  /** Vim mode: COMMAND / INSERT modes, see lib/vim-mode.ts. */
+  /** Vim's COMMAND / INSERT modes, see lib/vim-mode.ts. Always true — Vim is
+   *  the only mode — and read by nothing here: it stays in the settings for
+   *  older builds that read them through Cloud Sync. */
   vimMode: boolean
-  /** With Vim mode on: INSERT in a page hides the Sidebar and COMMAND
-   *  brings it back — derived, the saved toggle stays as it is. */
+  /** INSERT in a page hides the Sidebar and COMMAND brings it back —
+   *  derived, the saved toggle stays as it is. */
   hideSidebarInInsert: boolean
   /** How the mode's key cap shows its colour, see lib/vim-indicator.ts. */
   vimIndicator: VimIndicator
@@ -427,6 +428,7 @@ declare global {
       bookshelfAdd?: (profileId: string, input: { url: string; title?: string; favicon?: string }) => Promise<Reading | null>
       bookshelfUpdate?: (profileId: string, id: string, patch: { title?: string; status?: 'toread' | 'archived' }) => Promise<boolean>
       bookshelfRemove?: (profileId: string, id: string) => Promise<boolean>
+      bookshelfRestore?: (profileId: string, reading: Reading, beforeId: string | null) => Promise<{ readings: Reading[]; groups: ReadingGroup[] }>
       bookshelfMoveReading?: (profileId: string, readingId: string, groupId: string | null) => Promise<boolean>
       bookshelfPlaceReadings?: (profileId: string, ids: string[], target: { groupId: string | null; archived?: boolean }, beforeId: string | null) => Promise<{ readings: Reading[]; groups: ReadingGroup[] }>
       bookshelfPlaceGroup?: (profileId: string, groupId: string, beforeGroupId: string | null) => Promise<{ readings: Reading[]; groups: ReadingGroup[] }>
@@ -606,7 +608,7 @@ export default function App() {
     const t = setTimeout(() => {
       window.electronAPI.cloudSyncClaimSetupPrompt?.()
         .then((p) => { if (!cancelled && p?.shouldPrompt) setSyncPrompt(p) })
-        .catch(() => {})
+        .catch((err: unknown) => log.warn('cloud-sync: setup prompt claim failed', String(err)))
     }, 1200)
     return () => { cancelled = true; clearTimeout(t) }
   }, [])
@@ -945,8 +947,8 @@ export default function App() {
     const handleAction = (action: string) => {
       const s = useAppStore.getState()
       // tab-1..tab-9 quick-jump: parse the digit and index into the visible
-      // tabs (unlike cycleTab, group headers don't count), so what you press
-      // matches what you see numbered in the sidebar.
+      // tabs (unlike cycleTab, group headers don't count), so the Nth is the
+      // Nth tab the Sidebar shows, top down.
       if (action.startsWith('tab-')) {
         const n = parseInt(action.slice('tab-'.length), 10)
         if (Number.isInteger(n) && n >= 1 && n <= 9) {
@@ -1078,7 +1080,7 @@ export default function App() {
           break
         }
         case 'edit-url':
-          openUrlEditor()
+          if (!openUrlEditor()) log.info("edit-url: no address to edit here (a group, or a page of the browser's own)")
           break
         case 'split-close':
           closeSplit()
@@ -1275,7 +1277,7 @@ export default function App() {
           // typed into the field.
           const vimNow = vimRef.current
           if (!vimNow?.mode) {
-            log.info('chrome-hints: Vim mode is off')
+            log.info('chrome-hints: Vim has not started yet')
             break
           }
           if (vimNow.mode === 'insert') vimNow.enterCommand(false)
@@ -1571,20 +1573,25 @@ export default function App() {
   }, [])
 
   // ── Vim mode ──
-  const vimEnabled = settings?.vimMode === true
+  // Vim is the only mode. It starts once the settings are in — its keymap is
+  // one of them, as it always has: for that beat at launch the keymaps
+  // below are null, the way the components take Vim being off.
+  const vimReady = settings !== null
   const vimKeymap = useMemo(
     () => parseVimKeymap(settings?.vimKeymap ?? DEFAULT_VIM_KEYMAP),
     [settings?.vimKeymap],
   )
   // For the dialogs that open from anywhere (pickers, confirmations, name
   // prompts): they read it rather than being handed it down.
-  usePublishWindowVimKeymap(vimEnabled ? vimKeymap : null)
+  usePublishWindowVimKeymap(vimReady ? vimKeymap : null)
   const focusActivePage = (mode: VimMode = 'insert'): boolean => {
     const s = useAppStore.getState()
     if (!s.activeTabId) return false
-    // Internal pages are drawn by this renderer (data-vim-page). Focused,
-    // their own keys run, which is INSERT; in COMMAND they let go, and the
-    // window keeps the keys for COMMAND's.
+    // Internal pages are drawn by this renderer. Downloads and Bangs are
+    // COMMAND's — the window's keymap runs on them (lib/internal-page-keys.ts)
+    // and there's no view to hand the keys to; only a form one shows (the
+    // bang form, data-vim-page) keeps its own keys, which is INSERT, and in
+    // COMMAND it lets go.
     if (isInternalUrl(s.getActiveTab()?.url)) {
       const page = document.querySelector<HTMLElement>('[data-vim-page]')
       if (!page) return false
@@ -1602,7 +1609,7 @@ export default function App() {
   // Two-letter labels on the rows the group page shows
   // in COMMAND (lib/hint-labels.ts), bound in the window's keymap — the one
   // pages run too.
-  const hinted = useHintKeymap(vimEnabled ? vimKeymap.main : null)
+  const hinted = useHintKeymap(vimReady ? vimKeymap.main : null)
   const runVimCommand = (command: string): void => {
     const hint = hintIndex(command)
     if (hint !== null) {
@@ -1614,8 +1621,16 @@ export default function App() {
       cancelChromeHints('key')
       return
     }
-    // Parked on a group: its page takes the keys it knows (j/k, i).
+    // Parked on a group: its page takes the keys it knows (j/k, i) — the
+    // Bookshelf too while it holds the keyboard.
     if (dispatchPageCommand(command)) return
+    runAppCommand(command)
+  }
+  /** A command past what holds the page's keys (a group page, the Bookshelf)
+   *  and the hint labels: what's left of COMMAND's keys, and the Command
+   *  Palette's entries — so the palette's Close Tab closes the tab even
+   *  with the Bookshelf holding the keyboard. */
+  const runAppCommand = (command: string): void => {
     const pickFilter = VIM_PICK_FILTERS[command]
     if (pickFilter) {
       setSearchOpenFilter(pickFilter)
@@ -1650,7 +1665,7 @@ export default function App() {
     shortcutHandlerRef.current?.(command)
   }
   const vim = useVimMode({
-    enabled: vimEnabled,
+    enabled: vimReady,
     keymap: hinted.keymap ?? vimKeymap.main,
     onCommand: runVimCommand,
     // The other split pane's page counts too: clicking into it focuses it.
@@ -1659,15 +1674,16 @@ export default function App() {
   })
   vimRef.current = vim
   // For the Command Palette, which runs what the keys run (Search tabs,
-  // the Vim help, the app's actions).
-  const runVimCommandRef = useRef(runVimCommand)
-  runVimCommandRef.current = runVimCommand
+  // the Vim help, the app's actions) — never the page's keys' holder's.
+  const runAppCommandRef = useRef(runAppCommand)
+  runAppCommandRef.current = runAppCommand
   // A page this window draws (Downloads, Bangs).
   const activeIsInternal = useAppStore((s) => isInternalUrl(s.getActiveTab()?.url))
   // Shown unless toggled off — or, with Settings' Hide the Sidebar in
   // INSERT, while typing in a web page. Not for INSERT in a chrome field (the
-  // address bar, a tab's rename in the Sidebar itself), nor in a page this
-  // window draws, which is in INSERT only to keep its own keys. Derived, as
+  // address bar, a tab's rename in the Sidebar itself), nor on a page this
+  // window draws — its search box or the bang form, which take the keys
+  // only to type. Derived, as
   // cinema mode's hiding is not: the saved toggle stays as it is.
   const hiddenForInsert = settings?.hideSidebarInInsert === true && vim.mode === 'insert'
     && !vim.insertInChrome && !activeIsInternal
@@ -1711,24 +1727,22 @@ export default function App() {
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           visible={sidebarShown}
-          showTabNumbers={settings?.showTabNumbers ?? true}
           vimActive={vim.sidebarKeys}
-          vimKeymap={vimEnabled ? vimKeymap.main : null}
-          vimPending={vim.pending}
+          vimKeymap={vimReady ? vimKeymap.main : null}
         />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-          <UrlEditor anchorRef={webviewColumnRef} vimKeymap={vimEnabled ? vimKeymap.url : null} />
+          <UrlEditor anchorRef={webviewColumnRef} vimKeymap={vimReady ? vimKeymap.url : null} />
           <FindPopup
             open={findBarOpen}
             focusTick={findBarFocusTick}
             onClose={closeFind}
             anchorRef={webviewColumnRef}
-            vimKeymap={vimEnabled ? vimKeymap.find : null}
+            vimKeymap={vimReady ? vimKeymap.find : null}
           />
           <WebviewPanel
-            splitPickerKeymap={vimEnabled ? paletteKeymap(vimKeymap.search) : null}
+            splitPickerKeymap={vimReady ? paletteKeymap(vimKeymap.search) : null}
             splitPickerFocusTick={splitPickerFocusTick}
-            vimKeymap={vimEnabled ? vimKeymap.main : null}
+            vimKeymap={vimReady ? vimKeymap.main : null}
             vimMode={vim.mode}
             vimPending={vim.pending}
             groupHintsOn={!popupOpen}
@@ -1752,13 +1766,13 @@ export default function App() {
         open={searchOpen}
         onOpenChange={setSearchOpen}
         windowWorkspaceId={windowWorkspaceId}
-        vimKeymap={vimEnabled ? vimKeymap.search : null}
+        vimKeymap={vimReady ? vimKeymap.search : null}
         openFilter={searchOpenFilter}
       />
       <VimHelpDialog
         open={vimHelpFrom !== null}
         keymap={vimKeymap}
-        vimKeymap={vimEnabled ? helpKeymap(vimKeymap) : null}
+        vimKeymap={vimReady ? helpKeymap(vimKeymap) : null}
         fromMode={vimHelpFrom ?? 'command'}
         onClose={() => setVimHelpFrom(null)}
       />
@@ -1794,17 +1808,18 @@ export default function App() {
         onSave={handleSaveSettings}
         onAppearancePreview={(p) => { applyTheme(p.theme, p.lightVariant, p.darkVariant); applyDensity(p.density); applyVimIndicator(p.vimIndicator); applyVimEdge(p.vimEdge, p.vimEdgeEverywhere) }}
         tabRequest={settingsTabRequest}
-        vimKeymap={vimEnabled ? vimKeymap : null}
+        vimKeymap={vimReady ? vimKeymap : null}
       />
       <CommandPalette
         open={commandPaletteOpen}
         onOpenChange={setCommandPaletteOpen}
-        vimKeymap={vimEnabled ? paletteKeymap(vimKeymap.search) : null}
+        vimKeymap={vimReady ? paletteKeymap(vimKeymap.search) : null}
         onAction={(action) => {
           setCommandPaletteOpen(false)
           // Run it as its keys would: the app's actions through the
-          // shortcut handler, Search tabs / the Vim help through Vim's.
-          setTimeout(() => runVimCommandRef.current(action), 100)
+          // shortcut handler, Search tabs / the Vim help through Vim's —
+          // but not taken by a Bookshelf or group page holding the keys.
+          setTimeout(() => runAppCommandRef.current(action), 100)
         }}
       />
       <InputDialog
@@ -1905,9 +1920,10 @@ export default function App() {
       )}
       {/* Vim's ; labels on the browser's own controls. */}
       <ChromeHintsOverlay mode={vim.mode} pending={vim.pending} />
-      {/* What can follow a prefix typed (o, d, n…): the Sidebar lists it at
-          its foot; with the Sidebar hidden, a strip along the page's. */}
-      <WhichKeyStrip keymap={vimEnabled && !sidebarShown ? vimKeymap.main : null} pending={vim.pending} anchorRef={webviewColumnRef} />
+      {/* What can follow a prefix typed (o, d, n…): a strip along the
+          bottom of the page area, the Sidebar shown or not — its own hint
+          bar keeps to its own keys. */}
+      <WhichKeyStrip keymap={vimReady ? vimKeymap.main : null} pending={vim.pending} anchorRef={webviewColumnRef} />
     </>
   )
 }

@@ -94,9 +94,10 @@ export function VimFormLabels({ form, labels, mode, pending }: {
 }
 
 /** The hint bar's hints for the control under the cursor: what h / l,
- *  Enter and a row's keys do to it. */
+ *  Enter and a row's keys do to it. What can't be taken back (a danger
+ *  button, a row's Remove) is pressed with dd, never Enter. */
 export function VimFormCursorHints({ form, keymap }: { form: VimFormController; keymap: VimKeymap | null }) {
-  const { kind, cells } = useVimFormSnapshot(form)
+  const { kind, cells, danger, cellDanger } = useVimFormSnapshot(form)
   const caps = (...commands: string[]): string[] => vimKeyCaps(keymap, ...commands)
   switch (kind) {
     case 'toggle':
@@ -120,13 +121,13 @@ export function VimFormCursorHints({ form, keymap }: { form: VimFormController; 
     case 'text':
       return <Hint label="Type" keys={caps('insert-mode')} />
     case 'button':
-      return <Hint label="Press" keys={caps('activate')} />
+      return <Hint label="Press" keys={caps(danger ? 'row-remove' : 'activate')} />
     case 'row':
       return (
         <>
           {cells.length > 1 && <Hint label="Button" keys={caps('value-prev', 'value-next')} />}
-          <Hint label="Press" keys={caps('activate')} />
-          {cells.includes('remove') && <Hint label="Remove" keys={caps('row-remove')} />}
+          {!danger && !cellDanger && <Hint label="Press" keys={caps('activate')} />}
+          {(cells.includes('remove') || cellDanger) && <Hint label="Remove" keys={caps('row-remove')} />}
           {cells.includes('copy') && <Hint label="Copy" keys={caps('row-copy')} />}
           {cells.includes('copy-password') && <Hint label="Password" keys={caps('row-copy-password')} />}
           {cells.includes('edit') && <Hint label="Edit" keys={caps('row-edit')} />}

@@ -1,11 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import type { VimMode } from '../lib/vim-mode'
 
 interface Props {
-  /** Vim's mode, null while Vim mode is off: the mark wears the mode's
-   *  colours — COMMAND's (and so off's) blue, violet and cyan, INSERT's
-   *  green, lime and teal — the trios the address bar's edge runs in. */
-  mode: VimMode | null
   /** Bumped to glitch the mark once more. */
   glitchKey?: number
   /** 'full': the whole badge, the blades on their chamfered plate, as the
@@ -20,12 +15,13 @@ interface Props {
 }
 
 /** The app's mark — two katanas crossed point-down into a V, the guards on
- *  top. A change of Vim's mode tears it into the new colours: three copies
- *  of it, the two behind in the other mode's colours and the mode's second
- *  one, cut into bands that jump sideways for half a second (.brand-mark in
- *  globals.css). Still for Reduce motion, and while its window isn't the one
- *  in use. */
-export function BrandMark({ mode, glitchKey = 0, variant = 'small', glitchOnHover = false, size }: Props) {
+ *  top — in the app icon's colours, the same whatever Vim's mode or the
+ *  theme. A glitch (glitchKey bumped, or the pointer coming onto it with
+ *  glitchOnHover) tears it: three copies of it, the two behind in the
+ *  second trio and in the mark's second colour alone, cut into bands that
+ *  jump sideways for half a second (.brand-mark in globals.css). Still for
+ *  Reduce motion, and while its window isn't the one in use. */
+export function BrandMark({ glitchKey = 0, variant = 'small', glitchOnHover = false, size }: Props) {
   const ref = useRef<HTMLSpanElement>(null)
   const first = useRef(true)
   const [hovers, setHovers] = useState(0)
@@ -45,14 +41,13 @@ export function BrandMark({ mode, glitchKey = 0, variant = 'small', glitchOnHove
     el.setAttribute('data-glitch', '')
     const t = setTimeout(() => el.removeAttribute('data-glitch'), 600)
     return () => clearTimeout(t)
-  }, [mode, glitchKey, hovers])
+  }, [glitchKey, hovers])
 
   return (
     <span
       ref={ref}
       className="brand-mark"
       data-variant={variant}
-      data-mode={mode === 'insert' ? 'insert' : 'command'}
       aria-hidden="true"
       style={size ? { width: size, height: size } : undefined}
       onPointerEnter={glitchOnHover ? () => setHovers((n) => n + 1) : undefined}

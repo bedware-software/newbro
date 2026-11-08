@@ -2,9 +2,9 @@
 // two-letter label — home-row letters first, and only letters the list's
 // keymap leaves free, so a label never shadows a command — and typing it
 // picks the row. The labels go into the keymap as `hint-<n>` commands, so
-// the usual sequencer runs them (the first letter shows as pending, Esc
-// drops it, a pause forgets it) — in a popup, in the window, and in a tab's
-// page, which runs the window's COMMAND keys itself.
+// the usual sequencer runs them (the first letter shows as pending until the
+// second comes, however long after; Esc drops it) — in a popup, in the
+// window, and in a tab's page, which runs the window's COMMAND keys itself.
 //
 // In the main window several things can wear labels at once: each (the
 // group page) registers its rows here with useHintTargets, App numbers them

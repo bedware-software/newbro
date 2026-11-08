@@ -52,6 +52,25 @@ export function canonicalInternalUrl(url: string): string {
   return 'vimperium://' + trimmed.slice(LEGACY_INTERNAL_SCHEME.length)
 }
 
+/** A copy of a saved workspace tree with every `url` and `favicon` field in
+ *  the current form: newbro:// → vimperium://, newbro-icon: →
+ *  vimperium-icon:. Run when state is loaded, so a tab saved under Newbro
+ *  never shows the old name in the address bar. Devices still on Newbro are
+ *  unaffected: Cloud Sync publishes these fields in Newbro's form
+ *  (main/ipc.ts withLegacyInternalPages). */
+export function withCanonicalInternalPages<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(withCanonicalInternalPages) as T
+  if (!value || typeof value !== 'object') return value
+  const out: Record<string, unknown> = {}
+  for (const [key, field] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'url' && typeof field === 'string') out[key] = canonicalInternalUrl(field)
+    else if (key === 'favicon' && typeof field === 'string' && field.startsWith(LEGACY_INTERNAL_ICON_PREFIX)) {
+      out[key] = INTERNAL_ICON_PREFIX + field.slice(LEGACY_INTERNAL_ICON_PREFIX.length)
+    } else out[key] = withCanonicalInternalPages(field)
+  }
+  return out as T
+}
+
 /** The icon name an internal page's favicon marker carries ('download' for
  *  `vimperium-icon:download`, or the legacy `newbro-icon:download`), or null
  *  for a real favicon. */

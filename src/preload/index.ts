@@ -410,6 +410,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   bookshelfUpdate: (profileId: string, id: string, patch: { title?: string; status?: 'toread' | 'archived' }): Promise<boolean> =>
     ipcRenderer.invoke('bookshelf:update', profileId, id, patch),
   bookshelfRemove: (profileId: string, id: string): Promise<boolean> => ipcRenderer.invoke('bookshelf:remove', profileId, id),
+  bookshelfRestore: (profileId: string, reading: unknown, beforeId: string | null): Promise<unknown> =>
+    ipcRenderer.invoke('bookshelf:restore', profileId, reading, beforeId),
   bookshelfMoveReading: (profileId: string, readingId: string, groupId: string | null): Promise<boolean> =>
     ipcRenderer.invoke('bookshelf:move-reading', profileId, readingId, groupId),
   bookshelfPlaceReadings: (profileId: string, ids: string[], target: { groupId: string | null; archived?: boolean }, beforeId: string | null): Promise<unknown> =>

@@ -9,7 +9,7 @@ import { ChevronRight, ChevronDown, Plus, X } from 'lucide-react'
 import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
 import { useVimSidebar } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
-import { displayKeySequence, keysFor, type SidebarCommand, type VimKeymap } from '../lib/vim-keymap'
+import { type SidebarCommand, type VimKeymap } from '../lib/vim-keymap'
 import { SidebarHintBar } from './KeyHints'
 import { SplitGlyph } from './SplitPanes'
 import { isSplitShown, useSplitStore } from '../lib/split-view'
@@ -108,20 +108,14 @@ function loadWidth(): number {
 
 interface Props {
   visible: boolean
-  /** When true, the first 9 visible tabs show a small "N" badge advertising
-   *  the CmdOrCtrl+N quick-jump. Visible state is owned by App.tsx because
-   *  it lives in the settings store. */
-  showTabNumbers: boolean
   /** Vim's Sidebar keys are live (one was just used in COMMAND): they act
    *  on the active row. */
   vimActive: boolean
   /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
   vimKeymap: VimKeymap | null
-  /** Keys typed so far of an unfinished COMMAND sequence. */
-  vimPending: string
 }
 
-export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, vimPending }: Props) {
+export function Sidebar({ visible, vimActive, vimKeymap }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -496,29 +490,6 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, vimPend
     if (!visible || !vimActive || !vimCursorId) return
     findVimRow(vimCursorId)?.scrollIntoView({ block: 'nearest' })
   }, [visible, vimActive, vimCursorId])
-
-  // Visible-order positions (1..9) for the quick-jump badges. Mirrors
-  // App.tsx's CmdOrCtrl+N handler: ungrouped tabs and the children of
-  // expanded groups, in sidebar order, skipping collapsed groups. Beyond
-  // the 9th visible tab no badge is shown — the shortcut only covers 1-9.
-  const tabNumberById = useMemo(() => {
-    const m = new Map<string, number>()
-    if (!showTabNumbers) return m
-    let count = 0
-    for (const item of sidebarItems) {
-      if (item.type === 'tab') {
-        if (++count > 9) break
-        m.set(item.id, count)
-      } else if (!item.group.isCollapsed) {
-        for (const t of item.group.tabs) {
-          if (++count > 9) break
-          m.set(t.id, count)
-        }
-        if (count > 9) break
-      }
-    }
-    return m
-  }, [sidebarItems, showTabNumbers])
 
   /** Cmd/Ctrl+Click toggles a row (tab or group header) in the selection;
    *  Shift+Click selects every visible row between the anchor and this one.
@@ -955,12 +926,6 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, vimPend
     const active = tab.id === activeTabId
     const splitPane = split ? (tab.id === split.first ? 'first' : tab.id === split.second ? 'second' : null) : null
     const splitVisible = !active && splitPane !== null && splitOnScreen
-    const tabNumber = tabNumberById.get(tab.id)
-    // What switches to it: Cmd+N, or in Vim mode whatever tab-N is bound to.
-    const vimTabKeys = tabNumber !== undefined && vimKeymap ? keysFor(vimKeymap, `tab-${tabNumber}`)[0] : undefined
-    const tabNumberKeys = vimKeymap
-      ? vimTabKeys && displayKeySequence(vimTabKeys)
-      : `${isMacOS ? '⌘' : 'Ctrl+'}${tabNumber}`
     const showBefore = containerId === null
       ? isSidebarDropBefore(index)
       : isGroupedTabDropBefore(containerId, index)
@@ -1020,30 +985,13 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, vimPend
           </span>
         )}
         {tab.comment && <CommentChip comment={tab.comment} />}
-        {/* A numbered row keeps its stub clear of the 24×24 slot below. */}
-        <span
-          className="min-w-title-stub flex-1 truncate text-xs"
-          style={tabNumber !== undefined ? { ['--title-stub-reserve' as string]: '1.5rem' } : undefined}
-          title={tab.title}
-        >
+        <span className="min-w-title-stub flex-1 truncate text-xs" title={tab.title}>
           {tab.title}
         </span>
-        {/* Right-edge slot: the always-visible Cmd+N badge (when this tab
-            is among the first 9 visible) and the hover-only close X share
-            a single 24×24 cell. The Cmd+N badge is sized to match the
-            group counter on the left (w-4 h-4) and centred inside the
-            cell; the close X keeps the full 24×24 click target so it
-            stays easy to hit. */}
+        {/* Right-edge slot: the hover-only close X, keeping the full 24×24
+            click target so it stays easy to hit. */}
         <div className="absolute right-1 top-0 bottom-0 flex items-center">
           <div className="relative h-6 w-6 flex items-center justify-center">
-            {tabNumber !== undefined && (
-              <span
-                className="w-4 h-4 inline-flex items-center justify-center rounded bg-card/85 backdrop-blur-sm text-[10px] font-medium tabular-nums text-muted-foreground group-hover/tab:opacity-0 transition-opacity pointer-events-none"
-                title={tabNumberKeys ? `Switch to this tab — ${tabNumberKeys}` : undefined}
-              >
-                {tabNumber}
-              </span>
-            )}
             <button
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
@@ -1293,7 +1241,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, vimPend
           </button>
         </div>
 
-        {vimKeymap && <SidebarHintBar keymap={vimKeymap} active={vimActive} pending={vimPending} />}
+        {vimKeymap && <SidebarHintBar keymap={vimKeymap} active={vimActive} />}
 
         <div
           className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"

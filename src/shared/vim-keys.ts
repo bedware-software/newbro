@@ -37,8 +37,9 @@ type KeyEventLike = Pick<KeyboardEvent, 'key' | 'code' | 'shiftKey' | 'metaKey' 
 export function keyTokenFromEvent(e: KeyEventLike): string | null {
   if (e.metaKey || e.altKey || e.isComposing) return null
   if (e.ctrlKey) {
-    // By physical key, like the letters below. Ctrl+[ never gets here: main
-    // turns it into COMMAND mode first.
+    // By physical key, like the letters below. Ctrl+[ is never a token: main
+    // turns it into COMMAND mode first, and a popup's Vim keys match it by
+    // its code (isLeaveInsertKey).
     const chord = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(e.code)
     return chord ? `<C-${e.shiftKey ? 'S-' : ''}${(chord[1] ?? chord[2]).toLowerCase()}>` : null
   }
@@ -88,19 +89,17 @@ export function matchKeys(map: VimKeymap, tokens: readonly string[]): KeymapMatc
   return { kind: 'none' }
 }
 
-// How long the next key of a sequence (gg, gt) may trail the previous one —
-// vim's default timeoutlen.
-export const SEQUENCE_TIMEOUT_MS = 1000
-
 /**
  * Collects key tokens into sequences and resolves them against a keymap —
  * the framework-free core both sides drive. `feed` returns true when the key
  * belongs to Vim (a command ran or a sequence is pending), so the caller can
  * swallow it; `onPending` reports the unfinished sequence for a showcmd.
+ * A pending sequence waits for its next key however long, as vim's does
+ * with `notimeout`: a key that doesn't continue it, Esc, or the caller's
+ * reset() (the keys going elsewhere) drops it.
  */
 export class KeySequencer {
   private tokens: string[] = []
-  private timer: ReturnType<typeof setTimeout> | null = null
 
   constructor(
     private keymap: () => VimKeymap,
@@ -109,8 +108,6 @@ export class KeySequencer {
   ) {}
 
   reset(): void {
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = null
     if (this.tokens.length === 0) return
     this.tokens = []
     this.onPending('')
@@ -140,10 +137,8 @@ export class KeySequencer {
     }
     if (match.kind === 'pending') {
       if (e.repeat) return true
-      if (this.timer) clearTimeout(this.timer)
       this.tokens = tokens
       this.onPending(tokens.join(''))
-      this.timer = setTimeout(() => this.reset(), SEQUENCE_TIMEOUT_MS)
       return true
     }
     return false

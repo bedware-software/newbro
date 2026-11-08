@@ -40,27 +40,14 @@ function resolveTriggerIcon(name: IconName): typeof User {
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
-/** Convert an Electron accelerator (e.g. "CmdOrCtrl+O") into display segments
- *  for a dropdown row's shortcut chips (e.g. ['Ctrl', 'O'] or ['⌘', 'O']).
- *  Mirrors the <kbd> formatting used in Settings so the menu's shortcut hints
- *  reflect the keybindings the user actually has bound. */
-function acceleratorToSegments(accel: string): string[] {
-  return accel
-    .replace(/CmdOrCtrl/g, isMacOS ? '⌘' : 'Ctrl')
-    .replace(/Shift/g, isMacOS ? '⇧' : 'Shift')
-    .replace(/Alt/g, isMacOS ? '⌥' : 'Alt')
-    .split('+')
-    .filter(Boolean)
-}
-
 interface Props {
   windowWorkspaceId: string | null
   sidebarVisible: boolean
   /** Active tab's page is in HTML fullscreen (video playback) — the bar
    *  stays visible but re-themes to pure black via [data-cinema]. */
   pageFullscreen?: boolean
-  /** Vim mode's current mode, shown in the address bar; null while Vim
-   *  mode is off. */
+  /** Vim's current mode, shown in the address bar; null for the beat at
+   *  launch before Vim starts (App.tsx). */
   vimMode?: VimMode | null
   /** Unfinished key sequence typed in COMMAND mode. */
   vimPending?: string
@@ -642,11 +629,10 @@ function ExtensionActions({
   )
 }
 
-function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onOpenDownloads }: { sidebarVisible: boolean; vimMode: VimMode | null; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void; onOpenDownloads: () => void }) {
+function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onOpenDownloads }: { sidebarVisible: boolean; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void; onOpenDownloads: () => void }) {
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
-  // The mark on the button glitches as the pointer comes onto it, as it
-  // does when Vim's mode changes.
+  // The mark on the button glitches as the pointer comes onto it.
   const [markGlitch, setMarkGlitch] = useState(0)
   // A dev build says so on the orb, which has no label to say it in.
   const [devBuild, setDevBuild] = useState(false)
@@ -654,8 +640,8 @@ function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onO
   // the old floating toast): 'checking' → spinner, an update in flight
   // ('available' / 'downloading' / 'downloaded') → down-arrow, else nothing.
   const [updatePhase, setUpdatePhase] = useState<string>('idle')
-  // Live settings so the menu's shortcut hints reflect the user's actual
-  // bindings (or Vim keys) rather than hardcoded defaults. Loaded on mount
+  // Live settings so the menu's shortcut hints reflect the user's own Vim
+  // keymap rather than the default one. Loaded on mount
   // and refreshed whenever settings are saved from anywhere.
   const [hintSettings, setHintSettings] = useState<HintSettings | null>(null)
   const triggerRef = useRef<HTMLDivElement>(null)
@@ -725,13 +711,11 @@ function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onO
   })
 
   const buildActions = (): DropdownAction[] => {
-    // Hint the user's actual first binding (in Vim mode, its COMMAND key) for
-    // each action; omit the chip entirely if there's none, so we never
-    // advertise a dead shortcut.
+    // Hint each action's COMMAND key, as the user's keymap has it; omit the
+    // chip entirely if there's none, so we never advertise a dead shortcut.
     const shortcutFor = (action: string): string[] | undefined => {
       const hint = actionHint(hintSettings, action)
-      if (!hint) return undefined
-      return hint.kind === 'vim' ? [hint.keys] : acceleratorToSegments(hint.accelerator)
+      return hint?.kind === 'vim' ? [hint.keys] : undefined
     }
     return [
       {
@@ -820,11 +804,37 @@ function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onO
   }, [])
 
   const hint = actionHint(hintSettings, 'app-menu')
-  const hintText = !hint ? '' : hint.kind === 'vim' ? hint.keys : acceleratorToSegments(hint.accelerator).join(isMacOS ? '' : '+')
+  const hintText = hint?.kind === 'vim' ? hint.keys : ''
+
+  // Windows and Linux: the orb sits flush in the window's corner, where a
+  // restored window has resize bands, about 8 px along its top and 5 px down
+  // its left, that the OS hit-tests ahead of the page. The orb leaves them
+  // to the resize: its square still reaches into the corner, the mark about
+  // 7 px in, but the button takes the pointer only inside the bands, so it never lights up or opens
+  // under a resize cursor. A window that fills its screen (maximized, full
+  // screen) has no bands, so there the whole orb, corner and all, is the
+  // button, as the Start orb was.
+  const [resizeBands, setResizeBands] = useState(false)
+  useEffect(() => {
+    if (isMacOS) return
+    const check = (): void => {
+      // A few px short of the work area (rounding at a fractional scale, an
+      // auto-hidden taskbar) still fills it.
+      const fills = window.outerWidth >= window.screen.availWidth - 4 && window.outerHeight >= window.screen.availHeight - 4
+      setResizeBands(!fills)
+    }
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
 
   return (
-    // The toolbar's full height, square: the menu drops from its bottom edge.
-    <div ref={triggerRef} className="relative self-stretch aspect-square shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+    // The button: the toolbar's full height, square — the menu drops from
+    // its bottom edge, and on Windows a window filling its screen has its
+    // corner for the button. The mark in it is smaller, centred (.brand-orb);
+    // -mr-1.5 hands the square's empty 6 px on the right back to the gap, so
+    // Profile sits the bar's usual 8 px from the plate.
+    <div ref={triggerRef} className="relative self-stretch aspect-square shrink-0 -mr-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <button
         onMouseDown={() => { pressedOpenRef.current = open }}
         // A click with no press behind it (detail 0) came from the keys —
@@ -833,6 +843,7 @@ function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onO
         onClick={(e) => handleToggle(e.detail === 0)}
         onPointerEnter={() => setMarkGlitch((n) => n + 1)}
         className="brand-orb"
+        style={resizeBands ? { pointerEvents: 'none' } : undefined}
         aria-label="Vimperium menu"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -843,7 +854,13 @@ function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onO
             : hintText ? `Menu (${hintText})` : 'Menu'
         }
       >
-        <BrandMark variant="full" mode={vimMode} glitchKey={markGlitch} />
+        {/* 36 px: its plate (59.5 of the badge's 64 units, rim and all)
+            comes to 33.5 px, a touch over the bar's 32 px controls. */}
+        <BrandMark variant="full" size={36} glitchKey={markGlitch} />
+        {resizeBands && (
+          // What takes the pointer for the button, inside the resize bands.
+          <span data-orb-hit aria-hidden="true" className="absolute pointer-events-auto" style={{ top: 8, left: 5, right: 0, bottom: 0 }} />
+        )}
         {devBuild && (
           <span className="absolute left-[3px] bottom-[3px] px-[2px] rounded-[2px] bg-amber-400 text-black text-[7px] leading-[9px] font-bold tracking-[0.04em] pointer-events-none select-none" aria-hidden="true">
             DEV
@@ -1445,17 +1462,18 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
         data-cinema={pageFullscreen ? '' : undefined}
         className="flex items-center gap-2 h-12 border-b border-border bg-toolbar shrink-0"
         style={{
-          // The Menu orb comes first: on macOS right after the window's
-          // buttons, on Windows flush in the corner, as the Start orb was.
-          // No padding above or below — the orb is the bar's full height;
-          // the 32 px controls stay centred where they were.
-          paddingLeft: isMac ? 80 : 0,
+          // The Menu orb comes first: on macOS after the window's buttons,
+          // its plate where the Menu button always began (80 px); on Windows
+          // flush in the corner, as the Start orb was. No padding above or
+          // below — the orb is the bar's full height, square, its mark
+          // centred in it; the 32 px controls stay centred where they were.
+          paddingLeft: isMac ? 74 : 0,
           paddingRight: pageFullscreen ? 8 : isMac ? 8 : 142,
           WebkitAppRegion: 'drag',
         } as React.CSSProperties}
       >
         {/* App menu: the Vimperium orb */}
-        <AppMenu sidebarVisible={sidebarVisible} vimMode={vimMode ?? null} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} onOpenDownloads={openDownloadsPage} />
+        <AppMenu sidebarVisible={sidebarVisible} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} onOpenDownloads={openDownloadsPage} />
 
         {/* Profile selector */}
         <Dropdown

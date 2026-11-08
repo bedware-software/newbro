@@ -10,7 +10,7 @@ import { DetachedWindow, type PopupPlacement } from './DetachedWindow'
 import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
 import { InputField } from './InputField'
-import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, LEAVE_INSERT_CAP, RowHint, vimKeyCaps } from './KeyHints'
 import { hintIndex, usePopupHints } from '../lib/hint-labels'
 import { SplitGlyph } from './SplitPanes'
 import { fuzzyFilter } from '../lib/fuzzy'
@@ -160,9 +160,8 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
       pick(rows[selected])
     } else if (e.key === 'Escape') {
       e.preventDefault()
-      // Vim: Esc leaves the box for COMMAND mode; Esc there gives up.
-      if (vim.modeRef.current) inputRef.current?.blur()
-      else closeSplit()
+      // In Vim mode Esc never gets here: the picker's Vim keys give up.
+      closeSplit()
     }
   }
 
@@ -246,7 +245,8 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
             <>
               <Hint label="Navigate" keys={['↓', '↑']} />
               <Hint label="Open here" keys={['Enter']} />
-              <Hint label={vim.mode ? 'Command mode' : 'Cancel split'} keys={['Esc']} />
+              {vim.mode && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
+              <Hint label="Cancel split" keys={['Esc']} />
             </>
           )}
         </HintBar>

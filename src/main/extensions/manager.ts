@@ -31,17 +31,19 @@
 
 import { app, BrowserWindow, session, type Session } from 'electron'
 import Store from 'electron-store'
+import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { log } from '../log'
 import { deriveExtensionIdFromPublicKey, extractCrxPublicKey, parseCrx } from './crx'
 import { extractExtensionIdFromUrl as _extract, fetchCrx } from './store'
 import { unzipTo } from './zip'
-import { buildSwShimSource, stripSwShims, CS_STORAGE_PORT, SW_SHIM_MAGIC, SW_SHIM_FOOTER, SW_SHIM_MODULE_FILE } from './sw-shim'
+import { buildSwShimSource, stripSwShims, SW_SHIM_MAGIC, SW_SHIM_FOOTER, SW_SHIM_MODULE_FILE } from './sw-shim'
 import {
   LEGACY_BOOTSTRAP_MARKER,
   LEGACY_CS_STORAGE_POLYFILL_FILENAME,
+  LEGACY_CS_STORAGE_PORT,
   LEGACY_FRAME_STORAGE_BRIDGE_FILENAME,
   LEGACY_FRAME_STORAGE_BRIDGE_TAG,
   LEGACY_ORIGINAL_MANIFEST_FILE,
@@ -123,9 +125,16 @@ interface LedgerEntry {
   changedAt: number
 }
 
-const store = new Store<{ extensions: Record<string, PersistedEntry>; syncLedger: Record<string, LedgerEntry> }>({
+const store = new Store<{
+  extensions: Record<string, PersistedEntry>
+  syncLedger: Record<string, LedgerEntry>
+  /** Per profile session (its storage folder, relative to userData), per
+   *  extension: the fingerprint of the worker shim that session last
+   *  dropped its cached worker for. See clearRewrittenSwRegistration. */
+  swShimCleared: Record<string, Record<string, string>>
+}>({
   name: 'vimperium-extensions',
-  defaults: { extensions: {}, syncLedger: {} },
+  defaults: { extensions: {}, syncLedger: {}, swShimCleared: {} },
 })
 
 export const extractExtensionIdFromUrl = _extract
@@ -778,6 +787,14 @@ async function reloadExtensionEverywhere(extensionId: string): Promise<void> {
 // extension's own service worker (chrome.runtime.sendMessage →
 // __vimperiumCsStorage, serviced in sw-shim.ts with the SW's working
 // storage). sync/managed alias to local, matching Electron/library.
+//
+// LEGACY_CS_STORAGE_PORT, not CS_STORAGE_PORT: until a profile drops the
+// Newbro-patched worker Chromium cached for it (clearRewrittenSwRegistration),
+// that worker is the one answering, and it knows the port by Newbro's name
+// alone. Ours answers both names (sw-shim.ts), so the old name reaches
+// whichever worker runs. Back to CS_STORAGE_PORT when the other LEGACY_*
+// runtime aliases go.
+const CS_STORAGE_CONNECT_PORT = LEGACY_CS_STORAGE_PORT
 const CS_STORAGE_POLYFILL_FILENAME = 'vimperium-cs-storage.js'
 const CS_STORAGE_POLYFILL_MARKER = '// __VIMPERIUM_CS_STORAGE_V5__'
 const CS_STORAGE_POLYFILL_SOURCE = `${CS_STORAGE_POLYFILL_MARKER}
@@ -789,12 +806,12 @@ const CS_STORAGE_POLYFILL_SOURCE = `${CS_STORAGE_POLYFILL_MARKER}
     // delivers the FIRST responder's reply, and some extensions'
     // (NotebookLM) own onMessage listeners respond to our request first
     // with the wrong object. A named port is point-to-point, so only the
-    // SW's __vimperium_cs_storage handler answers.
+    // SW's cs-storage handler answers.
     var port = null, nextId = 1, pending = {};
     function ensurePort() {
       if (port) return port;
       try {
-        port = rt.connect({ name: ${JSON.stringify(CS_STORAGE_PORT)} });
+        port = rt.connect({ name: ${JSON.stringify(CS_STORAGE_CONNECT_PORT)} });
         port.onMessage.addListener(function (msg) {
           if (!msg || typeof msg.id === "undefined") return;
           var cb = pending[msg.id];
@@ -944,7 +961,7 @@ const FRAME_STORAGE_BRIDGE_SOURCE = `// __VIMPERIUM_FRAME_STORAGE_V1__
     function ensurePort() {
       if (port) return port;
       try {
-        port = rt.connect({ name: ${JSON.stringify(CS_STORAGE_PORT)} });
+        port = rt.connect({ name: ${JSON.stringify(CS_STORAGE_CONNECT_PORT)} });
         port.onMessage.addListener(function (msg) {
           if (!msg || typeof msg.id === "undefined") return;
           var cb = pending[msg.id];
@@ -1297,6 +1314,7 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>, extId?:
       magic: SW_SHIM_MAGIC,
       rpcPort: rpc.port,
     })
+    if (extId) swShimmedExtIds.add(extId)
     removeLegacyFile(legacyShimModule)
     return false
   }
@@ -1318,6 +1336,7 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>, extId?:
       bodyHead: head,
     })
     if (extId) {
+      swShimmedExtIds.add(extId)
       swShimRewrittenExtIds.add(extId)
       swShimClearedSessions.delete(extId)
     }
@@ -1562,29 +1581,84 @@ function getAllSessions(): Session[] {
  *  chrome.runtime.onStartup wiring (V35+) wouldn't kick in until the
  *  user did something that forced an SW update check. */
 const swShimRewrittenExtIds = new Set<string>()
+/** Extensions whose worker carries the current shim this boot, rewritten
+ *  or already up to date: the ones whose cached worker can be behind. */
+const swShimmedExtIds = new Set<string>()
 /** Sessions that already dropped their cached worker for an extension
- *  in swShimRewrittenExtIds. Once per session, not once per boot: every
- *  profile's session keeps its own copy of the old worker — after the
- *  rename, a Newbro-era one. Reset when the shim is rewritten again. */
+ *  this boot. Once per session, not once per boot: every profile's
+ *  session keeps its own copy of the old worker — after the rename, a
+ *  Newbro-era one. Reset when the shim is rewritten again. */
 const swShimClearedSessions = new Map<string, WeakSet<Session>>()
 
-/** If the shim was rewritten this boot, clear the cached SW
- *  registration + script bytes for this extension's origin so Chromium
- *  can't activate the stale pre-rewrite version. This is
- *  load-the-fresh-shim insurance — without it, the FIRST app launch
- *  after a shim version bump would still run the cached SW (Browsec
- *  sits idle, requires manual Turn on click) until Chromium's separate
- *  update check eventually noticed the byte difference and spawned a
- *  new SW. We DON'T clear other storage types — chrome.storage.local
- *  data must survive so the extension's persisted settings (proxy mode,
- *  country choice, on/off flag) are still there for the new SW's
- *  onStartup listener to read.
+/** A profile session's key in the swShimCleared store: its storage
+ *  folder relative to userData (Partitions/profile-…), stable across
+ *  launches. Null for an in-memory session — its cache starts empty
+ *  every launch. */
+function swShimPartitionKey(ses: Session): string | null {
+  const storagePath = ses.storagePath
+  if (!storagePath) return null
+  const rel = relative(app.getPath('userData'), storagePath)
+  if (!rel || rel.startsWith('..')) return storagePath
+  return rel.split('\\').join('/')
+}
+
+let swShimFingerprintMemo: { port: number; secret: string; value: string } | null = null
+/** What the shim on disk is, as far as a cached worker goes: a hash of
+ *  the shim source with its RPC port and secret (the secret itself never
+ *  lands in the store). Null until the RPC server is up. */
+function currentSwShimFingerprint(): string | null {
+  const rpc = getSwRpcServerInfo()
+  if (!rpc) return null
+  if (!swShimFingerprintMemo || swShimFingerprintMemo.port !== rpc.port || swShimFingerprintMemo.secret !== rpc.secret) {
+    const value = createHash('sha256').update(buildSwShimSource(rpc.port, rpc.secret, '*')).digest('hex').slice(0, 32)
+    swShimFingerprintMemo = { port: rpc.port, secret: rpc.secret, value }
+  }
+  return swShimFingerprintMemo.value
+}
+
+function recordedSwShim(partition: string, extensionId: string): string | undefined {
+  return (store.get('swShimCleared') ?? {})[partition]?.[extensionId]
+}
+
+function recordSwShim(partition: string, extensionId: string, fingerprint: string): void {
+  const all = { ...(store.get('swShimCleared') ?? {}) }
+  all[partition] = { ...(all[partition] ?? {}), [extensionId]: fingerprint }
+  try {
+    store.set('swShimCleared', all)
+  } catch (err) {
+    // Not fatal: the session clears once more next launch.
+    log.warn('extensions: recording the cleared SW shim failed', { id: extensionId, partition, err: String(err) })
+  }
+}
+
+/** Clear the cached SW registration + script bytes for this extension's
+ *  origin in this session, so Chromium can't activate a worker older
+ *  than the shim on disk. This is load-the-fresh-shim insurance —
+ *  without it, the FIRST app launch after a shim version bump would
+ *  still run the cached SW (Browsec sits idle, requires manual Turn on
+ *  click) until Chromium's separate update check eventually noticed the
+ *  byte difference and spawned a new SW. We DON'T clear other storage
+ *  types — chrome.storage.local data must survive so the extension's
+ *  persisted settings (proxy mode, country choice, on/off flag) are
+ *  still there for the new SW's onStartup listener to read.
+ *
+ *  When: the shim was rewritten this boot, or this profile's session
+ *  last cleared under a different shim (swShimCleared) — kept per
+ *  session on disk, not per boot, because the files are rewritten in the
+ *  boot that finds them stale while a profile's session is set up only
+ *  when one of its windows opens. A profile left closed on the first
+ *  Vimperium launch would otherwise keep its Newbro-era worker for good.
  *
  *  Must run BEFORE the extension loads: clearing afterwards drops the
  *  worker registration loadExtension just made, and nothing re-registers
  *  it until the next launch. Returns true if it cleared. */
 async function clearRewrittenSwRegistration(ses: Session, extensionId: string): Promise<boolean> {
-  if (!swShimRewrittenExtIds.has(extensionId)) return false
+  const partition = swShimPartitionKey(ses)
+  const fingerprint = partition !== null && swShimmedExtIds.has(extensionId) ? currentSwShimFingerprint() : null
+  const stamp = partition !== null && fingerprint !== null ? { partition, fingerprint } : null
+  const behind = stamp !== null && recordedSwShim(stamp.partition, extensionId) !== stamp.fingerprint
+  const rewritten = swShimRewrittenExtIds.has(extensionId)
+  if (!behind && !rewritten) return false
   let cleared = swShimClearedSessions.get(extensionId)
   if (!cleared) {
     cleared = new WeakSet()
@@ -1597,7 +1671,8 @@ async function clearRewrittenSwRegistration(ses: Session, extensionId: string): 
       origin: `chrome-extension://${extensionId}`,
       storages: ['serviceworkers'],
     })
-    log.info('extensions: cleared SW storage after shim rewrite', { id: extensionId })
+    if (stamp) recordSwShim(stamp.partition, extensionId, stamp.fingerprint)
+    log.info('extensions: cleared SW storage for the current shim', { id: extensionId, partition, rewritten })
     return true
   } catch (err) {
     log.warn('extensions: clearStorageData(serviceworkers) failed', { id: extensionId, err: String(err) })

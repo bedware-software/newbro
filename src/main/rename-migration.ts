@@ -15,12 +15,17 @@
 //   - the extensions store keeps each extension's folder as an absolute path,
 //     and the manager drops an entry whose manifest.json isn't there, so every
 //     path under the old folder is rewritten to the new one (a .bak first);
+//   - so is each Bookshelf reading's offline copy (bookshelf.ts also finds
+//     one by its file name, so a path left behind still opens);
 //   - on macOS the key that encrypts saved passwords, passkeys and corporate
 //     credentials lives in the login keychain under the app's name ("Newbro
 //     Safe Storage"). Electron would make a new random one for "Vimperium",
 //     and nothing saved before could be decrypted, so the secret is copied to
 //     the new name before anything uses safeStorage. Windows keeps that key
 //     DPAPI-wrapped in userData's Local State, which moves with the folder.
+//     Until the copy lands (macOS asked and nobody allowed it), the stores
+//     that use safeStorage stay off (vaultKeyMissingReason) and, once ready,
+//     the user is told and offered another try (handleLegacyKeychainMissing).
 //
 // The old app's keychain item is never deleted, and nothing is left behind or
 // removed at the old location: an old Newbro started later finds an empty
@@ -84,6 +89,11 @@ const PARTITIONS_DIR = 'Partitions'
 /** The extensions store (src/main/extensions/manager.ts), holding absolute
  *  paths to each extension's folder. */
 const EXTENSIONS_STORE_FILE = 'vimperium-extensions.json'
+/** The Bookshelf's store (src/main/bookshelf.ts): a reading saved for offline
+ *  use keeps the absolute path of its copy, userData/bookshelf/<id>.mhtml,
+ *  under this key. */
+const BOOKSHELF_STORE_FILE = 'vimperium-bookshelf.json'
+const BOOKSHELF_PATH_KEY = 'offlinePath'
 /** Each extension folder keeps the publisher's untouched manifest under this
  *  name (manager.ts ORIGINAL_MANIFEST_FILE); Newbro wrote it under the
  *  LEGACY_ name. The manager renames it too when it first reads it; doing it
@@ -130,7 +140,8 @@ export type KeychainState =
   /** The copy failed (the user denied the prompt, it timed out, …); the next
    *  launch tries again. */
   | 'pending'
-  /** Failed MAX_KEYCHAIN_ATTEMPTS times; no more prompts. */
+  /** Failed MAX_KEYCHAIN_ATTEMPTS times; no more prompts on their own, only
+   *  when the user asks for another try (requestKeychainRetry). */
   | 'failed'
 
 export interface MigrationMarker {
@@ -149,6 +160,8 @@ export interface MigrationMarker {
   keychainError?: string
   renamed?: string[]
   extensionPathsRewritten?: number
+  /** Only when there were any. */
+  bookshelfPathsRewritten?: number
 }
 
 export interface RunningCheck {
@@ -357,6 +370,7 @@ function finishMigration(
     return blocked(d, 'fixup-failed', errText(err))
   }
   renameOriginalManifests(d, to)
+  const shelfRewritten = rewriteBookshelfPaths(d, to, from)
 
   const keychain = copyKeychain(d, ctx.marker)
   const base: MigrationMarker = {
@@ -386,6 +400,8 @@ function finishMigration(
     renamed: [...new Set([...(ctx.marker?.renamed ?? []), ...renamed])],
     extensionPathsRewritten: (ctx.marker?.extensionPathsRewritten ?? 0) + rewritten,
   }
+  const shelfTotal = (ctx.marker?.bookshelfPathsRewritten ?? 0) + shelfRewritten
+  if (shelfTotal) done.bookshelfPathsRewritten = shelfTotal
   if (keychain.error) done.keychainError = keychain.error
   else delete done.keychainError
   try {
@@ -394,7 +410,11 @@ function finishMigration(
     // Everything above is done and safe to repeat; the next launch repeats it.
     d.log('error', `couldn't write the migration marker (the next launch finishes the move again): ${errText(err)}`)
   }
-  d.log('info', `done: ${renamed.length} files renamed, ${rewritten} extension paths rewritten, keychain ${keychain.state}`)
+  d.log(
+    'info',
+    `done: ${renamed.length} files renamed, ${rewritten} extension paths and ${shelfRewritten} offline reading paths ` +
+      `rewritten, keychain ${keychain.state}`,
+  )
   return { kind: 'migrated', resumed: ctx.resumed, keychain: keychain.state }
 }
 
@@ -461,9 +481,36 @@ function renameLegacyFiles(d: MigrationDeps, dir: string): string[] {
 }
 
 /** Rewrites every absolute path under `from` in the extensions store to the
- *  same path under `to`. Returns how many it rewrote. */
+ *  same path under `to`. Returns how many it rewrote. Throws FixupError when
+ *  the store can't be read or written. */
 function rewriteExtensionPaths(d: MigrationDeps, to: string, from: string): number {
-  const file = join(to, EXTENSIONS_STORE_FILE)
+  return rewriteStorePaths(d, join(to, EXTENSIONS_STORE_FILE), from, to, 'extension paths')
+}
+
+/** The same for the Bookshelf's offline copies. Not a reason to hold the
+ *  launch back: bookshelf.ts finds a copy by its file name under userData, so
+ *  one whose path still names the old folder opens all the same. */
+function rewriteBookshelfPaths(d: MigrationDeps, to: string, from: string): number {
+  try {
+    return rewriteStorePaths(d, join(to, BOOKSHELF_STORE_FILE), from, to, 'offline reading paths', BOOKSHELF_PATH_KEY)
+  } catch (err) {
+    d.log('warn', `${errText(err)} (the Bookshelf finds its offline copies by name, so they still open)`)
+    return 0
+  }
+}
+
+/** Rewrites the absolute paths under `from` in one JSON store to the same
+ *  paths under `to` — every string, or with `onlyKey` only the strings under
+ *  that key — keeping the untouched original as <file>.bak. Returns how many
+ *  it rewrote. Throws FixupError when the store can't be read or written. */
+function rewriteStorePaths(
+  d: MigrationDeps,
+  file: string,
+  from: string,
+  to: string,
+  what: string,
+  onlyKey?: string,
+): number {
   if (!exists(d, file)) return 0
   let text: string
   try {
@@ -481,21 +528,22 @@ function rewriteExtensionPaths(d: MigrationDeps, to: string, from: string): numb
   }
   const win = d.platform === 'win32'
   let count = 0
-  const walk = (value: unknown): unknown => {
+  const walk = (value: unknown, key: string | null): unknown => {
     if (typeof value === 'string') {
+      if (onlyKey !== undefined && key !== onlyKey) return value
       const moved = rebasePath(value, from, to, win)
       if (moved === null) return value
       count++
       return moved
     }
-    if (Array.isArray(value)) return value.map(walk)
+    if (Array.isArray(value)) return value.map((item) => walk(item, null))
     if (value && typeof value === 'object') {
       const obj = value as Record<string, unknown>
-      for (const key of Object.keys(obj)) obj[key] = walk(obj[key])
+      for (const k of Object.keys(obj)) obj[k] = walk(obj[k], k)
     }
     return value
   }
-  const next = walk(data)
+  const next = walk(data, null)
   if (!count) return 0
   const backup = `${file}.bak`
   try {
@@ -504,9 +552,9 @@ function rewriteExtensionPaths(d: MigrationDeps, to: string, from: string): numb
     // Tab-indented, as electron-store writes it.
     writeJsonAtomic(d, file, next, '\t')
   } catch (err) {
-    throw new FixupError(`couldn't rewrite the extension paths in ${file}: ${errText(err)}`)
+    throw new FixupError(`couldn't rewrite the ${what} in ${file}: ${errText(err)}`)
   }
-  d.log('info', `rewrote ${count} extension paths from ${from} to ${to} (original kept as ${basename(backup)})`)
+  d.log('info', `rewrote ${count} ${what} from ${from} to ${to} (original kept as ${basename(backup)})`)
   return count
 }
 
@@ -624,6 +672,37 @@ function retryKeychain(d: MigrationDeps, newDir: string, marker: MigrationMarker
   return kc.state
 }
 
+/**
+ * The user asked for another try at the keychain copy (Try again in
+ * handleLegacyKeychainMissing): the next launch copies the key — also when
+ * the tries had run out ('failed'), which is why the count starts over.
+ * Returns false when there's nothing to try again or the marker couldn't be
+ * written (logged).
+ */
+export function requestKeychainRetry(d: MigrationDeps, newDir: string): boolean {
+  const file = join(newDir, MIGRATION_MARKER_FILE)
+  const marker = readMarker(d, file)
+  if (!marker) {
+    d.log('warn', `keychain: no migration marker in ${newDir}, nothing to try again`)
+    return false
+  }
+  // An unfinished move copies the key when the next launch finishes it.
+  if (marker.state === 'moving') return true
+  if (marker.keychain !== 'pending' && marker.keychain !== 'failed') {
+    d.log('info', `keychain: ${marker.keychain ?? 'no state'}, nothing to try again`)
+    return false
+  }
+  const next: MigrationMarker = { ...marker, keychain: 'pending', keychainAttempts: 0 }
+  try {
+    writeJsonAtomic(d, file, next)
+  } catch (err) {
+    d.log('error', `keychain: couldn't record the request to try again: ${errText(err)}`)
+    return false
+  }
+  d.log('info', `keychain: the user asked to try again (was ${marker.keychain}); the next launch copies the key`)
+  return true
+}
+
 // ── Helpers ──
 
 function blocked(d: MigrationDeps, reason: BlockedReason, detail: string): MigrationResult {
@@ -715,9 +794,25 @@ function errText(err: unknown): string {
 
 // ── Running-app check (real) ──
 
-/** Process names a browser on one of these profiles runs as: the packaged app,
- *  or `npm run dev`'s Electron. */
-const BROWSER_PROCESS_RE = /newbro|vimperium|electron/i
+/** What the browser on a profile runs as, for isAppRunningIn. */
+export interface AppIdentity {
+  /** The packaged app's executable names ('Newbro', 'Vimperium'), matched
+   *  against the last part of the path `ps` names the process by. */
+  names: readonly string[]
+  /** Whole executable paths that count too: `npm run dev`'s Electron, which
+   *  is this launch's own process.execPath. */
+  paths?: readonly string[]
+}
+
+/** The packaged apps, old and new. Never a bare "Electron": other apps ship
+ *  under that name too (MongoDB Compass's is …/Contents/MacOS/Electron). */
+const PACKAGED_APPS: AppIdentity = { names: ['Newbro', 'Vimperium'] }
+
+/** This launch's own idea of the browser: the packaged apps, or the very
+ *  Electron binary it runs on (a dev run). */
+function ownAppIdentity(): AppIdentity {
+  return { names: PACKAGED_APPS.names, paths: [process.execPath] }
+}
 
 /**
  * Whether a Chromium-based app holds the profile in `dir`, judged by its
@@ -727,11 +822,21 @@ const BROWSER_PROCESS_RE = /newbro|vimperium|electron/i
  * deleted when it quits; one we can open is left over from a crash. Elsewhere:
  * `SingletonLock` is a symlink to `<host>-<pid>`. A dead pid is a stale lock;
  * a live one is checked against the process list, since the pid of an app
- * that quit long ago may belong to something else by now. The host is only
- * reported: macOS's host name follows the network, so a mismatch doesn't make
- * a live browser on this machine any less live.
+ * that quit long ago may belong to something else by now: it counts when the
+ * process is the app itself (`identity`), or when its helpers run on this very
+ * profile (Chromium hands each one --user-data-dir), which also catches a dev
+ * run from another checkout. The host is only reported: macOS's host name
+ * follows the network, so a mismatch doesn't make a live browser on this
+ * machine any less live.
+ *
+ * Meant for before this launch takes a lock of its own: a lock that names
+ * this very process is left over from an earlier one that had the same pid.
  */
-export function isAppRunningIn(dir: string, platform: NodeJS.Platform = process.platform): RunningCheck {
+export function isAppRunningIn(
+  dir: string,
+  platform: NodeJS.Platform = process.platform,
+  identity: AppIdentity = PACKAGED_APPS,
+): RunningCheck {
   if (platform === 'win32') {
     const lockfile = join(dir, 'lockfile')
     if (!nodeFs.existsSync(lockfile)) return { running: false, detail: 'no lockfile' }
@@ -758,6 +863,7 @@ export function isAppRunningIn(dir: string, platform: NodeJS.Platform = process.
   const pid = Number(match[2])
   const ownHost = hostname()
   const hostNote = host === ownHost ? '' : `, locked on host "${host}" (this is "${ownHost}")`
+  if (pid === process.pid) return { running: false, detail: `the lock names this process (pid ${pid}), so it is left over${hostNote}` }
   try {
     process.kill(pid, 0)
   } catch (err) {
@@ -766,21 +872,68 @@ export function isAppRunningIn(dir: string, platform: NodeJS.Platform = process.
   const comm = processCommand(pid)
   if (comm === 'gone') return { running: false, detail: `pid ${pid} is gone${hostNote}` }
   if (comm === null) return { running: true, detail: `pid ${pid} is alive${hostNote}` }
-  if (!BROWSER_PROCESS_RE.test(basename(comm))) {
-    return { running: false, detail: `pid ${pid} now belongs to ${comm}${hostNote}` }
-  }
-  return { running: true, detail: `pid ${pid} (${comm})${hostNote}` }
+  if (isAppExecutable(comm, identity)) return { running: true, detail: `pid ${pid} (${comm})${hostNote}` }
+  const helpers = helpersUseProfile(pid, dir)
+  if (helpers === true) return { running: true, detail: `pid ${pid} (${comm}) runs helpers on ${dir}${hostNote}` }
+  const unsure = helpers === null ? `, and its helpers couldn't be listed` : ''
+  return { running: false, detail: `pid ${pid} now belongs to ${comm}${unsure}${hostNote}` }
 }
+
+function isAppExecutable(comm: string, identity: AppIdentity): boolean {
+  const name = basename(comm).toLowerCase()
+  const full = comm.toLowerCase()
+  return (
+    identity.names.some((n) => n.toLowerCase() === name) ||
+    (identity.paths ?? []).some((p) => p.toLowerCase() === full)
+  )
+}
+
+/** `ps` with its text as UTF-8: under the C locale it escapes every
+ *  non-ASCII byte of a path (Cyrillic folder names, say). */
+const PS_ENV = { ...process.env, LC_ALL: 'en_US.UTF-8' }
 
 /** The executable `ps` names for a pid, 'gone' when there's no such process,
  *  or null when `ps` couldn't tell. */
 function processCommand(pid: number): string | 'gone' | null {
-  const r = spawnSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8', timeout: 5000 })
+  const r = spawnSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8', timeout: 5000, env: PS_ENV })
   if (r.error) return null
   const out = (r.stdout ?? '').trim()
   if (r.status === 0 && out) return out
   if (r.status === 1 && !out) return 'gone'
   return null
+}
+
+/** Whether a child of `pid` runs with --user-data-dir=`dir`, as every
+ *  Chromium helper (GPU, network, renderer) of a browser on that profile
+ *  does; null when `ps` couldn't tell. */
+function helpersUseProfile(pid: number, dir: string): boolean | null {
+  const r = spawnSync('ps', ['-axww', '-o', 'ppid=,args='], {
+    encoding: 'utf8',
+    timeout: 5000,
+    maxBuffer: 64 * 1024 * 1024,
+    env: PS_ENV,
+  })
+  if (r.error || r.status !== 0) return null
+  return psListsHelperOn(String(r.stdout ?? ''), pid, dir)
+}
+
+/** Over `ps -o ppid=,args=` output: whether a child of `pid` has
+ *  --user-data-dir=`dir`. */
+export function psListsHelperOn(psOutput: string, pid: number, dir: string): boolean {
+  const flag = `--user-data-dir=${dir}`
+  for (const line of psOutput.split('\n')) {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line)
+    if (!m || Number(m[1]) !== pid) continue
+    const args = m[2].trimEnd()
+    for (let at = args.indexOf(flag); at >= 0; at = args.indexOf(flag, at + 1)) {
+      // ps joins the arguments with spaces, unquoted, and the folder has
+      // spaces in it ("Application Support"): the value ends where the line
+      // does or the next switch starts, so "…/Newbro" isn't "…/Newbro Dev".
+      const rest = args.slice(at + flag.length)
+      if (rest === '' || rest.startsWith(' --')) return true
+    }
+  }
+  return false
 }
 
 /** pids of this user's processes named exactly `name`, or [] (pgrep). */
@@ -886,6 +1039,8 @@ export interface RenameMigrationOutcome {
 }
 
 let outcome: RenameMigrationOutcome | null = null
+/** The deps this launch migrated with, for the keychain retry once ready. */
+let launchDeps: MigrationDeps | null = null
 const pendingLines: Array<{ level: MigrationLogLevel; msg: string }> = []
 
 function note(level: MigrationLogLevel, msg: string): void {
@@ -907,6 +1062,34 @@ export function getRenameMigrationOutcome(): RenameMigrationOutcome {
   )
 }
 
+function keychainStateOf(result: MigrationResult): KeychainState | undefined {
+  return result.kind === 'migrated' || result.kind === 'already' ? result.keychain : undefined
+}
+
+/**
+ * Why saved passwords, passkeys and sign-ins can't be used this launch, or
+ * null when they can. On macOS the key they're encrypted with is still only in
+ * "Newbro Safe Storage" while the keychain copy is 'pending' or 'failed'.
+ * Until it lands the stores must neither decrypt nor encrypt — nor touch
+ * safeStorage at all: its first use makes up a random "Vimperium Safe
+ * Storage" key, nothing moved over can be read with it, and whatever were
+ * encrypted with it would be lost when the copy replaces it.
+ */
+export function vaultKeyMissingReason(): string | null {
+  return vaultKeyMissingReasonFor(getRenameMigrationOutcome())
+}
+
+/** vaultKeyMissingReason for a given outcome. */
+export function vaultKeyMissingReasonFor(o: RenameMigrationOutcome): string | null {
+  const state = keychainStateOf(o.result)
+  if (state !== 'pending' && state !== 'failed') return null
+  return (
+    `${o.newName} can't use saved passwords, passkeys or sign-ins yet: it still needs the key ${o.legacyName} ` +
+    `saved them with, “${keychainItem(o.legacyName).service}” in your keychain. Restart ${o.newName} to try again, ` +
+    `and allow access when macOS asks.`
+  )
+}
+
 /**
  * Runs the migration for this launch. branding.ts calls it once, before
  * app.setName and before anything reads userData.
@@ -923,7 +1106,8 @@ export function migrateFromNewbro(opts: { appName: string; legacyName: string; t
   const to = join(appData, opts.appName)
   const platform = process.platform
   // A packaged Newbro runs as "Newbro"; also look for one by name in case its
-  // lock is gone. A dev run is a plain "Electron", found by its lock alone.
+  // lock is gone. A dev run is a plain "Electron", found by its lock alone
+  // (and its helpers' --user-data-dir).
   const legacyProcessName = platform === 'darwin' && opts.legacyName === 'Newbro' ? opts.legacyName : null
 
   let keychain: KeychainOps | null = null
@@ -939,7 +1123,7 @@ export function migrateFromNewbro(opts: { appName: string; legacyName: string; t
     platform,
     fs: nodeFs,
     isAppRunning: (dir) => {
-      const lock = isAppRunningIn(dir, platform)
+      const lock = isAppRunningIn(dir, platform, ownAppIdentity())
       if (lock.running || dir !== from || !legacyProcessName) return lock
       const pids = userProcessesNamed(legacyProcessName)
       return pids.length ? { running: true, detail: `${legacyProcessName} is running as pid ${pids.join(', ')}` } : lock
@@ -951,6 +1135,7 @@ export function migrateFromNewbro(opts: { appName: string; legacyName: string; t
     appVersion: app.getVersion(),
     log: note,
   }
+  launchDeps = deps
 
   let result: MigrationResult
   try {
@@ -1009,7 +1194,7 @@ function sweepWaitingProfiles(): void {
     try {
       const st = nodeFs.lstatSync(dir)
       if (!st.isDirectory() || st.isSymbolicLink()) continue
-      if (isAppRunningIn(dir).running) continue
+      if (isAppRunningIn(dir, process.platform, ownAppIdentity()).running) continue
       nodeFs.rmSync(dir, { recursive: true, force: true })
       note('info', `removed the waiting profile ${dir}`)
     } catch (err) {
@@ -1042,11 +1227,20 @@ export function flushRenameMigrationLog(logger: MigrationLogger): void {
   for (const { level, msg } of pendingLines.splice(0)) logger[level](`rename-migration: ${msg}`)
 }
 
+/** Whether this launch can start itself again. Not under `npm run dev`:
+ *  electron-vite stops its dev server once its Electron exits, so a relaunched
+ *  one would open on a dead renderer URL — a blank window (ipc.ts wipe-data
+ *  skips its relaunch for the same reason). The developer runs it again. */
+function canRelaunch(): boolean {
+  return app.isPackaged
+}
+
 /**
  * When this launch couldn't move the data, asks the user to quit Newbro (or
  * says what went wrong) and ends the launch: Retry starts Vimperium again,
- * Quit just quits. Returns true when it handled the launch, so the caller
- * opens nothing. index.ts calls it first thing in the ready handler.
+ * Quit just quits (in `npm run dev` only Quit, and the developer runs it
+ * again). Returns true when it handled the launch, so the caller opens
+ * nothing. index.ts calls it first thing in the ready handler.
  */
 export async function handleRenameMigrationBlocked(logger: MigrationLogger): Promise<boolean> {
   const current = getRenameMigrationOutcome()
@@ -1054,36 +1248,41 @@ export async function handleRenameMigrationBlocked(logger: MigrationLogger): Pro
   if (result.kind !== 'blocked') return false
   const oldApp = current.legacyName
   const newApp = current.newName
+  const relaunch = canRelaunch()
+  const then = relaunch ? 'choose Retry' : 'choose Quit and run npm run dev again'
+  const tryAgain = relaunch ? 'Choose Retry to try again.' : 'Choose Quit, then run npm run dev again to try again.'
   const copy =
     result.reason === 'old-app-running'
       ? {
           message: `Quit ${oldApp} to finish moving to ${newApp}`,
           detail:
             `${newApp} brings over your tabs, passwords, extensions and history from ${oldApp} ` +
-            `the first time it starts, and ${oldApp} is still open. Quit ${oldApp}, then choose Retry.`,
+            `the first time it starts, and ${oldApp} is still open. Quit ${oldApp}, then ${then}.`,
         }
       : result.reason === 'move-failed'
         ? {
             message: `${newApp} couldn't move your data from ${oldApp}`,
-            detail: `${result.detail}\n\nYour data is untouched in ${current.from}. Close anything that may be using that folder, then choose Retry.`,
+            detail: `${result.detail}\n\nYour data is untouched in ${current.from}. Close anything that may be using that folder, then ${then}.`,
           }
         : result.reason === 'fixup-failed'
           ? {
               message: `${newApp} couldn't finish moving your data from ${oldApp}`,
-              detail: `${result.detail}\n\nYour data is in ${current.to}. Choose Retry to try again.`,
+              detail: `${result.detail}\n\nYour data is in ${current.to}. ${tryAgain}`,
             }
           : {
               message: `${newApp} couldn't move your data from ${oldApp}`,
-              detail: `${result.detail}\n\nChoose Retry to try again.`,
+              detail: `${result.detail}\n\n${tryAgain}`,
             }
+  const buttons = relaunch ? ['Retry', 'Quit'] : ['Quit']
+  const quitId = buttons.indexOf('Quit')
   if (process.platform === 'darwin') app.focus({ steal: true })
-  let response = 1 // Quit
+  let response = quitId
   try {
     const answer = await dialog.showMessageBox({
       type: 'warning',
-      buttons: ['Retry', 'Quit'],
+      buttons,
       defaultId: 0,
-      cancelId: 1,
+      cancelId: quitId,
       noLink: true,
       message: copy.message,
       detail: copy.detail,
@@ -1092,11 +1291,73 @@ export async function handleRenameMigrationBlocked(logger: MigrationLogger): Pro
   } catch (err) {
     logger.error('rename-migration: the dialog failed, quitting', String(err))
   }
-  if (response === 0) {
+  if (relaunch && response === 0) {
     logger.info('rename-migration: Retry, relaunching')
     app.relaunch()
   } else {
-    logger.info('rename-migration: Quit')
+    logger.info(`rename-migration: Quit${relaunch ? '' : ' (npm run dev: no relaunch, run it again)'}`)
+  }
+  app.exit(0)
+  return true
+}
+
+/**
+ * macOS, once ready: when the key the moved passwords are encrypted with is
+ * still missing — macOS asked to let this app read "Newbro Safe Storage" and
+ * nobody allowed it, so the copy is 'pending' or 'failed' — says so. Try
+ * again asks for another copy, also after the automatic tries ran out, and
+ * relaunches (in `npm run dev` it's Quit, and the developer runs it again);
+ * Continue without saved passwords opens the app with saved passwords,
+ * passkeys and sign-ins off for this launch (vaultKeyMissingReason keeps the
+ * stores away from safeStorage). Returns true when it ended the launch.
+ * index.ts calls it right after handleRenameMigrationBlocked.
+ */
+export async function handleLegacyKeychainMissing(logger: MigrationLogger): Promise<boolean> {
+  const current = getRenameMigrationOutcome()
+  const state = keychainStateOf(current.result)
+  if (state !== 'pending' && state !== 'failed') return false
+  const oldApp = current.legacyName
+  const newApp = current.newName
+  const item = keychainItem(oldApp).service
+  const relaunch = canRelaunch()
+  const buttons = [relaunch ? 'Try again' : 'Quit', 'Continue without saved passwords']
+  const next = relaunch
+    ? `Choose Try again, then allow access when macOS asks about “${item}”.`
+    : `Choose Quit and run npm run dev again, then allow access when macOS asks about “${item}”.`
+  if (process.platform === 'darwin') app.focus({ steal: true })
+  let response = 1 // Continue
+  try {
+    const answer = await dialog.showMessageBox({
+      type: 'warning',
+      buttons,
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      message: `${newApp} couldn't get the key to your ${oldApp} passwords`,
+      detail:
+        `The passwords, passkeys and sign-ins you saved in ${oldApp} are encrypted with a key that macOS keeps ` +
+        `in your keychain as “${item}”, and ${newApp} wasn't allowed to read it. Until it can, ${newApp} ` +
+        `can't fill or save passwords, passkeys or sign-ins. Nothing you saved is lost.\n\n${next}`,
+    })
+    response = answer.response
+  } catch (err) {
+    logger.error('rename-migration: the keychain dialog failed, going on without saved passwords', String(err))
+  }
+  if (response !== 0) {
+    logger.warn(`rename-migration: going on without saved passwords this launch (keychain ${state})`)
+    return false
+  }
+  if (launchDeps) {
+    const deps: MigrationDeps = { ...launchDeps, log: (level, msg) => logger[level](`rename-migration: ${msg}`) }
+    requestKeychainRetry(deps, current.to)
+  } else {
+    logger.error('rename-migration: no migration deps for the keychain retry; the next launch may not try again')
+  }
+  if (relaunch) {
+    logger.info('rename-migration: Try again, relaunching')
+    app.relaunch()
+  } else {
+    logger.info('rename-migration: Quit (npm run dev: no relaunch, run it again)')
   }
   app.exit(0)
   return true

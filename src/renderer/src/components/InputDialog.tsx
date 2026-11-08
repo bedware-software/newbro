@@ -1,12 +1,14 @@
 // Asks for a name (a new group, a rename) or a line of text (a tab's
-// comment) in a popup of its own. Enter takes it from anywhere in it. In Vim
+// comment) in a popup of its own. Enter takes it from anywhere in it but a
+// focused button, which Enter presses (Cancel cancels). In Vim
 // mode the box has the two modes the other popups' boxes have: it opens
-// typing (INSERT); Esc goes to COMMAND, where i types again and Esc cancels.
+// typing (INSERT); Ctrl+C goes to COMMAND, where i types again; Esc cancels
+// from either.
 
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
-import { Hint, HintBar, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, LEAVE_INSERT_CAP, vimKeyCaps } from './KeyHints'
 import { usePopupVimMode } from '../lib/vim-mode'
 import { paletteKeymap } from '../lib/vim-keymap'
 import { keymapOnly, useWindowVimKeymap } from '../lib/window-vim-keymap'
@@ -59,7 +61,16 @@ export function InputDialog({ open, title, placeholder, defaultValue = '', confi
     onCommand: (command) => { if (command === 'insert-mode') inputRef.current?.focus() },
     onEscape: onCancel,
     intercept: (e) => {
-      if (e.key !== 'Enter' || e.ctrlKey || e.shiftKey) return false
+      if (e.ctrlKey || e.shiftKey) return false
+      // Tab put the focus on a button (Cancel): Enter and Space press it.
+      // COMMAND would eat the key before the button saw it, so it's pressed
+      // here, once a press.
+      const target = e.target as HTMLElement | null
+      if ((e.key === 'Enter' || e.key === ' ') && target?.tagName === 'BUTTON') {
+        if (!e.repeat) (target as HTMLButtonElement).click()
+        return true
+      }
+      if (e.key !== 'Enter') return false
       handleSubmit()
       return true
     },
@@ -80,7 +91,7 @@ export function InputDialog({ open, title, placeholder, defaultValue = '', confi
       // explicit dismiss paths; closeOnBlur is the "I clicked
       // somewhere else" path.
       closeOnBlur
-      // In Vim mode Esc first leaves the box; the dialog handles it.
+      // In Vim mode Esc is the dialog's Vim keys' (usePopupVimMode).
       closeOnEscape={!vimKeymap}
       onClose={onCancel}
       onWindowChange={setPopup}
@@ -100,10 +111,11 @@ export function InputDialog({ open, title, placeholder, defaultValue = '', confi
                   handleSubmit()
                 } else if (e.key === 'Escape') {
                   e.preventDefault()
-                  // Kept from the popup's own Esc (closing) in both modes.
+                  // Kept from the popup's own Esc (closing): one cancel a
+                  // press. In Vim mode Esc never gets here — the dialog's
+                  // Vim keys cancel it.
                   e.stopPropagation()
-                  if (vim.modeRef.current) inputRef.current?.blur()
-                  else onCancel()
+                  onCancel()
                 }
               }}
               onFocus={vim.onBoxFocus}
@@ -132,7 +144,8 @@ export function InputDialog({ open, title, placeholder, defaultValue = '', confi
         <HintBar>
           <Hint label={confirmLabel} keys={['Enter']} />
           {vim.mode === 'command' && <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />}
-          <Hint label={vim.mode === 'insert' ? 'Command mode' : 'Cancel'} keys={['Esc']} />
+          {vim.mode === 'insert' && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
+          <Hint label="Cancel" keys={['Esc']} />
         </HintBar>
       </div>
     </DetachedWindow>

@@ -121,8 +121,10 @@ export const SW_SHIM_HOST = 'vimperium-ext-ipc.test'
 /** The privileged scheme main serves round-trips on (index.ts). */
 export const SW_IPC_SCHEME = 'vimperium-ipc'
 
-/** The port content scripts' storage polyfill (manager.ts) opens to the
- *  worker. The worker answers Newbro's old name as well. */
+/** The worker's storage port for content scripts' storage polyfill
+ *  (manager.ts). The worker answers Newbro's old name as well — which is
+ *  the one the polyfill opens while profiles may still run a cached
+ *  Newbro-era worker (manager.ts CS_STORAGE_CONNECT_PORT). */
 export const CS_STORAGE_PORT = '__vimperium_cs_storage'
 
 /** Every shim header we ever wrote that has a footer: ours (any version)

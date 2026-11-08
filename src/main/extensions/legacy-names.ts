@@ -19,7 +19,10 @@ export const LEGACY_CS_STORAGE_POLYFILL_FILENAME = 'newbro-cs-storage.js'
 
 /** The port that polyfill (and the frame bridge below) opens to the
  *  service worker. The worker shim answers it too, for a page still
- *  running the old polyfill. */
+ *  running the old polyfill — and our own polyfill and frame bridge
+ *  connect by this name for now (manager.ts CS_STORAGE_CONNECT_PORT):
+ *  a profile's cached Newbro-era worker answers no other until the
+ *  profile drops it. */
 export const LEGACY_CS_STORAGE_PORT = '__newbro_cs_storage'
 
 /** Newbro's frame storage bridge: its <script> tag is stripped from every

@@ -10,7 +10,7 @@ import { CommentChip } from './CommentChip'
 import { GroupPill } from './GroupPill'
 import { ScopeSwitch } from './ScopeSwitch'
 import { InputField } from './InputField'
-import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, LEAVE_INSERT_CAP, RowHint, vimKeyCaps } from './KeyHints'
 import { hintIndex, usePopupHints } from '../lib/hint-labels'
 import { usePopupVimMode, type VimMode } from '../lib/vim-mode'
 import { displayKeySequence, keysFor, type VimKeymap } from '../lib/vim-keymap'
@@ -192,7 +192,8 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
   const listRef = useRef<HTMLDivElement>(null)
   const [popupWindow, setPopupWindow] = useState<Window | null>(null)
   // Vim mode (null while off): the window opens in INSERT, typing in the
-  // search box; Esc goes to COMMAND, where plain keys pick filters and rows.
+  // search box; Ctrl+C goes to COMMAND, where plain keys pick filters and
+  // rows; Esc closes from either.
   // Follows the box's focus. Set up further down, once its commands exist; the
   // handlers above only need to know which mode it's in.
   const vimModeRef = useRef<VimMode | null>(null)
@@ -445,13 +446,9 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
       e.preventDefault()
       if (flatResults[selectedIndex]) handleSelect(flatResults[selectedIndex])
     } else if (e.key === 'Escape') {
-      // Vim: Esc leaves the box for COMMAND mode; Esc there closes.
-      if (vimModeRef.current) {
-        e.preventDefault()
-        inputRef.current?.blur()
-      } else {
-        onOpenChange(false)
-      }
+      // In Vim mode Esc never gets here: the window's Vim keys close it
+      // (usePopupVimMode), from the box as from COMMAND.
+      onOpenChange(false)
     }
   }, [flatResults, selectedIndex, handleSelect, onOpenChange, toggleScope, scopeApplies, handleFilterChord])
 
@@ -654,7 +651,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
       height={640}
       closeOnBlur
       matchRunwaPalette
-      // In Vim mode Esc first leaves the search box; the window handles it.
+      // In Vim mode Esc is the window's Vim keys' (usePopupVimMode), which close it.
       closeOnEscape={!vimKeymap}
       // Not while the row menu has the keyboard: it took it from here.
       onClose={() => { if (!rowMenuOpenRef.current) onOpenChange(false) }}
@@ -859,7 +856,8 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
                   </>
                 )}
                 {scopeApplies && <Hint label="Scope" keys={['Tab']} />}
-                <Hint label={vimMode === 'insert' ? 'Command mode' : 'Close'} keys={['Esc']} />
+                {vimMode === 'insert' && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
+                <Hint label="Close" keys={['Esc']} />
               </>
             )}
           </HintBar>

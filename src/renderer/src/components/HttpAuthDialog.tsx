@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Lock } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
-import { Hint, vimKeyCaps } from './KeyHints'
+import { Hint, LEAVE_INSERT_CAP, vimKeyCaps } from './KeyHints'
 import { usePopupVimMode } from '../lib/vim-mode'
 import { paletteKeymap } from '../lib/vim-keymap'
 import { keymapOnly, useWindowVimKeymap } from '../lib/window-vim-keymap'
@@ -49,9 +49,9 @@ export function HttpAuthDialog({ request, onDone }: Props) {
 
   // ── Vim mode ──
   // The two boxes share the popup's pair of modes: typing in either is
-  // INSERT; Esc leaves it for COMMAND, where i types in the box last left,
-  // Tab goes to the user name, Space ticks Remember, Enter signs in and Esc
-  // cancels. Null while Vim mode is off.
+  // INSERT; Ctrl+C leaves it for COMMAND, where i types in the box last
+  // left, Tab goes to the user name, Space ticks Remember and Enter signs in.
+  // Esc cancels from either. Null while Vim mode is off.
   const [popup, setPopup] = useState<Window | null>(null)
   const [activeField, setActiveField] = useState<'user' | 'pass'>(request.savedUsername ? 'pass' : 'user')
   const activeFieldRef = useRef<HTMLInputElement | null>(null)
@@ -94,10 +94,10 @@ export function HttpAuthDialog({ request, onDone }: Props) {
     onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key !== 'Escape') return
       e.preventDefault()
-      // Kept from the popup's own Esc (cancelling) in both modes.
+      // Kept from the popup's own Esc (cancelling): one cancel a press. In
+      // Vim mode Esc never gets here — the dialog's Vim keys cancel.
       e.stopPropagation()
-      if (vim.modeRef.current) e.currentTarget.blur()
-      else cancel()
+      cancel()
     },
   })
   // The mode shows on the box being typed in, or last left.
@@ -114,7 +114,7 @@ export function HttpAuthDialog({ request, onDone }: Props) {
       width={440}
       height={288 + (wantsDomain ? 24 : 0) + (canSave ? 40 : 0) + (request.hadSavedCredential ? 32 : 0)}
       resizable={false}
-      // In Vim mode Esc first leaves the box; the dialog handles it.
+      // In Vim mode Esc is the dialog's Vim keys' (usePopupVimMode).
       closeOnEscape={!vimKeymap}
       onClose={cancel}
       onWindowChange={setPopup}
@@ -195,7 +195,8 @@ export function HttpAuthDialog({ request, onDone }: Props) {
           <div className="mr-auto flex items-center gap-x-3 text-[11px] font-medium text-muted-foreground whitespace-nowrap">
             <Hint label="Sign in" keys={['Enter']} />
             {vim.mode === 'command' && <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />}
-            <Hint label={vim.mode === 'insert' ? 'Command mode' : 'Cancel'} keys={['Esc']} />
+            {vim.mode === 'insert' && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
+            <Hint label="Cancel" keys={['Esc']} />
           </div>
           <button
             type="button"

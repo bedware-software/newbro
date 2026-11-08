@@ -88,6 +88,7 @@ export function ExportWorkspaceDialog({ open, workspaces, profileName, onConfirm
       if (w && expanded.has(w.id) !== unfold) toggleExpand(w.id)
     },
     onConfirm: handleExport,
+    defaultButton: confirmRef,
   })
   useEffect(() => {
     listRef.current?.querySelector(`[data-row-index="${keys.cursor}"]`)?.scrollIntoView({ block: 'nearest' })

@@ -1,12 +1,14 @@
 // Which-key: while a prefix is pending in COMMAND (o, d, n, t, g…), what
 // can follow it, each with what it does — "o → Workspace w · Tab t · …".
-// Built from the live keymap, the user's own keys included. The Sidebar
-// shows it at its foot, in its key hint bar (KeyHints' SidebarHintBar);
-// with the Sidebar hidden, components/WhichKey.tsx shows it in a strip
-// along the bottom of the page area, styled as the Downloads page's hint
-// bar. Either goes on the next key, Esc or the sequence's timeout — when
-// the pending keys do. Typed in a page counts too: the page reports its
-// pending keys (lib/vim-mode.ts).
+// Built from the live keymap, the user's own keys included.
+// components/WhichKey.tsx shows it in a strip along the bottom of the page
+// area, styled as the Downloads page's hint bar — the Sidebar shown or not:
+// the Sidebar's own hint bar keeps to the Sidebar's keys. It goes when the
+// pending keys do — on the next key, Esc, a mode
+// change, a click or the keys going elsewhere, never on a timeout: a
+// pending prefix waits (shared/vim-keys.ts' KeySequencer), so the list is
+// up for as long as reading it takes. Typed in a page counts too: the page
+// reports its pending keys (lib/vim-mode.ts).
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { SEQUENCE_JOIN, type VimKeymap } from '../../../shared/vim-keys'

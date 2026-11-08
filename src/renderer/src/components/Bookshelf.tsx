@@ -144,13 +144,14 @@ function reclaimRendererFocus(): void {
   }
 }
 
-/** COMMAND's keys while the shelf has the keyboard: mounted only then, so it
- *  comes first, over the group page's (lib/vim-mode.ts usePageKeys). */
+/** COMMAND's keys while the shelf has the keyboard: mounted only then, as
+ *  the keyboard's holder, so it comes first, over a group page or a page's
+ *  error even when one of those mounts later (lib/vim-mode.ts usePageKeys). */
 function ShelfKeys({ intercept, command }: {
   intercept: (e: KeyboardEvent) => boolean
   command: (command: string) => boolean
 }) {
-  usePageKeys({ intercept, command })
+  usePageKeys({ intercept, command }, { owner: true })
   return null
 }
 
@@ -847,15 +848,13 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
         .catch(logShelfError('undoing the archive'))
       return
     }
-    // Removed for good: added again, then put back in the Archive. Its
-    // offline copy went with it.
+    // Removed for good: put back in the Archive as it was, by its own id —
+    // not added again by its address, which another reading of the same
+    // page would answer to. Its offline copy went with it.
     const { reading, beforeId } = last
-    api.bookshelfAdd?.(profileId, { url: reading.url, title: reading.title, favicon: reading.favicon })
-      .then((added) => {
-        if (!added) return
-        setCursorId(added.id)
-        return api.bookshelfPlaceReadings?.(profileId, [added.id], { groupId: null, archived: true }, beforeId).then(applyShelf)
-      })
+    setCursorId(reading.id)
+    api.bookshelfRestore?.(profileId, reading, beforeId)
+      .then(applyShelf)
       .catch(logShelfError('undoing the removal'))
   }
 

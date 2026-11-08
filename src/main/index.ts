@@ -31,10 +31,10 @@ import {
   saveLastUsedWorkspace,
   type OpenWindowEntry,
 } from './store'
-import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
+import { loadSettings, type ProxySettings, type Settings } from './settings-store'
 import { attachDownloadHandler } from './downloads'
 import { log, startLogSession } from './log'
-import { flushRenameMigrationLog, handleRenameMigrationBlocked } from './rename-migration'
+import { flushRenameMigrationLog, handleLegacyKeychainMissing, handleRenameMigrationBlocked } from './rename-migration'
 import { adoptLegacyDefaultBrowser } from './default-browser'
 import { runwaPaletteBounds, wantsRunwaPaletteGeometry } from './runwa-palette'
 import {
@@ -1205,15 +1205,6 @@ function keyTokenFromInput(input: Electron.Input): string {
   return normalizeShortcutKeyToken(input.key || '')
 }
 
-function parseTabLeaderShortcut(binding: string | undefined): string | null {
-  if (!binding) return null
-  const parts = binding.split('+').map((part) => part.trim()).filter(Boolean)
-  if (parts.length !== 2) return null
-  if (parts[0].toLowerCase() !== 'tab') return null
-  const key = normalizeShortcutKeyToken(parts[1])
-  return key || null
-}
-
 interface ParsedAccelerator {
   key: string
   shift: boolean
@@ -1245,9 +1236,10 @@ function parseAcceleratorShortcut(binding: string | undefined): ParsedAccelerato
       cmdOrCtrl = true
       continue
     }
-    // Tab+X chord (Tab as leader) is handled by parseTabLeaderShortcut — only
-    // reject when Tab appears at the leader position (first token, no modifiers
-    // seen yet). With modifiers like CmdOrCtrl+Tab, Tab is a regular key.
+    // A Tab+X chord (Tab as leader, as the regular shortcuts of old allowed)
+    // is no accelerator: reject Tab at the leader position (first token, no
+    // modifiers seen yet). With modifiers like CmdOrCtrl+Tab, Tab is a
+    // regular key.
     if (part === 'tab' && !shift && !alt && !cmdOrCtrl && !key) return null
     if (key) return null
     key = normalizeShortcutKeyToken(rawPart)
@@ -1255,26 +1247,6 @@ function parseAcceleratorShortcut(binding: string | undefined): ParsedAccelerato
 
   if (!key) return null
   return { key, shift, alt, cmdOrCtrl }
-}
-
-function resolveTabCycleBindings(
-  keybindings: Record<string, string[]>,
-  action: 'next-tab' | 'prev-tab',
-  fallback: string,
-): string[] {
-  const stored = keybindings[action]
-  // An empty array means the user explicitly cleared all bindings; respect
-  // that. Only a missing key falls back to the platform default.
-  const candidates = Array.isArray(stored) ? stored : [fallback]
-  const out: string[] = []
-  for (const raw of candidates) {
-    const trimmed = (raw || '').trim()
-    if (!trimmed) continue
-    if (parseTabLeaderShortcut(trimmed) || parseAcceleratorShortcut(trimmed)) {
-      out.push(trimmed)
-    }
-  }
-  return out
 }
 
 function matchesAccelerator(input: Electron.Input, shortcut: ParsedAccelerator | null): boolean {
@@ -1303,145 +1275,32 @@ function runMatchingExtensionCommand(input: Electron.Input, targetWindow: Browse
   return false
 }
 
+/** The keys main catches before a page or the window's renderer sees them.
+ *  Vim is the only mode: its COMMAND keys live in the pages and the window
+ *  renderer, so all that's left here is what those can't do themselves. The
+ *  OS's own (copy, paste, undo, quit, fullscreen, zoom…) are the menu's
+ *  roles, buildMenu. */
 function installShortcutInterceptor(source: Electron.WebContents, targetWindow: BrowserWindow): void {
-  let tabDown = false
-  let tabResetTimer: NodeJS.Timeout | null = null
-
-  const clearTabState = () => {
-    tabDown = false
-    if (tabResetTimer) {
-      clearTimeout(tabResetTimer)
-      tabResetTimer = null
-    }
-  }
-
-  const armTabState = () => {
-    tabDown = true
-    if (tabResetTimer) clearTimeout(tabResetTimer)
-    tabResetTimer = setTimeout(() => {
-      tabDown = false
-      tabResetTimer = null
-    }, 900)
-  }
-
   source.on('before-input-event', (event, input) => {
-    // Vim mode: Ctrl pressed and let go anywhere in the window — the page or
-    // the chrome. Letting it go ends the walk through the Sidebar's rows that
+    // Ctrl pressed and let go anywhere in the window — the page or the
+    // chrome. Letting it go ends the walk through the Sidebar's rows that
     // Ctrl+J/K started (renderer lib/vim-mode.ts), handing the keyboard to
     // the page shown.
-    if (input.key === 'Control' && !input.isAutoRepeat && loadSettings().vimMode && !targetWindow.isDestroyed()) {
+    if (input.key === 'Control' && !input.isAutoRepeat && !targetWindow.isDestroyed()) {
       targetWindow.webContents.send('vim-ctrl', input.type !== 'keyUp')
     }
     if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return
 
-    const key = keyTokenFromInput(input)
-    const noOtherModifiers = !input.alt && !input.control && !input.meta && !input.shift
-
-    const settings = loadSettings()
-
-    // Vim mode replaces the regular shortcuts: its COMMAND keys live in the
-    // pages and the window renderer. Ctrl+[ — vim's other Esc — leaves
-    // INSERT from anywhere, even a page that keeps Esc to itself.
-    if (settings.vimMode) {
-      if (input.control && !input.meta && !input.alt && !input.shift && input.code === 'BracketLeft') {
-        event.preventDefault()
-        if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', 'command-mode')
-        return
-      }
-      if (runMatchingExtensionCommand(input, targetWindow)) event.preventDefault()
+    // Ctrl+[ — vim's other Esc — leaves INSERT from anywhere, even a page
+    // that keeps Esc to itself.
+    if (input.control && !input.meta && !input.alt && !input.shift && input.code === 'BracketLeft') {
+      event.preventDefault()
+      if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', 'command-mode')
       return
     }
-
-    const keybindings = { ...DEFAULT_KEYBINDINGS, ...settings.keybindings }
-
-    // Tab-leader chord support (e.g. "Tab+J" for next-tab): resolved separately
-    // because parseAcceleratorShortcut rejects Tab-as-leader bindings. Each
-    // action may carry up to two bindings; collect every Tab-leader from
-    // both slots so either fires the chord.
-    const nextBindings = resolveTabCycleBindings(keybindings, 'next-tab', 'CmdOrCtrl+Tab')
-    const prevBindings = resolveTabCycleBindings(keybindings, 'prev-tab', 'CmdOrCtrl+Shift+Tab')
-    const nextLeaderKeys = nextBindings
-      .map(parseTabLeaderShortcut)
-      .filter((k): k is string => !!k)
-    const prevLeaderKeys = prevBindings
-      .map(parseTabLeaderShortcut)
-      .filter((k): k is string => !!k)
-
-    // Plain Tab: arm the chord if the user has a Tab-leader binding configured.
-    if (key === 'tab' && noOtherModifiers) {
-      if (nextLeaderKeys.length > 0 || prevLeaderKeys.length > 0) {
-        armTabState()
-        // Prevent native focus traversal so Tab+J/K remains reliable.
-        event.preventDefault()
-        log.info('tab-chord: armed', { nextLeaderKeys, prevLeaderKeys })
-      }
-      return
-    }
-
-    // Second key in an armed Tab-leader chord.
-    if (tabDown && noOtherModifiers) {
-      if (key && nextLeaderKeys.includes(key)) {
-        event.preventDefault()
-        if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', 'next-tab')
-        clearTabState()
-        return
-      }
-      if (key && prevLeaderKeys.includes(key)) {
-        event.preventDefault()
-        if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', 'prev-tab')
-        clearTabState()
-        return
-      }
-      if (key !== 'tab') {
-        clearTabState()
-      }
-    }
-
-    // Match against every user-defined accelerator-style keybinding. We run
-    // here (before-input-event) rather than relying only on native menu
-    // accelerators because menu accelerators can lose the race when a page's
-    // own keydown handler calls preventDefault — e.g. Yandex Code capturing
-    // Ctrl+P to jump to a matching parenthesis. Intercepting at
-    // before-input-event runs BEFORE any page script sees the key, and
-    // calling event.preventDefault() here cancels both the page keydown
-    // AND the menu shortcut, so there's no double dispatch. Each action
-    // may have up to two bindings; either should fire.
-    for (const action of Object.keys(keybindings)) {
-      const bindings = keybindings[action] || []
-      for (const binding of bindings) {
-        const parsed = parseAcceleratorShortcut(binding)
-        if (!parsed) continue
-        if (matchesAccelerator(input, parsed)) {
-          // Find-in-page from inside a tab goes to the page first, like
-          // Chrome. Sites with viewport-virtualized content (CodeMirror in
-          // Bitbucket's source view, GitLab diffs, …) listen for Ctrl+F to
-          // render every line — swallowing the key here left native find
-          // matching only what was on screen. If the page doesn't
-          // preventDefault, the key comes back unhandled and the "Find in
-          // Page" menu accelerator opens our bar; if it does, the site's
-          // own search wins, same as Chrome. Only the first binding is
-          // registered on the menu, so a second binding still dispatches
-          // directly.
-          if (
-            action === 'find-in-page' &&
-            binding === bindings[0] &&
-            source !== targetWindow.webContents
-          ) {
-            return
-          }
-          event.preventDefault()
-          if (!targetWindow.isDestroyed()) targetWindow.webContents.send('shortcut', action)
-          return
-        }
-      }
-    }
-
-    // Extension shortcuts (manifest `commands`, Settings → Extensions),
-    // after the app's own bindings so those always win.
+    // Extension shortcuts (manifest `commands`, Settings → Extensions).
     if (runMatchingExtensionCommand(input, targetWindow)) event.preventDefault()
   })
-
-  source.once('destroyed', clearTabState)
 }
 
 function sanitizeProxyRules(rules: string): string {
@@ -3539,20 +3398,12 @@ function toggleUiDevTools(win: Electron.BaseWindow | undefined): void {
   }
 }
 
+/** The app menu. Vim is the only mode, so the app's own items carry no
+ *  accelerator — COMMAND's keys run them (an accelerator would take its
+ *  combination from every page). What keeps a key is the OS's own: the
+ *  roles' (copy, paste, undo, select all, hide, quit, minimize, reload,
+ *  zoom, fullscreen). */
 function buildMenu(): void {
-  const settings = loadSettings()
-  const merged = { ...DEFAULT_KEYBINDINGS, ...settings.keybindings }
-  // Electron menu items take a single accelerator string; with up-to-two
-  // bindings per action we surface the FIRST one in the menu UI. The
-  // second binding still fires via the before-input-event interceptor —
-  // the menu just doesn't have a second column to advertise it.
-  // Vim mode turns the regular shortcuts off, the menu's included.
-  const kb: Record<string, string | undefined> = {}
-  for (const key of Object.keys(merged)) {
-    const list = merged[key]
-    kb[key] = !settings.vimMode && Array.isArray(list) && list.length > 0 ? list[0] : undefined
-  }
-
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: APP_NAME,
@@ -3564,7 +3415,6 @@ function buildMenu(): void {
         { type: 'separator' },
         {
           label: 'Settings...',
-          accelerator: kb['settings'],
           click: (_item, win) => sendShortcutToWindow(win, 'settings'),
         },
         { type: 'separator' },
@@ -3580,17 +3430,14 @@ function buildMenu(): void {
       submenu: [
         {
           label: 'New Tab',
-          accelerator: kb['new-tab'],
           click: (_item, win) => sendShortcutToWindow(win, 'new-tab'),
         },
         {
           label: 'Close Tab',
-          accelerator: kb['close-tab'],
           click: (_item, win) => sendShortcutToWindow(win, 'close-tab'),
         },
         {
           label: 'Close Window',
-          accelerator: kb['close-window'],
           click: (_item, win) => {
             if (win && !win.isDestroyed()) {
               log.info('menu Close Window clicked', { windowId: (win as Electron.BrowserWindow).id })
@@ -3601,7 +3448,6 @@ function buildMenu(): void {
         { type: 'separator' },
         {
           label: 'New Workspace',
-          accelerator: kb['new-workspace'],
           click: (_item, win) => sendShortcutToWindow(win, 'new-workspace'),
         },
       ],
@@ -3632,19 +3478,16 @@ function buildMenu(): void {
         // shortcut handler so the active-tab id is resolved on its side.
         {
           label: 'Toggle Page Developer Tools',
-          accelerator: kb['page-devtools'],
           click: (_item, win) => sendShortcutToWindow(win, 'page-devtools'),
         },
         { type: 'separator' },
         // Dark pages (main/dark-pages.ts).
         {
           label: 'Dark Pages On / Off',
-          accelerator: kb['dark-pages'],
           click: (_item, win) => sendShortcutToWindow(win, 'dark-pages'),
         },
         {
           label: 'Dark Pages on This Site',
-          accelerator: kb['dark-pages-site'],
           click: (_item, win) => sendShortcutToWindow(win, 'dark-pages-site'),
         },
         { type: 'separator' },
@@ -3660,49 +3503,40 @@ function buildMenu(): void {
       submenu: [
         {
           label: 'Focus Address Bar',
-          accelerator: kb['focus-url'],
           click: (_item, win) => sendShortcutToWindow(win, 'focus-url'),
         },
         {
           label: 'Search Everything',
-          accelerator: kb['search'],
           click: (_item, win) => sendShortcutToWindow(win, 'search'),
         },
         {
           label: 'Command Palette',
-          accelerator: kb['command-palette'],
           click: (_item, win) => sendShortcutToWindow(win, 'command-palette'),
         },
         {
           label: 'Downloads',
-          accelerator: kb['open-downloads'],
           click: (_item, win) => sendShortcutToWindow(win, 'open-downloads'),
         },
         {
           label: 'Toggle Sidebar',
-          accelerator: kb['toggle-sidebar'],
           click: (_item, win) => sendShortcutToWindow(win, 'toggle-sidebar'),
         },
         { type: 'separator' },
         {
           label: 'Back',
-          accelerator: kb['back'],
           click: (_item, win) => sendShortcutToWindow(win, 'back'),
         },
         {
           label: 'Forward',
-          accelerator: kb['forward'],
           click: (_item, win) => sendShortcutToWindow(win, 'forward'),
         },
         {
           label: 'Reload Page',
-          accelerator: kb['reload'],
           click: (_item, win) => sendShortcutToWindow(win, 'reload'),
         },
         { type: 'separator' },
         {
           label: 'Find in Page',
-          accelerator: kb['find-in-page'],
           click: (_item, win) => sendShortcutToWindow(win, 'find-in-page'),
         },
       ],
@@ -3777,6 +3611,10 @@ app.whenReady().then(async () => {
   // throwaway profile: it only asks the user to quit Newbro, then relaunches
   // or quits. Nothing else may start on that profile.
   if (await handleRenameMigrationBlocked(log)) return
+  // macOS: the key Newbro's passwords, passkeys and sign-ins are encrypted
+  // with couldn't be read from the keychain (the prompt was denied or timed
+  // out). Say so and offer another try; going on keeps those stores off.
+  if (await handleLegacyKeychainMissing(log)) return
 
   // ── About panel ──
   app.setAboutPanelOptions({

@@ -17,11 +17,11 @@ import { useAppStore } from '../store/app-store'
 import { DEFAULT_VIM_KEYMAP, parseVimKeymap, settingsKeymap, settingsCommandLabel, settingsCommandsInOrder, type ParsedVimKeymap, type VimKeymap } from '../lib/vim-keymap'
 import { usePopupVimMode, type VimMode } from '../lib/vim-mode'
 import { hintIndex, usePopupHints } from '../lib/hint-labels'
-import { VimFormContext, stepIndex, useVimForm, useVimFormLabelCount, useVimFormSnapshot, type VimFormController } from '../lib/vim-form'
+import { VimFormContext, stepIndex, useCloseWarning, useVimForm, useVimFormLabelCount, useVimFormSnapshot, type VimFormController } from '../lib/vim-form'
 import { SETTINGS_SECTIONS, filterSettingsIndex, settingsIndex, settingsSectionLabel, type SettingsIndexEntry, type SettingsSection } from '../lib/settings-index'
 import { cn } from '../lib/utils'
 import { InputField } from './InputField'
-import { Hint, HintBar, vimKeyCaps, vimKeyCapsAll } from './KeyHints'
+import { Hint, HintBar, LEAVE_INSERT_CAP, vimKeyCaps, vimKeyCapsAll } from './KeyHints'
 import { VimFormCursorHints, VimFormLabels } from './VimForm'
 import { VimSelect } from './VimSelect'
 import { Segmented } from './Segmented'
@@ -29,6 +29,7 @@ import { Switch } from './Switch'
 import { ACTION_LABELS } from '../lib/action-labels'
 import { SEARCH_ENGINES } from '../../../shared/search-engines'
 import { BANGS_URL } from '../lib/internal-pages'
+import { AUTHORS, CREDIT_GROUPS, INSPIRATIONS } from '../lib/credits'
 import {
   PERMISSION_KINDS,
   PERMISSION_LABEL,
@@ -49,7 +50,7 @@ interface Settings {
   darkVariant: string
   density: Density
   newTabFocus: 'site' | 'url'
-  showTabNumbers: boolean
+  /** Always saved true: Vim is the only mode (older builds read it). */
   vimMode: boolean
   /** INSERT in a page hides the Sidebar; COMMAND brings it back. */
   hideSidebarInInsert: boolean
@@ -209,17 +210,6 @@ function cloneDefaultKeybindings(): Record<string, string[]> {
   return out
 }
 
-/** True when the action's current bindings differ from the defaults — used
- *  to decide whether to show the per-row "reset to default" affordance. */
-function isCustomBinding(action: string, current: string[]): boolean {
-  const defaults = DEFAULT_KEYBINDINGS[action] || []
-  if (current.length !== defaults.length) return true
-  for (let i = 0; i < current.length; i++) {
-    if (current[i] !== defaults[i]) return true
-  }
-  return false
-}
-
 interface Props {
   open: boolean
   onClose: () => void
@@ -228,8 +218,8 @@ interface Props {
   onAppearancePreview?: (preview: AppearancePreview) => void
   /** Versioned request to switch panes. See {@link SettingsTabRequest}. */
   tabRequest?: SettingsTabRequest | null
-  /** The window's parsed Vim keymap while Vim mode is on (as saved, not as
-   *  the switch here has it); null gives Settings no Vim keys. */
+  /** The window's parsed Vim keymap, as saved; null (the beat at launch
+   *  before the window's Vim starts) gives Settings no Vim keys. */
   vimKeymap?: ParsedVimKeymap | null
 }
 
@@ -488,24 +478,6 @@ function normalizeKnownKeybindings(
   return next
 }
 
-/** When the user records a new accelerator, refuse it if it's already bound
- *  to a different action (or to a different slot of the SAME action). The
- *  caller surfaces the returned conflict in an inline error. */
-function findBindingConflict(
-  bindings: Record<string, string[]>,
-  action: string,
-  slot: number,
-  accel: string,
-): { action: string; slot: number } | null {
-  for (const [otherAction, list] of Object.entries(bindings)) {
-    for (let i = 0; i < list.length; i++) {
-      if (otherAction === action && i === slot) continue
-      if (list[i] === accel) return { action: otherAction, slot: i }
-    }
-  }
-  return null
-}
-
 export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePreview, tabRequest, vimKeymap }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>(() => tabRequest?.tab ?? 'general')
 
@@ -520,8 +492,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [darkVariant, setDarkVariant] = useState<string>(DARK_VARIANTS[0].id)
   const [density, setDensity] = useState<Density>(DEFAULT_DENSITY)
   const [newTabFocus, setNewTabFocus] = useState<'site' | 'url'>('site')
-  const [showTabNumbers, setShowTabNumbers] = useState(true)
-  const [vimMode, setVimMode] = useState(false)
   const [hideSidebarInInsert, setHideSidebarInInsert] = useState(false)
   const [vimIndicator, setVimIndicator] = useState<VimIndicator>(DEFAULT_VIM_INDICATOR)
   const [vimEdge, setVimEdge] = useState<VimEdge>(DEFAULT_VIM_EDGE)
@@ -589,9 +559,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [addSiteDecision, setAddSiteDecision] = useState<'allow' | 'block'>('allow')
   const [addSitePartition, setAddSitePartition] = useState('')
   const [addSiteError, setAddSiteError] = useState<string | null>(null)
-  const [recordingTarget, setRecordingTarget] = useState<{ action: string; slot: number } | null>(null)
-  const [conflictError, setConflictError] = useState<string | null>(null)
-  const [shortcutFilter, setShortcutFilter] = useState('')
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
   // Vim mode's keys (further down): what Save would keep as Settings
   // opened, the filter, the hint bar's states, and the form's elements.
@@ -599,7 +566,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [filterQuery, setFilterQuery] = useState('')
   const [filterActive, setFilterActive] = useState(false)
   const [filterSelected, setFilterSelected] = useState(0)
-  const [closeWarning, setCloseWarning] = useState(false)
   const [showAllKeys, setShowAllKeys] = useState(false)
   const [formRoot, setFormRoot] = useState<HTMLDivElement | null>(null)
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null)
@@ -633,8 +599,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const passOnKeys = otherBrowserOnMac ? '⌘↵' : 'Ctrl+Enter'
   const [otherBrowser, setOtherBrowser] = useState<OtherBrowser | null>(null)
   const [installedBrowsers, setInstalledBrowsers] = useState<OtherBrowser[]>([])
-  const recordingRef = useRef<{ action: string; slot: number } | null>(null)
-  const pendingTabChordRef = useRef(false)
   const originalAppearanceRef = useRef<AppearancePreview>({
     theme: 'dark',
     lightVariant: LIGHT_VARIANTS[0].id,
@@ -644,7 +608,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     vimEdge: DEFAULT_VIM_EDGE,
     vimEdgeEverywhere: DEFAULT_VIM_EDGE_EVERYWHERE,
   })
-  recordingRef.current = recordingTarget
 
   // Subscribe to updater status while the dialog is open so the
   // General → Updates section reflects live download / install events.
@@ -919,8 +882,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setDarkVariant(dv)
       setDensity(dens)
       setNewTabFocus(settings.newTabFocus === 'url' ? 'url' : 'site')
-      setShowTabNumbers(settings.showTabNumbers !== false)
-      setVimMode(settings.vimMode === true)
       setHideSidebarInInsert(settings.hideSidebarInInsert === true)
       setVimIndicator(indicator)
       setVimEdge(edge)
@@ -1283,16 +1244,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     setPasswordNotice('All saved passwords were removed from this profile.')
   }, [passwordPartition])
 
-  const vimKeymapErrors = useMemo(
-    () => (vimMode ? parseVimKeymap(vimKeymapText).errors : []),
-    [vimMode, vimKeymapText],
-  )
-
-  const filteredShortcutActions = Object.keys(ACTION_LABELS).filter((action) => {
-    const query = shortcutFilter.trim().toLowerCase()
-    if (!query) return true
-    return ACTION_LABELS[action].toLowerCase().includes(query)
-  })
+  const vimKeymapErrors = useMemo(() => parseVimKeymap(vimKeymapText).errors, [vimKeymapText])
 
   /** ↑ / ↓ step between saved passwords, from wherever focus sits in an entry. */
   const handlePasswordListKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -1353,92 +1305,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     [profiles],
   )
 
-  // Apply a recorded accelerator into a specific (action, slot). Rejects
-  // and surfaces an inline error if the new combo is already bound to a
-  // DIFFERENT action — or to a DIFFERENT slot of the same action — so the
-  // user can't accidentally collide two commands on the same key.
-  const commitRecordedAccel = useCallback((action: string, slot: number, accel: string) => {
-    setKeybindings((prev) => {
-      const conflict = findBindingConflict(prev, action, slot, accel)
-      if (conflict) {
-        const otherLabel = ACTION_LABELS[conflict.action] || conflict.action
-        setConflictError(`That shortcut is already bound to "${otherLabel}". Clear it there first.`)
-        return prev
-      }
-      setConflictError(null)
-      const list = [...(prev[action] || [])]
-      if (slot < list.length) list[slot] = accel
-      else list.push(accel)
-      return { ...prev, [action]: list.slice(0, MAX_BINDINGS_PER_ACTION) }
-    })
-  }, [])
-
-  // Record keybinding
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    const target = recordingRef.current
-    if (!target) return
-    e.preventDefault()
-    e.stopPropagation()
-
-    if (e.key === 'Escape') {
-      pendingTabChordRef.current = false
-      setRecordingTarget(null)
-      return
-    }
-
-    // Only treat a bare Tab press (no modifiers) as the start of a Tab+X chord.
-    // Tab with modifiers (e.g. Ctrl+Tab) is a regular accelerator.
-    if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-      pendingTabChordRef.current = true
-      return
-    }
-
-    if (pendingTabChordRef.current) {
-      pendingTabChordRef.current = false
-      const key = eventToKeyToken(e)
-      if (key && key !== 'Tab') {
-        commitRecordedAccel(target.action, target.slot, `Tab+${key}`)
-        setRecordingTarget(null)
-      }
-      return
-    }
-
-    const accel = eventToAccelerator(e)
-    if (accel) {
-      commitRecordedAccel(target.action, target.slot, accel)
-      setRecordingTarget(null)
-    }
-  }, [commitRecordedAccel])
-
-  useEffect(() => {
-    if (!recordingTarget) pendingTabChordRef.current = false
-  }, [recordingTarget])
-
-  useEffect(() => {
-    if (!recordingTarget || !hostWindow) return
-    hostWindow.addEventListener('keydown', handleKeyDown, true)
-    return () => hostWindow.removeEventListener('keydown', handleKeyDown, true)
-  }, [recordingTarget, handleKeyDown, hostWindow])
-
-  // Clear a specific slot for an action. Compacts the array so a cleared
-  // slot 0 + filled slot 1 collapses to a single binding at index 0 — the
-  // simplest rule that keeps storage and the UI consistent.
-  const clearBindingSlot = useCallback((action: string, slot: number) => {
-    setKeybindings((prev) => {
-      const list = [...(prev[action] || [])]
-      if (slot < list.length) list.splice(slot, 1)
-      setConflictError(null)
-      return { ...prev, [action]: list }
-    })
-  }, [])
-
-  const startRecording = useCallback((action: string, slot: number) => {
-    setConflictError(null)
-    setRecordingTarget((prev) =>
-      prev && prev.action === action && prev.slot === slot ? null : { action, slot },
-    )
-  }, [])
-
   /** What Save keeps. */
   const buildDraft = (): Settings => {
     const normalizedProxy: ProxySettings = {
@@ -1453,8 +1319,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       darkVariant,
       density,
       newTabFocus,
-      showTabNumbers,
-      vimMode,
+      // Vim is the only mode; kept for older builds reading synced settings.
+      vimMode: true,
       hideSidebarInInsert,
       vimIndicator,
       vimEdge,
@@ -1492,11 +1358,6 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     onAppearancePreview?.({ theme, lightVariant, darkVariant, density, vimIndicator, vimEdge, vimEdgeEverywhere, ...next })
   }
 
-  const handleResetKeybindings = () => {
-    setKeybindings(cloneDefaultKeybindings())
-    setConflictError(null)
-  }
-
   const handleWipeAllData = () => {
     setWipeConfirmOpen(false)
     // Fire-and-forget — the main process will relaunch the app immediately.
@@ -1504,8 +1365,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   }
 
   // ── Vim mode's keys ──
-  // Settings has a COMMAND / INSERT of its own while Vim mode is on — as
-  // saved: the switch under Keyboard Shortcuts takes effect on Save. It
+  // Settings has a COMMAND / INSERT of its own, on the window's keymap as
+  // saved (an edit to it takes effect on Save). It
   // opens in COMMAND, a cursor on the section's first setting: j / k walk
   // the settings, h / l change the one under the cursor, Enter or Space
   // presses it, J / K go through the sections, a setting's two-letter label
@@ -1514,8 +1375,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // INSERT; Esc comes back to COMMAND. Esc in COMMAND steps back out: an
   // open list or the filter's results close, then Settings — asking once
   // first while there are changes Save would keep. ZZ saves, ZQ throws the
-  // changes away. Out of Vim mode it's a form like any other, Tab going
-  // round it, a ring on what has the keyboard.
+  // changes away. Before the window's Vim starts (vimKeymap null, a beat at
+  // launch) it's a form like any other, Tab going round it, a ring on what
+  // has the keyboard.
   const settingsVimKeymap = useMemo(() => (vimKeymap ? settingsKeymap(vimKeymap) : null), [vimKeymap])
   const vimNav = settingsVimKeymap !== null
   const form = useVimForm({ enabled: vimNav, root: formRoot, scrollRoot: contentEl, resetKey: activeTab })
@@ -1537,6 +1399,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baselineTick])
   const unsaved = baselineRef.current !== null && baselineRef.current !== draftJson
+  // Closing with those asks first (requestClose); any change after the
+  // warning, made with the keys, the mouse or by typing, takes it down, so
+  // the next close asks again rather than throwing the new change away.
+  const [closeWarning, setCloseWarning] = useCloseWarning(draftJson)
 
   useEffect(() => {
     if (open) return
@@ -1550,8 +1416,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // Finding a setting (/): a static index, as only the section shown is
   // rendered (lib/settings-index.ts).
   const indexEntries = useMemo(
-    () => settingsIndex({ vimMode, otherBrowser: otherBrowserSupported }),
-    [vimMode, otherBrowserSupported],
+    () => settingsIndex({ otherBrowser: otherBrowserSupported }),
+    [otherBrowserSupported],
   )
   const filterResults = useMemo(() => filterSettingsIndex(filterQuery, indexEntries).slice(0, 12), [filterQuery, indexEntries])
   const filterShown = filterActive && filterQuery.trim() !== ''
@@ -1594,7 +1460,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       const entry = filterResults[filterSelected]
       if (entry) pickFilterResult(entry)
     } else if (e.key === 'Escape' && filterQuery) {
-      // Out of Vim mode (in it, Esc never gets here: it leaves INSERT):
+      // Out of Vim mode (in it, Esc never gets here: Vim's keys take it,
+      // usePopupVimMode):
       // the first Esc clears the filter rather than closing Settings.
       e.preventDefault()
       e.stopPropagation()
@@ -1659,13 +1526,29 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   }
 
   /** Closing, as Esc or , does: once there are changes Save would keep, it
-   *  asks first (the hint bar), and closing again throws them away. */
+   *  asks first (the hint bar), and closing again straight after throws
+   *  them away. A change in between asks again (useCloseWarning). */
   const requestClose = (): void => {
     if (unsaved && !closeWarning) {
       setCloseWarning(true)
       return
     }
     handleCancel()
+  }
+
+  /** A link in About: its page in a new tab of the active workspace, then
+   *  Settings closes as Cancel does, so the page is what's in front. With
+   *  changes Save would keep, Settings stays — the tab opens in the
+   *  background rather than the changes going. A button, never an <a>: the popup has
+   *  no window-open handler of its own, so a link would open a bare window
+   *  or navigate Settings away. */
+  const openLink = (url: string): void => {
+    const s = useAppStore.getState()
+    if (!s.activeWorkspaceId) return
+    // With changes to keep, the tab opens behind: activating it would bring
+    // the main window up over Settings, its draft out of sight.
+    s.addTabNearActive(s.activeWorkspaceId, url, !unsaved)
+    if (!unsaved) handleCancel()
   }
 
   const runSettingsCommand = (command: string): void => {
@@ -1692,10 +1575,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
   const escapeSettings = (): void => {
     if (form.escapeOverlay()) return
-    if (filterActive || filterQuery) {
+    // The filter's results up: Esc takes them down first. A filter with
+    // nothing showing (empty, or left behind by a click elsewhere) is
+    // tidied away on the way out, as the hint bar's Close says.
+    if (filterShown) {
       closeFilter()
       return
     }
+    if (filterActive || filterQuery) closeFilter()
     if (showAllKeys) {
       setShowAllKeys(false)
       return
@@ -1710,11 +1597,19 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     initial: 'command',
     open,
     anyField: true,
-    // A shortcut being recorded takes the next keys, whatever they are.
-    passThrough: () => recordingRef.current !== null || recordingCommandRef.current !== null,
+    // An extension shortcut being recorded takes the next keys, whatever
+    // they are.
+    passThrough: () => recordingCommandRef.current !== null,
     onCommand: runSettingsCommand,
     onEscape: escapeSettings,
   })
+
+  // A field taking the keyboard takes a close warning down: Esc in it
+  // closes (escapeSettings), and with unsaved changes that asks again
+  // rather than throwing them away on the earlier warning's word.
+  useEffect(() => {
+    if (vim.mode === 'insert') setCloseWarning(false)
+  }, [vim.mode, setCloseWarning])
 
   const canRestartSyncSetup = !!syncInfo
     && syncInfo.state !== 'syncing'
@@ -1909,101 +1804,96 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 />
               </div>
 
-              {/* Vim mode's key cap — only while Vim mode is on. */}
-              {vimMode && (
-                <div>
-                  <h3 className="text-sm font-semibold text-foreground mb-1">Vim mode indicator</h3>
-                  <p className="text-[11px] text-muted-foreground mb-3">
-                    How the mode's key cap — CMD, WEB, INS — shows the mode's colour.
-                  </p>
-                  <div
-                    role="radiogroup"
-                    aria-label="Vim mode indicator"
-                    data-vim-item="appearance:vim-indicator"
-                    className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 rounded-lg"
-                  >
-                    {VIM_INDICATORS.map((v) => (
-                      <button
-                        key={v.id}
-                        type="button"
-                        role="radio"
-                        aria-checked={vimIndicator === v.id}
-                        onClick={() => { setVimIndicator(v.id); previewAppearance({ vimIndicator: v.id }) }}
-                        title={v.hint}
-                        className={`flex flex-col items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors ${
-                          vimIndicator === v.id
-                            ? 'border-primary bg-primary/10'
-                            : 'border-border hover:bg-secondary'
-                        }`}
-                      >
-                        <span className="flex gap-1.5">
-                          <VimModeBadge mode="command" indicator={v.id} />
-                          <VimModeBadge mode="insert" indicator={v.id} />
-                        </span>
-                        <span className="text-xs font-medium text-foreground">{v.label}</span>
-                      </button>
-                    ))}
-                  </div>
+              {/* Vim's mode key cap. */}
+              <div>
+                <h3 className="text-sm font-semibold text-foreground mb-1">Vim mode indicator</h3>
+                <p className="text-[11px] text-muted-foreground mb-3">
+                  How the mode's key cap — CMD, WEB, INS — shows the mode's colour.
+                </p>
+                <div
+                  role="radiogroup"
+                  aria-label="Vim mode indicator"
+                  data-vim-item="appearance:vim-indicator"
+                  className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 rounded-lg"
+                >
+                  {VIM_INDICATORS.map((v) => (
+                    <button
+                      key={v.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={vimIndicator === v.id}
+                      onClick={() => { setVimIndicator(v.id); previewAppearance({ vimIndicator: v.id }) }}
+                      title={v.hint}
+                      className={`flex flex-col items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                        vimIndicator === v.id
+                          ? 'border-primary bg-primary/10'
+                          : 'border-border hover:bg-secondary'
+                      }`}
+                    >
+                      <span className="flex gap-1.5">
+                        <VimModeBadge mode="command" indicator={v.id} />
+                        <VimModeBadge mode="insert" indicator={v.id} />
+                      </span>
+                      <span className="text-xs font-medium text-foreground">{v.label}</span>
+                    </button>
+                  ))}
                 </div>
-              )}
+              </div>
 
-              {/* The mode as a light on the address bar's edge — only while
-                  Vim mode is on. */}
-              {vimMode && (
-                <div>
-                  <h3 className="text-sm font-semibold text-foreground mb-1">Vim mode edge</h3>
-                  <p className="text-[11px] text-muted-foreground mb-3">
-                    A light moving round the address bar's edge in the mode's colours — cool for
-                    COMMAND, green for INSERT — fading from one to the other as the mode changes.
-                  </p>
-                  <div
-                    role="radiogroup"
-                    aria-label="Vim mode edge"
-                    data-vim-item="appearance:vim-edge"
-                    className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 rounded-lg"
-                  >
-                    {VIM_EDGES.map((v) => (
-                      <button
-                        key={v.id}
-                        type="button"
-                        role="radio"
-                        aria-checked={vimEdge === v.id}
-                        onClick={() => { setVimEdge(v.id); previewAppearance({ vimEdge: v.id }) }}
-                        title={v.hint}
-                        className={`flex flex-col items-stretch gap-3 rounded-lg border px-3 pt-3.5 pb-2.5 text-left transition-colors ${
-                          vimEdge === v.id
-                            ? 'border-primary bg-primary/10'
-                            : 'border-border hover:bg-secondary'
-                        }`}
-                      >
-                        {(['command', 'insert'] as const).map((mode) => (
-                          <span key={mode} className="field relative flex items-center justify-end h-6 rounded-md pr-1">
-                            <VimModeBadge mode={mode} />
-                            <ModeEdge mode={mode} edge={v.id} />
-                          </span>
-                        ))}
-                        <span className="text-xs font-medium text-foreground">{v.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <label className="mt-3 flex items-center gap-2.5 text-xs text-foreground cursor-pointer">
-                    <Switch
-                      label="Vim mode edge on every field"
-                      vimItem="appearance:vim-edge-everywhere"
-                      checked={vimEdgeEverywhere}
-                      disabled={vimEdge === 'off'}
-                      onChange={(on) => { setVimEdgeEverywhere(on); previewAppearance({ vimEdgeEverywhere: on }) }}
-                    />
-                    On every field that shows the mode too — Search Everything, the Command Palette,
-                    Find, the address editor
-                  </label>
+              {/* The mode as a light on the address bar's edge. */}
+              <div>
+                <h3 className="text-sm font-semibold text-foreground mb-1">Vim mode edge</h3>
+                <p className="text-[11px] text-muted-foreground mb-3">
+                  A light moving round the address bar's edge in the mode's colours — cool for
+                  COMMAND, green for INSERT — fading from one to the other as the mode changes.
+                </p>
+                <div
+                  role="radiogroup"
+                  aria-label="Vim mode edge"
+                  data-vim-item="appearance:vim-edge"
+                  className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 rounded-lg"
+                >
+                  {VIM_EDGES.map((v) => (
+                    <button
+                      key={v.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={vimEdge === v.id}
+                      onClick={() => { setVimEdge(v.id); previewAppearance({ vimEdge: v.id }) }}
+                      title={v.hint}
+                      className={`flex flex-col items-stretch gap-3 rounded-lg border px-3 pt-3.5 pb-2.5 text-left transition-colors ${
+                        vimEdge === v.id
+                          ? 'border-primary bg-primary/10'
+                          : 'border-border hover:bg-secondary'
+                      }`}
+                    >
+                      {(['command', 'insert'] as const).map((mode) => (
+                        <span key={mode} className="field relative flex items-center justify-end h-6 rounded-md pr-1">
+                          <VimModeBadge mode={mode} />
+                          <ModeEdge mode={mode} edge={v.id} />
+                        </span>
+                      ))}
+                      <span className="text-xs font-medium text-foreground">{v.label}</span>
+                    </button>
+                  ))}
                 </div>
-              )}
+                <label className="mt-3 flex items-center gap-2.5 text-xs text-foreground cursor-pointer">
+                  <Switch
+                    label="Vim mode edge on every field"
+                    vimItem="appearance:vim-edge-everywhere"
+                    checked={vimEdgeEverywhere}
+                    disabled={vimEdge === 'off'}
+                    onChange={(on) => { setVimEdgeEverywhere(on); previewAppearance({ vimEdgeEverywhere: on }) }}
+                  />
+                  On every field that shows the mode too — Search Everything, the Command Palette,
+                  Find, the address editor
+                </label>
+              </div>
             </div>
           )}
 
           {activeTab === 'darkPages' && (
-            <DarkPagesSettings hintSettings={{ vimMode, vimKeymap: vimKeymapText, keybindings }} />
+            <DarkPagesSettings hintSettings={{ vimKeymap: vimKeymapText, keybindings }} />
           )}
 
           {activeTab === 'passwords' && (
@@ -2703,43 +2593,22 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </p>
               </div>
 
-              {/* New-tab focus + tab-number badges, side by side (2-column row) */}
-              <div className="grid grid-cols-2 gap-4">
-                {/* New-tab focus target */}
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">Focus on New Tab</label>
-                  <Segmented
-                    label="Focus on New Tab"
-                    vimItem="general:new-tab-focus"
-                    value={newTabFocus}
-                    onChange={setNewTabFocus}
-                    options={[
-                      { value: 'site', label: 'Site', title: 'Keystrokes go straight to the loaded page.' },
-                      { value: 'url', label: 'URL bar', title: 'Type a URL right away, like a fresh Chrome tab.' },
-                    ]}
-                  />
-                  <p className="text-[11px] text-muted-foreground mt-1">
-                    Where keyboard focus lands when a new tab is opened.
-                  </p>
-                </div>
-
-                {/* Sidebar tab-number badges */}
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">Tab Number Badges</label>
-                  <Segmented
-                    label="Tab Number Badges"
-                    vimItem="general:tab-badges"
-                    value={showTabNumbers}
-                    onChange={setShowTabNumbers}
-                    options={[
-                      { value: true, label: 'Show' },
-                      { value: false, label: 'Hide' },
-                    ]}
-                  />
-                  <p className="text-[11px] text-muted-foreground mt-1">
-                    Show a small "1"…"9" badge on the first nine visible sidebar tabs, advertising the CmdOrCtrl+N quick-jump shortcut.
-                  </p>
-                </div>
+              {/* New-tab focus target */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">Focus on New Tab</label>
+                <Segmented
+                  label="Focus on New Tab"
+                  vimItem="general:new-tab-focus"
+                  value={newTabFocus}
+                  onChange={setNewTabFocus}
+                  options={[
+                    { value: 'site', label: 'Site', title: 'Keystrokes go straight to the loaded page.' },
+                    { value: 'url', label: 'URL bar', title: 'Type a URL right away, like a fresh Chrome tab.' },
+                  ]}
+                />
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Where keyboard focus lands when a new tab is opened.
+                </p>
               </div>
 
               {/* Search engine */}
@@ -3379,230 +3248,78 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
           {activeTab === 'shortcuts' && (
             <div>
-              <div className="mb-8">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="text-lg font-semibold text-foreground">Vim Mode</h3>
-                    <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
-                      Two modes, shown in the address bar. COMMAND: plain keys drive the page and the
-                      browser, the way Vimium does — scrolling, history, tabs, app commands; keys not
-                      bound reach the page. INSERT: keys go to the page or the field you're typing in.
-                      i goes into INSERT, Esc or Ctrl+[ comes back. Clicking a text field is INSERT,
-                      anywhere else COMMAND. Ctrl+J/K step through the Sidebar's tabs and groups, Ctrl+H/L
-                      fold and unfold, Tab shows or hides it. Replaces the regular shortcuts and the Vimium
-                      extension.
-                    </p>
-                  </div>
-                  <Switch size="md" label="Vim Mode" vimItem="shortcuts:vim" checked={vimMode} onChange={setVimMode} className="mt-1" />
-                </div>
-
-                {vimMode && (
-                  <div className="mt-4 flex items-start justify-between gap-4">
-                    <div>
-                      <div className="text-sm text-foreground">Hide the Sidebar in INSERT</div>
-                      <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
-                        Going into INSERT in a page hides the Sidebar; COMMAND brings it back.
-                      </p>
-                    </div>
-                    <Switch
-                      size="md"
-                      label="Hide the Sidebar in INSERT"
-                      vimItem="shortcuts:hide-sidebar-insert"
-                      checked={hideSidebarInInsert}
-                      onChange={setHideSidebarInInsert}
-                      className="mt-1"
-                    />
-                  </div>
-                )}
-
-                {vimMode && (
-                  <div className="mt-4">
-                    <div className="flex items-center justify-between gap-4 mb-2">
-                      <p className="text-sm text-muted-foreground">
-                        One <code className="font-mono text-xs">command keys…</code> per line;
-                        the <code className="font-mono text-xs">search-</code>,{' '}
-                        <code className="font-mono text-xs">find-</code> and <code className="font-mono text-xs">url-</code> prefixes say where a command works.
-                      </p>
-                      <button
-                        type="button"
-                        data-vim-item="shortcuts:vim-reset"
-                        onClick={() => setVimKeymapText(DEFAULT_VIM_KEYMAP)}
-                        disabled={vimKeymapText === DEFAULT_VIM_KEYMAP}
-                        className="shrink-0 flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:pointer-events-none"
-                      >
-                        <RotateCcw size={12} />
-                        Reset to Defaults
-                      </button>
-                    </div>
-                    <textarea
-                      data-vim-item="shortcuts:vim-keymap"
-                      value={vimKeymapText}
-                      onChange={(event) => setVimKeymapText(event.target.value)}
-                      // Recording captures every keydown on the host window,
-                      // so typing here would be swallowed — stop recording.
-                      onFocus={() => setRecordingTarget(null)}
-                      spellCheck={false}
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      wrap="off"
-                      rows={24}
-                      className="w-full px-3 py-2 field rounded-xl font-mono text-xs leading-relaxed text-foreground outline-none resize-y"
-                    />
-                    {vimKeymapErrors.length > 0 && (
-                      <div className="mt-2 px-3 py-2 rounded-md border border-destructive/40 bg-destructive/10 text-xs text-destructive space-y-0.5">
-                        <div className="font-medium">These lines are ignored:</div>
-                        {vimKeymapErrors.map((error) => (
-                          <div key={error} className="font-mono">{error}</div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+              {/* Vim is Vimperium's only mode: no switch, and no regular
+                  shortcuts to record — the keymap below is all the keys. */}
+              <div>
+                <h3 className="text-lg font-semibold text-foreground">Vim Mode</h3>
+                <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                  Vimperium runs on two modes, shown in the address bar. COMMAND: plain keys drive the
+                  page and the browser, the way Vimium does — scrolling, history, tabs, app commands;
+                  keys not bound reach the page. INSERT: keys go to the page or the field you're typing in.
+                  i goes into INSERT, Esc or Ctrl+[ comes back; in a popup (Search Everything, Find,
+                  the address editor, a dialog, Settings) Ctrl+C or Ctrl+[ leaves its field and Esc
+                  closes it. Clicking a text field is INSERT,
+                  anywhere else COMMAND. Ctrl+J/K step through the Sidebar's tabs and groups, Ctrl+H/L
+                  fold and unfold, Tab shows or hides it. ? lists every key. The system's own shortcuts
+                  — copy, paste, undo, quit — work as everywhere else.
+                </p>
               </div>
 
-              {/* Vim mode turns the regular shortcuts off — its keymap above
-                  replaces them — so they aren't offered while it's on. */}
-              {!vimMode && (
-                <>
-                <h3 className="text-sm font-semibold text-foreground mb-1">Shortcuts</h3>
-                <div className="flex items-center justify-between gap-4 mb-4">
+              <div className="mt-4 flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm text-foreground">Hide the Sidebar in INSERT</div>
+                  <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                    Going into INSERT in a page hides the Sidebar; COMMAND brings it back.
+                  </p>
+                </div>
+                <Switch
+                  size="md"
+                  label="Hide the Sidebar in INSERT"
+                  vimItem="shortcuts:hide-sidebar-insert"
+                  checked={hideSidebarInInsert}
+                  onChange={setHideSidebarInInsert}
+                  className="mt-1"
+                />
+              </div>
+
+              <div className="mt-4">
+                <div className="flex items-center justify-between gap-4 mb-2">
                   <p className="text-sm text-muted-foreground">
-                    Click on a shortcut to reassign it. Each command supports up
-                    to {MAX_BINDINGS_PER_ACTION} bindings. Press Escape to cancel.
+                    One <code className="font-mono text-xs">command keys…</code> per line;
+                    the <code className="font-mono text-xs">search-</code>,{' '}
+                    <code className="font-mono text-xs">find-</code> and <code className="font-mono text-xs">url-</code> prefixes say where a command works.
                   </p>
                   <button
                     type="button"
-                    data-vim-item="shortcuts:reset"
-                    onClick={handleResetKeybindings}
-                    className="shrink-0 flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                    data-vim-item="shortcuts:vim-reset"
+                    onClick={() => setVimKeymapText(DEFAULT_VIM_KEYMAP)}
+                    disabled={vimKeymapText === DEFAULT_VIM_KEYMAP}
+                    className="shrink-0 flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:pointer-events-none"
                   >
                     <RotateCcw size={12} />
                     Reset to Defaults
                   </button>
                 </div>
-
-                {conflictError && (
-                  <div className="mb-3 px-3 py-2 rounded-md border border-destructive/40 bg-destructive/10 text-xs text-destructive">
-                    {conflictError}
+                <textarea
+                  data-vim-item="shortcuts:vim-keymap"
+                  value={vimKeymapText}
+                  onChange={(event) => setVimKeymapText(event.target.value)}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  wrap="off"
+                  rows={24}
+                  className="w-full px-3 py-2 field rounded-xl font-mono text-xs leading-relaxed text-foreground outline-none resize-y"
+                />
+                {vimKeymapErrors.length > 0 && (
+                  <div className="mt-2 px-3 py-2 rounded-md border border-destructive/40 bg-destructive/10 text-xs text-destructive space-y-0.5">
+                    <div className="font-medium">These lines are ignored:</div>
+                    {vimKeymapErrors.map((error) => (
+                      <div key={error} className="font-mono">{error}</div>
+                    ))}
                   </div>
                 )}
-
-                <div className="relative mb-3">
-                  <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-                  <input
-                    data-vim-item="shortcuts:filter"
-                    type="text"
-                    value={shortcutFilter}
-                    onChange={(event) => setShortcutFilter(event.target.value)}
-                    onKeyDown={(event) => { if (event.key === 'Escape') setShortcutFilter('') }}
-                    // Recording captures every keydown on the host window, so
-                    // typing here would be swallowed — stop recording instead.
-                    onFocus={() => setRecordingTarget(null)}
-                    placeholder="Filter shortcuts by name"
-                    // In Vim mode Settings keeps to COMMAND until a field is asked for.
-                    autoFocus={!vimNav}
-                    className="w-full h-9 pl-9 pr-8 field rounded-xl text-sm text-foreground outline-none"
-                  />
-                  {shortcutFilter && (
-                    <button
-                      type="button"
-                      // Keep focus in the input so the user can keep typing.
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => setShortcutFilter('')}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
-                      title="Clear filter"
-                    >
-                      <X size={10} />
-                    </button>
-                  )}
-                </div>
-
-                {filteredShortcutActions.length === 0 ? (
-                  <p className="py-8 text-center text-xs text-muted-foreground border border-input rounded-md">No shortcuts match your filter.</p>
-                ) : (
-                  <div className="flex flex-col divide-y divide-border border border-input rounded-md bg-card overflow-hidden">
-                    {filteredShortcutActions.map((action) => {
-                      const bindings = keybindings[action] || []
-                      const isCustom = isCustomBinding(action, bindings)
-                      return (
-                        <div
-                          key={action}
-                          data-vim-item={`shortcut:${action}`}
-                          data-vim-kind="row"
-                          className="flex items-center justify-between gap-4 px-4 py-3"
-                        >
-                          <span className="text-sm text-foreground">{ACTION_LABELS[action]}</span>
-                          <div className="flex items-center gap-2">
-                            {isCustom && (
-                              <button
-                                data-vim-cell="reset"
-                                onClick={() => {
-                                  setKeybindings((prev) => ({
-                                    ...prev,
-                                    [action]: [...(DEFAULT_KEYBINDINGS[action] || [])],
-                                  }))
-                                  setConflictError(null)
-                                }}
-                                className="h-5 w-5 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
-                                title="Reset to default"
-                              >
-                                <RotateCcw size={10} />
-                              </button>
-                            )}
-                            {Array.from({ length: MAX_BINDINGS_PER_ACTION }).map((_, slot) => {
-                              const isRecording =
-                                recordingTarget?.action === action && recordingTarget.slot === slot
-                              const binding = bindings[slot]
-                              // Don't let the user start in a slot that's "ahead"
-                              // of any empty slot to its left — keeps storage
-                              // compact (no holes) and matches what the user
-                              // sees: filling slot 1 only makes sense once
-                              // slot 0 has something.
-                              const disabled = !binding && !isRecording && slot > bindings.length
-                              return (
-                                <div key={slot} className="relative inline-flex items-center">
-                                  <button
-                                    data-vim-cell="record"
-                                    onClick={() => !disabled && startRecording(action, slot)}
-                                    disabled={disabled}
-                                    className={`min-w-[120px] h-8 px-3 ${binding && !isRecording ? 'pr-7' : ''} rounded-md text-xs flex items-center justify-center transition-colors ${
-                                      isRecording
-                                        ? 'bg-background border border-ring text-primary'
-                                        : binding
-                                          ? 'bg-card border border-input text-foreground hover:bg-accent/40'
-                                          : 'bg-card border border-dashed border-input text-muted-foreground/70 hover:bg-accent/30'
-                                    } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                  >
-                                    {isRecording
-                                      ? 'Press keys...'
-                                      : binding
-                                        ? formatAccelerator(binding)
-                                        : 'Add shortcut'}
-                                  </button>
-                                  {binding && !isRecording && (
-                                    <button
-                                      data-vim-cell="remove"
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        clearBindingSlot(action, slot)
-                                      }}
-                                      className="absolute right-1 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted"
-                                      title="Clear this shortcut"
-                                    >
-                                      <X size={10} />
-                                    </button>
-                                  )}
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-                </>
-              )}
+              </div>
             </div>
           )}
 
@@ -3760,13 +3477,25 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               <section>
                 <div className="flex items-center gap-3 mb-3">
                   {/* The orb's badge, live: it glitches as the pointer comes onto it. */}
-                  <BrandMark variant="full" mode={null} size={48} glitchOnHover />
+                  <BrandMark variant="full" size={48} glitchOnHover />
                   <div>
                     <h2 className="text-sm font-semibold text-foreground mb-1">
                       {appPaths?.appName || 'Vimperium'}
                     </h2>
                     <p className="text-xs text-muted-foreground">
                       Workspace-based browser with profiles and tab groups.
+                    </p>
+                    {/* Who made it (lib/credits.ts): a name opens its page in a tab. */}
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Made by{' '}
+                      {AUTHORS.map((author, i) => (
+                        <React.Fragment key={author.id}>
+                          {i > 0 && ' & '}
+                          <AboutLink item={`about:author:${author.id}`} url={author.url} onOpen={openLink}>
+                            {author.name}
+                          </AboutLink>
+                        </React.Fragment>
+                      ))}
                     </p>
                   </div>
                 </div>
@@ -3938,6 +3667,54 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   )}
                 </div>
               </section>
+
+              {/* Open source — what Vimperium is built on (lib/credits.ts), a
+                  row a project: a row opens its site in a tab. The cards pad
+                  rather than clip, so the cursor's ring round a row shows. */}
+              <section>
+                <h2 className="text-sm font-semibold text-foreground mb-1">Open source</h2>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Vimperium is built on these projects — thanks to everyone who makes them. Its keys
+                  come from{' '}
+                  {INSPIRATIONS.map((link, i) => (
+                    <React.Fragment key={link.id}>
+                      {i > 0 && (i === INSPIRATIONS.length - 1 ? ' and ' : ', ')}
+                      <AboutLink item={`about:inspired:${link.id}`} url={link.url} onOpen={openLink}>
+                        {link.name}
+                      </AboutLink>
+                    </React.Fragment>
+                  ))}
+                  .
+                </p>
+                <div className="flex flex-col gap-4">
+                  {CREDIT_GROUPS.map((group) => (
+                    <div key={group.id}>
+                      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {group.label}
+                      </div>
+                      <div className="flex flex-col rounded-md border border-input bg-card p-1">
+                        {group.credits.map((credit) => (
+                          <button
+                            key={credit.id}
+                            type="button"
+                            data-vim-item={`about:oss:${credit.id}`}
+                            onClick={() => openLink(credit.url)}
+                            title={credit.url}
+                            className="flex items-center gap-3 rounded px-3 py-1.5 text-left transition-colors hover:bg-accent/50"
+                          >
+                            <span className="shrink-0 text-sm font-medium text-foreground">{credit.name}</span>
+                            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{credit.role}</span>
+                            <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                              {credit.license}
+                            </span>
+                            <ExternalLink size={11} className="shrink-0 text-muted-foreground" />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
             </div>
           )}
           </div>
@@ -4026,6 +3803,28 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   )
 }
 
+/** A name in About's text that opens its page: a button, so Vim's keys reach
+ *  it as they do any control (its label presses it, as Enter does). */
+function AboutLink({ item, url, onOpen, children }: {
+  /** Its data-vim-item. */
+  item: string
+  url: string
+  onOpen: (url: string) => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      data-vim-item={item}
+      onClick={() => onOpen(url)}
+      title={url}
+      className="font-medium text-foreground underline-offset-2 hover:underline"
+    >
+      {children}
+    </button>
+  )
+}
+
 /** Settings' hint bar in Vim mode, above the footer: the keys for where
  *  the cursor is, the filter's results, an open list — or, once asked, all
  *  of Settings' keys, or what closing would throw away. */
@@ -4054,15 +3853,9 @@ function SettingsHintBar({ form, keymap, mode, firstLabel, closeWarning, showAll
       </>,
     )
   }
-  if (closeWarning) {
-    return bar(
-      <>
-        <span className="text-foreground">There are unsaved changes.</span>
-        <Hint label="Save" keys={caps('save')} />
-        <Hint label="Close without saving" keys={['Esc', ...caps('discard')]} />
-      </>,
-    )
-  }
+  // INSERT: Ctrl+C leaves the field; Esc steps back out from it as from
+  // COMMAND — the filter's results, else closing, which asks first with
+  // unsaved changes (a field taking the keys took an earlier warning down).
   if (mode === 'insert') {
     return bar(
       <>
@@ -4072,7 +3865,17 @@ function SettingsHintBar({ form, keymap, mode, firstLabel, closeWarning, showAll
             <Hint label="Go" keys={['Enter']} />
           </>
         )}
-        <Hint label="Command mode" keys={['Esc']} />
+        <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />
+        <Hint label={filterShown ? 'Clear' : 'Close'} keys={['Esc']} />
+      </>,
+    )
+  }
+  if (closeWarning) {
+    return bar(
+      <>
+        <span className="text-foreground">There are unsaved changes.</span>
+        <Hint label="Save" keys={caps('save')} />
+        <Hint label="Close without saving" keys={['Esc', ...caps('discard')]} />
       </>,
     )
   }

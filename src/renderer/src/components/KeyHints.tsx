@@ -7,7 +7,7 @@
 import type { ReactNode } from 'react'
 import { cn } from '../lib/utils'
 import { displayKeySequence, keysFor, type VimKeymap } from '../lib/vim-keymap'
-import { useWhichKey, type WhichKeyEntry } from '../lib/which-key'
+import type { WhichKeyEntry } from '../lib/which-key'
 
 export function Hint({ label, keys }: { label: ReactNode; keys: ReactNode[] }) {
   if (keys.length === 0) return null
@@ -60,19 +60,11 @@ export function HintBar({ children, wrap = false, className }: BarProps) {
 }
 
 /** The Sidebar's keys, at the bottom of it — wrapping, since it's narrow.
- *  Faded until one of them is used, which brings them to life. While a
- *  prefix is pending (o, d, n…) it lists what can follow it instead
- *  (which-key, components/WhichKey.tsx). */
-export function SidebarHintBar({ keymap, active, pending = '' }: { keymap: VimKeymap; active: boolean; pending?: string }) {
-  const whichKey = useWhichKey(keymap, pending)
+ *  Faded until one of them is used, which brings them to life. Only the
+ *  Sidebar's, a prefix pending (o, d, n…) or not: what can follow one is
+ *  which-key's strip, along the page area (components/WhichKey.tsx). */
+export function SidebarHintBar({ keymap, active }: { keymap: VimKeymap; active: boolean }) {
   const caps = (...commands: string[]): string[] => vimKeyCaps(keymap, ...commands)
-  if (whichKey.length > 0) {
-    return (
-      <HintBar wrap className="px-2">
-        <WhichKeyHints pending={pending} entries={whichKey} />
-      </HintBar>
-    )
-  }
   return (
     <HintBar wrap className={cn('px-2 transition-opacity', !active && 'opacity-50')}>
       <Hint label="Switch" keys={caps('cursor-down-show', 'cursor-up-show')} />
@@ -101,6 +93,10 @@ export function vimKeyCaps(map: VimKeymap | null, ...commands: string[]): string
 export function vimKeyCapsAll(map: VimKeymap | null, command: string): string[] {
   return map ? keysFor(map, command).map(displayKeySequence) : []
 }
+
+/** The cap of the key that leaves a popup's field for COMMAND: Ctrl+C (⌃C
+ *  on a Mac). Esc closes the popup. */
+export const LEAVE_INSERT_CAP = displayKeySequence('<C-c>')
 
 /** A list row's key in Vim mode, as a keycap filling the row's left padding
  *  (positioned by the row, so its content never moves; a span, as the

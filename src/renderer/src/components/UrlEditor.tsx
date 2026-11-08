@@ -8,7 +8,8 @@
 // parameters, while D removes all of it and P pastes over all of it — and
 // yt copies the page's title. gu goes up a level, gt keeps only the site; u undoes and <C-r>
 // redoes, as in vim; i / A / I / C go to typing. Enter goes there. It opens typing over the whole address,
-// selected, as other browsers' address bars do; Esc goes to COMMAND.
+// selected, as other browsers' address bars do; Ctrl+C goes to COMMAND, and
+// Esc closes from either.
 // It drops down from the toolbar's address bar, edge to edge with it, the
 // way the address bar's suggestions do — a pinned popup (tab pages are
 // native views that paint over the app's DOM), not dragged anywhere — and
@@ -20,7 +21,7 @@ import { useAppStore } from '../store/app-store'
 import { TabFavicon } from './TabFavicon'
 import { DetachedWindow, type PopupPlacement } from './DetachedWindow'
 import { InputField } from './InputField'
-import { Hint, HintBar, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, LEAVE_INSERT_CAP, vimKeyCaps } from './KeyHints'
 import { closeUrlEditor, useUrlEditorStore } from '../lib/url-editor'
 import { openAddress } from '../lib/open-address'
 import { blockByKey, blockKeyLabel, isBlockKey, removeBlock, replaceBlock, siteOnly, startBlock, upOneLevel, urlBlocks, type UrlBlock } from '../lib/url-blocks'
@@ -448,7 +449,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   })
 
   // The box has the keys from the start, the whole address selected — typing
-  // replaces it, as in any address bar; Vim's Esc goes to COMMAND.
+  // replaces it, as in any address bar; Vim's Ctrl+C goes to COMMAND.
   useEffect(() => {
     if (!popupWindow) return
     const t = setTimeout(() => typeAt(0, valueRef.current.length), 0)
@@ -467,9 +468,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       go(e.shiftKey)
     } else if (e.key === 'Escape') {
       e.preventDefault()
-      // Vim: Esc leaves the box for COMMAND mode; Esc there closes.
-      if (vim.modeRef.current) e.currentTarget.blur()
-      else closeUrlEditor()
+      // In Vim mode Esc never gets here: the editor's Vim keys close it.
+      closeUrlEditor()
     }
   }
 
@@ -484,7 +484,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       height={HEIGHT}
       resizable={false}
       modal
-      // In Vim mode Esc first leaves the box; the editor handles it.
+      // In Vim mode Esc is the editor's Vim keys' (usePopupVimMode).
       closeOnEscape={!vimKeymap}
       placement={placement}
       onClose={closeUrlEditor}
@@ -621,7 +621,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
             <>
               <Hint label="Go" keys={['Enter']} />
               <Hint label="New tab" keys={[shift, 'Enter']} />
-              <Hint label={vim.mode ? 'Command mode' : 'Close'} keys={['Esc']} />
+              {vim.mode && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
+              <Hint label="Close" keys={['Esc']} />
             </>
           )}
         </HintBar>

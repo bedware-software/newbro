@@ -1,12 +1,12 @@
 # Vimperium
 
-A keyboard-first desktop browser with Vim-style keys, built with Electron, React and TypeScript. Organize your tabs into colorful groups across multiple isolated workspaces and profiles, and do all of it without the mouse.
+A keyboard-first desktop browser that runs on Vim keys and nothing else, built with Electron, React and TypeScript. Organize your tabs into colorful groups across multiple isolated workspaces and profiles, and do all of it without the mouse.
 
 ![Vimperium](docs/screenshot.png)
 
 ## Features
 
-- **Vim-style keys** — every action has a key: `j`/`k` scroll, `Ctrl+d`/`Ctrl+u` move half a page, and a prefix is a verb (`n` new, `d` close, `o` open, `t` toggle; `u` brings back a closed tab). `?` lists them all, and Settings → Keyboard Shortcuts rebinds them
+- **Vim-style keys** — Vim's COMMAND and INSERT modes are all there is (no regular-shortcuts mode to switch to), and every action has a key: `j`/`k` scroll, `Ctrl+d`/`Ctrl+u` move half a page, and a prefix is a verb (`n` new, `d` close, `o` open, `t` toggle; `u` brings back a closed tab). `?` lists them all, and Settings → Keyboard Shortcuts rebinds them
 - **Profiles** — separate session partitions keep cookies and logins isolated
 - **Workspaces** — switch between independent workspaces (work, personal, projects)
 - **Tab groups** — color-coded, collapsible groups with drag-and-drop reordering

@@ -1,15 +1,16 @@
 // The pickers' shared window — Move Tab / Group / Reading, Open Link: a
 // filter box over a list of destinations, Search Everything's look. In Vim
 // mode it has Search Everything's two modes too: it opens typing in the box
-// (INSERT); Esc goes to COMMAND, where the scroll keys move through the
-// rows, each row wears a two-letter label that picks it, and i types again.
+// (INSERT); Ctrl+C goes to COMMAND, where the scroll keys move through the
+// rows, each row wears a two-letter label that picks it, and i types again;
+// Esc cancels from either.
 // Enter (Shift+Enter, Ctrl/⌘+Enter) works the same in both.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, ArrowUpDown, CornerDownLeft } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
-import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, LEAVE_INSERT_CAP, RowHint, vimKeyCaps } from './KeyHints'
 import { GroupPill } from './GroupPill'
 import { ScopeSwitch } from './ScopeSwitch'
 import { fuzzyFilter } from '../lib/fuzzy'
@@ -326,9 +327,8 @@ export function PickerDialog({
       // second cancel for one press, and the Open Link picker would drop the
       // next link it has queued along with this one.
       e.stopPropagation()
-      // Vim: Esc leaves the box for COMMAND mode; Esc there cancels.
-      if (vim.modeRef.current) inputRef.current?.blur()
-      else onCancel()
+      // In Vim mode Esc never gets here: the picker's Vim keys cancel it.
+      onCancel()
     }
   }
 
@@ -475,7 +475,8 @@ export function PickerDialog({
             {vim.mode === 'command' && hints.labels[0] && <Hint label="Row" keys={[`${hints.labels[0]}…`]} />}
             {scopeSwitch && <Hint label="Scope" keys={['⇥']} />}
             {vim.mode === 'command' && <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />}
-            <Hint label={vim.mode === 'insert' ? 'Command mode' : 'Close'} keys={['Esc']} />
+            {vim.mode === 'insert' && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
+            <Hint label="Close" keys={['Esc']} />
           </HintBar>
         </div>
       </div>

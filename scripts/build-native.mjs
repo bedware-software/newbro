@@ -17,6 +17,15 @@ if (process.platform !== 'darwin') process.exit(0)
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const source = join(root, 'native/vimperium-hybrid.swift')
 const output = join(root, 'out/native/vimperium-hybrid')
+// The helper's name before Newbro became Vimperium. Nothing empties
+// out/native between builds, and electron-builder packs all of out/
+// (build.files), so a checkout that built it would ship it.
+const LEGACY_OUTPUT = join(root, 'out/native/newbro-hybrid')
+
+if (existsSync(LEGACY_OUTPUT)) {
+  rmSync(LEGACY_OUTPUT, { force: true })
+  console.log(`removed the old ${LEGACY_OUTPUT}`)
+}
 
 if (existsSync(output) && statSync(output).mtimeMs >= statSync(source).mtimeMs) process.exit(0)
 

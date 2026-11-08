@@ -30,7 +30,8 @@ export interface Reading {
   addedAt: number
   /** Group membership (only meaningful while status === 'toread'). */
   groupId?: string
-  /** Absolute path to a saved single-file MHTML, set once saved offline. */
+  /** Absolute path to a saved single-file MHTML, set once saved offline.
+   *  Only its file name is trusted: see localOffline. */
   offlinePath?: string
 }
 
@@ -69,16 +70,23 @@ function loadAll(): Record<string, unknown> {
   return raw && typeof raw === 'object' ? raw : {}
 }
 
-/** Read a profile's shelf, migrating the legacy flat-array shape on the fly. */
+/** Read a profile's shelf, migrating the legacy flat-array shape on the fly.
+ *  Offline copies come back as paths on this machine (localOffline). */
 function shelfFor(profileId: string): Shelf {
   if (!profileId) return { readings: [], groups: [] }
   const raw = loadAll()[profileId]
-  if (Array.isArray(raw)) return { readings: raw as Reading[], groups: [] }
+  if (Array.isArray(raw)) return { readings: withLocalOffline(raw as Reading[]), groups: [] }
   if (raw && typeof raw === 'object') {
     const s = raw as Partial<Shelf>
-    return { readings: s.readings ?? [], groups: s.groups ?? [] }
+    return { readings: withLocalOffline(s.readings ?? []), groups: s.groups ?? [] }
   }
   return { readings: [], groups: [] }
+}
+
+function withLocalOffline(readings: Reading[]): Reading[] {
+  return readings.map((r) =>
+    r && typeof r.offlinePath === 'string' ? { ...r, offlinePath: localOffline(r.offlinePath) } : r,
+  )
 }
 
 function persistShelf(profileId: string, shelf: Shelf): void {
@@ -182,6 +190,30 @@ function removeReading(profileId: string, id: string): void {
   commit(profileId, shelf)
 }
 
+/** Put an archived reading that was removed back in the Archive as it was
+ *  (the sidebar's u): its own id, title and date, right before `beforeId`
+ *  (or last). Not added again by URL, so another reading of the same page
+ *  stays as it is. Its offline copy went with it. Returns the resulting shelf. */
+function restoreReading(profileId: string, saved: Reading, beforeId: string | null): Shelf {
+  const shelf = shelfFor(profileId)
+  if (!profileId || !saved || typeof saved.id !== 'string' || !saved.id) return shelf
+  const url = typeof saved.url === 'string' ? saved.url.trim() : ''
+  if (!url || shelf.readings.some((r) => r.id === saved.id)) return shelf
+  const reading: Reading = {
+    id: saved.id,
+    url,
+    title: (typeof saved.title === 'string' && saved.title.trim()) || url,
+    favicon: saved.favicon || undefined,
+    status: 'archived',
+    addedAt: typeof saved.addedAt === 'number' ? saved.addedAt : Date.now(),
+  }
+  const at = beforeId ? shelf.readings.findIndex((r) => r.id === beforeId) : -1
+  if (at === -1) shelf.readings.push(reading)
+  else shelf.readings.splice(at, 0, reading)
+  commit(profileId, shelf)
+  return shelf
+}
+
 /** Where drag and drop puts readings: a group, the ungrouped list (groupId
  *  null), or the archive. */
 interface PlaceTarget {
@@ -243,10 +275,12 @@ function placeGroup(profileId: string, groupId: string, beforeGroupId: string | 
  *  too, so removing either entry never deletes the other's file. */
 function cloneReading(r: Reading, groupId: string | undefined): Reading {
   const clone: Reading = { ...r, id: randomUUID(), groupId, addedAt: Date.now() }
-  if (r.offlinePath) {
+  const src = r.offlinePath ? localOffline(r.offlinePath) : undefined
+  if (r.offlinePath) clone.offlinePath = undefined
+  if (src) {
     const dest = path.join(offlineDir(), `${clone.id}.mhtml`)
     try {
-      fs.copyFileSync(r.offlinePath, dest)
+      fs.copyFileSync(src, dest)
       clone.offlinePath = dest
     } catch (err) {
       clone.offlinePath = undefined
@@ -366,15 +400,32 @@ function removeGroup(profileId: string, id: string, deleteReadings: boolean): vo
 }
 
 function cleanupOffline(r: Reading): void {
-  if (!r.offlinePath) return
-  try { fs.rmSync(r.offlinePath, { force: true }) }
+  const file = r.offlinePath ? localOffline(r.offlinePath) : undefined
+  if (!file) return
+  try { fs.rmSync(file, { force: true }) }
   catch (err) { log.warn('bookshelf: offline file cleanup failed', String(err)) }
 }
 
+function offlineRoot(): string {
+  return path.join(app.getPath('userData'), 'bookshelf')
+}
+
 function offlineDir(): string {
-  const dir = path.join(app.getPath('userData'), 'bookshelf')
+  const dir = offlineRoot()
   fs.mkdirSync(dir, { recursive: true })
   return dir
+}
+
+/** Where a reading's offline copy is on this machine: userData/bookshelf
+ *  plus the stored path's file name. The store keeps the absolute path
+ *  saveOffline wrote, which names the old folder once userData has moved
+ *  (Newbro → Vimperium) and another machine's when Cloud Sync brought the
+ *  reading — and a path from elsewhere must never be what removing a reading
+ *  deletes. undefined when there's no file name in it. */
+function localOffline(stored: string): string | undefined {
+  const name = stored.split(/[\\/]/).pop() ?? ''
+  if (!name || name === '.' || name === '..') return undefined
+  return path.join(offlineRoot(), name)
 }
 
 /** Load the reading's URL in a hidden window under the profile's partition,
@@ -416,6 +467,9 @@ export function registerBookshelfIpc(): void {
     removeReading(profileId, id)
     return true
   })
+  ipcMain.handle('bookshelf:restore', (_e, profileId: string, reading: Reading, beforeId: string | null) =>
+    restoreReading(profileId, reading, beforeId),
+  )
   ipcMain.handle('bookshelf:move-reading', (_e, profileId: string, readingId: string, groupId: string | null) => {
     moveReading(profileId, readingId, groupId)
     return true

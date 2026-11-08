@@ -5,6 +5,9 @@
 // The list itself lives in main (src/main/downloads.ts); we mirror its
 // broadcasts and sort / filter locally. Every action is on the keyboard — see
 // KEY_HELP (shown with `?`); the hint bar at the bottom advertises the common keys.
+// In Vim mode the page is COMMAND's and the window's keymap runs on it
+// (lib/internal-page-keys.ts): j/k move, dd removes, u puts it back, and
+// every key the page has no use for — ob, Tab, Ctrl+J/K, ; — is the window's.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -15,6 +18,11 @@ import {
 import type { DownloadEntry } from '../App'
 import { useAppStore } from '../store/app-store'
 import { keepsChromeKeyboard } from '../lib/vim-mode'
+import {
+  CONTEXT_MENU_KEYS, LIST_MOVES, cmd, helpKeys, titleWithKey, useInternalPageKeys, windowKeysNote,
+  type ListMove, type PageKeyRunner, type PageKeyTable,
+} from '../lib/internal-page-keys'
+import { log } from '../lib/log'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 import { Hint, HintBar, KeyCap } from './KeyHints'
 
@@ -31,29 +39,62 @@ const SORT_LABELS: Record<SortKey, string> = { date: 'Date', size: 'Size', name:
 const DEFAULT_DIR: Record<SortKey, SortDir> = { date: 'desc', size: 'desc', name: 'asc' }
 const SORT_STORAGE_KEY = 'vimperium-downloads-sort'
 
-// How long the second `g` of `gg` may trail the first (same as Vim mode's).
-const GG_TIMEOUT_MS = 1000
-
 /** Events other parts of the app send the page: App routes find-in-page and
  *  reload here while the Downloads tab is active. */
 export const DOWNLOADS_FIND_EVENT = 'vimperium-downloads-find'
 export const DOWNLOADS_RELOAD_EVENT = 'vimperium-downloads-reload'
 
-const KEY_HELP: Array<[string, string]> = [
-  ['j / k, ↓ / ↑', 'Move through the list'],
-  ['gg / G, Home / End', 'First / last download'],
-  ['Enter', 'Main action: open, resume or retry'],
-  ['f', 'Show in folder'],
-  ['c', 'Copy download link'],
-  ['Space', 'Pause or resume'],
-  ['r', 'Retry a failed download'],
-  ['x, Delete', 'Cancel, or remove from list'],
-  ['l', 'Clear all finished downloads'],
-  ['s / S', 'Next sort / reverse order'],
-  ['/', 'Search downloads'],
-  ['m', 'All actions for the selected download'],
-  ['o', 'Open the downloads folder'],
-  ['?', 'Show or hide this help'],
+// How long a removed download can still be put back (u): until then it's
+// only hidden here, and leaves main's list after.
+const UNDO_REMOVE_MS = 10_000
+
+type DownloadsAction = ListMove
+  | 'primary' | 'showInFolder' | 'copy' | 'pause' | 'retry' | 'remove' | 'undo' | 'clear'
+  | 'sort' | 'reverse' | 'search' | 'menu' | 'folder' | 'help' | 'escape'
+
+// The page's keys (lib/internal-page-keys.ts). The window's commands it has
+// a meaning for — dd removes, u puts back, y copies, r retries a failed
+// download, od opens the folder — and keys of its own, each one taken only
+// while the window's keymap leaves it free: by default f searches and o
+// opens, so those two are F and od here.
+export const DOWNLOADS_KEYS: PageKeyTable<DownloadsAction> = {
+  ...LIST_MOVES,
+  primary: ['<CR>'],
+  showInFolder: ['F', 'f'],
+  copy: [cmd('copy-url'), 'c'],
+  pause: ['<Space>', 'p'],
+  retry: [cmd('reload')],
+  remove: [cmd('close-tab'), '<Del>', '<BS>'],
+  undo: [cmd('reopen-closed-tab'), 'u'],
+  clear: ['C', 'l'],
+  sort: ['s'],
+  reverse: ['S', 'O'],
+  search: [cmd('find-in-page'), cmd('insert-mode'), cmd('focus-input'), '/'],
+  menu: ['m', cmd('row-menu'), ...CONTEXT_MENU_KEYS],
+  folder: [cmd('open-downloads'), 'o'],
+  help: [cmd('help'), '?'],
+  escape: ['<Esc>'],
+}
+
+const KEY_HELP: Array<[DownloadsAction[], string]> = [
+  [['down', 'up'], 'Move through the list'],
+  [['halfDown', 'halfUp'], 'Half a page down / up'],
+  [['pageDown', 'pageUp'], 'A page down / up'],
+  [['first', 'last'], 'First / last download'],
+  [['primary'], 'Main action: open, resume or retry'],
+  [['showInFolder'], 'Show in folder'],
+  [['copy'], 'Copy download link'],
+  [['pause'], 'Pause or resume'],
+  [['retry'], 'Retry a failed download'],
+  [['remove'], 'Cancel, or remove from list'],
+  [['undo'], 'Put the last removed download back'],
+  [['clear'], 'Clear all finished downloads'],
+  [['sort'], 'Next sort'],
+  [['reverse'], 'Reverse the order'],
+  [['search'], 'Search downloads'],
+  [['menu'], 'All actions for the selected download'],
+  [['folder'], 'Open the downloads folder'],
+  [['help'], 'Show or hide this help'],
 ]
 
 function loadSort(): SortState {
@@ -62,14 +103,15 @@ function loadSort(): SortState {
     if (v && SORT_KEYS.includes(v.key as SortKey) && (v.dir === 'asc' || v.dir === 'desc')) {
       return { key: v.key as SortKey, dir: v.dir }
     }
-  } catch {
-    /* corrupt entry — fall back to the default */
+  } catch (err) {
+    log.warn('downloads page: ignoring a corrupt saved sort', err)
   }
   return { key: 'date', dir: 'desc' }
 }
 
 function saveSort(sort: SortState): void {
-  try { localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(sort)) } catch { /* storage unavailable */ }
+  try { localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(sort)) }
+  catch (err) { log.warn('downloads page: could not save the sort', err) }
 }
 
 function formatBytes(n: number): string {
@@ -207,7 +249,10 @@ export function DownloadsPage() {
   const rootRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
-  const pendingGRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Downloads removed from the list (dd) that u can still put back: hidden
+  // here until their time is up, then removed in main.
+  const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(() => new Set())
+  const removalsRef = useRef<Array<{ id: string; timer: ReturnType<typeof setTimeout> }>>([])
   const activePartition = useAppStore((s) => s.getActivePartition())
 
   useEffect(() => { saveSort(sort) }, [sort])
@@ -248,14 +293,30 @@ export function DownloadsPage() {
     }
   }, [entries])
 
+  // A hidden download that's left main's list needn't be remembered.
+  useEffect(() => {
+    setHiddenIds((hidden) => {
+      if (hidden.size === 0) return hidden
+      const listed = new Set(entries.map((e) => e.id))
+      const next = new Set([...hidden].filter((id) => listed.has(id)))
+      return next.size === hidden.size ? hidden : next
+    })
+  }, [entries])
+
+  // The list as the page shows it: without the removals u can still undo.
+  const shown = useMemo(
+    () => (hiddenIds.size === 0 ? entries : entries.filter((e) => !hiddenIds.has(e.id))),
+    [entries, hiddenIds],
+  )
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
     const matched = q
-      ? entries.filter((e) =>
+      ? shown.filter((e) =>
           e.filename.toLowerCase().includes(q) ||
           e.url.toLowerCase().includes(q) ||
           (e.originUrl ?? '').toLowerCase().includes(q))
-      : entries.slice()
+      : shown.slice()
     const sign = sort.dir === 'asc' ? 1 : -1
     matched.sort((a, b) => {
       let cmp = 0
@@ -266,7 +327,7 @@ export function DownloadsPage() {
       return cmp !== 0 ? cmp * sign : b.startedAt - a.startedAt
     })
     return matched
-  }, [entries, query, sort])
+  }, [shown, query, sort])
 
   // Date sort reads best under day headings, the way Chrome groups its page.
   const rows = useMemo(() => {
@@ -357,8 +418,32 @@ export function DownloadsPage() {
     if (!canRetry(e)) return
     void api.downloadsRetry?.(e.id, activePartition)
   }
-  /** x: an active download is cancelled first; a finished one leaves the
-   *  list, the cursor moving on to what follows it (vim's x). */
+  /** Removes a download from main's list for good. */
+  const commitRemoval = useCallback((id: string): void => {
+    api.downloadsRemove?.(id)
+      .catch((err) => log.error('downloads page: remove failed', err))
+  }, [api])
+  /** Every removal u could still undo goes through now. */
+  const commitRemovals = useCallback((): void => {
+    const pending = removalsRef.current
+    removalsRef.current = []
+    for (const { id, timer } of pending) {
+      clearTimeout(timer)
+      commitRemoval(id)
+    }
+  }, [commitRemoval])
+  // Leaving the page (or the window going away) ends the undo.
+  useEffect(() => {
+    window.addEventListener('pagehide', commitRemovals)
+    return () => {
+      window.removeEventListener('pagehide', commitRemovals)
+      commitRemovals()
+    }
+  }, [commitRemovals])
+
+  /** dd: an active download is cancelled first; a finished one leaves the
+   *  list, the cursor moving on to what follows it — u puts it back for a
+   *  while. */
   const removeOrCancel = (e: DownloadEntry): void => {
     if (isLive(e)) {
       void api.downloadsCancel?.(e.id)
@@ -367,10 +452,40 @@ export function DownloadsPage() {
     const at = visible.findIndex((v) => v.id === e.id)
     const next = visible[at + 1] ?? visible[at - 1]
     setSelectedId(next?.id ?? null)
-    void api.downloadsRemove?.(e.id)
+    setHiddenIds((s) => new Set(s).add(e.id))
+    const timer = setTimeout(() => {
+      removalsRef.current = removalsRef.current.filter((r) => r.id !== e.id)
+      commitRemoval(e.id)
+    }, UNDO_REMOVE_MS)
+    removalsRef.current.push({ id: e.id, timer })
+    const undoKey = pageKeys.key('undo')
+    showFlash(undoKey ? `Removed from the list — ${undoKey} to undo` : 'Removed from the list')
+  }
+  /** u: the last removal undone, while it still can be. */
+  const undoRemove = (): void => {
+    const last = removalsRef.current.pop()
+    if (!last) {
+      showFlash('Nothing to undo')
+      return
+    }
+    clearTimeout(last.timer)
+    setHiddenIds((s) => {
+      const next = new Set(s)
+      next.delete(last.id)
+      return next
+    })
+    if (!entries.some((e) => e.id === last.id)) {
+      showFlash('That download is gone from the list already')
+      return
+    }
+    setSelectedId(last.id)
+    showFlash('Back in the list')
   }
   const clearFinished = (): void => {
-    if (!entries.some((e) => !isLive(e))) return
+    if (!shown.some((e) => !isLive(e))) return
+    // Clearing takes the removals u could undo along with it.
+    for (const { timer } of removalsRef.current) clearTimeout(timer)
+    removalsRef.current = []
     void api.downloadsClear?.()
     showFlash('Finished downloads cleared')
   }
@@ -416,17 +531,23 @@ export function DownloadsPage() {
   }
 
   const openMenu = async (e: DownloadEntry, at: { x: number; y: number }, keyboard: boolean): Promise<void> => {
+    // Each item shows the page's key for it, if it has one.
+    const shortcut = (action: DownloadsAction): string[] | undefined => {
+      const key = pageKeys.key(action)
+      return key ? [key] : undefined
+    }
     const actions: DropdownAction[] = []
-    if (canOpen(e)) actions.push({ id: 'open', label: 'Open', iconName: 'FolderOpen', shortcut: ['Enter'] })
-    if (canShow(e)) actions.push({ id: 'show', label: 'Show in Folder', iconName: 'Folder', shortcut: ['f'] })
-    actions.push({ id: 'copy', label: 'Copy Download Link', iconName: 'Link', shortcut: ['c'] })
-    if (e.state === 'progressing') actions.push({ id: 'pause', label: 'Pause', iconName: 'Pause', shortcut: ['Space'], divider: 'before' })
-    if (e.state === 'paused') actions.push({ id: 'resume', label: 'Resume', iconName: 'Play', shortcut: ['Space'], divider: 'before' })
-    if (isLive(e)) actions.push({ id: 'cancel', label: 'Cancel Download', iconName: 'X', shortcut: ['x'] })
-    if (canRetry(e)) actions.push({ id: 'retry', label: 'Retry', iconName: 'RotateCw', shortcut: ['r'], divider: 'before' })
-    if (!isLive(e)) actions.push({ id: 'remove', label: 'Remove from List', iconName: 'Trash2', shortcut: ['x'], destructive: true, divider: canRetry(e) ? undefined : 'before' })
-    actions.push({ id: 'clear', label: 'Clear All Finished', iconName: 'ListX', shortcut: ['l'], divider: 'before', disabled: !entries.some((x) => !isLive(x)) })
-    actions.push({ id: 'folder', label: 'Open Downloads Folder', iconName: 'FolderOpen', shortcut: ['o'] })
+    if (canOpen(e)) actions.push({ id: 'open', label: 'Open', iconName: 'FolderOpen', shortcut: shortcut('primary') })
+    if (canShow(e)) actions.push({ id: 'show', label: 'Show in Folder', iconName: 'Folder', shortcut: shortcut('showInFolder') })
+    actions.push({ id: 'copy', label: 'Copy Download Link', iconName: 'Link', shortcut: shortcut('copy') })
+    if (e.state === 'progressing') actions.push({ id: 'pause', label: 'Pause', iconName: 'Pause', shortcut: shortcut('pause'), divider: 'before' })
+    if (e.state === 'paused') actions.push({ id: 'resume', label: 'Resume', iconName: 'Play', shortcut: shortcut('pause'), divider: 'before' })
+    // d in the menu, as dd deletes.
+    if (isLive(e)) actions.push({ id: 'cancel', label: 'Cancel Download', iconName: 'X', key: 'd', shortcut: shortcut('remove') })
+    if (canRetry(e)) actions.push({ id: 'retry', label: 'Retry', iconName: 'RotateCw', shortcut: shortcut('retry'), divider: 'before' })
+    if (!isLive(e)) actions.push({ id: 'remove', label: 'Remove from List', iconName: 'Trash2', key: 'd', shortcut: shortcut('remove'), destructive: true, divider: canRetry(e) ? undefined : 'before' })
+    actions.push({ id: 'clear', label: 'Clear All Finished', iconName: 'ListX', shortcut: shortcut('clear'), divider: 'before', disabled: !shown.some((x) => !isLive(x)) })
+    actions.push({ id: 'folder', label: 'Open Downloads Folder', iconName: 'FolderOpen', shortcut: shortcut('folder') })
 
     const result = await openDropdownAsync({
       kind: 'menu',
@@ -464,99 +585,73 @@ export function DownloadsPage() {
   }
 
   // ── keyboard ──
-  // Registered once; the ref always points at this render's handler so the
-  // keys act on the current list, sort and selection.
-  const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {})
-  onKeyRef.current = (e: KeyboardEvent): void => {
-    if (e.defaultPrevented || e.isComposing) return
-    const root = rootRef.current
-    if (!root) return
-    // Only while the page has the keyboard: focus on it, or on nothing at all.
-    const target = e.target
-    const onPage = target === document.body || target === document.documentElement ||
-      (target instanceof Node && root.contains(target))
-    if (!onPage || isEditable(target)) return
-    if (e.metaKey || e.ctrlKey || e.altKey) return
-    // A focused control (Tab onto a header button) keeps its own Enter / Space.
-    if ((e.key === 'Enter' || e.key === ' ') && target instanceof HTMLElement && target.closest('button, a, [role="radio"]')) return
-
-    if (e.key === 'Escape' && helpOpen) {
-      e.preventDefault()
-      e.stopPropagation()
-      setHelpOpen(false)
-      return
+  // DOWNLOADS_KEYS through lib/internal-page-keys.ts: in Vim mode the
+  // window's keymap brings them, and a key or command this declines goes on
+  // to the window.
+  const runKey: PageKeyRunner<DownloadsAction> = (action, source) => {
+    switch (action) {
+      case 'escape':
+        if (!helpOpen) return false
+        setHelpOpen(false)
+        return true
+      case 'help': setHelpOpen((v) => !v); return true
+      case 'down': moveBy(1); return true
+      case 'up': moveBy(-1); return true
+      case 'halfDown': moveBy(Math.max(1, Math.floor(pageSize() / 2))); return true
+      case 'halfUp': moveBy(-Math.max(1, Math.floor(pageSize() / 2))); return true
+      case 'pageDown': moveBy(pageSize()); return true
+      case 'pageUp': moveBy(-pageSize()); return true
+      case 'first': moveTo(0); return true
+      case 'last': moveTo(-1); return true
+      case 'search': focusSearch(); return true
+      case 'sort': cycleSort(); return true
+      case 'reverse': reverseSort(); return true
+      case 'clear': clearFinished(); return true
+      case 'folder': openFolder(); return true
+      case 'menu': openMenuForSelected(); return true
+      case 'undo': undoRemove(); return true
     }
-
-    let handled = true
-    if (e.key === 'g' && !e.shiftKey) {
-      if (pendingGRef.current) {
-        clearTimeout(pendingGRef.current)
-        pendingGRef.current = null
-        moveTo(0)
-      } else {
-        pendingGRef.current = setTimeout(() => { pendingGRef.current = null }, GG_TIMEOUT_MS)
-      }
-      e.preventDefault()
-      return
+    if (!selected) {
+      // dd with nothing to remove does nothing — it never closes the tab
+      // here. The rest go on to the window (y copies the page's address).
+      return action === 'remove'
     }
-    if (pendingGRef.current) {
-      clearTimeout(pendingGRef.current)
-      pendingGRef.current = null
+    switch (action) {
+      case 'primary': primary(selected); return true
+      case 'showInFolder': showInFolder(selected); return true
+      case 'copy': copyLink(selected); return true
+      case 'pause': togglePause(selected); return true
+      case 'remove': removeOrCancel(selected); return true
+      case 'retry':
+        // r reloads the list unless there's a download to retry.
+        if (!canRetry(selected)) return source.command === undefined
+        retry(selected)
+        return true
     }
-    switch (e.key) {
-      case 'j':
-      case 'ArrowDown': moveBy(1); break
-      case 'k':
-      case 'ArrowUp': moveBy(-1); break
-      case 'Home': moveTo(0); break
-      case 'G':
-      case 'End': moveTo(-1); break
-      case 'PageDown': moveBy(pageSize()); break
-      case 'PageUp': moveBy(-pageSize()); break
-      case '/': focusSearch(); break
-      case 's': cycleSort(); break
-      case 'S': reverseSort(); break
-      case '?': setHelpOpen((v) => !v); break
-      case 'o': openFolder(); break
-      case 'l': clearFinished(); break
-      case 'ContextMenu': openMenuForSelected(); break
-      case 'F10':
-        if (e.shiftKey) openMenuForSelected()
-        else handled = false
-        break
-      default:
-        handled = false
-    }
-    if (!handled && selected) {
-      handled = true
-      switch (e.key) {
-        case 'Enter': primary(selected); break
-        case 'f': showInFolder(selected); break
-        case 'c':
-        case 'y': copyLink(selected); break
-        case ' ':
-        case 'p': togglePause(selected); break
-        case 'r': retry(selected); break
-        case 'x':
-        case 'Delete':
-        case 'Backspace': removeOrCancel(selected); break
-        case 'm': openMenuForSelected(); break
-        default: handled = false
-      }
-    }
-    if (!handled) return
-    e.preventDefault()
-    // Keeps App's global Escape / other window listeners out of keys we used.
-    e.stopPropagation()
+    return false
   }
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => onKeyRef.current(e)
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      if (pendingGRef.current) clearTimeout(pendingGRef.current)
-    }
-  }, [])
+  const pageKeys = useInternalPageKeys({
+    table: DOWNLOADS_KEYS,
+    run: runKey,
+    // Without Vim mode, the keys are the page's while it has the focus — on
+    // it, or on nothing at all — and not in its search box. A focused
+    // control (Tab onto a header button) keeps its own Enter / Space.
+    ownsKeyboard: (e) => {
+      const root = rootRef.current
+      const target = e.target
+      if (!root || isEditable(target)) return false
+      const onPage = target === document.body || target === document.documentElement ||
+        (target instanceof Node && root.contains(target))
+      if (!onPage) return false
+      return !((e.key === 'Enter' || e.key === ' ') && target instanceof HTMLElement && target.closest('button, a, [role="radio"]'))
+    },
+  })
+  const keyOf = pageKeys.key
+  /** An action's key for the hint bar; none when the keymap took them all. */
+  const hintKeys = (action: DownloadsAction): string[] => {
+    const key = keyOf(action)
+    return key ? [key] : []
+  }
 
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === 'ArrowDown' || e.key === 'Enter') {
@@ -571,18 +666,19 @@ export function DownloadsPage() {
     }
   }
 
-  const activeCount = entries.filter(isLive).length
-  const hasFinished = entries.some((e) => !isLive(e))
-  const summary = entries.length === 0
+  const activeCount = shown.filter(isLive).length
+  const hasFinished = shown.some((e) => !isLive(e))
+  const summary = shown.length === 0
     ? ''
-    : `${entries.length} ${entries.length === 1 ? 'download' : 'downloads'}${activeCount > 0 ? ` · ${activeCount} active` : ''}`
+    : `${shown.length} ${shown.length === 1 ? 'download' : 'downloads'}${activeCount > 0 ? ` · ${activeCount} active` : ''}`
+  const helpNote = pageKeys.keymap ? windowKeysNote(pageKeys.keymap) : null
 
   return (
     <div
       ref={rootRef}
       tabIndex={-1}
-      // To Vim mode this is a page: keys here are INSERT, its own j/k & co.
-      data-vim-page=""
+      // In Vim mode it's COMMAND's (not data-vim-page, which is INSERT): the
+      // window's keymap reaches it through lib/internal-page-keys.ts.
       className="absolute inset-0 z-50 flex flex-col bg-background text-foreground outline-none"
       role="region"
       aria-label="Downloads"
@@ -597,21 +693,21 @@ export function DownloadsPage() {
             <button
               onClick={openFolder}
               className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
-              title="Open the downloads folder (o)"
+              title={titleWithKey('Open the downloads folder', keyOf('folder'))}
             >
               <FolderOpen size={14} />
               Open folder
-              <KeyCap>o</KeyCap>
+              {keyOf('folder') && <KeyCap>{keyOf('folder')}</KeyCap>}
             </button>
             <button
               onClick={clearFinished}
               disabled={!hasFinished}
               className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-              title="Remove every finished download from the list (l). Files stay on disk."
+              title={`${titleWithKey('Remove every finished download from the list', keyOf('clear'))}. Files stay on disk.`}
             >
               <Trash2 size={14} />
               Clear all
-              <KeyCap>l</KeyCap>
+              {keyOf('clear') && <KeyCap>{keyOf('clear')}</KeyCap>}
             </button>
           </div>
         </div>
@@ -638,13 +734,17 @@ export function DownloadsPage() {
                 <X size={13} />
               </button>
             ) : (
-              <span className="pointer-events-none absolute right-2.5 top-1/2 flex -translate-y-1/2">
-                <KeyCap onField>/</KeyCap>
-              </span>
+              keyOf('search') && (
+                <span className="pointer-events-none absolute right-2.5 top-1/2 flex -translate-y-1/2">
+                  <KeyCap onField>{keyOf('search')}</KeyCap>
+                </span>
+              )
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">Sort by <KeyCap>s</KeyCap></span>
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Sort by {keyOf('sort') && <KeyCap>{keyOf('sort')}</KeyCap>}
+            </span>
             <div className="flex h-9 items-center rounded-md bg-secondary p-0.5" role="radiogroup" aria-label="Sort downloads">
               {SORT_KEYS.map((key) => {
                 const active = sort.key === key
@@ -657,7 +757,9 @@ export function DownloadsPage() {
                     className={`flex h-8 items-center gap-1 rounded px-2.5 text-xs font-medium transition-colors ${
                       active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
                     }`}
-                    title={active ? 'Reverse the order (Shift+S)' : `Sort by ${SORT_LABELS[key].toLowerCase()} (S cycles)`}
+                    title={active
+                      ? titleWithKey('Reverse the order', keyOf('reverse'))
+                      : `Sort by ${SORT_LABELS[key].toLowerCase()}${keyOf('sort') ? ` (${keyOf('sort')} cycles)` : ''}`}
                   >
                     {SORT_LABELS[key]}
                     {active && (sort.dir === 'desc'
@@ -679,14 +781,14 @@ export function DownloadsPage() {
           aria-label="Downloads"
           aria-activedescendant={selected ? `download-${selected.id}` : undefined}
         >
-          {loaded && entries.length === 0 && (
+          {loaded && shown.length === 0 && (
             <div className="flex flex-col items-center justify-center py-24 text-center text-muted-foreground">
               <DownloadIcon size={30} className="mb-3 opacity-50" />
               <p className="text-sm font-medium text-foreground">No downloads yet</p>
               <p className="mt-1 text-xs">Files you download will appear here.</p>
             </div>
           )}
-          {entries.length > 0 && visible.length === 0 && (
+          {shown.length > 0 && visible.length === 0 && (
             <p className="py-16 text-center text-sm text-muted-foreground">
               No downloads match “{query.trim()}”.
             </p>
@@ -706,6 +808,7 @@ export function DownloadsPage() {
                 selected={row.entry.id === selected?.id}
                 showDate={sort.key !== 'date'}
                 osIcon={osIcons.get(row.entry.id) ?? null}
+                keyOf={keyOf}
                 onSelect={() => { setSelectedId(row.entry.id); focusList() }}
                 onPrimary={() => primary(row.entry)}
                 onOpen={() => open(row.entry)}
@@ -727,24 +830,25 @@ export function DownloadsPage() {
           <span className="text-foreground">{flash}</span>
         ) : (
           <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
-            <Hint label="Navigate" keys={['j', 'k']} />
-            <Hint label="Open" keys={['Enter']} />
-            <Hint label="Folder" keys={['f']} />
-            <Hint label="Copy link" keys={['c']} />
-            <Hint label="Remove" keys={['x']} />
-            <Hint label="Sort" keys={['s']} />
-            <Hint label="Search" keys={['/']} />
-            <Hint label="Actions" keys={['m']} />
+            <Hint label="Navigate" keys={[keyOf('down'), keyOf('up')].filter((k): k is string => !!k)} />
+            <Hint label="Open" keys={hintKeys('primary')} />
+            <Hint label="Folder" keys={hintKeys('showInFolder')} />
+            <Hint label="Copy link" keys={hintKeys('copy')} />
+            <Hint label="Remove" keys={hintKeys('remove')} />
+            <Hint label="Undo" keys={hintKeys('undo')} />
+            <Hint label="Sort" keys={hintKeys('sort')} />
+            <Hint label="Search" keys={hintKeys('search')} />
+            <Hint label="Actions" keys={hintKeys('menu')} />
           </div>
         )}
         <button
           onClick={() => setHelpOpen((v) => !v)}
           className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-secondary hover:text-foreground"
-          title="Keyboard shortcuts (?)"
+          title={titleWithKey('Keyboard shortcuts', keyOf('help'))}
           tabIndex={-1}
         >
           <Keyboard size={13} />
-          <kbd>?</kbd>
+          {keyOf('help') && <kbd>{keyOf('help')}</kbd>}
         </button>
       </HintBar>
 
@@ -768,13 +872,20 @@ export function DownloadsPage() {
               </button>
             </div>
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
-              {KEY_HELP.map(([keys, what]) => (
-                <div key={keys} className="contents">
-                  <dt className="font-mono text-foreground">{keys}</dt>
-                  <dd className="text-muted-foreground">{what}</dd>
-                </div>
-              ))}
+              {KEY_HELP.map(([actions, what]) => {
+                const keys = helpKeys(pageKeys.caps, actions)
+                // A key the keymap took for something else: the menu (or ;)
+                // still reaches the action.
+                if (!keys) return null
+                return (
+                  <div key={what} className="contents">
+                    <dt className="font-mono text-foreground">{keys}</dt>
+                    <dd className="text-muted-foreground">{what}</dd>
+                  </div>
+                )
+              })}
             </dl>
+            {helpNote && <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{helpNote}</p>}
           </div>
         </div>
       )}
@@ -795,13 +906,15 @@ function FileTypeIcon({ entry, osIcon }: { entry: DownloadEntry; osIcon: string 
 }
 
 function DownloadRow({
-  entry, selected, showDate, osIcon,
+  entry, selected, showDate, osIcon, keyOf,
   onSelect, onPrimary, onOpen, onShow, onCopy, onTogglePause, onRetry, onRemove, onContextMenu,
 }: {
   entry: DownloadEntry
   selected: boolean
   showDate: boolean
   osIcon: string | null
+  /** The page's key for an action, for the buttons' tooltips. */
+  keyOf: (action: DownloadsAction) => string | undefined
   onSelect: () => void
   onPrimary: () => void
   onOpen: () => void
@@ -886,38 +999,38 @@ function DownloadRow({
         selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
       }`}>
         {entry.state === 'progressing' && (
-          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onTogglePause() }} className={iconButton} title="Pause (Space)">
+          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onTogglePause() }} className={iconButton} title={titleWithKey('Pause', keyOf('pause'))}>
             <Pause size={14} />
           </button>
         )}
         {entry.state === 'paused' && (
-          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onTogglePause() }} className={iconButton} title="Resume (Space)">
+          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onTogglePause() }} className={iconButton} title={titleWithKey('Resume', keyOf('pause'))}>
             <Play size={14} />
           </button>
         )}
         {canRetry(entry) && (
-          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onRetry() }} className={iconButton} title="Retry (R)">
+          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onRetry() }} className={iconButton} title={titleWithKey('Retry', keyOf('retry'))}>
             <RotateCw size={14} />
           </button>
         )}
         {openable && (
-          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onOpen() }} className={iconButton} title="Open (Enter)">
+          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onOpen() }} className={iconButton} title={titleWithKey('Open', keyOf('primary'))}>
             <FolderOpen size={14} />
           </button>
         )}
         {canShow(entry) && (
-          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onShow() }} className={iconButton} title="Show in folder (F)">
+          <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onShow() }} className={iconButton} title={titleWithKey('Show in folder', keyOf('showInFolder'))}>
             <Folder size={14} />
           </button>
         )}
-        <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onCopy() }} className={iconButton} title="Copy download link (C)">
+        <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onCopy() }} className={iconButton} title={titleWithKey('Copy download link', keyOf('copy'))}>
           <Link2 size={14} />
         </button>
         <button
           tabIndex={-1}
           onClick={(e) => { e.stopPropagation(); onRemove() }}
           className={`${iconButton} hover:text-destructive`}
-          title={live ? 'Cancel (X)' : 'Remove from list (X)'}
+          title={titleWithKey(live ? 'Cancel' : 'Remove from list', keyOf('remove'))}
         >
           {live ? <X size={14} /> : <Trash2 size={14} />}
         </button>

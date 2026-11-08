@@ -3,7 +3,7 @@ import { produce } from 'immer'
 import { v4 as uuid } from 'uuid'
 import type { Profile, Workspace, TabGroup, Tab, SearchableItem, SearchPathSegment, WorkspaceCandidate } from './types'
 import { log } from '../lib/log'
-import { canonicalInternalUrl, internalPageOf, internalTabMeta } from '../lib/internal-pages'
+import { canonicalInternalUrl, internalPageOf, internalTabMeta, withCanonicalInternalPages } from '../lib/internal-pages'
 
 // Edge-style palette: medium-saturation, medium-light hues spread around the
 // HSL wheel so dark text on top stays readable across the whole set. The
@@ -140,7 +140,7 @@ export function getSidebarOrder(w: Workspace): string[] {
 /** Visible tab order in the sidebar — interleaved ungrouped tabs with the
  *  children of expanded groups, in sidebar layout order. Collapsed groups
  *  contribute nothing so the indexing matches exactly what the user sees.
- *  Used by Cmd+N quick-jump (App.tsx) and the matching badge in Sidebar. */
+ *  Used by the tab-1…tab-9 quick-jump (Cmd/Ctrl+1…9, App.tsx). */
 export function getVisibleTabOrder(w: Workspace): string[] {
   const order = getSidebarOrder(w)
   const tabMap = new Map((w.tabs || []).map((t) => [t.id, t]))
@@ -828,7 +828,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       const state = {
-        profiles: d.profiles,
+        // Tabs saved under Newbro (or synced from a device still on it) carry
+        // newbro:// for internal pages; show and keep them as vimperium://.
+        profiles: withCanonicalInternalPages(d.profiles),
         activeProfileId: d.activeProfileId || d.profiles[0].id,
         activeWorkspaceId: d.activeWorkspaceId || d.profiles[0].workspaces[0]?.id || null,
         activeTabGroupId: d.activeTabGroupId || null,

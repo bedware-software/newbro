@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { log } from '../lib/log'
 import { registerHintPopup } from '../lib/chrome-hints'
+import { isEscapeKey } from '../lib/vim-mode'
 
 const DRAG_HANDLE_SELECTOR = '[data-detached-drag-handle]'
 const DRAG_CANCEL_SELECTOR = '[data-detached-no-drag]'
@@ -299,7 +300,8 @@ export function DetachedWindow({
       if (!suppressBeforeUnloadRef.current) onCloseRef.current()
     }
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (closeOnEscape && e.key === 'Escape') onCloseRef.current()
+      // Esc itself: not an IME's, not Ctrl+[ (isEscapeKey).
+      if (closeOnEscape && isEscapeKey(e)) onCloseRef.current()
       // F12 / Ctrl+Shift+I opens DevTools for THIS popup (it's its own window,
       // so the main "Toggle UI Developer Tools" can't reach it). getFocusedWindow
       // in main resolves to this popup since it has focus.

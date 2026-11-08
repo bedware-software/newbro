@@ -45,7 +45,11 @@ export const SYNC_CATEGORIES: readonly SyncCategory[] = [
  *  extensions reconcile by re-downloading CRXs. */
 export interface SyncAdapter {
   read: () => unknown
-  write: (data: unknown) => void | Promise<void>
+  /** Applies another device's payload. True means it stored something
+   *  other than what came in, on purpose (an old Vim keymap carried over):
+   *  that is published as this device's copy right away, so the other
+   *  devices end on it too. */
+  write: (data: unknown) => void | boolean | Promise<void | boolean>
   /** write() merges an incoming payload into local data (entry-level, its
    *  own conflict rules) instead of replacing it. Such a category folds in
    *  every other device's copy, not just the newest — an older copy can
@@ -750,7 +754,9 @@ export function notifyCloudChange(cat: SyncCategory): void {
   }, PUSH_DEBOUNCE_MS))
 }
 
-function pushIfChanged(cat: SyncCategory): void {
+/** `supersedes`: the updatedAt of a copy this one is made from, which it
+ *  must come after even when that device's clock runs ahead of ours. */
+function pushIfChanged(cat: SyncCategory, supersedes = 0): void {
   if (!isActive(cat)) return
   const adapter = adapters.get(cat)!
   let data: unknown
@@ -758,7 +764,7 @@ function pushIfChanged(cat: SyncCategory): void {
   const h = hashOf(data)
   const seen = lastSeen.get(cat)
   if (seen && seen.hash === h && selfFileExists(cat)) return // nothing new (or echo of an applied payload)
-  const updatedAt = Date.now()
+  const updatedAt = Math.max(Date.now(), supersedes + 1)
   const dir = syncDir()
   if (writeEnvelopeSelf(cat, dir, data, h, updatedAt)) {
     setSeen(cat, h, updatedAt)
@@ -844,10 +850,11 @@ async function pullCategory(cat: SyncCategory, generation = syncGeneration): Pro
   const localUpdatedAt = lastSeen.get(cat)?.updatedAt ?? 0
   if (winner.updatedAt <= localUpdatedAt) return
 
+  let rewritten = false
   applying = true
   try {
     if (!isRunCurrent(generation) || !isActive(cat)) return
-    await adapter.write(winner.data)
+    rewritten = (await adapter.write(winner.data)) === true
     if (!isRunCurrent(generation) || !isActive(cat)) return
     // Claim we're at the winner's state. For pass-through categories the next
     // local read hashes identically so no echo push fires; settings normalize
@@ -855,12 +862,19 @@ async function pullCategory(cat: SyncCategory, generation = syncGeneration): Pro
     // idempotent).
     setSeen(cat, winner.hash, winner.updatedAt)
     touchLastSync()
-    log.info('cloud-sync: adopted', { cat, from: winner.deviceId })
+    log.info('cloud-sync: adopted', { cat, from: winner.deviceId, rewritten })
   } catch (err) {
+    rewritten = false
     log.warn('cloud-sync: apply failed', { cat, err: String(err) })
   } finally {
     applying = false
   }
+  // The apply changed what came in on purpose (SyncAdapter.write): ours
+  // now differs from the winner's hash, so this publishes it — dated after
+  // the winner, or a winner from a clock running ahead would be adopted
+  // (and rewritten, and published) again at the next pull, which our own
+  // write sets off. Its hash check keeps it a no-op when nothing changed.
+  if (rewritten && isRunCurrent(generation)) pushIfChanged(cat, winner.updatedAt)
 }
 
 function touchLastSync(): void {

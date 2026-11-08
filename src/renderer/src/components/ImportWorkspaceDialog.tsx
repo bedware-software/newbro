@@ -100,6 +100,7 @@ export function ImportWorkspaceDialog({ open, candidates, onConfirm, onCancel }:
       if (c && expanded.has(c.id) !== unfold) toggleExpand(c.id)
     },
     onConfirm: handleImport,
+    defaultButton: confirmRef,
   })
   useEffect(() => {
     listRef.current?.querySelector(`[data-row-index="${keys.cursor}"]`)?.scrollIntoView({ block: 'nearest' })

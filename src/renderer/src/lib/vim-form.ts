@@ -12,7 +12,10 @@
 //                          `row` (a list's row: its buttons, marked
 //                          data-vim-cell="<name>", are reached with h/l),
 //                          `select` (a VimSelect)
-//   data-vim-danger        a label only goes to it, never presses it
+//   data-vim-danger        what can't be taken back (Remove all, Wipe):
+//                          Enter, Space and its label only go to it, and
+//                          dd presses it. On a row's cell too; a cell named
+//                          `remove` is always one
 //   data-vim-nowalk        a label reaches it, j/k don't (a section's tab)
 // Hidden and disabled controls are skipped. What a control is, otherwise:
 // a checkbox or a role=switch toggles, a role=radiogroup steps through its
@@ -24,7 +27,7 @@
 // are told apart by their tags, and events and observers are made from the
 // element's own window.
 
-import { createContext, useLayoutEffect, useMemo, useSyncExternalStore } from 'react'
+import { createContext, useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { isTypingElement } from './vim-mode'
 import { log } from './log'
 
@@ -127,6 +130,12 @@ function cellsOf(row: Element): Element[] {
   )
 }
 
+/** A row's cell that only dd presses, never Enter or Space: its Remove, or
+ *  one marked data-vim-danger. */
+function isDangerCell(cell: Element): boolean {
+  return cell.getAttribute('data-vim-cell') === 'remove' || cell.hasAttribute('data-vim-danger')
+}
+
 /** A radio group's choices — its own. */
 function radiosOf(group: Element): Element[] {
   return Array.from(group.querySelectorAll('[role="radio"]')).filter(
@@ -216,13 +225,16 @@ export interface VimFormSnapshot {
   /** The cursor's row's cells by name, and which one the cursor is on. */
   cells: readonly string[]
   cell: number
+  /** The cell under the cursor is one only dd presses (a Remove): Enter
+   *  and Space leave it alone. */
+  cellDanger: boolean
   /** How many controls wear labels. */
   labelCount: number
   overlayOpen: boolean
 }
 
 const EMPTY_SNAPSHOT: VimFormSnapshot = {
-  cursor: null, kind: null, danger: false, cells: [], cell: 0, labelCount: 0, overlayOpen: false,
+  cursor: null, kind: null, danger: false, cells: [], cell: 0, cellDanger: false, labelCount: 0, overlayOpen: false,
 }
 
 /** How long a cursor asked for (a filter result) waits for its control to
@@ -456,20 +468,24 @@ export class VimFormController {
   private publish(): void {
     const el = this.enabled ? this.cursorEl() : null
     const kind = el ? kindOf(el) : null
-    const cells = el && kind === 'row' ? cellsOf(el).map((c) => c.getAttribute('data-vim-cell') ?? '') : []
+    const rowCells = el && kind === 'row' ? cellsOf(el) : []
+    const cells = rowCells.map((c) => c.getAttribute('data-vim-cell') ?? '')
+    const cell = cells.length > 0 ? Math.min(this.cellIndex, cells.length - 1) : 0
     const next: VimFormSnapshot = {
       cursor: el ? this.cursorId : null,
       kind,
       danger: !!el?.hasAttribute('data-vim-danger'),
       cells,
-      cell: cells.length > 0 ? Math.min(this.cellIndex, cells.length - 1) : 0,
+      cell,
+      cellDanger: rowCells.length > 0 && isDangerCell(rowCells[cell]),
       labelCount: this.enabled ? this.labelEls.length : 0,
       overlayOpen: this.overlays.length > 0,
     }
     const prev = this.snapshot
     if (
       prev.cursor === next.cursor && prev.kind === next.kind && prev.danger === next.danger &&
-      prev.cell === next.cell && prev.labelCount === next.labelCount && prev.overlayOpen === next.overlayOpen &&
+      prev.cell === next.cell && prev.cellDanger === next.cellDanger &&
+      prev.labelCount === next.labelCount && prev.overlayOpen === next.overlayOpen &&
       prev.cells.join('\n') === next.cells.join('\n')
     ) return
     this.snapshot = next
@@ -584,10 +600,12 @@ export class VimFormController {
     }
   }
 
-  /** Enter or Space on the cursor. */
+  /** Enter or Space on the cursor. Never on what can't be taken back — a
+   *  danger button, a row's Remove — even with the cursor on it: that's
+   *  dd's (pressCell). */
   private activate(): boolean {
     const el = this.cursorEl()
-    if (!el) return false
+    if (!el || el.hasAttribute('data-vim-danger')) return false
     switch (kindOf(el)) {
       case 'segment': {
         // Round the choices, the way pressing a switch goes round its two.
@@ -604,7 +622,7 @@ export class VimFormController {
       case 'row': {
         const cells = cellsOf(el)
         const cell = cells[Math.min(this.cellIndex, cells.length - 1)]
-        if (!cell) return false
+        if (!cell || isDangerCell(cell)) return false
         press(cell)
         return true
       }
@@ -614,12 +632,20 @@ export class VimFormController {
     }
   }
 
-  /** dd, y, e…: the cursor's row's cell of that name. */
+  /** dd, y, e…: the cursor's row's cell of that name — for dd, the nearest
+   *  cell only it presses (a Remove, or one marked data-vim-danger). dd on
+   *  a danger button presses it. */
   private pressCell(name: string): boolean {
     const el = this.cursorEl()
-    if (!el || kindOf(el) !== 'row') return false
+    if (!el) return false
+    if (kindOf(el) !== 'row') {
+      if (name !== 'remove' || !el.hasAttribute('data-vim-danger') || kindOf(el) !== 'button') return false
+      press(el)
+      return true
+    }
     const cells = cellsOf(el)
-    const at = nearestCell(cells.map((c) => c.getAttribute('data-vim-cell') ?? ''), this.cellIndex, name)
+    const names = cells.map((c) => (name === 'remove' && isDangerCell(c) ? 'remove' : c.getAttribute('data-vim-cell') ?? ''))
+    const at = nearestCell(names, this.cellIndex, name)
     if (at < 0) return false
     this.cellIndex = at
     this.mark()
@@ -744,6 +770,24 @@ export function useVimForm({ enabled, root, scrollRoot, resetKey }: {
 /** Where the cursor is, for what shows it (the hint bar). */
 export function useVimFormSnapshot(form: VimFormController): VimFormSnapshot {
   return useSyncExternalStore(form.subscribe, form.getSnapshot)
+}
+
+/**
+ * A form's "there are unsaved changes" warning, which closing shows first.
+ * Once set it stays up until the form changes (`draft`, what Save would
+ * keep), however the change was made: a key, the mouse, typing. So a second
+ * close throws the changes away only when nothing changed since the
+ * warning, and an edit made after it gets a fresh warning.
+ */
+export function useCloseWarning(draft: string): [boolean, (on: boolean) => void] {
+  // The draft as it was when the warning went up.
+  const [warnedDraft, setWarnedDraft] = useState<string | null>(null)
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  // Changed since: down, in this render, before anything reads it.
+  if (warnedDraft !== null && warnedDraft !== draft) setWarnedDraft(null)
+  const setWarning = useCallback((on: boolean) => setWarnedDraft(on ? draftRef.current : null), [])
+  return [warnedDraft !== null && warnedDraft === draft, setWarning]
 }
 
 /** How many controls wear labels — all a form's owner needs to re-render
