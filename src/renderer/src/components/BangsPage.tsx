@@ -1,4 +1,4 @@
-// Bangs page (newbro://bangs) — the bang table behind `!w vim` in the address
+// Bangs page (vimperium://bangs) — the bang table behind `!w vim` in the address
 // bar (src/shared/bangs.ts), and the search engine plain queries go to. An
 // internal page like Downloads (lib/internal-pages.ts): WebviewPanel draws it
 // over the page area, and it takes the same keys — see KEY_HELP (`?`).
@@ -31,7 +31,7 @@ interface SortState {
 
 const SORT_KEYS: SortKey[] = ['category', 'trigger', 'name']
 const SORT_LABELS: Record<SortKey, string> = { category: 'Category', trigger: 'Trigger', name: 'Name' }
-const SORT_STORAGE_KEY = 'newbro-bangs-sort'
+const SORT_STORAGE_KEY = 'vimperium-bangs-sort'
 
 // How long the second `g` of `gg` may trail the first (same as Vim mode's).
 const GG_TIMEOUT_MS = 1000
@@ -40,8 +40,8 @@ const RESET_ARM_MS = 3000
 
 /** Events other parts of the app send the page: App routes find-in-page and
  *  reload here while the Bangs tab is active. */
-export const BANGS_FIND_EVENT = 'newbro-bangs-find'
-export const BANGS_RELOAD_EVENT = 'newbro-bangs-reload'
+export const BANGS_FIND_EVENT = 'vimperium-bangs-find'
+export const BANGS_RELOAD_EVENT = 'vimperium-bangs-reload'
 
 const KEY_HELP: Array<[string, string]> = [
   ['j / k, ↓ / ↑', 'Move through the list'],
@@ -1004,11 +1004,11 @@ function BangEditor({
           <input
             value={draft.category}
             onChange={(e) => setDraft({ ...draft, category: e.target.value })}
-            list="newbro-bang-categories"
+            list="vimperium-bang-categories"
             placeholder="Other"
             className={field}
           />
-          <datalist id="newbro-bang-categories">
+          <datalist id="vimperium-bang-categories">
             {categories.map((c) => <option key={c} value={c} />)}
           </datalist>
         </label>

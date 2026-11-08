@@ -87,7 +87,7 @@ export function CertificatePopup({ open, url, security, onClose }: Props) {
     // ignore parse errors
   }
 
-  const title = hostname ? `Certificate - ${hostname}` : 'Certificate - Newbro'
+  const title = hostname ? `Certificate - ${hostname}` : 'Certificate - Vimperium'
 
   return (
     <DetachedWindow open={open} title={title} width={430} height={620} onClose={onClose}>

@@ -479,7 +479,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   return (
     <DetachedWindow
       open
-      title="Edit Address - Newbro"
+      title="Edit Address - Vimperium"
       width={size.width}
       height={HEIGHT}
       resizable={false}

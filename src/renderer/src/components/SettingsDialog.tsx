@@ -11,10 +11,21 @@ import { LIGHT_VARIANTS, DARK_VARIANTS, DENSITIES, normalizeLightVariant, normal
 import { VIM_INDICATORS, DEFAULT_VIM_INDICATOR, normalizeVimIndicator, type VimIndicator } from '../lib/vim-indicator'
 import { VimModeBadge } from './VimModeBadge'
 import { ModeEdge } from './ModeEdge'
-import { BADGE_URL } from '../lib/brand-badge'
+import { BrandMark } from './BrandMark'
 import { VIM_EDGES, DEFAULT_VIM_EDGE, DEFAULT_VIM_EDGE_EVERYWHERE, normalizeVimEdge, type VimEdge } from '../lib/vim-edge'
 import { useAppStore } from '../store/app-store'
-import { DEFAULT_VIM_KEYMAP, parseVimKeymap } from '../lib/vim-keymap'
+import { DEFAULT_VIM_KEYMAP, parseVimKeymap, settingsKeymap, settingsCommandLabel, settingsCommandsInOrder, type ParsedVimKeymap, type VimKeymap } from '../lib/vim-keymap'
+import { usePopupVimMode, type VimMode } from '../lib/vim-mode'
+import { hintIndex, usePopupHints } from '../lib/hint-labels'
+import { VimFormContext, stepIndex, useVimForm, useVimFormLabelCount, useVimFormSnapshot, type VimFormController } from '../lib/vim-form'
+import { SETTINGS_SECTIONS, filterSettingsIndex, settingsIndex, settingsSectionLabel, type SettingsIndexEntry, type SettingsSection } from '../lib/settings-index'
+import { cn } from '../lib/utils'
+import { InputField } from './InputField'
+import { Hint, HintBar, vimKeyCaps, vimKeyCapsAll } from './KeyHints'
+import { VimFormCursorHints, VimFormLabels } from './VimForm'
+import { VimSelect } from './VimSelect'
+import { Segmented } from './Segmented'
+import { Switch } from './Switch'
 import { ACTION_LABELS } from '../lib/action-labels'
 import { SEARCH_ENGINES } from '../../../shared/search-engines'
 import { BANGS_URL } from '../lib/internal-pages'
@@ -40,7 +51,8 @@ interface Settings {
   newTabFocus: 'site' | 'url'
   showTabNumbers: boolean
   vimMode: boolean
-  sidebarAutoHide: boolean
+  /** INSERT in a page hides the Sidebar; COMMAND brings it back. */
+  hideSidebarInInsert: boolean
   vimIndicator: VimIndicator
   vimEdge: VimEdge
   vimEdgeEverywhere: boolean
@@ -146,8 +158,47 @@ const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'add-to-bookshelf': [],
   'toggle-bookshelf': ['CmdOrCtrl+Shift+B'],
   'open-downloads': ['CmdOrCtrl+J'],
+  // Settings lists it (ACTION_LABELS), so a shortcut recorded for it must
+  // survive the filter too.
+  'open-bangs': [],
   'dark-pages': ['Alt+Shift+D'],
   'dark-pages-site': ['Alt+Shift+A'],
+  // The rest of the app's commands ship unbound; listed so a recorded
+  // shortcut survives (main's table has the same keys).
+  'new-group': [],
+  'close-group': [],
+  'add-to-new-group': [],
+  'ungroup-tab': [],
+  'ungroup-all-tabs': [],
+  'expand-all-groups': [],
+  'collapse-all-groups': [],
+  'rename-workspace': [],
+  'close-workspace': [],
+  'delete-workspace': [],
+  'import-workspaces': [],
+  'export-workspaces': [],
+  'workspace-menu': [],
+  'new-profile': [],
+  'rename-profile': [],
+  'delete-profile': [],
+  'profile-menu': [],
+  'app-menu': [],
+  'extensions-menu': [],
+  'manage-extensions': [],
+  'site-info': [],
+  'dark-pages-menu': [],
+  'dark-pages-settings': [],
+  'chrome-hints': [],
+  'zoom-in': [],
+  'zoom-out': [],
+  'zoom-reset': [],
+  'check-updates': [],
+  'install-update': [],
+  about: [],
+  'minimize-window': [],
+  'maximize-window': [],
+  'restore-window': [],
+  quit: [],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -177,6 +228,9 @@ interface Props {
   onAppearancePreview?: (preview: AppearancePreview) => void
   /** Versioned request to switch panes. See {@link SettingsTabRequest}. */
   tabRequest?: SettingsTabRequest | null
+  /** The window's parsed Vim keymap while Vim mode is on (as saved, not as
+   *  the switch here has it); null gives Settings no Vim keys. */
+  vimKeymap?: ParsedVimKeymap | null
 }
 
 function originHost(origin: string): string {
@@ -293,8 +347,25 @@ function formatAccelerator(accel: string): React.ReactNode {
   )
 }
 
-export type SettingsTab = 'general' | 'appearance' | 'darkPages' | 'passwords' | 'network' | 'enterprise' | 'shortcuts' | 'extensions' | 'permissions' | 'sync' | 'about'
+export type SettingsTab = SettingsSection
 type Tab = SettingsTab
+
+const SECTION_ICONS: Record<SettingsSection, LucideIcon> = {
+  general: SlidersHorizontal,
+  appearance: Palette,
+  darkPages: Moon,
+  passwords: KeyRound,
+  network: Wifi,
+  enterprise: Building2,
+  shortcuts: Keyboard,
+  extensions: Puzzle,
+  permissions: ShieldCheck,
+  sync: Cloud,
+  about: Info,
+}
+
+/** The search engine segment's Custom choice (an address of one's own). */
+const CUSTOM_ENGINE = '\u0000custom'
 
 /** Order + labels for the Cloud Sync category checkboxes. */
 const SYNC_CATEGORY_LABELS: { id: SyncCategory; label: string; hint: string }[] = [
@@ -319,7 +390,7 @@ function syncStatusLabel(info: CloudSyncInfo | null): string {
  * Versioned request from the parent to switch to a specific tab. The
  * version bump is what fires the effect — re-issuing the same tab after a
  * dismiss-and-reopen still triggers a switch. Used by the macOS app menu
- * "About Newbro" entry to deep-link into the About pane.
+ * "About Vimperium" entry to deep-link into the About pane.
  */
 export interface SettingsTabRequest {
   tab: SettingsTab
@@ -435,7 +506,7 @@ function findBindingConflict(
   return null
 }
 
-export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePreview, tabRequest }: Props) {
+export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePreview, tabRequest, vimKeymap }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>(() => tabRequest?.tab ?? 'general')
 
   // Switch to the parent-requested tab whenever a fresh request arrives —
@@ -451,7 +522,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [newTabFocus, setNewTabFocus] = useState<'site' | 'url'>('site')
   const [showTabNumbers, setShowTabNumbers] = useState(true)
   const [vimMode, setVimMode] = useState(false)
-  const [sidebarAutoHide, setSidebarAutoHide] = useState(false)
+  const [hideSidebarInInsert, setHideSidebarInInsert] = useState(false)
   const [vimIndicator, setVimIndicator] = useState<VimIndicator>(DEFAULT_VIM_INDICATOR)
   const [vimEdge, setVimEdge] = useState<VimEdge>(DEFAULT_VIM_EDGE)
   const [vimEdgeEverywhere, setVimEdgeEverywhere] = useState(DEFAULT_VIM_EDGE_EVERYWHERE)
@@ -479,7 +550,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
   const [passwordEntries, setPasswordEntries] = useState<PasswordEntryInfo[]>([])
-  // Passkeys exist only on macOS, where Newbro is its own authenticator.
+  // Passkeys exist only on macOS, where Vimperium is its own authenticator.
   const passkeysSupported = navigator.platform.includes('Mac')
   const [passkeys, setPasskeys] = useState<PasskeyInfo[]>([])
   const [passkeyToRemove, setPasskeyToRemove] = useState<PasskeyInfo | null>(null)
@@ -522,6 +593,16 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [conflictError, setConflictError] = useState<string | null>(null)
   const [shortcutFilter, setShortcutFilter] = useState('')
   const [hostWindow, setHostWindow] = useState<Window | null>(null)
+  // Vim mode's keys (further down): what Save would keep as Settings
+  // opened, the filter, the hint bar's states, and the form's elements.
+  const [baselineTick, setBaselineTick] = useState(0)
+  const [filterQuery, setFilterQuery] = useState('')
+  const [filterActive, setFilterActive] = useState(false)
+  const [filterSelected, setFilterSelected] = useState(0)
+  const [closeWarning, setCloseWarning] = useState(false)
+  const [showAllKeys, setShowAllKeys] = useState(false)
+  const [formRoot, setFormRoot] = useState<HTMLDivElement | null>(null)
+  const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null)
   const [syncRestartConfirmOpen, setSyncRestartConfirmOpen] = useState(false)
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false)
   const [appVersion, setAppVersion] = useState<string>('')
@@ -541,7 +622,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const edgeDirectPasswordCount = Math.max(0, (edgeSource?.passwordCount || 0) - edgeAppBoundPasswordCount)
   const [defaultBrowserBusy, setDefaultBrowserBusy] = useState(false)
   // Set after the user clicks "Make default" on Windows — the OS pane has
-  // been opened and we want to remind them to actually pick Newbro there
+  // been opened and we want to remind them to actually pick Vimperium there
   // until the next status refresh confirms the change took effect.
   const [defaultBrowserSystemPaneOpened, setDefaultBrowserSystemPaneOpened] = useState(false)
   // The browser the Open Link picker's ⌘↵ / Ctrl+Enter passes links on to —
@@ -591,7 +672,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setTestNotice({
         ok: true,
         text: result.unconfirmed
-          ? 'Sent. If nothing appeared, check Focus assist / Do not disturb and that Newbro is allowed in Windows notification settings.'
+          ? 'Sent. If nothing appeared, check Focus assist / Do not disturb and that Vimperium is allowed in Windows notification settings.'
           : 'Shown — look at the corner of the screen or the notification center.',
       })
     }
@@ -618,7 +699,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // refresh whenever the popup regains focus. macOS shows a system prompt
   // that we can't observe directly — refreshing on focus catches the user
   // returning to the app after accepting it. Same idea for Windows after the
-  // user picks Newbro in Settings → Default Apps and Cmd/Alt-Tabs back.
+  // user picks Vimperium in Settings → Default Apps and Cmd/Alt-Tabs back.
   useEffect(() => {
     if (!open) return
     const api = (window as any).electronAPI
@@ -667,7 +748,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setDefaultBrowserSystemPaneOpened(!!result?.openedSystemPane)
       // setAsDefaultProtocolClient returns synchronously, but on macOS the
       // OS prompt shown to the user is asynchronous — the actual default
-      // doesn't change until they click "Use Newbro". Re-poll a few times
+      // doesn't change until they click "Use Vimperium". Re-poll a few times
       // so the UI updates without requiring a manual focus/refresh.
       const delays = [800, 2000, 5000]
       for (const delay of delays) {
@@ -733,7 +814,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
   // Record an extension shortcut: the next key combination (Escape
   // cancels). Like Chrome, it must use Ctrl or Alt, and may not take a
-  // combination Newbro or another extension already uses.
+  // combination Vimperium or another extension already uses.
   useEffect(() => {
     if (!recordingCommand || !hostWindow) return
     const { extensionId, command } = recordingCommand
@@ -757,7 +838,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       const pretty = accel.replace(/CmdOrCtrl/g, navigator.platform.includes('Mac') ? '⌘' : 'Ctrl')
       const appAction = Object.entries(keybindings).find(([, list]) => list.includes(accel))?.[0]
       if (appAction) {
-        fail(`${pretty} is already used by Newbro (“${ACTION_LABELS[appAction] ?? appAction}”).`)
+        fail(`${pretty} is already used by Vimperium (“${ACTION_LABELS[appAction] ?? appAction}”).`)
         return
       }
       for (const [otherId, commands] of Object.entries(extCommands)) {
@@ -840,7 +921,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setNewTabFocus(settings.newTabFocus === 'url' ? 'url' : 'site')
       setShowTabNumbers(settings.showTabNumbers !== false)
       setVimMode(settings.vimMode === true)
-      setSidebarAutoHide(settings.sidebarAutoHide === true)
+      setHideSidebarInInsert(settings.hideSidebarInInsert === true)
       setVimIndicator(indicator)
       setVimEdge(edge)
       setVimEdgeEverywhere(edgeEverywhere)
@@ -867,6 +948,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
         ...buildDefaultPermissionDefaults(),
         ...(settings.permissionDefaults || {}),
       })
+      // What Save would keep now is what there is to lose (below).
+      setBaselineTick((tick) => tick + 1)
     }
   }, [open, settings])
 
@@ -874,7 +957,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // refresh on open) so the list reflects decisions made since last view.
   useEffect(() => {
     if (!open || activeTab !== 'permissions') return
-    window.electronAPI.permissionsList?.().then(setPermissionGrants).catch(() => {})
+    window.electronAPI.permissionsList?.().then(setPermissionGrants).catch((err) => {
+      console.warn('SettingsDialog: site permissions load failed', String(err))
+    })
   }, [open, activeTab])
 
   // Passwords are scoped to a browser profile, just like cookies and login
@@ -918,7 +1003,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     setEdgeDetecting(true)
     window.electronAPI.edgePasswordsDetect()
       .then((source) => { if (!cancelled) setEdgeSource(source) })
-      .catch(() => { if (!cancelled) setEdgeSource(null) })
+      .catch((err) => {
+        console.warn('SettingsDialog: looking for Edge passwords failed', String(err))
+        if (!cancelled) setEdgeSource(null)
+      })
       .finally(() => { if (!cancelled) setEdgeDetecting(false) })
     return () => { cancelled = true }
   }, [open, activeTab])
@@ -927,7 +1015,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // their own store and never sync). Passwords are never returned — metadata only.
   useEffect(() => {
     if (!open || activeTab !== 'enterprise') return
-    window.electronAPI.savedCredentialsList?.().then(setSavedCredentials).catch(() => {})
+    window.electronAPI.savedCredentialsList?.().then(setSavedCredentials).catch((err) => {
+      console.warn('SettingsDialog: saved sign-ins load failed', String(err))
+    })
   }, [open, activeTab])
 
   // ── Cloud sync (synced-folder) ──
@@ -936,45 +1026,65 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // (a background sync, or a change from another window).
   useEffect(() => {
     if (!open) return
-    window.electronAPI.cloudSyncGetInfo?.().then((i) => setSyncInfo(i)).catch(() => {})
+    window.electronAPI.cloudSyncGetInfo?.().then((i) => setSyncInfo(i)).catch((err) => {
+      console.warn('SettingsDialog: cloud sync info load failed', String(err))
+    })
     const cleanup = window.electronAPI.onCloudSyncStatus?.((i) => setSyncInfo(i))
     return cleanup
   }, [open])
 
   const chooseSyncFolder = useCallback(() => {
-    window.electronAPI.cloudSyncSetFolder?.().then(setSyncInfo).catch(() => {})
+    window.electronAPI.cloudSyncSetFolder?.().then(setSyncInfo).catch((err) => {
+      console.warn('SettingsDialog: choosing the sync folder failed', String(err))
+    })
   }, [])
   const setSyncEnabled = useCallback((enabled: boolean) => {
-    window.electronAPI.cloudSyncSetEnabled?.(enabled).then(setSyncInfo).catch(() => {})
+    window.electronAPI.cloudSyncSetEnabled?.(enabled).then(setSyncInfo).catch((err) => {
+      console.warn('SettingsDialog: switching cloud sync failed', { enabled, err: String(err) })
+    })
   }, [])
   const toggleSyncCategory = useCallback((cat: SyncCategory, on: boolean) => {
-    window.electronAPI.cloudSyncSetCategories?.({ [cat]: on }).then(setSyncInfo).catch(() => {})
+    window.electronAPI.cloudSyncSetCategories?.({ [cat]: on }).then(setSyncInfo).catch((err) => {
+      console.warn('SettingsDialog: changing what syncs failed', { cat, on, err: String(err) })
+    })
   }, [])
   const runSyncNow = useCallback(() => {
-    window.electronAPI.cloudSyncNow?.().then(setSyncInfo).catch(() => {})
+    window.electronAPI.cloudSyncNow?.().then(setSyncInfo).catch((err) => {
+      console.warn('SettingsDialog: sync now failed', String(err))
+    })
   }, [])
   const restartSyncSetup = useCallback(() => {
     setSyncRestartConfirmOpen(false)
-    window.electronAPI.cloudSyncRestartSetup?.().then(setSyncInfo).catch(() => {})
+    window.electronAPI.cloudSyncRestartSetup?.().then(setSyncInfo).catch((err) => {
+      console.warn('SettingsDialog: restarting cloud sync setup failed', String(err))
+    })
   }, [])
 
   const clearPermissionGrant = useCallback((grant: PermissionGrant) => {
     window.electronAPI
       .permissionsClear?.(grant.partition, grant.origin, grant.kind)
       .then(setPermissionGrants)
-      .catch(() => {})
+      .catch((err) => {
+        console.warn('SettingsDialog: removing a site permission failed', { origin: grant.origin, kind: grant.kind, err: String(err) })
+      })
   }, [])
 
   const clearAllPermissionGrants = useCallback(() => {
-    window.electronAPI.permissionsClearAll?.().then(setPermissionGrants).catch(() => {})
+    window.electronAPI.permissionsClearAll?.().then(setPermissionGrants).catch((err) => {
+      console.warn('SettingsDialog: clearing site permissions failed', String(err))
+    })
   }, [])
 
   const removeSavedCredential = useCallback((host: string) => {
-    window.electronAPI.savedCredentialDelete?.(host).then(setSavedCredentials).catch(() => {})
+    window.electronAPI.savedCredentialDelete?.(host).then(setSavedCredentials).catch((err) => {
+      console.warn('SettingsDialog: removing a saved sign-in failed', { host, err: String(err) })
+    })
   }, [])
 
   const clearAllSavedCredentials = useCallback(() => {
-    window.electronAPI.savedCredentialsClearAll?.().then(setSavedCredentials).catch(() => {})
+    window.electronAPI.savedCredentialsClearAll?.().then(setSavedCredentials).catch((err) => {
+      console.warn('SettingsDialog: clearing saved sign-ins failed', String(err))
+    })
   }, [])
 
   const handlePasswordProfileChange = useCallback((partition: string) => {
@@ -1190,7 +1300,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     // Settings renders into its own window; its document holds the focus.
     const focused = event.currentTarget.ownerDocument.activeElement
     const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-password-item]'))
-    const at = items.findIndex((item) => focused instanceof Node && item.contains(focused))
+    // Not instanceof Node: the popup's nodes are of its realm, not this one's.
+    const at = items.findIndex((item) => !!focused && item.contains(focused))
     if (at === -1) return
     const next = items[at + (event.key === 'ArrowDown' ? 1 : -1)]
     const row = next?.querySelector<HTMLElement>('[data-password-row]')
@@ -1230,7 +1341,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     window.electronAPI
       .permissionsSet?.(partition, origin, addSiteKind, addSiteDecision)
       .then(setPermissionGrants)
-      .catch(() => {})
+      .catch((err) => {
+        console.warn('SettingsDialog: adding a site permission failed', { origin, kind: addSiteKind, err: String(err) })
+      })
     setAddSiteOrigin('')
   }, [addSitePartition, profiles, addSiteOrigin, addSiteKind, addSiteDecision])
 
@@ -1326,14 +1439,15 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     )
   }, [])
 
-  const handleSave = () => {
+  /** What Save keeps. */
+  const buildDraft = (): Settings => {
     const normalizedProxy: ProxySettings = {
       ...proxy,
       proxyRules: proxy.proxyRules.trim(),
       proxyBypassRules: proxy.proxyBypassRules.trim() || '<-loopback>',
     }
 
-    onSave({
+    return {
       theme,
       lightVariant,
       darkVariant,
@@ -1341,7 +1455,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       newTabFocus,
       showTabNumbers,
       vimMode,
-      sidebarAutoHide,
+      hideSidebarInInsert,
       vimIndicator,
       vimEdge,
       vimEdgeEverywhere,
@@ -1361,7 +1475,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       },
       keybindings: normalizeKnownKeybindings(keybindings),
       permissionDefaults,
-    })
+    }
+  }
+
+  const handleSave = () => {
+    onSave(buildDraft())
     onClose()
   }
 
@@ -1385,6 +1503,219 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     window.electronAPI.wipeAllData()
   }
 
+  // ── Vim mode's keys ──
+  // Settings has a COMMAND / INSERT of its own while Vim mode is on — as
+  // saved: the switch under Keyboard Shortcuts takes effect on Save. It
+  // opens in COMMAND, a cursor on the section's first setting: j / k walk
+  // the settings, h / l change the one under the cursor, Enter or Space
+  // presses it, J / K go through the sections, a setting's two-letter label
+  // goes to it, / finds a setting in any section (lib/vim-keymap.ts has the
+  // keys, lib/vim-form.ts the cursor). A text field taking the keyboard is
+  // INSERT; Esc comes back to COMMAND. Esc in COMMAND steps back out: an
+  // open list or the filter's results close, then Settings — asking once
+  // first while there are changes Save would keep. ZZ saves, ZQ throws the
+  // changes away. Out of Vim mode it's a form like any other, Tab going
+  // round it, a ring on what has the keyboard.
+  const settingsVimKeymap = useMemo(() => (vimKeymap ? settingsKeymap(vimKeymap) : null), [vimKeymap])
+  const vimNav = settingsVimKeymap !== null
+  const form = useVimForm({ enabled: vimNav, root: formRoot, scrollRoot: contentEl, resetKey: activeTab })
+  const labelCount = useVimFormLabelCount(form)
+  const hints = usePopupHints(settingsVimKeymap, labelCount)
+  const filterRef = useRef<HTMLInputElement>(null)
+  const filterBoxRef = useRef<HTMLDivElement>(null)
+  const filterListRef = useRef<HTMLDivElement>(null)
+  const recordingCommandRef = useRef(recordingCommand)
+  recordingCommandRef.current = recordingCommand
+
+  // Changes Save would keep: what it would save now against what it would
+  // have saved as the settings came in.
+  const draftJson = JSON.stringify(buildDraft())
+  const baselineRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (baselineTick > 0) baselineRef.current = draftJson
+    // Only as the settings come in, when the draft is all theirs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baselineTick])
+  const unsaved = baselineRef.current !== null && baselineRef.current !== draftJson
+
+  useEffect(() => {
+    if (open) return
+    baselineRef.current = null
+    setCloseWarning(false)
+    setShowAllKeys(false)
+    setFilterQuery('')
+    setFilterActive(false)
+  }, [open])
+
+  // Finding a setting (/): a static index, as only the section shown is
+  // rendered (lib/settings-index.ts).
+  const indexEntries = useMemo(
+    () => settingsIndex({ vimMode, otherBrowser: otherBrowserSupported }),
+    [vimMode, otherBrowserSupported],
+  )
+  const filterResults = useMemo(() => filterSettingsIndex(filterQuery, indexEntries).slice(0, 12), [filterQuery, indexEntries])
+  const filterShown = filterActive && filterQuery.trim() !== ''
+  useEffect(() => { setFilterSelected(0) }, [filterQuery])
+  useEffect(() => {
+    filterListRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
+  }, [filterSelected, filterShown])
+
+  const closeFilter = useCallback(() => {
+    setFilterQuery('')
+    setFilterActive(false)
+    filterRef.current?.blur()
+  }, [])
+
+  const openFilter = (): void => {
+    setFilterActive(true)
+    const input = filterRef.current
+    if (!input) return
+    input.focus()
+    input.select()
+  }
+
+  const pickFilterResult = (entry: SettingsIndexEntry): void => {
+    // Asked for first, so the section's first look puts the cursor there.
+    form.requestCursor(entry.item, entry.fallback)
+    setActiveTab(entry.section)
+    closeFilter()
+  }
+
+  const stepFilterSelection = (delta: number): void => {
+    setFilterSelected((at) => Math.max(0, stepIndex(at, filterResults.length, delta, false)))
+  }
+
+  const onFilterKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      stepFilterSelection(e.key === 'ArrowDown' ? 1 : -1)
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      const entry = filterResults[filterSelected]
+      if (entry) pickFilterResult(entry)
+    } else if (e.key === 'Escape' && filterQuery) {
+      // Out of Vim mode (in it, Esc never gets here: it leaves INSERT):
+      // the first Esc clears the filter rather than closing Settings.
+      e.preventDefault()
+      e.stopPropagation()
+      setFilterQuery('')
+    }
+  }
+
+  // In COMMAND, the results take j / k and Enter while they're up.
+  const filterStateRef = useRef({ results: filterResults, selected: filterSelected, pick: pickFilterResult })
+  filterStateRef.current = { results: filterResults, selected: filterSelected, pick: pickFilterResult }
+  useEffect(() => {
+    if (!vimNav || !filterShown) return
+    return form.openOverlay({
+      command: (command) => {
+        const { results, selected, pick } = filterStateRef.current
+        const step = (delta: number): void => setFilterSelected((at) => Math.max(0, stepIndex(at, results.length, delta, false)))
+        switch (command) {
+          case 'cursor-down': step(1); break
+          case 'cursor-up': step(-1); break
+          case 'cursor-first': setFilterSelected(0); break
+          case 'cursor-last': setFilterSelected(Math.max(0, results.length - 1)); break
+          case 'activate':
+          case 'toggle': {
+            const entry = results[selected]
+            if (entry) pick(entry)
+            break
+          }
+          case 'insert-mode': filterRef.current?.focus(); break
+        }
+        return true
+      },
+      escape: closeFilter,
+    })
+  }, [vimNav, filterShown, form, closeFilter])
+
+  // A press anywhere else puts the results away.
+  useEffect(() => {
+    if (!filterShown || !hostWindow) return
+    const doc = hostWindow.document
+    const onPress = (e: MouseEvent): void => {
+      if (!filterBoxRef.current?.contains(e.target as Node | null)) setFilterActive(false)
+    }
+    doc.addEventListener('mousedown', onPress, true)
+    return () => doc.removeEventListener('mousedown', onPress, true)
+  }, [filterShown, hostWindow])
+
+  // A confirmation is a window of its own: once it's gone, Settings takes
+  // the keyboard back, rather than whichever window the OS picks next.
+  const confirmOpen = syncRestartConfirmOpen || edgeImportConfirmOpen || passwordClearConfirmOpen || passkeyToRemove !== null || wipeConfirmOpen
+  const confirmWasOpenRef = useRef(confirmOpen)
+  useEffect(() => {
+    const wasOpen = confirmWasOpenRef.current
+    confirmWasOpenRef.current = confirmOpen
+    if (!wasOpen || confirmOpen || !open || !hostWindow) return
+    const t = setTimeout(() => { if (!hostWindow.closed) hostWindow.focus() }, 50)
+    return () => clearTimeout(t)
+  }, [confirmOpen, open, hostWindow])
+
+  const switchSection = (delta: number): void => {
+    const order = SETTINGS_SECTIONS.map((section) => section.id)
+    setActiveTab(order[stepIndex(order.indexOf(activeTab), order.length, delta, true)])
+  }
+
+  /** Closing, as Esc or , does: once there are changes Save would keep, it
+   *  asks first (the hint bar), and closing again throws them away. */
+  const requestClose = (): void => {
+    if (unsaved && !closeWarning) {
+      setCloseWarning(true)
+      return
+    }
+    handleCancel()
+  }
+
+  const runSettingsCommand = (command: string): void => {
+    const hinted = hintIndex(command)
+    if (command !== 'close') setCloseWarning(false)
+    if (hinted !== null) {
+      if (!form.getSnapshot().overlayOpen) form.pickLabel(hinted)
+      return
+    }
+    switch (command) {
+      case 'save': handleSave(); return
+      case 'discard': handleCancel(); return
+      case 'close': requestClose(); return
+      case 'help': setShowAllKeys((shown) => !shown); return
+      case 'filter': openFilter(); return
+      case 'section-next':
+      case 'section-prev':
+        if (filterShown) closeFilter()
+        switchSection(command === 'section-next' ? 1 : -1)
+        return
+    }
+    form.run(command)
+  }
+
+  const escapeSettings = (): void => {
+    if (form.escapeOverlay()) return
+    if (filterActive || filterQuery) {
+      closeFilter()
+      return
+    }
+    if (showAllKeys) {
+      setShowAllKeys(false)
+      return
+    }
+    requestClose()
+  }
+
+  const vim = usePopupVimMode({
+    keymap: hints.keymap,
+    popup: hostWindow,
+    box: filterRef,
+    initial: 'command',
+    open,
+    anyField: true,
+    // A shortcut being recorded takes the next keys, whatever they are.
+    passThrough: () => recordingRef.current !== null || recordingCommandRef.current !== null,
+    onCommand: runSettingsCommand,
+    onEscape: escapeSettings,
+  })
+
   const canRestartSyncSetup = !!syncInfo
     && syncInfo.state !== 'syncing'
     && (syncInfo.enabled || !!syncInfo.folderPath || !!syncInfo.lastSync)
@@ -1394,22 +1725,76 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   return (
     <DetachedWindow
       open={open}
-      title="Settings - Newbro"
+      title="Settings - Vimperium"
       width={920}
       height={720}
+      // In Vim mode Esc steps back out (escapeSettings) instead.
+      closeOnEscape={!vimNav}
       onClose={handleCancel}
       onWindowChange={setHostWindow}
     >
-      <div className="h-full bg-card text-card-foreground flex flex-col overflow-hidden">
-        {/* Header */}
+      <VimFormContext.Provider value={vimNav ? form : null}>
+      <div data-vim-form className="h-full bg-card text-card-foreground flex flex-col overflow-hidden">
+        {/* Header: the title, the filter that finds a setting, close */}
         <div
           data-detached-drag-handle
-          className="flex items-center justify-between px-6 py-4 border-b border-border"
+          className="flex items-center gap-4 px-6 py-3 border-b border-border"
         >
-          <h2 className="text-base font-semibold text-foreground">Settings</h2>
+          <h2 className="text-base font-semibold text-foreground shrink-0">Settings</h2>
+          <div ref={filterBoxRef} data-detached-no-drag className="relative ml-auto w-80">
+            <InputField inputRef={filterRef} mode={vim.mode} pending={vim.pending} className="h-9">
+              <Search size={14} className="shrink-0 text-muted-foreground" />
+              <input
+                ref={filterRef}
+                type="text"
+                value={filterQuery}
+                onChange={(e) => { setFilterQuery(e.target.value); setFilterActive(true) }}
+                onFocus={() => setFilterActive(true)}
+                // In Vim mode the results stay for COMMAND's keys.
+                onBlur={() => { if (!vimNav) setFilterActive(false) }}
+                onKeyDown={onFilterKeyDown}
+                spellCheck={false}
+                aria-label="Find a setting"
+                placeholder={vim.mode === 'command' && vimKeyCaps(settingsVimKeymap, 'filter')[0]
+                  ? `Find a setting… (${vimKeyCaps(settingsVimKeymap, 'filter')[0]} to type)`
+                  : 'Find a setting…'}
+                className="flex-1 min-w-0 h-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
+              />
+            </InputField>
+            {filterShown && (
+              <div
+                ref={filterListRef}
+                role="listbox"
+                aria-label="Settings found"
+                // The filter keeps the keyboard while a result is pressed.
+                onMouseDown={(e) => e.preventDefault()}
+                className="absolute right-0 top-full z-50 mt-1.5 max-h-[360px] w-[440px] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+              >
+                {filterResults.length === 0 ? (
+                  <div className="px-2.5 py-2 text-xs text-muted-foreground">No settings match</div>
+                ) : filterResults.map((entry, i) => (
+                  <div
+                    key={entry.item}
+                    role="option"
+                    aria-selected={i === filterSelected}
+                    onMouseEnter={() => setFilterSelected(i)}
+                    onClick={() => pickFilterResult(entry)}
+                    className={cn(
+                      'flex h-8 cursor-default select-none items-center gap-1.5 rounded-md px-2.5 text-xs',
+                      i === filterSelected && 'bg-accent text-accent-foreground',
+                    )}
+                  >
+                    <span className="shrink-0 text-muted-foreground">{settingsSectionLabel(entry.section)} ›</span>
+                    <span className="truncate text-foreground">{entry.title}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             data-detached-no-drag
             onClick={handleCancel}
+            aria-label="Close Settings"
             className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
           >
             <X size={16} />
@@ -1417,58 +1802,40 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
         </div>
 
         {/* Body: sidebar + content */}
-        <div className="flex-1 min-h-0 flex">
+        <div ref={setFormRoot} className="flex-1 min-h-0 flex">
           {/* Sidebar — top group for the main panes, About pinned to the
-              bottom under a separator (Edge / runwa-style). */}
+              bottom under a separator (Edge / runwa-style). Labels reach
+              each, j / k don't: J / K go through them. */}
           <aside className="w-52 bg-card border-r border-border p-3 flex flex-col shrink-0">
-            <nav className="flex flex-col gap-1">
-              {(
-                [
-                  { id: 'general', label: 'General', icon: SlidersHorizontal },
-                  { id: 'appearance', label: 'Appearance', icon: Palette },
-                  { id: 'darkPages', label: 'Dark pages', icon: Moon },
-                  { id: 'passwords', label: 'Passwords', icon: KeyRound },
-                  { id: 'network', label: 'Network', icon: Wifi },
-                  { id: 'enterprise', label: 'Enterprise', icon: Building2 },
-                  { id: 'shortcuts', label: 'Keyboard Shortcuts', icon: Keyboard },
-                  { id: 'extensions', label: 'Extensions', icon: Puzzle },
-                  { id: 'permissions', label: 'Site permissions', icon: ShieldCheck },
-                  { id: 'sync', label: 'Cloud Sync', icon: Cloud },
-                ] as { id: Tab; label: string; icon: LucideIcon }[]
-              ).map(({ id, label, icon: Icon }) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => setActiveTab(id)}
-                  className={`flex items-center gap-2 h-8 px-2 rounded-md text-sm text-left transition-colors ${
-                    activeTab === id
-                      ? 'bg-accent text-accent-foreground'
-                      : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
-                  }`}
-                >
-                  <Icon size={14} className="shrink-0" />
-                  <span className="truncate">{label}</span>
-                </button>
-              ))}
-            </nav>
-            <nav className="mt-auto pt-3 border-t border-border flex flex-col gap-1">
-              <button
-                type="button"
-                onClick={() => setActiveTab('about')}
-                className={`flex items-center gap-2 h-8 px-2 rounded-md text-sm text-left transition-colors ${
-                  activeTab === 'about'
-                    ? 'bg-accent text-accent-foreground'
-                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
-                }`}
-              >
-                <Info size={14} className="shrink-0" />
-                About
-              </button>
-            </nav>
+            {[SETTINGS_SECTIONS.filter((section) => section.id !== 'about'), SETTINGS_SECTIONS.filter((section) => section.id === 'about')].map((group, g) => (
+              <nav key={g} className={cn('flex flex-col gap-1', g === 1 && 'mt-auto pt-3 border-t border-border')}>
+                {group.map(({ id, label }) => {
+                  const Icon = SECTION_ICONS[id]
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      data-vim-item={`nav:${id}`}
+                      data-vim-nowalk
+                      aria-current={activeTab === id ? 'page' : undefined}
+                      onClick={() => setActiveTab(id)}
+                      className={`flex items-center gap-2 h-8 px-2 rounded-md text-sm text-left transition-colors ${
+                        activeTab === id
+                          ? 'bg-accent text-accent-foreground'
+                          : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                      }`}
+                    >
+                      <Icon size={14} className="shrink-0" />
+                      <span className="truncate">{label}</span>
+                    </button>
+                  )
+                })}
+              </nav>
+            ))}
           </aside>
 
           {/* Content */}
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
+          <div ref={setContentEl} className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
           {activeTab === 'appearance' && (
             <div className="space-y-8">
               {/* Theme */}
@@ -1477,26 +1844,17 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 <p className="text-[11px] text-muted-foreground mb-3">
                   Choose the overall family, then pick a brightness variant for each family.
                 </p>
-                <div className="flex gap-2">
-                  {([
-                    { value: 'system' as const, label: 'System', icon: Monitor },
-                    { value: 'light' as const, label: 'Light', icon: Sun },
-                    { value: 'dark' as const, label: 'Dark', icon: Moon },
-                  ]).map(({ value, label, icon: Icon }) => (
-                    <button
-                      key={value}
-                      onClick={() => { setTheme(value); previewAppearance({ theme: value }) }}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                        theme === value
-                          ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                      }`}
-                    >
-                      <Icon size={14} />
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                <Segmented
+                  label="Theme"
+                  vimItem="appearance:theme"
+                  value={theme}
+                  onChange={(value) => { setTheme(value); previewAppearance({ theme: value }) }}
+                  options={[
+                    { value: 'system', label: 'System', icon: Monitor },
+                    { value: 'light', label: 'Light', icon: Sun },
+                    { value: 'dark', label: 'Dark', icon: Moon },
+                  ]}
+                />
 
                 {/* Variant pickers — show only the family the current theme
                     can actually render. On 'system' we show both so the
@@ -1507,21 +1865,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       <Sun size={11} />
                       Light variant
                     </div>
-                    <div className="flex gap-2 flex-wrap">
-                      {LIGHT_VARIANTS.map((v) => (
-                        <button
-                          key={v.id}
-                          onClick={() => { setLightVariant(v.id); previewAppearance({ lightVariant: v.id }) }}
-                          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                            lightVariant === v.id
-                              ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                              : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                          }`}
-                        >
-                          {v.label}
-                        </button>
-                      ))}
-                    </div>
+                    <Segmented
+                      label="Light variant"
+                      vimItem="appearance:light-variant"
+                      wrap
+                      value={lightVariant}
+                      onChange={(id) => { setLightVariant(id); previewAppearance({ lightVariant: id }) }}
+                      options={LIGHT_VARIANTS.map((v) => ({ value: v.id, label: v.label }))}
+                    />
                   </div>
                 )}
 
@@ -1531,21 +1882,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       <Moon size={11} />
                       Dark variant
                     </div>
-                    <div className="flex gap-2 flex-wrap">
-                      {DARK_VARIANTS.map((v) => (
-                        <button
-                          key={v.id}
-                          onClick={() => { setDarkVariant(v.id); previewAppearance({ darkVariant: v.id }) }}
-                          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                            darkVariant === v.id
-                              ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                              : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                          }`}
-                        >
-                          {v.label}
-                        </button>
-                      ))}
-                    </div>
+                    <Segmented
+                      label="Dark variant"
+                      vimItem="appearance:dark-variant"
+                      wrap
+                      value={darkVariant}
+                      onChange={(id) => { setDarkVariant(id); previewAppearance({ darkVariant: id }) }}
+                      options={DARK_VARIANTS.map((v) => ({ value: v.id, label: v.label }))}
+                    />
                   </div>
                 )}
               </div>
@@ -1556,22 +1900,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 <p className="text-[11px] text-muted-foreground mb-3">
                   Vertical breathing room between sidebar rows.
                 </p>
-                <div className="flex gap-2">
-                  {DENSITIES.map((d) => (
-                    <button
-                      key={d.id}
-                      onClick={() => { setDensity(d.id); previewAppearance({ density: d.id }) }}
-                      title={d.hint}
-                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                        density === d.id
-                          ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                      }`}
-                    >
-                      {d.label}
-                    </button>
-                  ))}
-                </div>
+                <Segmented
+                  label="Density"
+                  vimItem="appearance:density"
+                  value={density}
+                  onChange={(id) => { setDensity(id); previewAppearance({ density: id }) }}
+                  options={DENSITIES.map((d) => ({ value: d.id, label: d.label, title: d.hint }))}
+                />
               </div>
 
               {/* Vim mode's key cap — only while Vim mode is on. */}
@@ -1581,10 +1916,18 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <p className="text-[11px] text-muted-foreground mb-3">
                     How the mode's key cap — CMD, WEB, INS — shows the mode's colour.
                   </p>
-                  <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
+                  <div
+                    role="radiogroup"
+                    aria-label="Vim mode indicator"
+                    data-vim-item="appearance:vim-indicator"
+                    className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 rounded-lg"
+                  >
                     {VIM_INDICATORS.map((v) => (
                       <button
                         key={v.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={vimIndicator === v.id}
                         onClick={() => { setVimIndicator(v.id); previewAppearance({ vimIndicator: v.id }) }}
                         title={v.hint}
                         className={`flex flex-col items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors ${
@@ -1613,10 +1956,18 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     A light moving round the address bar's edge in the mode's colours — cool for
                     COMMAND, green for INSERT — fading from one to the other as the mode changes.
                   </p>
-                  <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
+                  <div
+                    role="radiogroup"
+                    aria-label="Vim mode edge"
+                    data-vim-item="appearance:vim-edge"
+                    className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2 rounded-lg"
+                  >
                     {VIM_EDGES.map((v) => (
                       <button
                         key={v.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={vimEdge === v.id}
                         onClick={() => { setVimEdge(v.id); previewAppearance({ vimEdge: v.id }) }}
                         title={v.hint}
                         className={`flex flex-col items-stretch gap-3 rounded-lg border px-3 pt-3.5 pb-2.5 text-left transition-colors ${
@@ -1635,13 +1986,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </button>
                     ))}
                   </div>
-                  <label className="mt-3 flex items-center gap-2 text-xs text-foreground cursor-pointer">
-                    <input
-                      type="checkbox"
+                  <label className="mt-3 flex items-center gap-2.5 text-xs text-foreground cursor-pointer">
+                    <Switch
+                      label="Vim mode edge on every field"
+                      vimItem="appearance:vim-edge-everywhere"
                       checked={vimEdgeEverywhere}
                       disabled={vimEdge === 'off'}
-                      onChange={(e) => { setVimEdgeEverywhere(e.target.checked); previewAppearance({ vimEdgeEverywhere: e.target.checked }) }}
-                      className="h-3.5 w-3.5 accent-primary"
+                      onChange={(on) => { setVimEdgeEverywhere(on); previewAppearance({ vimEdgeEverywhere: on }) }}
                     />
                     On every field that shows the mode too — Search Everything, the Command Palette,
                     Find, the address editor
@@ -1667,45 +2018,37 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 <div className="divide-y divide-border border-y border-border">
                   <label className="flex items-center justify-between gap-4 py-3 cursor-pointer">
                     <span>
-                      <span className="block text-sm text-foreground">Use Newbro password manager</span>
+                      <span className="block text-sm text-foreground">Use Vimperium password manager</span>
                       <span className="block text-[11px] text-muted-foreground mt-0.5">Enable filling and save prompts in website forms.</span>
                     </span>
-                    <input
-                      type="checkbox"
-                      checked={passwordManagerEnabled}
-                      onChange={(event) => setPasswordManagerEnabled(event.target.checked)}
-                      className="h-4 w-4 accent-primary shrink-0"
-                    />
+                    <Switch label="Use Vimperium password manager" vimItem="pw:enabled" checked={passwordManagerEnabled} onChange={setPasswordManagerEnabled} />
                   </label>
                   <label className={`flex items-center justify-between gap-4 py-3 ${passwordManagerEnabled ? 'cursor-pointer' : 'opacity-50'}`}>
                     <span>
                       <span className="block text-sm text-foreground">Offer to save passwords</span>
                       <span className="block text-[11px] text-muted-foreground mt-0.5">Ask after a website sign-in or password change.</span>
                     </span>
-                    <input
-                      type="checkbox"
-                      checked={passwordOfferToSave}
-                      disabled={!passwordManagerEnabled}
-                      onChange={(event) => setPasswordOfferToSave(event.target.checked)}
-                      className="h-4 w-4 accent-primary shrink-0"
-                    />
+                    <Switch label="Offer to save passwords" vimItem="pw:offer" checked={passwordOfferToSave} disabled={!passwordManagerEnabled} onChange={setPasswordOfferToSave} />
                   </label>
-                  <label className={`flex items-center justify-between gap-4 py-3 ${passwordManagerEnabled ? '' : 'opacity-50'}`}>
+                  <div className={`flex items-center justify-between gap-4 py-3 ${passwordManagerEnabled ? '' : 'opacity-50'}`}>
                     <span>
                       <span className="block text-sm text-foreground">Autofill behavior</span>
                       <span className="block text-[11px] text-muted-foreground mt-0.5">Exact website matches only.</span>
                     </span>
-                    <select
+                    <VimSelect
+                      label="Autofill behavior"
+                      vimItem="pw:autofill"
                       value={passwordAutofill}
                       disabled={!passwordManagerEnabled}
-                      onChange={(event) => setPasswordAutofill(event.target.value as 'automatic' | 'on-focus' | 'off')}
-                      className="h-8 px-2.5 text-xs field text-foreground rounded-lg outline-none shrink-0"
-                    >
-                      <option value="automatic">Fill automatically</option>
-                      <option value="on-focus">Choose on field focus</option>
-                      <option value="off">Never fill</option>
-                    </select>
-                  </label>
+                      onChange={setPasswordAutofill}
+                      options={[
+                        { value: 'automatic', label: 'Fill automatically' },
+                        { value: 'on-focus', label: 'Choose on field focus' },
+                        { value: 'off', label: 'Never fill' },
+                      ]}
+                      className="h-8 px-2.5 text-xs field rounded-lg shrink-0"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1715,15 +2058,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     <h3 className="text-sm font-semibold text-foreground mb-1">Saved passwords</h3>
                     <p className="text-[11px] text-muted-foreground">Each browser profile has its own password vault. Open an entry to see or copy its password.</p>
                   </div>
-                  <select
+                  <VimSelect
+                    label="Profile"
+                    vimItem="pw:profile"
                     value={passwordPartition}
-                    onChange={(event) => handlePasswordProfileChange(event.target.value)}
-                    className="h-8 max-w-52 px-2.5 text-xs field text-foreground rounded-lg outline-none"
-                  >
-                    {profiles.map((profile) => (
-                      <option key={profile.id} value={profile.partition}>{profile.name}</option>
-                    ))}
-                  </select>
+                    onChange={handlePasswordProfileChange}
+                    options={profiles.map((profile) => ({ value: profile.partition, label: profile.name }))}
+                    className="h-8 max-w-52 px-2.5 text-xs field rounded-lg"
+                  />
                 </div>
 
                 <div className="flex items-center gap-3 border-y border-border py-3 mb-3">
@@ -1754,6 +2096,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       {edgeDirectPasswordCount > 0 && (
                         <button
                           type="button"
+                          data-vim-item="pw:edge-import"
                           onClick={() => setEdgeImportConfirmOpen(true)}
                           disabled={!passwordPartition || edgeImporting}
                           className="flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"
@@ -1765,6 +2108,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       {edgeAppBoundPasswordCount > 0 && (
                         <button
                           type="button"
+                          data-vim-item="pw:edge-export-help"
                           onClick={() => setEdgeExportHelpOpen((current) => !current)}
                           disabled={!passwordPartition}
                           className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 ${
@@ -1792,6 +2136,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </div>
                       <button
                         type="button"
+                        data-vim-item="pw:edge-help-close"
                         onClick={() => setEdgeExportHelpOpen(false)}
                         className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
                         aria-label="Close Edge export help"
@@ -1810,6 +2155,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                           </div>
                           <button
                             type="button"
+                            data-vim-item={`pw:edge-open:${profile.id}`}
                             onClick={() => handleOpenEdgePasswordExport(profile.id)}
                             disabled={edgeExportOpeningProfile !== null}
                             className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-secondary px-3 text-xs font-medium text-secondary-foreground hover:bg-muted disabled:opacity-50"
@@ -1828,6 +2174,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </p>
                       <button
                         type="button"
+                        data-vim-item="pw:edge-choose-csv"
                         onClick={handleImportPasswords}
                         disabled={!passwordPartition || passwordImporting}
                         className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
@@ -1842,6 +2189,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 <div className="flex flex-wrap items-center gap-2 mb-3">
                   <button
                     type="button"
+                    data-vim-item="pw:add"
                     onClick={() => { setPasswordEditor({ origin: '', username: '', password: '' }); setPasswordError(null); setPasswordNotice(null) }}
                     disabled={!passwordPartition}
                     className="flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"
@@ -1851,6 +2199,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   </button>
                   <button
                     type="button"
+                    data-vim-item="pw:import-csv"
                     onClick={handleImportPasswords}
                     disabled={!passwordPartition || passwordImporting}
                     className="flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted disabled:opacity-50"
@@ -1861,6 +2210,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   {passwordEntries.length > 0 && (
                     <button
                       type="button"
+                      data-vim-item="pw:remove-all"
+                      data-vim-danger
                       onClick={() => setPasswordClearConfirmOpen(true)}
                       className="ml-auto h-8 px-2 text-[11px] font-medium text-destructive hover:underline"
                     >
@@ -1884,6 +2235,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </p>
                       <button
                         type="button"
+                        data-vim-item="pw:editor-close"
                         onClick={() => setPasswordEditor(null)}
                         className="h-6 w-6 flex items-center justify-center rounded hover:bg-muted text-muted-foreground"
                         aria-label="Close password editor"
@@ -1895,6 +2247,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       <label className="col-span-2">
                         <span className="block text-[11px] font-medium text-muted-foreground mb-1">Website</span>
                         <input
+                          data-vim-item="pw:editor-origin"
                           type="text"
                           value={passwordEditor.origin}
                           onChange={(event) => setPasswordEditor((current) => current ? { ...current, origin: event.target.value } : current)}
@@ -1906,6 +2259,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       <label>
                         <span className="block text-[11px] font-medium text-muted-foreground mb-1">Username or email</span>
                         <input
+                          data-vim-item="pw:editor-username"
                           type="text"
                           value={passwordEditor.username}
                           onChange={(event) => setPasswordEditor((current) => current ? { ...current, username: event.target.value } : current)}
@@ -1921,6 +2275,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         </span>
                         <div className="relative">
                           <input
+                            data-vim-item="pw:editor-password"
                             type={editorPasswordVisible ? 'text' : 'password'}
                             value={passwordEditor.password}
                             onChange={(event) => setPasswordEditor((current) => current ? { ...current, password: event.target.value } : current)}
@@ -1931,6 +2286,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                           />
                           <button
                             type="button"
+                            data-vim-item="pw:editor-show"
                             onClick={() => setEditorPasswordVisible((visible) => !visible)}
                             className="absolute right-1.5 top-1/2 -translate-y-1/2 h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
                             aria-label={editorPasswordVisible ? 'Hide password' : 'Show password'}
@@ -1944,6 +2300,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     <div className="flex justify-end gap-2 mt-3">
                       <button
                         type="button"
+                        data-vim-item="pw:editor-cancel"
                         onClick={() => setPasswordEditor(null)}
                         className="h-8 px-3 rounded-md text-xs font-medium text-muted-foreground hover:bg-muted"
                       >
@@ -1951,6 +2308,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </button>
                       <button
                         type="button"
+                        data-vim-item="pw:editor-save"
                         onClick={handleSavePasswordEntry}
                         className="h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90"
                       >
@@ -1964,6 +2322,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <div className="relative mb-2">
                     <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
                     <input
+                      data-vim-item="pw:search"
                       type="search"
                       value={passwordSearch}
                       onChange={(event) => setPasswordSearch(event.target.value)}
@@ -1993,11 +2352,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       const rowButton = 'h-7 w-7 shrink-0 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground'
                       return (
                         <div key={entry.id} data-password-item>
-                          <div className="group flex items-center gap-1 py-2">
+                          <div data-vim-item={`pw-row:${entry.id}`} data-vim-kind="row" className="group flex items-center gap-1 py-2 rounded-md">
                             {/* The row opens the record — Edge's password details. */}
                             <button
                               type="button"
                               data-password-row
+                              data-vim-cell="open"
                               onClick={() => setOpenPasswordId(isOpen ? null : entry.id)}
                               aria-expanded={isOpen}
                               className="min-w-0 flex-1 flex items-center gap-3 rounded-md py-1 pl-1 pr-2 text-left outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
@@ -2017,6 +2377,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                             </button>
                             <button
                               type="button"
+                              data-vim-cell="copy"
                               onClick={() => copyPasswordEntryField(entry, 'username')}
                               className={rowButton}
                               aria-label={`Copy username ${entry.username}`}
@@ -2026,6 +2387,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                             </button>
                             <button
                               type="button"
+                              data-vim-cell="copy-password"
                               onClick={() => copyPasswordEntryField(entry, 'password')}
                               disabled={busy}
                               className={rowButton}
@@ -2036,6 +2398,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                             </button>
                             <button
                               type="button"
+                              data-vim-cell="edit"
                               onClick={() => startEditPassword(entry)}
                               className={rowButton}
                               aria-label={`Edit ${entry.username}`}
@@ -2045,6 +2408,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                             </button>
                             <button
                               type="button"
+                              data-vim-cell="remove"
                               onClick={() => handleDeletePassword(entry.id)}
                               className={`${rowButton} hover:text-destructive`}
                               aria-label={`Remove ${entry.username}`}
@@ -2055,7 +2419,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                           </div>
 
                           {isOpen && (
-                            <div className="mb-3 ml-11 mr-1 rounded-md border border-border bg-secondary/40 px-3 py-1">
+                            <div data-vim-item={`pw-detail:${entry.id}`} data-vim-kind="row" className="mb-3 ml-11 mr-1 rounded-md border border-border bg-secondary/40 px-3 py-1">
                               <dl className="divide-y divide-border">
                                 <div className="flex items-center gap-3 py-2">
                                   <dt className="w-20 shrink-0 text-[11px] font-medium text-muted-foreground">Website</dt>
@@ -2066,6 +2430,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                                   <dd className="min-w-0 flex-1 truncate text-sm text-foreground select-text">{entry.username}</dd>
                                   <button
                                     type="button"
+                                    data-vim-cell="copy"
                                     onClick={() => copyPasswordEntryField(entry, 'username')}
                                     className="h-7 px-2 shrink-0 flex items-center gap-1.5 rounded-md text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
                                   >
@@ -2092,6 +2457,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                                   </dd>
                                   <button
                                     type="button"
+                                    data-vim-cell="reveal"
                                     onClick={() => togglePasswordReveal(entry.id)}
                                     disabled={busy}
                                     className="h-7 w-7 shrink-0 flex items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -2102,6 +2468,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                                   </button>
                                   <button
                                     type="button"
+                                    data-vim-cell="copy-password"
                                     onClick={() => copyPasswordEntryField(entry, 'password')}
                                     disabled={busy}
                                     className="h-7 px-2 shrink-0 flex items-center gap-1.5 rounded-md text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -2122,6 +2489,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                               <div className="flex justify-end gap-2 py-2">
                                 <button
                                   type="button"
+                                  data-vim-cell="edit"
                                   onClick={() => startEditPassword(entry)}
                                   className="h-7 px-2.5 flex items-center gap-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted"
                                 >
@@ -2130,6 +2498,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                                 </button>
                                 <button
                                   type="button"
+                                  data-vim-cell="remove"
                                   onClick={() => handleDeletePassword(entry.id)}
                                   className="h-7 px-2.5 flex items-center gap-1.5 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10"
                                 >
@@ -2157,7 +2526,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     Saved when a website offers to create a passkey. Signing in with one asks for Touch ID.
                     They stay on this Mac and aren&apos;t included in Cloud Sync. For a passkey from iCloud Keychain
                     (Safari, the Passwords app), choose Use iPhone when signing in, or sign in to a site with no
-                    passkey here: Newbro shows a QR code to scan with your iPhone.
+                    passkey here: Vimperium shows a QR code to scan with your iPhone.
                   </p>
                   {passkeys.length === 0 ? (
                     <div className="py-8 text-center border-y border-border">
@@ -2168,7 +2537,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   ) : (
                     <div className="border-y border-border divide-y divide-border">
                       {passkeys.map((passkey) => (
-                        <div key={passkey.id} className="flex items-center gap-3 py-2">
+                        <div key={passkey.id} data-vim-item={`passkey:${passkey.id}`} data-vim-kind="row" className="flex items-center gap-3 py-2 rounded-md">
                           <div className="h-8 w-8 rounded-md bg-secondary flex items-center justify-center text-muted-foreground shrink-0">
                             <FingerprintPattern size={14} />
                           </div>
@@ -2183,6 +2552,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                           </div>
                           <button
                             type="button"
+                            data-vim-cell="remove"
                             onClick={() => setPasskeyToRemove(passkey)}
                             className="h-7 px-2.5 flex items-center gap-1.5 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10 shrink-0"
                           >
@@ -2203,19 +2573,19 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               <div>
                 <h3 className="text-sm font-semibold text-foreground mb-1">Cloud Sync</h3>
                 <p className="text-[11px] text-muted-foreground mb-3">
-                  Sync your data across devices through a folder that OneDrive, Dropbox, or Google
-                  Drive already keeps in the cloud. No account needed — newbro just reads and writes
-                  JSON files in the folder you pick.
+                  Sync your data across devices through a folder that OneDrive, Dropbox, Google
+                  Drive or iCloud Drive already keeps in the cloud. No account needed — Vimperium just
+                  reads and writes JSON files directly in the folder you pick.
                 </p>
 
                 {/* Enable toggle */}
                 <label className="flex items-center gap-2.5 mb-4 cursor-pointer">
-                  <input
-                    type="checkbox"
+                  <Switch
+                    label="Enable cloud sync"
+                    vimItem="sync:enabled"
                     checked={!!syncInfo?.enabled}
                     disabled={!syncInfo?.folderPath}
-                    onChange={(e) => setSyncEnabled(e.target.checked)}
-                    className="h-4 w-4 accent-primary"
+                    onChange={setSyncEnabled}
                   />
                   <span className="text-sm text-foreground">Enable cloud sync</span>
                   {!syncInfo?.folderPath && (
@@ -2231,6 +2601,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       {syncInfo?.folderPath || 'Not set'}
                     </div>
                     <button
+                      data-vim-item="sync:choose-folder"
                       onClick={chooseSyncFolder}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted shrink-0"
                     >
@@ -2239,8 +2610,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     </button>
                   </div>
                   <p className="text-[11px] text-muted-foreground mt-1.5">
-                    Pick a folder inside OneDrive / Dropbox / Google Drive so the files reach your
-                    other devices.
+                    Pick a folder inside OneDrive / Dropbox / Google Drive / iCloud Drive so the files
+                    reach your other devices. They go straight into it, named like
+                    settings.&lt;device-id&gt;.json; anything else in the folder is left alone.
                   </p>
                 </div>
               </div>
@@ -2254,12 +2626,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 <div className="space-y-2">
                   {SYNC_CATEGORY_LABELS.map(({ id, label, hint }) => (
                     <label key={id} className="flex items-start gap-2.5 cursor-pointer">
-                      <input
-                        type="checkbox"
+                      <Switch
+                        label={label}
+                        vimItem={`sync-cat:${id}`}
                         checked={syncInfo?.categories?.[id] ?? true}
                         disabled={!syncInfo?.enabled}
-                        onChange={(e) => toggleSyncCategory(id, e.target.checked)}
-                        className="h-4 w-4 mt-0.5 accent-primary"
+                        onChange={(on) => toggleSyncCategory(id, on)}
+                        className="mt-0.5"
                       />
                       <span>
                         <span className="text-sm text-foreground block leading-tight">{label}</span>
@@ -2274,6 +2647,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               <div>
                 <div className="flex items-center gap-3">
                   <button
+                    data-vim-item="sync:now"
                     onClick={runSyncNow}
                     disabled={!syncInfo?.enabled || syncInfo?.state === 'syncing'}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -2293,6 +2667,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   sync folder are left untouched.
                 </p>
                 <button
+                  data-vim-item="sync:restart"
                   onClick={() => setSyncRestartConfirmOpen(true)}
                   disabled={!canRestartSyncSetup}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
@@ -2316,6 +2691,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Default New Tab URL</label>
                 <input
+                  data-vim-item="general:default-url"
                   type="text"
                   value={defaultUrl}
                   onChange={(e) => setDefaultUrl(e.target.value)}
@@ -2332,25 +2708,16 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 {/* New-tab focus target */}
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-2">Focus on New Tab</label>
-                  <div className="flex gap-2">
-                    {([
-                      { value: 'site' as const, label: 'Site', hint: 'Keystrokes go straight to the loaded page.' },
-                      { value: 'url' as const, label: 'URL bar', hint: 'Type a URL right away, like a fresh Chrome tab.' },
-                    ]).map(({ value, label, hint }) => (
-                      <button
-                        key={value}
-                        onClick={() => setNewTabFocus(value)}
-                        title={hint}
-                        className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                          newTabFocus === value
-                            ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                            : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
+                  <Segmented
+                    label="Focus on New Tab"
+                    vimItem="general:new-tab-focus"
+                    value={newTabFocus}
+                    onChange={setNewTabFocus}
+                    options={[
+                      { value: 'site', label: 'Site', title: 'Keystrokes go straight to the loaded page.' },
+                      { value: 'url', label: 'URL bar', title: 'Type a URL right away, like a fresh Chrome tab.' },
+                    ]}
+                  />
                   <p className="text-[11px] text-muted-foreground mt-1">
                     Where keyboard focus lands when a new tab is opened.
                   </p>
@@ -2359,24 +2726,16 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 {/* Sidebar tab-number badges */}
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-2">Tab Number Badges</label>
-                  <div className="flex gap-2">
-                    {([
+                  <Segmented
+                    label="Tab Number Badges"
+                    vimItem="general:tab-badges"
+                    value={showTabNumbers}
+                    onChange={setShowTabNumbers}
+                    options={[
                       { value: true, label: 'Show' },
                       { value: false, label: 'Hide' },
-                    ] as const).map(({ value, label }) => (
-                      <button
-                        key={String(value)}
-                        onClick={() => setShowTabNumbers(value)}
-                        className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                          showTabNumbers === value
-                            ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                            : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
+                    ]}
+                  />
                   <p className="text-[11px] text-muted-foreground mt-1">
                     Show a small "1"…"9" badge on the first nine visible sidebar tabs, advertising the CmdOrCtrl+N quick-jump shortcut.
                   </p>
@@ -2386,36 +2745,24 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               {/* Search engine */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Default Search Engine</label>
-                <div className="flex flex-wrap gap-2">
-                  {Object.entries(SEARCH_ENGINES).map(([name, url]) => (
-                    <button
-                      key={name}
-                      onClick={() => setSearchEngine(url)}
-                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                        searchEngine === url
-                          ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                          : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                      }`}
-                    >
-                      {name}
-                    </button>
-                  ))}
-                  <button
-                    onClick={() => setSearchEngine('')}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                      !Object.values(SEARCH_ENGINES).includes(searchEngine)
-                        ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                        : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                    }`}
-                  >
-                    Custom
-                  </button>
-                </div>
+                <Segmented
+                  label="Default Search Engine"
+                  vimItem="general:search-engine"
+                  wrap
+                  value={Object.values(SEARCH_ENGINES).includes(searchEngine) ? searchEngine : CUSTOM_ENGINE}
+                  onChange={(url) => setSearchEngine(url === CUSTOM_ENGINE ? '' : url)}
+                  options={[
+                    ...Object.entries(SEARCH_ENGINES).map(([name, url]) => ({ value: url, label: name })),
+                    { value: CUSTOM_ENGINE, label: 'Custom' },
+                  ]}
+                />
                 {(() => {
                   const isCustom = !Object.values(SEARCH_ENGINES).includes(searchEngine)
                   return (
                     <>
                       <input
+                        // Read-only, it's no setting for the keys to stop at.
+                        data-vim-item={isCustom ? 'general:custom-engine' : undefined}
                         type="text"
                         value={searchEngine}
                         onChange={(e) => isCustom && setSearchEngine(e.target.value)}
@@ -2426,7 +2773,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                             ? 'field text-foreground'
                             : 'bg-secondary/50 text-muted-foreground cursor-default'
                         }`}
-                        autoFocus={isCustom}
+                        // Not in Vim mode, where h / l stepping onto Custom
+                        // would land the next key in the field.
+                        autoFocus={isCustom && !vimNav}
                       />
                       {isCustom && (
                         <p className="text-[11px] text-muted-foreground mt-1">
@@ -2443,12 +2792,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       Ask the search engine for suggestions while you type in the address bar (Google, Yandex, DuckDuckGo, Bing).
                     </span>
                   </span>
-                  <input
-                    type="checkbox"
-                    checked={searchSuggestions}
-                    onChange={(event) => setSearchSuggestions(event.target.checked)}
-                    className="h-4 w-4 accent-primary shrink-0"
-                  />
+                  <Switch label="Show search suggestions" vimItem="general:suggestions" checked={searchSuggestions} onChange={setSearchSuggestions} />
                 </label>
                 <label className="flex items-center justify-between gap-4 mt-3 cursor-pointer">
                   <span>
@@ -2457,20 +2801,16 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       <span className="font-mono">!w vim</span> or <span className="font-mono">vim !w</span> in the address bar goes straight to Wikipedia's search — resolved here in the browser, whichever engine is chosen.
                     </span>
                   </span>
-                  <input
-                    type="checkbox"
-                    checked={bangsEnabled}
-                    onChange={(event) => setBangsEnabled(event.target.checked)}
-                    className="h-4 w-4 accent-primary shrink-0"
-                  />
+                  <Switch label="Bangs" vimItem="general:bangs" checked={bangsEnabled} onChange={setBangsEnabled} />
                 </label>
                 <button
+                  data-vim-item="general:manage-bangs"
                   onClick={() => {
                     handleSave()
                     useAppStore.getState().showInternalPage(BANGS_URL)
                   }}
                   className="mt-2 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-secondary"
-                  title="Save Settings and open the Bangs page (newbro://bangs)"
+                  title="Save Settings and open the Bangs page (vimperium://bangs)"
                 >
                   Manage bangs…
                   <ExternalLink size={12} />
@@ -2486,13 +2826,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       {defaultBrowserStatus?.isDefault ? (
                         <>
                           <CheckCircle2 size={12} className="text-primary shrink-0" />
-                          Newbro is your default browser
+                          Vimperium is your default browser
                         </>
                       ) : (
                         <>
                           <Compass size={12} className="text-muted-foreground shrink-0" />
                           {defaultBrowserStatus
-                            ? "Newbro isn't your default browser"
+                            ? "Vimperium isn't your default browser"
                             : 'Checking default browser status…'}
                         </>
                       )}
@@ -2502,18 +2842,19 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         {defaultBrowserStatus.platform === 'darwin'
                           ? 'macOS will ask you to confirm the change.'
                           : defaultBrowserStatus.platform === 'win32'
-                            ? 'Windows opens its Default Apps page; pick Newbro for HTTP and HTTPS there.'
+                            ? 'Windows opens its Default Apps page; pick Vimperium for HTTP and HTTPS there.'
                             : 'Best effort via xdg-mime — your desktop environment may still prompt or ignore the change.'}
                       </p>
                     )}
                     {defaultBrowserSystemPaneOpened && !defaultBrowserStatus?.isDefault && (
                       <p className="text-[11px] text-foreground/80 mt-1 leading-relaxed">
-                        Settings opened. After picking Newbro for HTTP and HTTPS, click Refresh.
+                        Settings opened. After picking Vimperium for HTTP and HTTPS, click Refresh.
                       </p>
                     )}
                   </div>
                   {defaultBrowserStatus?.isDefault ? null : defaultBrowserSystemPaneOpened ? (
                     <button
+                      data-vim-item="general:default-browser"
                       onClick={handleRefreshDefaultBrowser}
                       disabled={defaultBrowserBusy}
                       className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium border bg-secondary text-secondary-foreground border-input hover:bg-accent disabled:opacity-60 disabled:cursor-not-allowed"
@@ -2523,6 +2864,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     </button>
                   ) : (
                     <button
+                      data-vim-item="general:default-browser"
                       onClick={handleMakeDefaultBrowser}
                       disabled={defaultBrowserBusy || !defaultBrowserStatus}
                       className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium border bg-primary text-primary-foreground border-primary hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed"
@@ -2554,23 +2896,24 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         : ' — say, for a site that works better there.'}
                     </p>
                   </div>
-                  <select
+                  <VimSelect
+                    label="Open links in another browser"
+                    vimItem="general:other-browser"
                     value={otherBrowser?.id ?? ''}
-                    onChange={(event) => handleOtherBrowserChange(event.target.value)}
-                    className="h-8 max-w-52 px-2.5 text-xs field text-foreground rounded-lg outline-none shrink-0"
-                  >
-                    <option value="">Ask on first {passOnKeys}</option>
-                    {installedBrowsers.map((browser) => (
-                      <option key={browser.id} value={browser.id}>{browser.name}</option>
-                    ))}
-                    {otherBrowser && !installedBrowsers.some((browser) => browser.id === otherBrowser.id) && (
-                      <option value={otherBrowser.id}>{otherBrowser.name} (not found)</option>
-                    )}
-                  </select>
+                    onChange={handleOtherBrowserChange}
+                    options={[
+                      { value: '', label: `Ask on first ${passOnKeys}` },
+                      ...installedBrowsers.map((browser) => ({ value: browser.id, label: browser.name })),
+                      ...(otherBrowser && !installedBrowsers.some((browser) => browser.id === otherBrowser.id)
+                        ? [{ value: otherBrowser.id, label: `${otherBrowser.name} (not found)` }]
+                        : []),
+                    ]}
+                    className="h-8 max-w-52 px-2.5 text-xs field rounded-lg shrink-0"
+                  />
                 </div>
               )}
 
-              {/* Notifications — checks that the OS shows Newbro's toasts, the
+              {/* Notifications — checks that the OS shows Vimperium's toasts, the
                   kind extensions (Claude's "needs your attention") send. */}
               <div className="flex items-start gap-4">
                 <div className="flex-1 min-w-0">
@@ -2585,6 +2928,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   )}
                 </div>
                 <button
+                  data-vim-item="general:test-notification"
                   onClick={handleTestNotification}
                   className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium border bg-secondary text-secondary-foreground border-input hover:bg-accent"
                 >
@@ -2603,13 +2947,15 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-foreground">Wipe all data</p>
                     <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
-                      Permanently deletes the entire Newbro application directory, including every
+                      Permanently deletes the entire Vimperium application directory, including every
                       workspace, tab, bookmark, cookie, login session, cache, history, setting, and
                       keybinding. The app will relaunch as if freshly installed. This action cannot
                       be undone.
                     </p>
                   </div>
                   <button
+                    data-vim-item="general:wipe"
+                    data-vim-danger
                     onClick={() => setWipeConfirmOpen(true)}
                     className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium bg-destructive text-destructive-foreground hover:opacity-90"
                   >
@@ -2626,42 +2972,24 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               {/* Proxy */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Proxy</label>
-                <div className="flex flex-wrap gap-2 mb-2">
-                  <button
-                    onClick={() => setProxy((prev) => ({ ...prev, mode: 'system' }))}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                      proxy.mode === 'system'
-                        ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                        : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                    }`}
-                  >
-                    System
-                  </button>
-                  <button
-                    onClick={() => setProxy((prev) => ({ ...prev, mode: 'direct' }))}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                      proxy.mode === 'direct'
-                        ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                        : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                    }`}
-                  >
-                    Direct (No Proxy)
-                  </button>
-                  <button
-                    onClick={() => setProxy((prev) => ({ ...prev, mode: 'custom' }))}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                      proxy.mode === 'custom'
-                        ? 'bg-primary text-primary-foreground hover:bg-primary/80'
-                        : 'bg-secondary text-secondary-foreground hover:bg-muted'
-                    }`}
-                  >
-                    Custom Proxy
-                  </button>
-                </div>
+                <Segmented
+                  label="Proxy"
+                  vimItem="network:proxy"
+                  wrap
+                  className="mb-2"
+                  value={proxy.mode}
+                  onChange={(mode) => setProxy((prev) => ({ ...prev, mode }))}
+                  options={[
+                    { value: 'system', label: 'System' },
+                    { value: 'direct', label: 'Direct (No Proxy)' },
+                    { value: 'custom', label: 'Custom Proxy' },
+                  ]}
+                />
 
                 {proxy.mode === 'custom' && (
                   <div className="space-y-2">
                     <input
+                      data-vim-item="network:proxy-rules"
                       type="text"
                       value={proxy.proxyRules}
                       onChange={(e) => setProxy((prev) => ({ ...prev, proxyRules: e.target.value }))}
@@ -2669,6 +2997,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       className="w-full h-9 px-3 field rounded-xl text-sm text-foreground outline-none"
                     />
                     <input
+                      data-vim-item="network:proxy-bypass"
                       type="text"
                       value={proxy.proxyBypassRules}
                       onChange={(e) => setProxy((prev) => ({ ...prev, proxyBypassRules: e.target.value }))}
@@ -2693,15 +3022,18 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               {/* DNS-over-HTTPS */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">DNS-over-HTTPS</label>
-                <select
+                <VimSelect
+                  label="DNS-over-HTTPS"
+                  vimItem="network:doh"
                   value={dohMode}
-                  onChange={(e) => setDohMode(e.target.value as 'off' | 'automatic' | 'secure')}
-                  className="w-full px-3 py-2 text-sm field text-foreground rounded-xl outline-none"
-                >
-                  <option value="off">Off (use OS DNS only)</option>
-                  <option value="automatic">Automatic (OS DNS first, DoH as fallback) — recommended</option>
-                  <option value="secure">Secure (DoH only — breaks corporate VPN intranet)</option>
-                </select>
+                  onChange={setDohMode}
+                  options={[
+                    { value: 'off', label: 'Off (use OS DNS only)' },
+                    { value: 'automatic', label: 'Automatic (OS DNS first, DoH as fallback) — recommended' },
+                    { value: 'secure', label: 'Secure (DoH only — breaks corporate VPN intranet)' },
+                  ]}
+                  className="w-full h-9 px-3 text-sm field rounded-xl"
+                />
                 <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
                   Resolves DNS through Cloudflare + Google DoH endpoints.
                   {dohMode === 'secure' && (
@@ -2713,7 +3045,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </span>
                     </>
                   )}
-                  {' '}Restart Newbro after changing this — Chromium applies DNS configuration at startup.
+                  {' '}Restart Vimperium after changing this — Chromium applies DNS configuration at startup.
                 </p>
               </div>
             </div>
@@ -2725,6 +3057,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Integrated Windows Authentication (SSO)</label>
                 <textarea
+                  data-vim-item="enterprise:sso"
                   value={authServerAllowlist}
                   onChange={(e) => setAuthServerAllowlist(e.target.value)}
                   rows={2}
@@ -2741,7 +3074,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     Only add hosts you trust — your Windows credentials are sent to them automatically.
                   </span>
                   {' '}This uses the account this PC is logged in as. If that isn&apos;t your corporate account, leave
-                  this empty and use a <span className="text-foreground">saved sign-in</span> below instead. Restart Newbro after
+                  this empty and use a <span className="text-foreground">saved sign-in</span> below instead. Restart Vimperium after
                   changing this — it applies at startup.
                 </p>
               </div>
@@ -2750,7 +3083,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Saved sign-ins</label>
                 <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
-                  Corporate credentials you asked Newbro to remember from the sign-in prompt. Newbro answers
+                  Corporate credentials you asked Vimperium to remember from the sign-in prompt. Vimperium answers
                   that site&apos;s password challenge automatically so you don&apos;t retype it on every launch. Passwords
                   are encrypted on this device and never leave it — they are not cloud-synced.
                 </p>
@@ -2761,7 +3094,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 ) : (
                   <div className="rounded-lg border border-input divide-y divide-border overflow-hidden">
                     {savedCredentials.map((c) => (
-                      <div key={c.host} className="flex items-center gap-3 px-3 py-2">
+                      <div key={c.host} data-vim-item={`cred:${c.host}`} data-vim-kind="row" className="flex items-center gap-3 px-3 py-2">
                         <div className="min-w-0 flex-1">
                           <p className="text-sm text-foreground truncate" title={c.host}>{c.host}</p>
                           <p className="text-[11px] text-muted-foreground truncate">
@@ -2770,6 +3103,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         </div>
                         <button
                           type="button"
+                          data-vim-cell="remove"
                           onClick={() => removeSavedCredential(c.host)}
                           className="shrink-0 flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
                         >
@@ -2781,6 +3115,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     <div className="flex justify-end px-3 py-2 bg-toolbar">
                       <button
                         type="button"
+                        data-vim-item="enterprise:clear-creds"
+                        data-vim-danger
                         onClick={clearAllSavedCredentials}
                         className="text-[11px] font-medium text-destructive hover:underline"
                       >
@@ -2802,7 +3138,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </h3>
                 <p className="text-[11px] text-muted-foreground leading-relaxed">
                   Paste a Chrome Web Store URL or a 32-character extension ID.
-                  Newbro downloads the .crx, unpacks it locally, and loads it
+                  Vimperium downloads the .crx, unpacks it locally, and loads it
                   into every profile. Manifest V3 extensions work best; some
                   Manifest V2 features (notably blocking webRequest) are not
                   supported by Electron.
@@ -2811,6 +3147,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
               <div className="flex items-center gap-2 flex-wrap">
                 <button
+                  data-vim-item="ext:store-chrome"
                   onClick={() => handleOpenStoreUrl('https://chromewebstore.google.com/category/extensions')}
                   className="h-8 px-3 flex items-center gap-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted border border-input"
                   title="Open Chrome Web Store"
@@ -2820,6 +3157,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <ExternalLink size={11} className="text-muted-foreground" />
                 </button>
                 <button
+                  data-vim-item="ext:store-edge"
                   onClick={() => handleOpenStoreUrl('https://microsoftedge.microsoft.com/addons/Microsoft-Edge-Extensions-Home')}
                   className="h-8 px-3 flex items-center gap-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-muted border border-input"
                   title="Open Edge Add-ons store"
@@ -2832,6 +3170,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
               <div className="flex items-stretch gap-2">
                 <input
+                  data-vim-item="ext:install-input"
                   type="text"
                   value={extInput}
                   onChange={(e) => setExtInput(e.target.value)}
@@ -2841,6 +3180,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   disabled={extInstalling}
                 />
                 <button
+                  data-vim-item="ext:install"
                   onClick={handleInstallExtension}
                   disabled={extInstalling || !extInput.trim()}
                   className={`flex items-center gap-1.5 h-9 px-3 rounded-md text-xs font-medium transition-colors ${
@@ -2872,7 +3212,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   </div>
                 ) : (
                   extensions.map((ext) => (
-                    <div key={ext.id} className="flex items-start gap-3 px-4 py-3">
+                    <div key={ext.id} data-vim-item={`ext-row:${ext.id}`} data-vim-kind="row" className="flex items-start gap-3 px-4 py-3">
                       <div className="shrink-0 w-8 h-8 rounded-md bg-muted flex items-center justify-center overflow-hidden">
                         {ext.iconUrl ? (
                           <img
@@ -2906,6 +3246,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                             <>
                               <button
                                 type="button"
+                                data-vim-cell="details"
+                                aria-expanded={expanded}
                                 onClick={() => toggleExtensionDetails(ext.id)}
                                 className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
                               >
@@ -2918,8 +3260,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                                 <div className="mt-2 flex flex-col gap-3 rounded-md border border-border p-3">
                                   {!ext.permissionsFromOriginal && (
                                     <p className="text-[11px] text-muted-foreground leading-relaxed">
-                                      Read from Newbro's adjusted manifest, which also grants access to all
-                                      sites. The extension's own list appears once Newbro re-downloads it.
+                                      Read from Vimperium's adjusted manifest, which also grants access to all
+                                      sites. The extension's own list appears once Vimperium re-downloads it.
                                     </p>
                                   )}
                                   <ExtensionPermissionList
@@ -2938,13 +3280,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                                           const recording =
                                             recordingCommand?.extensionId === ext.id && recordingCommand.command === c.name
                                           return (
-                                            <div key={c.name} className="flex items-center justify-between gap-3">
+                                            <div key={c.name} data-vim-item={`ext-cmd:${ext.id}:${c.name}`} data-vim-kind="row" className="flex items-center justify-between gap-3 rounded">
                                               <span className="min-w-0 truncate text-xs text-foreground" title={c.description}>
                                                 {c.description}
                                               </span>
                                               <div className="flex shrink-0 items-center gap-1">
                                                 <button
                                                   type="button"
+                                                  data-vim-cell="record"
                                                   onClick={() => {
                                                     setCommandError(null)
                                                     setRecordingCommand(recording ? null : { extensionId: ext.id, command: c.name })
@@ -2961,6 +3304,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                                                 {c.shortcut && !recording && (
                                                   <button
                                                     type="button"
+                                                    data-vim-cell="remove"
                                                     onClick={() => applyExtensionCommand(ext.id, c.name, '')}
                                                     title="Remove shortcut"
                                                     className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -2987,6 +3331,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       <div className="flex items-center gap-2 shrink-0">
                         {ext.hasAction && (
                           <button
+                            data-vim-cell="pin"
                             onClick={() => handleTogglePinned(ext.id, !(ext.pinned ?? true))}
                             className={`h-7 w-7 rounded-md flex items-center justify-center hover:bg-muted ${
                               (ext.pinned ?? true) ? 'text-foreground' : 'text-muted-foreground'
@@ -2998,6 +3343,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         )}
                         {ext.hasOptionsPage && (
                           <button
+                            data-vim-cell="options"
                             onClick={() => handleOpenExtensionOptions(ext.id)}
                             className="h-7 px-2 rounded-md text-[11px] bg-secondary text-secondary-foreground hover:bg-muted flex items-center gap-1"
                             title="Open options page"
@@ -3007,14 +3353,16 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                           </button>
                         )}
                         <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
-                          <input
-                            type="checkbox"
+                          <Switch
+                            label={`${ext.name} enabled`}
+                            vimCell="enabled"
                             checked={ext.enabled}
-                            onChange={(e) => handleToggleExtension(ext.id, e.target.checked)}
+                            onChange={(on) => handleToggleExtension(ext.id, on)}
                           />
                           Enabled
                         </label>
                         <button
+                          data-vim-cell="remove"
                           onClick={() => handleUninstallExtension(ext.id)}
                           className="h-7 w-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                           title="Uninstall"
@@ -3040,55 +3388,30 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       browser, the way Vimium does — scrolling, history, tabs, app commands; keys not
                       bound reach the page. INSERT: keys go to the page or the field you're typing in.
                       i goes into INSERT, Esc or Ctrl+[ comes back. Clicking a text field is INSERT,
-                      anywhere else COMMAND. The arrows drive the Sidebar: ↓/↑ step through the tabs and
-                      groups, ←/→ fold and unfold. Replaces the regular shortcuts and the Vimium extension.
+                      anywhere else COMMAND. Ctrl+J/K step through the Sidebar's tabs and groups, Ctrl+H/L
+                      fold and unfold, Tab shows or hides it. Replaces the regular shortcuts and the Vimium
+                      extension.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={vimMode}
-                    aria-label="Vim Mode"
-                    onClick={() => setVimMode((on) => !on)}
-                    className={`relative mt-1 inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors ${
-                      vimMode ? 'bg-primary' : 'bg-muted-foreground/30'
-                    }`}
-                  >
-                    <span
-                      className={`h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
-                        vimMode ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
+                  <Switch size="md" label="Vim Mode" vimItem="shortcuts:vim" checked={vimMode} onChange={setVimMode} className="mt-1" />
                 </div>
 
                 {vimMode && (
                   <div className="mt-4 flex items-start justify-between gap-4">
                     <div>
-                      <div className="text-sm text-foreground">Hide the Sidebar</div>
+                      <div className="text-sm text-foreground">Hide the Sidebar in INSERT</div>
                       <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
-                        For a small screen: the page takes the whole width, and the Sidebar shows while
-                        its keys are in use in COMMAND mode — ↓/↑ step through the tabs, and it hides a
-                        second after the last one, staying on the tab shown. Tapping Esc twice (or Toggle
-                        Sidebar, Space) pins it open for the time being.
+                        Going into INSERT in a page hides the Sidebar; COMMAND brings it back.
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={sidebarAutoHide}
-                      aria-label="Hide the Sidebar"
-                      onClick={() => setSidebarAutoHide((on) => !on)}
-                      className={`relative mt-1 inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition-colors ${
-                        sidebarAutoHide ? 'bg-primary' : 'bg-muted-foreground/30'
-                      }`}
-                    >
-                      <span
-                        className={`h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
-                          sidebarAutoHide ? 'translate-x-5' : 'translate-x-0'
-                        }`}
-                      />
-                    </button>
+                    <Switch
+                      size="md"
+                      label="Hide the Sidebar in INSERT"
+                      vimItem="shortcuts:hide-sidebar-insert"
+                      checked={hideSidebarInInsert}
+                      onChange={setHideSidebarInInsert}
+                      className="mt-1"
+                    />
                   </div>
                 )}
 
@@ -3102,6 +3425,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </p>
                       <button
                         type="button"
+                        data-vim-item="shortcuts:vim-reset"
                         onClick={() => setVimKeymapText(DEFAULT_VIM_KEYMAP)}
                         disabled={vimKeymapText === DEFAULT_VIM_KEYMAP}
                         className="shrink-0 flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:pointer-events-none"
@@ -3111,6 +3435,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </button>
                     </div>
                     <textarea
+                      data-vim-item="shortcuts:vim-keymap"
                       value={vimKeymapText}
                       onChange={(event) => setVimKeymapText(event.target.value)}
                       // Recording captures every keydown on the host window,
@@ -3147,6 +3472,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   </p>
                   <button
                     type="button"
+                    data-vim-item="shortcuts:reset"
                     onClick={handleResetKeybindings}
                     className="shrink-0 flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                   >
@@ -3164,6 +3490,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 <div className="relative mb-3">
                   <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
                   <input
+                    data-vim-item="shortcuts:filter"
                     type="text"
                     value={shortcutFilter}
                     onChange={(event) => setShortcutFilter(event.target.value)}
@@ -3172,7 +3499,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     // typing here would be swallowed — stop recording instead.
                     onFocus={() => setRecordingTarget(null)}
                     placeholder="Filter shortcuts by name"
-                    autoFocus
+                    // In Vim mode Settings keeps to COMMAND until a field is asked for.
+                    autoFocus={!vimNav}
                     className="w-full h-9 pl-9 pr-8 field rounded-xl text-sm text-foreground outline-none"
                   />
                   {shortcutFilter && (
@@ -3199,12 +3527,15 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       return (
                         <div
                           key={action}
+                          data-vim-item={`shortcut:${action}`}
+                          data-vim-kind="row"
                           className="flex items-center justify-between gap-4 px-4 py-3"
                         >
                           <span className="text-sm text-foreground">{ACTION_LABELS[action]}</span>
                           <div className="flex items-center gap-2">
                             {isCustom && (
                               <button
+                                data-vim-cell="reset"
                                 onClick={() => {
                                   setKeybindings((prev) => ({
                                     ...prev,
@@ -3231,6 +3562,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                               return (
                                 <div key={slot} className="relative inline-flex items-center">
                                   <button
+                                    data-vim-cell="record"
                                     onClick={() => !disabled && startRecording(action, slot)}
                                     disabled={disabled}
                                     className={`min-w-[120px] h-8 px-3 ${binding && !isRecording ? 'pr-7' : ''} rounded-md text-xs flex items-center justify-center transition-colors ${
@@ -3249,6 +3581,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                                   </button>
                                   {binding && !isRecording && (
                                     <button
+                                      data-vim-cell="remove"
                                       onClick={(e) => {
                                         e.stopPropagation()
                                         clearBindingSlot(action, slot)
@@ -3287,20 +3620,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   {PERMISSION_KINDS.map((kind) => (
                     <div key={kind} className="flex items-center justify-between gap-3 px-3 py-2.5">
                       <span className="text-sm text-foreground">{PERMISSION_LABEL[kind]}</span>
-                      <select
+                      <VimSelect
+                        label={PERMISSION_LABEL[kind]}
+                        vimItem={`perm-default:${kind}`}
                         value={permissionDefaults[kind]}
-                        onChange={(e) =>
-                          setPermissionDefaults((prev) => ({
-                            ...prev,
-                            [kind]: e.target.value as PermissionPolicy,
-                          }))
-                        }
-                        className="w-32 px-2 py-1.5 text-sm field text-foreground rounded-xl outline-none"
-                      >
-                        {(['ask', 'allow', 'block'] as PermissionPolicy[]).map((p) => (
-                          <option key={p} value={p}>{PERMISSION_POLICY_LABEL[p]}</option>
-                        ))}
-                      </select>
+                        onChange={(policy) => setPermissionDefaults((prev) => ({ ...prev, [kind]: policy }))}
+                        options={(['ask', 'allow', 'block'] as PermissionPolicy[]).map((p) => ({ value: p, label: PERMISSION_POLICY_LABEL[p] }))}
+                        className="w-32 h-8 px-2.5 text-sm field rounded-xl"
+                      />
                     </div>
                   ))}
                 </div>
@@ -3315,6 +3642,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   <label className="block text-sm font-medium text-foreground">Exceptions</label>
                   {permissionGrants.length > 0 && (
                     <button
+                      data-vim-item="perm:clear-all"
+                      data-vim-danger
                       onClick={clearAllPermissionGrants}
                       className="text-xs text-muted-foreground hover:text-foreground"
                     >
@@ -3331,18 +3660,18 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 <div className="rounded-lg border border-border p-3 mb-3">
                   <div className="flex flex-wrap items-center gap-2">
                     {profiles.length > 1 && (
-                      <select
-                        value={addSitePartition || profiles[0]?.partition || ''}
-                        onChange={(e) => setAddSitePartition(e.target.value)}
-                        className="h-9 px-2 text-sm field text-foreground rounded-xl outline-none"
+                      <VimSelect
+                        label="Profile"
                         title="Profile"
-                      >
-                        {profiles.map((p) => (
-                          <option key={p.id} value={p.partition}>{p.name}</option>
-                        ))}
-                      </select>
+                        vimItem="perm:add-profile"
+                        value={addSitePartition || profiles[0]?.partition || ''}
+                        onChange={setAddSitePartition}
+                        options={profiles.map((p) => ({ value: p.partition, label: p.name }))}
+                        className="h-9 px-2.5 text-sm field rounded-xl"
+                      />
                     )}
                     <input
+                      data-vim-item="perm:add-origin"
                       type="text"
                       value={addSiteOrigin}
                       onChange={(e) => { setAddSiteOrigin(e.target.value); setAddSiteError(null) }}
@@ -3350,24 +3679,27 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       placeholder="https://meet.google.com"
                       className="flex-1 min-w-[180px] h-9 px-3 field rounded-xl text-sm text-foreground outline-none"
                     />
-                    <select
+                    <VimSelect
+                      label="Permission"
+                      vimItem="perm:add-kind"
                       value={addSiteKind}
-                      onChange={(e) => setAddSiteKind(e.target.value as PermissionKind)}
-                      className="h-9 px-2 text-sm field text-foreground rounded-xl outline-none"
-                    >
-                      {PERMISSION_KINDS.map((k) => (
-                        <option key={k} value={k}>{PERMISSION_LABEL[k]}</option>
-                      ))}
-                    </select>
-                    <select
+                      onChange={setAddSiteKind}
+                      options={PERMISSION_KINDS.map((k) => ({ value: k, label: PERMISSION_LABEL[k] }))}
+                      className="h-9 px-2.5 text-sm field rounded-xl"
+                    />
+                    <VimSelect
+                      label="Decision"
+                      vimItem="perm:add-decision"
                       value={addSiteDecision}
-                      onChange={(e) => setAddSiteDecision(e.target.value as 'allow' | 'block')}
-                      className="h-9 px-2 text-sm field text-foreground rounded-xl outline-none"
-                    >
-                      <option value="allow">Allow</option>
-                      <option value="block">Block</option>
-                    </select>
+                      onChange={setAddSiteDecision}
+                      options={[
+                        { value: 'allow', label: 'Allow' },
+                        { value: 'block', label: 'Block' },
+                      ]}
+                      className="h-9 px-2.5 text-sm field rounded-xl"
+                    />
                     <button
+                      data-vim-item="perm:add"
                       onClick={handleAddSite}
                       className="h-9 inline-flex items-center gap-1 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
                     >
@@ -3386,6 +3718,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     {permissionGrants.map((g) => (
                       <div
                         key={`${g.partition} ${g.origin} ${g.kind}`}
+                        data-vim-item={`perm-grant:${g.partition} ${g.origin} ${g.kind}`}
+                        data-vim-kind="row"
                         className="flex items-center gap-3 px-3 py-2.5"
                       >
                         <Globe size={14} className="shrink-0 text-muted-foreground" />
@@ -3406,6 +3740,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         </span>
                         <button
                           aria-label="Remove"
+                          data-vim-cell="remove"
                           onClick={() => clearPermissionGrant(g)}
                           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
                         >
@@ -3424,10 +3759,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               {/* App identity + version + storage paths in one divided card. */}
               <section>
                 <div className="flex items-center gap-3 mb-3">
-                  <img src={BADGE_URL} alt="" width={48} height={48} className="shrink-0 select-none" draggable={false} />
+                  {/* The orb's badge, live: it glitches as the pointer comes onto it. */}
+                  <BrandMark variant="full" mode={null} size={48} glitchOnHover />
                   <div>
                     <h2 className="text-sm font-semibold text-foreground mb-1">
-                      {appPaths?.appName || 'Newbro'}
+                      {appPaths?.appName || 'Vimperium'}
                     </h2>
                     <p className="text-xs text-muted-foreground">
                       Workspace-based browser with profiles and tab groups.
@@ -3458,6 +3794,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         </div>
                         <button
                           type="button"
+                          data-vim-item={`about:path:${row.label}`}
                           onClick={() => {
                             navigator.clipboard.writeText(row.value).catch((err) => {
                               console.warn('SettingsDialog: clipboard write failed', { value: row.value, err: String(err) })
@@ -3478,7 +3815,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
               <section>
                 <h2 className="text-sm font-semibold text-foreground mb-1">Updates</h2>
                 <p className="text-xs text-muted-foreground mb-3">
-                  Newbro checks GitHub for new releases on launch and every few hours.
+                  Vimperium checks GitHub for new releases on launch and every few hours.
                   The button below triggers a manual check.
                 </p>
                 <div className="flex items-start gap-4 px-4 py-3 border border-input rounded-md bg-card">
@@ -3493,7 +3830,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       {(() => {
                         switch (updateStatus.phase) {
                           case 'idle':
-                            return 'Newbro is ready to check for updates'
+                            return 'Vimperium is ready to check for updates'
                           case 'checking':
                             return 'Checking for updates…'
                           case 'not-available':
@@ -3528,7 +3865,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                         case 'downloaded':
                           return (
                             <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
-                              Newbro will close, swap in the new version, and relaunch.
+                              Vimperium will close, swap in the new version, and relaunch.
                             </p>
                           )
                         case 'error':
@@ -3550,6 +3887,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   </div>
                   {updateStatus.phase === 'downloaded' ? (
                     <button
+                      data-vim-item="about:update"
                       onClick={handleInstallUpdate}
                       className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium border bg-primary text-primary-foreground border-primary hover:opacity-90"
                     >
@@ -3558,6 +3896,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                     </button>
                   ) : (
                     <button
+                      data-vim-item="about:update"
                       onClick={handleCheckForUpdates}
                       disabled={
                         updateStatus.phase === 'checking' ||
@@ -3604,6 +3943,18 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
           </div>
         </div>
 
+        {vimNav && vim.mode && (
+          <SettingsHintBar
+            form={form}
+            keymap={settingsVimKeymap}
+            mode={vim.mode}
+            firstLabel={hints.labels[0]}
+            closeWarning={closeWarning}
+            showAllKeys={showAllKeys}
+            filterShown={filterShown}
+          />
+        )}
+
         {/* Footer */}
         <div className="flex justify-end gap-2 px-6 py-4 border-t border-border">
           <button
@@ -3619,7 +3970,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
             Save
           </button>
         </div>
+        {/* Outside the form's root: drawing them isn't the form changing. */}
+        {vimNav && <VimFormLabels form={form} labels={hints.labels} mode={vim.mode} pending={vim.pending} />}
       </div>
+      </VimFormContext.Provider>
 
       <ConfirmDialog
         open={syncRestartConfirmOpen}
@@ -3633,7 +3987,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       <ConfirmDialog
         open={edgeImportConfirmOpen}
         title="Import passwords from Microsoft Edge?"
-        message={`Newbro will use the operating system to unlock ${edgeDirectPasswordCount || 'the detected'} compatible Edge passwords and copy them into ${profileNameForPartition(passwordPartition)}. Microsoft Edge will not be changed.${edgeAppBoundPasswordCount ? ` The remaining ${edgeAppBoundPasswordCount} must be exported by Edge.` : ''}`}
+        message={`Vimperium will use the operating system to unlock ${edgeDirectPasswordCount || 'the detected'} compatible Edge passwords and copy them into ${profileNameForPartition(passwordPartition)}. Microsoft Edge will not be changed.${edgeAppBoundPasswordCount ? ` The remaining ${edgeAppBoundPasswordCount} must be exported by Edge.` : ''}`}
         confirmLabel="Import passwords"
         tone="primary"
         onConfirm={handleImportEdgePasswords}
@@ -3653,7 +4007,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
         open={passkeyToRemove !== null}
         title="Remove this passkey?"
         message={passkeyToRemove
-          ? `Newbro will no longer sign in to ${passkeyToRemove.rpId} as ${passkeyToRemove.userName || passkeyToRemove.userDisplayName || 'this account'} with Touch ID. The site keeps it listed until you remove it in the site's security settings too.`
+          ? `Vimperium will no longer sign in to ${passkeyToRemove.rpId} as ${passkeyToRemove.userName || passkeyToRemove.userDisplayName || 'this account'} with Touch ID. The site keeps it listed until you remove it in the site's security settings too.`
           : ''}
         confirmLabel="Remove passkey"
         onConfirm={handleRemovePasskey}
@@ -3662,12 +4016,95 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
 
       <ConfirmDialog
         open={wipeConfirmOpen}
-        title="Wipe all Newbro data?"
+        title="Wipe all Vimperium data?"
         message="This will permanently delete every workspace, tab, bookmark, cookie, login session, cache, setting, and keybinding, then relaunch the app. This cannot be undone."
         confirmLabel="Wipe everything"
         onConfirm={handleWipeAllData}
         onCancel={() => setWipeConfirmOpen(false)}
       />
     </DetachedWindow>
+  )
+}
+
+/** Settings' hint bar in Vim mode, above the footer: the keys for where
+ *  the cursor is, the filter's results, an open list — or, once asked, all
+ *  of Settings' keys, or what closing would throw away. */
+function SettingsHintBar({ form, keymap, mode, firstLabel, closeWarning, showAllKeys, filterShown }: {
+  form: VimFormController
+  keymap: VimKeymap | null
+  mode: VimMode
+  /** The first control's label, as an example of them. */
+  firstLabel?: string
+  closeWarning: boolean
+  showAllKeys: boolean
+  filterShown: boolean
+}) {
+  const { overlayOpen } = useVimFormSnapshot(form)
+  const caps = (...commands: string[]): string[] => vimKeyCaps(keymap, ...commands)
+  const bar = (children: React.ReactNode) => <HintBar wrap className="min-h-10">{children}</HintBar>
+
+  if (showAllKeys) {
+    return bar(
+      <>
+        {settingsCommandsInOrder().map((command) => (
+          <Hint key={command} label={settingsCommandLabel(command)} keys={vimKeyCapsAll(keymap, command)} />
+        ))}
+        {firstLabel && <Hint label="Go to a setting by its label" keys={[`${firstLabel}…`]} />}
+        <Hint label="Back" keys={caps('help')} />
+      </>,
+    )
+  }
+  if (closeWarning) {
+    return bar(
+      <>
+        <span className="text-foreground">There are unsaved changes.</span>
+        <Hint label="Save" keys={caps('save')} />
+        <Hint label="Close without saving" keys={['Esc', ...caps('discard')]} />
+      </>,
+    )
+  }
+  if (mode === 'insert') {
+    return bar(
+      <>
+        {filterShown && (
+          <>
+            <Hint label="Navigate" keys={['↓', '↑']} />
+            <Hint label="Go" keys={['Enter']} />
+          </>
+        )}
+        <Hint label="Command mode" keys={['Esc']} />
+      </>,
+    )
+  }
+  if (filterShown) {
+    return bar(
+      <>
+        <Hint label="Navigate" keys={caps('cursor-down', 'cursor-up')} />
+        <Hint label="Go" keys={caps('activate')} />
+        <Hint label="Type" keys={caps('insert-mode')} />
+        <Hint label="Clear" keys={['Esc']} />
+      </>,
+    )
+  }
+  if (overlayOpen) {
+    return bar(
+      <>
+        <Hint label="Navigate" keys={caps('cursor-down', 'cursor-up')} />
+        <Hint label="Pick" keys={caps('activate')} />
+        <Hint label="Close" keys={['Esc']} />
+      </>,
+    )
+  }
+  return bar(
+    <>
+      <Hint label="Navigate" keys={caps('cursor-down', 'cursor-up')} />
+      <Hint label="Section" keys={caps('section-next', 'section-prev')} />
+      <VimFormCursorHints form={form} keymap={keymap} />
+      {firstLabel && <Hint label="Go to" keys={[`${firstLabel}…`]} />}
+      <Hint label="Find" keys={caps('filter')} />
+      <Hint label="Save" keys={caps('save')} />
+      <Hint label="Close" keys={['Esc']} />
+      <Hint label="Keys" keys={caps('help')} />
+    </>,
   )
 }

@@ -40,12 +40,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('window-active', handler)
     return () => { ipcRenderer.removeListener('window-active', handler) }
   },
-  // Esc tapped twice in this window, with Vim mode on.
-  onVimEscDoubleTap: (callback: () => void) => {
-    const handler = () => callback()
-    ipcRenderer.on('vim-esc-double-tap', handler)
-    return () => { ipcRenderer.removeListener('vim-esc-double-tap', handler) }
-  },
   minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:maximize'),
   restoreWindow: (): Promise<void> => ipcRenderer.invoke('window:restore'),
@@ -98,7 +92,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   edgePasswordsDetect: (): Promise<unknown> => ipcRenderer.invoke('passwords:edge-detect'),
   edgePasswordsOpenExport: (profileId: string): Promise<void> => ipcRenderer.invoke('passwords:edge-open-export', profileId),
   passwordsImportEdge: (partition: string): Promise<unknown> => ipcRenderer.invoke('passwords:import-edge', partition),
-  // Passkeys Newbro's own authenticator saved (macOS). Metadata only — the
+  // Passkeys Vimperium's own authenticator saved (macOS). Metadata only — the
   // private keys never leave main.
   passkeysList: (partition: string): Promise<unknown[]> => ipcRenderer.invoke('passkeys:list', partition),
   passkeyDelete: (partition: string, id: string): Promise<unknown[]> =>
@@ -180,7 +174,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getDefaultBrowserStatus: (): Promise<unknown> => ipcRenderer.invoke('default-browser:get-status'),
   setAsDefaultBrowser: (): Promise<unknown> => ipcRenderer.invoke('default-browser:set-default'),
 
-  // Another browser for links handed to Newbro: the Open Link picker's ⌘↵
+  // Another browser for links handed to Vimperium: the Open Link picker's ⌘↵
   // (Ctrl+Enter on Windows), and its choice in Settings (main/other-browser.ts).
   // macOS and Windows.
   otherBrowserGet: (): Promise<unknown> => ipcRenderer.invoke('other-browser:get'),
@@ -254,6 +248,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('tab:execute-js', tabId, code),
   tabToggleDevTools: (tabId: string): Promise<void> =>
     ipcRenderer.invoke('tab:toggle-devtools', tabId),
+  // The page's zoom a step in or out, or back to actual size; the new factor.
+  tabZoom: (tabId: string, step: 'in' | 'out' | 'reset'): Promise<number | null> =>
+    ipcRenderer.invoke('tab:zoom', tabId, step),
   tabSavePage: (tabId: string): Promise<boolean> =>
     ipcRenderer.invoke('tab:save-page', tabId),
   // Find-in-page: fire-and-forget. Match results arrive on the existing
@@ -360,7 +357,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Search-engine suggestions for the address bar (src/main/omnibox-suggest.ts).
   omniboxSuggest: (query: string, partition?: string): Promise<string[]> =>
     ipcRenderer.invoke('omnibox:suggest', query, partition),
-  // Dark pages — Newbro's own dark mode for web pages (src/main/dark-pages.ts).
+  // Dark pages — Vimperium's own dark mode for web pages (src/main/dark-pages.ts).
   darkPagesGet: (): Promise<unknown> => ipcRenderer.invoke('dark-pages:get'),
   darkPagesSet: (patch: unknown): Promise<unknown> => ipcRenderer.invoke('dark-pages:set', patch),
   darkPagesSetSite: (site: string, rule: 'dark' | 'light' | null): Promise<unknown> =>

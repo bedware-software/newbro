@@ -321,7 +321,7 @@ export function Omnibox({ tabId, tabUrl, anchorRef }: Props) {
       return
     }
     if (!tabId) return
-    // Internal pages (newbro://…) have no view to navigate: going to or from
+    // Internal pages (vimperium://…) have no view to navigate: going to or from
     // one is a store change, and WebviewPanel drops or creates the view.
     if (isInternalUrl(url) || isInternalUrl(tabUrl)) {
       store.retargetTab(tabId, url)

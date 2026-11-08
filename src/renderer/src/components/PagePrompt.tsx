@@ -3,6 +3,8 @@
 // top-left corner (Find in Page has the top-right one), over the page
 // rather than pushing it down. It shows without taking the keyboard, so a
 // site asking mid-typing doesn't cut in; Esc in it, once clicked, dismisses.
+// From the keyboard its buttons are the browser's own controls: the chrome
+// hints (;) label them, as they do the toolbar's (data-chrome-hints).
 
 import type { ReactNode } from 'react'
 import { Bell, Camera, Clipboard, MapPin, Mic, Music, ShieldAlert, X, type LucideIcon } from 'lucide-react'
@@ -40,7 +42,7 @@ function PagePrompt({ open, title, height, anchorRef, onDismiss, children }: She
       placement={placement}
       onClose={onDismiss}
     >
-      <div className="h-full flex flex-col justify-between gap-2 p-3 bg-popover text-popover-foreground border border-border overflow-hidden">
+      <div data-chrome-hints="" className="h-full flex flex-col justify-between gap-2 p-3 bg-popover text-popover-foreground border border-border overflow-hidden">
         {children}
       </div>
     </DetachedWindow>
@@ -50,7 +52,9 @@ function PagePrompt({ open, title, height, anchorRef, onDismiss, children }: She
 function DismissButton({ onClick }: { onClick: () => void }) {
   return (
     <button
+      type="button"
       aria-label="Dismiss"
+      title="Dismiss"
       onClick={onClick}
       className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
     >
@@ -92,7 +96,7 @@ export function PermissionPrompt({
   const Icon = PERMISSION_ICON[kinds[0]] ?? Mic
   const dismiss = (): void => onDecide('block', false)
   return (
-    <PagePrompt open={open} title="Permission - Newbro" height={HEIGHT} anchorRef={anchorRef} onDismiss={dismiss}>
+    <PagePrompt open={open} title="Permission - Vimperium" height={HEIGHT} anchorRef={anchorRef} onDismiss={dismiss}>
       <div className="flex items-center gap-3 min-w-0">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground">
           <Icon size={16} strokeWidth={1.75} />
@@ -105,12 +109,14 @@ export function PermissionPrompt({
       </div>
       <div className="flex justify-end gap-2">
         <button
+          type="button"
           onClick={() => onDecide('block', true)}
           className="h-8 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
         >
           Block
         </button>
         <button
+          type="button"
           onClick={() => onDecide('allow', true)}
           className="h-8 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
@@ -144,19 +150,20 @@ export function OsBlockedPrompt({
     ? 'camera'
     : 'microphone'
   return (
-    <PagePrompt open={open} title="Permission - Newbro" height={TALL_HEIGHT} anchorRef={anchorRef} onDismiss={onDismiss}>
+    <PagePrompt open={open} title="Permission - Vimperium" height={TALL_HEIGHT} anchorRef={anchorRef} onDismiss={onDismiss}>
       <div className="flex items-start gap-3 min-w-0">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
           <ShieldAlert size={16} strokeWidth={1.75} />
         </div>
         <p className="min-w-0 flex-1 line-clamp-3 text-[13px] leading-snug text-muted-foreground">
-          Your system is blocking Newbro from using your{' '}
+          Your system is blocking Vimperium from using your{' '}
           <span className="font-medium text-foreground">{label}</span>. Enable it in System Settings, then reload the page.
         </p>
         <DismissButton onClick={onDismiss} />
       </div>
       <div className="flex justify-end">
         <button
+          type="button"
           onClick={() => onOpenSettings(primaryKind)}
           className="h-8 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
         >

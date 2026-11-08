@@ -1,4 +1,4 @@
-// Page side of Newbro's passkeys (main/webauthn.ts), macOS only.
+// Page side of Vimperium's passkeys (main/webauthn.ts), macOS only.
 //
 // Replaces navigator.credentials.create / get for publicKey requests in the
 // page's main world and carries them to main over IPC. Main derives the
@@ -9,21 +9,21 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 
-const bridgeGlobal = globalThis as typeof globalThis & { __newbroWebAuthnInstalled?: boolean }
+const bridgeGlobal = globalThis as typeof globalThis & { __vimperiumWebAuthnInstalled?: boolean }
 
 export function installWebAuthnBridge(): void {
   if (process.platform !== 'darwin') return
   if (location.protocol !== 'https:' && location.protocol !== 'http:') return
   // The preload can run twice in one frame (webPreferences + session).
-  if (bridgeGlobal.__newbroWebAuthnInstalled) return
-  bridgeGlobal.__newbroWebAuthnInstalled = true
+  if (bridgeGlobal.__vimperiumWebAuthnInstalled) return
+  bridgeGlobal.__vimperiumWebAuthnInstalled = true
 
   const cb = contextBridge as typeof contextBridge & {
     executeInMainWorld?: (spec: { func: (...a: never[]) => void; args?: unknown[] }) => void
   }
   if (typeof cb.executeInMainWorld !== 'function') {
     // eslint-disable-next-line no-console
-    console.log('[newbro-webauthn] contextBridge.executeInMainWorld is missing; passkeys are off')
+    console.log('[vimperium-webauthn] contextBridge.executeInMainWorld is missing; passkeys are off')
     return
   }
   // These run here, in the isolated world, when the page's override calls them.
@@ -42,7 +42,7 @@ export function installWebAuthnBridge(): void {
     cb.executeInMainWorld({ func: mainWorldWebAuthn as (...a: never[]) => void, args: [request, cancel, available] })
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.log('[newbro-webauthn] main-world install failed:', err)
+    console.log('[vimperium-webauthn] main-world install failed:', err)
   }
 }
 
@@ -105,7 +105,7 @@ function mainWorldWebAuthn(
   }
   const credential = (res: any, response: any, responseJSON: Record<string, unknown>): any => {
     const extensions = () => JSON.parse(JSON.stringify(res.extensions || {}))
-    // Newbro's own passkeys are 'platform'; a phone's are 'cross-platform'.
+    // Vimperium's own passkeys are 'platform'; a phone's are 'cross-platform'.
     const attachment = res.attachment || 'platform'
     return own(Object.create(PKC.prototype), {
       id: res.id,

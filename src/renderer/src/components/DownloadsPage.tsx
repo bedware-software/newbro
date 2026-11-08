@@ -1,4 +1,4 @@
-// Downloads page (newbro://downloads) — a full tab, like Chrome's
+// Downloads page (vimperium://downloads) — a full tab, like Chrome's
 // chrome://downloads, in place of the old detached popup. It's an internal
 // page (lib/internal-pages.ts): WebviewPanel draws it over the page area.
 //
@@ -29,15 +29,15 @@ const SORT_KEYS: SortKey[] = ['date', 'size', 'name']
 const SORT_LABELS: Record<SortKey, string> = { date: 'Date', size: 'Size', name: 'Name' }
 // Picking a sort starts from its natural direction: newest, largest, A→Z.
 const DEFAULT_DIR: Record<SortKey, SortDir> = { date: 'desc', size: 'desc', name: 'asc' }
-const SORT_STORAGE_KEY = 'newbro-downloads-sort'
+const SORT_STORAGE_KEY = 'vimperium-downloads-sort'
 
 // How long the second `g` of `gg` may trail the first (same as Vim mode's).
 const GG_TIMEOUT_MS = 1000
 
 /** Events other parts of the app send the page: App routes find-in-page and
  *  reload here while the Downloads tab is active. */
-export const DOWNLOADS_FIND_EVENT = 'newbro-downloads-find'
-export const DOWNLOADS_RELOAD_EVENT = 'newbro-downloads-reload'
+export const DOWNLOADS_FIND_EVENT = 'vimperium-downloads-find'
+export const DOWNLOADS_RELOAD_EVENT = 'vimperium-downloads-reload'
 
 const KEY_HELP: Array<[string, string]> = [
   ['j / k, ↓ / ↑', 'Move through the list'],

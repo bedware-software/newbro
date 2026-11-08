@@ -1,22 +1,23 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { log } from '../lib/log'
+import { registerHintPopup } from '../lib/chrome-hints'
 
 const DRAG_HANDLE_SELECTOR = '[data-detached-drag-handle]'
 const DRAG_CANCEL_SELECTOR = '[data-detached-no-drag]'
 const DRAG_THRESHOLD_PX = 2
 /** Features-string token asking main to open the popup at Runwa's
  *  search-window geometry. Mirrored in src/main/runwa-palette.ts. */
-const RUNWA_PALETTE_FEATURE = 'newbro-runwa-palette'
+const RUNWA_PALETTE_FEATURE = 'vimperium-runwa-palette'
 /** Features-string token carrying the popup's native background color as
  *  RRGGBB. Mirrored in src/main/index.ts (setWindowOpenHandler). */
-const BACKGROUND_FEATURE = 'newbro-bg'
+const BACKGROUND_FEATURE = 'vimperium-bg'
 /** Features-string token naming a pinned popup, so main can place it.
  *  Mirrored in src/main/index.ts (setWindowOpenHandler). */
-const POPUP_ID_FEATURE = 'newbro-popup-id'
+const POPUP_ID_FEATURE = 'vimperium-popup-id'
 /** Features-string token making the popup modal to its opener window.
  *  Mirrored in src/main/index.ts (setWindowOpenHandler). */
-const MODAL_FEATURE = 'newbro-modal'
+const MODAL_FEATURE = 'vimperium-modal'
 
 /** A spot in the opener window's content area, in CSS pixels. */
 export interface PopupPlacement {
@@ -59,6 +60,11 @@ interface Props {
   placement?: PopupPlacement
   /** Bumped to give the keyboard back to a pinned popup that's open. */
   focusTick?: number
+  /** Vim's ; (lib/chrome-hints.ts) labels the popup's controls too — a
+   *  popup that shows without the keyboard (a page prompt), whose buttons
+   *  the keys can't reach otherwise. The same as marking a root inside it
+   *  `data-chrome-hints`. */
+  chromeHints?: boolean
   /** A pinned popup dragged by its handle stays where it's dropped: its new
    *  spot, to keep as `placement`. */
   onMoved?: (placement: PopupPlacement) => void
@@ -93,8 +99,9 @@ function readSavedBounds(key: string): SavedBounds | null {
         top: typeof v.top === 'number' ? v.top : undefined,
       }
     }
-  } catch {
-    /* corrupt entry — fall back to defaults */
+  } catch (err) {
+    // A corrupt entry: the defaults stand.
+    log.warn('detached-window: unreadable saved bounds', { key, err: String(err) })
   }
   return null
 }
@@ -129,7 +136,8 @@ function pageBackgroundHex(): string | null {
     const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data
     if (a === 0) return null
     return [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')
-  } catch {
+  } catch (err) {
+    log.warn('detached-window: page background unreadable', String(err))
     return null
   }
 }
@@ -153,8 +161,9 @@ function copyStylesToPopup(popupDoc: Document): void {
           )
         popupDoc.head.appendChild(style)
         return
-      } catch {
-        /* rules unreadable — fall back to loading the stylesheet */
+      } catch (err) {
+        // Rules unreadable: the popup loads the stylesheet itself.
+        log.warn('detached-window: stylesheet rules unreadable, linking it', { href: sheet.href, err: String(err) })
       }
     }
     popupDoc.head.appendChild(node.cloneNode(true))
@@ -176,6 +185,7 @@ export function DetachedWindow({
   matchRunwaPalette = false,
   placement,
   focusTick,
+  chromeHints = false,
   onMoved,
   onClose,
   onWindowChange,
@@ -247,7 +257,7 @@ export function DetachedWindow({
       // window.open returning null usually means setWindowOpenHandler in
       // main rejected the request (URL mismatch) or the popup blocker
       // tripped. Either case is a silent failure for the user — no dialog
-      // appears, no console error. Log it so the userData/newbro.log file
+      // appears, no console error. Log it so the userData/vimperium.log file
       // shows the failure when the user reports "the dialog didn't open".
       log.warn('detached-window: window.open returned null', { title })
       return
@@ -272,8 +282,18 @@ export function DetachedWindow({
     const root = popup.document.createElement('div')
     root.style.height = '100%'
     root.style.width = '100%'
+    if (chromeHints) root.setAttribute('data-chrome-hints', '')
     popup.document.body.appendChild(root)
     setContainerEl(root)
+    // Vim's ; looks into it for a root marked data-chrome-hints; a field
+    // picked there needs the popup to take the keyboard.
+    const unregisterHints = registerHintPopup({
+      win: popup,
+      focus: () => {
+        if (popupId) window.electronAPI.detachedWindowFocus?.(popupId)
+        else popup.focus()
+      },
+    })
 
     const handleBeforeUnload = () => {
       if (!suppressBeforeUnloadRef.current) onCloseRef.current()
@@ -396,6 +416,7 @@ export function DetachedWindow({
     popup.addEventListener('blur', handleBlurClose)
 
     return () => {
+      unregisterHints()
       themeObserver.disconnect()
       popup.removeEventListener('beforeunload', handleBeforeUnload)
       popup.removeEventListener('keydown', handleKeyDown)
@@ -421,7 +442,7 @@ export function DetachedWindow({
         suppressBeforeUnloadRef.current = false
       }
     }
-  }, [open, width, height, resizable, closeOnEscape, closeOnBlur, modal, persistKey, matchRunwaPalette])
+  }, [open, width, height, resizable, closeOnEscape, closeOnBlur, modal, persistKey, matchRunwaPalette, chromeHints])
 
   // Show the popup window once React has rendered content into the portal.
   // Double-rAF on the POPUP's own frame clock ensures the popup has

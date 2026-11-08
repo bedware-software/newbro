@@ -188,7 +188,7 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
   return (
     <DetachedWindow
       open={open}
-      title="Find - Newbro"
+      title="Find - Vimperium"
       width={WIDTH}
       height={HEIGHT}
       resizable={false}

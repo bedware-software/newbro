@@ -2,8 +2,8 @@ import { app } from 'electron'
 import { join } from 'path'
 import { appendFileSync, writeFileSync } from 'fs'
 
-const PREFIX = '[newbro:main]'
-const LOG_FILE = join(app.getPath('userData'), 'newbro.log')
+const PREFIX = '[vimperium:main]'
+const LOG_FILE = join(app.getPath('userData'), 'vimperium.log')
 const MAX_LINES = 2000
 
 function ts(): string {
@@ -65,7 +65,7 @@ function writeToFile(level: string, prefix: string, msg: string): void {
 export function startLogSession(): void {
   if (!pendingLines) return
   try {
-    writeFileSync(LOG_FILE, `--- Newbro started at ${new Date().toISOString()} ---\n${pendingLines.join('')}`)
+    writeFileSync(LOG_FILE, `--- Vimperium started at ${new Date().toISOString()} ---\n${pendingLines.join('')}`)
   } catch {
     // ignore
   }
@@ -99,6 +99,6 @@ export const log = {
   },
   /** Write a renderer log line to the file (received via IPC) */
   renderer: (level: string, msg: string) => {
-    writeToFile(level, '[newbro:renderer]', msg)
+    writeToFile(level, '[vimperium:renderer]', msg)
   },
 }

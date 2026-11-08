@@ -2,17 +2,17 @@
 // process, built on Electron 35+ service-worker preload realms and
 // ServiceWorkerMain.ipc. This is the replacement for the legacy
 // network-based transport (loopback HTTP sw-rpc-server, the
-// `newbro-ext-ipc.test` sentinel host and the `newbro-ipc://`
+// `vimperium-ext-ipc.test` sentinel host and the `vimperium-ipc://`
 // protocol): IPC cannot be intercepted by extension webRequest/DNR
 // rules, does not consume the 6-connections-per-origin budget, and
 // does not die on ERR_NETWORK_CHANGED.
 //
 // Wire protocol (all multiplexed over two channels so workers only
 // ever need one handle() each):
-//   SW → main  invoke: ipcRenderer.invoke('newbro-sw', channel, payload)
+//   SW → main  invoke: ipcRenderer.invoke('vimperium-sw', channel, payload)
 //              → JSON of { ok: true, data } | { ok: false, error }
-//   SW → main  notify: ipcRenderer.send('newbro-sw-notify', channel, payload)
-//   main → SW  push:   worker.send('newbro-sw-event', channel, JSON of payload)
+//   SW → main  notify: ipcRenderer.send('vimperium-sw-notify', channel, payload)
+//   main → SW  push:   worker.send('vimperium-sw-event', channel, JSON of payload)
 //
 // Everything main sends a worker travels as a JSON string, parsed in the
 // worker. Objects would be rebuilt by V8's deserializer on the worker
@@ -22,7 +22,7 @@
 // script that a stopping worker can interrupt without taking the process
 // down.
 //
-// The preload realm (extension-shim.ts) exposes a `__newbroIpc`
+// The preload realm (extension-shim.ts) exposes a `__vimperiumIpc`
 // facade into the SW main world so the polyfill shim can call
 // invoke/on without knowing about ipcRenderer.
 
@@ -56,7 +56,7 @@ const invokeHandlers = new Map<string, SwInvokeHandler>()
 const notifyHandlers = new Map<string, SwNotifyHandler>()
 
 /** Register a request/response handler reachable from extension SWs as
- *  `__newbroIpc.invoke(channel, payload)`. Last registration wins —
+ *  `__vimperiumIpc.invoke(channel, payload)`. Last registration wins —
  *  intentional, so a subsystem can replace its own handler on reload. */
 export function registerSwInvokeHandler(channel: string, handler: SwInvokeHandler): void {
   if (invokeHandlers.has(channel)) {
@@ -65,7 +65,7 @@ export function registerSwInvokeHandler(channel: string, handler: SwInvokeHandle
   invokeHandlers.set(channel, handler)
 }
 
-/** Register a fire-and-forget handler for `__newbroIpc.notify(channel, payload)`. */
+/** Register a fire-and-forget handler for `__vimperiumIpc.notify(channel, payload)`. */
 export function registerSwNotifyHandler(channel: string, handler: SwNotifyHandler): void {
   if (notifyHandlers.has(channel)) {
     log.warn('sw-bridge: notify handler replaced', { channel })
@@ -118,7 +118,7 @@ export function sendToExtensionWorkers(
       if (extensionId !== null && id !== extensionId) continue
       if (!ready) continue
       try {
-        worker.send('newbro-sw-event', channel, json)
+        worker.send('vimperium-sw-event', channel, json)
         reached++
         if (mode === 'first') return reached
       } catch (err) {
@@ -178,7 +178,7 @@ export function wireServiceWorkerBridge(ses: Session, partition: string): void {
     workers.set(versionId, entry)
 
     try {
-      worker.ipc.handle('newbro-sw', async (_event, channel: unknown, payload: unknown) => {
+      worker.ipc.handle('vimperium-sw', async (_event, channel: unknown, payload: unknown) => {
         const ch = String(channel)
         const handler = invokeHandlers.get(ch)
         if (!handler) {
@@ -198,7 +198,7 @@ export function wireServiceWorkerBridge(ses: Session, partition: string): void {
           return JSON.stringify({ ok: false, error: String(err) })
         }
       })
-      worker.ipc.on('newbro-sw-notify', (_event, channel: unknown, payload: unknown) => {
+      worker.ipc.on('vimperium-sw-notify', (_event, channel: unknown, payload: unknown) => {
         const ch = String(channel)
         const handler = notifyHandlers.get(ch)
         if (!handler) {

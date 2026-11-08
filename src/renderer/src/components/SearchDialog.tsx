@@ -14,6 +14,10 @@ import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
 import { hintIndex, usePopupHints } from '../lib/hint-labels'
 import { usePopupVimMode, type VimMode } from '../lib/vim-mode'
 import { displayKeySequence, keysFor, type VimKeymap } from '../lib/vim-keymap'
+import { useWindowVimKeymap, withKeysOf } from '../lib/window-vim-keymap'
+import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
+import { InputDialog } from './InputDialog'
+import { ConfirmDialog } from './ConfirmDialog'
 
 interface Props {
   open: boolean
@@ -76,8 +80,8 @@ export type SearchFilter = FilterSelection
 /** Where tab groups / tabs are searched: every workspace or only the one this window shows. */
 type SearchScope = 'all' | 'current'
 
-const FILTER_STORAGE_KEY = 'newbro-search-filter'
-const SCOPE_STORAGE_KEY = 'newbro-search-scope'
+const FILTER_STORAGE_KEY = 'vimperium-search-filter'
+const SCOPE_STORAGE_KEY = 'vimperium-search-scope'
 
 function loadFilter(): FilterSelection {
   const raw = localStorage.getItem(FILTER_STORAGE_KEY)
@@ -126,6 +130,59 @@ function SearchBreadcrumb({ item }: { item: SearchableItem }) {
 const isMac = navigator.platform.includes('Mac')
 const MOD = isMac ? '⌘' : 'Ctrl+'
 
+/** The theme for the row menu's popup (its own window). */
+function readThemeAttrs(): { theme?: string; themeVariant?: string } {
+  const root = document.documentElement
+  return {
+    theme: root.getAttribute('data-theme') ?? undefined,
+    themeVariant: root.getAttribute('data-theme-variant') ?? undefined,
+  }
+}
+
+/** A row menu's follow-up that needs a dialog of its own, Search closed. */
+type RowDialog =
+  | { kind: 'rename-workspace'; id: string; name: string }
+  | { kind: 'rename-group'; id: string; name: string }
+  | { kind: 'delete-workspace'; id: string; name: string; tabCount: number }
+
+/** What a row's menu (<C-m> in COMMAND) offers, with a key each — the
+ *  Sidebar's letters where it has the same action. */
+function rowMenuActions(item: SearchableItem): DropdownAction[] {
+  switch (item.type) {
+    case 'tab':
+      return [
+        { id: 'close-tab', label: 'Close Tab', iconName: 'X', key: 'x' },
+        { id: 'duplicate-tab', label: 'Duplicate Tab', iconName: 'CopyPlus', key: 'd' },
+        { id: 'move-tab', label: 'Move Tab…', iconName: 'FolderInput', key: 'm', divider: 'before' },
+      ]
+    case 'tabGroup':
+      return [
+        { id: 'rename-group', label: 'Rename Group…', iconName: 'Pencil', key: 'r' },
+        { id: 'close-group', label: 'Close Group', iconName: 'X', key: 'x', destructive: true, divider: 'before' },
+      ]
+    case 'workspace': {
+      // A profile keeps at least one workspace (the profile menu's rule).
+      const profile = useAppStore.getState().profiles.find((p) => p.id === item.profileId)
+      const last = (profile?.workspaces.length ?? 0) <= 1
+      return [
+        { id: 'rename-workspace', label: 'Rename Workspace…', iconName: 'Pencil', key: 'r' },
+        {
+          id: 'delete-workspace',
+          label: 'Delete Workspace…',
+          iconName: 'Trash2',
+          key: 'x',
+          destructive: true,
+          divider: 'before',
+          disabled: last,
+          disabledTitle: last ? 'A profile keeps at least one workspace' : undefined,
+        },
+      ]
+    }
+    default:
+      return []
+  }
+}
+
 export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap, openFilter = null }: Props) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -139,6 +196,14 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
   // Follows the box's focus. Set up further down, once its commands exist; the
   // handlers above only need to know which mode it's in.
   const vimModeRef = useRef<VimMode | null>(null)
+  // The row menu (<C-m>): bumped after it changed what the results hold, so
+  // they're read again; the menu being open, during which the window losing
+  // focus to it mustn't close it; and the window's key, changed to open it
+  // anew once the menu's gone — the way to give it the keyboard back.
+  const [revision, setRevision] = useState(0)
+  const rowMenuOpenRef = useRef(false)
+  const [windowKey, setWindowKey] = useState(0)
+  const [rowDialog, setRowDialog] = useState<RowDialog | null>(null)
 
   const getAllSearchableItems = useAppStore((s) => s.getAllSearchableItems)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
@@ -161,7 +226,9 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
       return typed.filter((item) => item.workspaceId === windowWorkspaceId)
     }
     return typed
-  }, [getAllSearchableItems, open, filter, scopedToCurrent, windowWorkspaceId])
+    // revision: the row menu changed what's there.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [getAllSearchableItems, open, filter, scopedToCurrent, windowWorkspaceId, revision])
 
   const results = useMemo(() => {
     if (!query.trim()) return items.slice(0, 250)
@@ -186,7 +253,8 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
   }, [query, items])
 
   // Count totals per type within the active scope (not just visible results)
-  const allItems = useMemo(() => getAllSearchableItems(), [getAllSearchableItems, open])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const allItems = useMemo(() => getAllSearchableItems(), [getAllSearchableItems, open, revision])
   const totalCounts = useMemo(() => {
     const counts: Record<string, number> = {}
     for (const item of allItems) {
@@ -387,10 +455,99 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
     }
   }, [flatResults, selectedIndex, handleSelect, onOpenChange, toggleScope, scopeApplies, handleFilterChord])
 
+  // ── The row menu (<C-m>) ──
+  // The window's row-menu key opens the menu of the row under the cursor,
+  // the dropdown the Sidebar's rows have, keyboard and all: close, move or
+  // duplicate a tab; rename or close a group; rename or delete a workspace.
+  // The menu takes the keyboard (its own window), so this one stays open
+  // under it and opens anew afterwards — unless what was picked needs a
+  // dialog, which this one gives way to.
+  const parsedKeymap = useWindowVimKeymap()
+  const searchKeymap = useMemo(
+    () => (vimKeymap && parsedKeymap ? withKeysOf(vimKeymap, parsedKeymap.main, ['row-menu'], 'row-menu') : vimKeymap),
+    [vimKeymap, parsedKeymap],
+  )
+  useEffect(() => {
+    setSelectedIndex((i) => Math.min(i, Math.max(flatResults.length - 1, 0)))
+  }, [flatResults.length])
+
+  const runRowAction = (item: SearchableItem, actionId: string | null): void => {
+    const s = useAppStore.getState()
+    // Done here, then back to the results, read again.
+    const thenBack = (): void => {
+      setRevision((r) => r + 1)
+      setWindowKey((k) => k + 1)
+    }
+    // Needs a window of its own: this one closes first, the way the Command
+    // Palette's actions run once it's gone.
+    const handOff = (run: () => void): void => {
+      onOpenChange(false)
+      setTimeout(run, 100)
+    }
+    log.action('search:row-menu', { type: item.type, id: item.id, action: actionId })
+    switch (actionId) {
+      case 'close-tab': s.closeTab(item.id); thenBack(); break
+      case 'duplicate-tab': s.duplicateItems([item.id]); thenBack(); break
+      case 'move-tab':
+        handOff(() => window.dispatchEvent(new CustomEvent('vimperium:open-move-tab', { detail: { tabIds: [item.id] } })))
+        break
+      case 'close-group': s.closeGroup(item.id); thenBack(); break
+      case 'rename-group':
+        handOff(() => setRowDialog({ kind: 'rename-group', id: item.id, name: item.name }))
+        break
+      case 'rename-workspace':
+        handOff(() => setRowDialog({ kind: 'rename-workspace', id: item.id, name: item.name }))
+        break
+      case 'delete-workspace': {
+        const ws = s.profiles.find((p) => p.id === item.profileId)?.workspaces.find((w) => w.id === item.id)
+        const tabCount = ws ? (ws.tabs?.length ?? 0) + ws.tabGroups.reduce((n, g) => n + g.tabs.length, 0) : 0
+        handOff(() => setRowDialog({ kind: 'delete-workspace', id: item.id, name: item.name, tabCount }))
+        break
+      }
+      default:
+        // Esc: back to the results as they were.
+        setWindowKey((k) => k + 1)
+    }
+  }
+
+  const openRowMenu = async (): Promise<void> => {
+    const item = flatResults[selectedIndex]
+    if (!item || rowMenuOpenRef.current) return
+    const actions = rowMenuActions(item)
+    if (actions.length === 0) return
+    // Just under the row, past its icon — from this window's corner to the
+    // browser window's, which the menu is placed in.
+    const row = listRef.current?.querySelector(`[data-index="${selectedIndex}"]`)
+    const rect = row?.getBoundingClientRect()
+    const position = popupWindow && rect
+      ? { x: Math.round(popupWindow.screenX + rect.left + 40 - window.screenX), y: Math.round(popupWindow.screenY + rect.bottom - window.screenY) }
+      : { x: Math.round(window.innerWidth / 3), y: Math.round(window.innerHeight / 4) }
+    rowMenuOpenRef.current = true
+    let actionId: string | null = null
+    try {
+      const result = await openDropdownAsync({
+        kind: 'menu',
+        position,
+        ...readThemeAttrs(),
+        header: item.name,
+        actions,
+        keyboard: true,
+      })
+      actionId = result?.type === 'action' ? result.actionId : null
+    } finally {
+      rowMenuOpenRef.current = false
+    }
+    runRowAction(item, actionId)
+  }
+
   // ── Vim COMMAND mode ──
   // COMMAND mode's two-letter row labels (lib/hint-labels.ts).
-  const hints = usePopupHints(vimKeymap, flatResults.length)
+  const hints = usePopupHints(searchKeymap, flatResults.length)
   const runVimCommand = (command: string): void => {
+    if (command === 'row-menu') {
+      openRowMenu().catch((err: unknown) => log.warn('search: row menu failed', { err: String(err) }))
+      return
+    }
     const hinted = hintIndex(command)
     if (hinted !== null) {
       const item = flatResults[hinted]
@@ -434,21 +591,73 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
   const vimHint = (...commands: string[]): string =>
     vimKeymap ? commands.map((c) => keysFor(vimKeymap, c)[0]).filter(Boolean).map(displayKeySequence).join('/') : ''
 
-  if (!open) return null
+  // What the row menu's rename and delete open, once this window's gone —
+  // so they're here even while it's closed.
+  const renaming = rowDialog?.kind === 'rename-workspace' || rowDialog?.kind === 'rename-group' ? rowDialog : null
+  const deleting = rowDialog?.kind === 'delete-workspace' ? rowDialog : null
+  const rowDialogs = (
+    <>
+      <InputDialog
+        open={renaming !== null}
+        title={renaming?.kind === 'rename-group' ? 'Rename Group' : 'Rename Workspace'}
+        placeholder={renaming?.kind === 'rename-group' ? 'Group name' : 'New workspace name'}
+        defaultValue={renaming?.name ?? ''}
+        confirmLabel="Rename"
+        onConfirm={(name) => {
+          if (renaming?.kind === 'rename-group') useAppStore.getState().renameTabGroup(renaming.id, name)
+          else if (renaming) useAppStore.getState().renameWorkspace(renaming.id, name)
+          log.action('search:rename', { kind: renaming?.kind, id: renaming?.id, name })
+          setRowDialog(null)
+        }}
+        onCancel={() => setRowDialog(null)}
+      />
+      <ConfirmDialog
+        open={deleting !== null}
+        title={`Delete workspace "${deleting?.name ?? ''}"?`}
+        message={`This will permanently delete ${deleting?.tabCount ?? 0} tab${deleting?.tabCount === 1 ? '' : 's'}. The workspace's window will be closed.`}
+        onConfirm={() => {
+          const target = deleting
+          setRowDialog(null)
+          if (!target) return
+          log.action('search:delete-workspace', { id: target.id, name: target.name })
+          // As the profile menu's Delete does: its window first, then the
+          // workspace itself.
+          void (async () => {
+            try {
+              await window.electronAPI.closeWorkspaceWindows([target.id])
+              useAppStore.getState().removeWorkspace(target.id)
+              await saveStateNow()
+            } catch (err) {
+              log.warn('search: deleting the workspace failed', { id: target.id, err: String(err) })
+            }
+          })()
+        }}
+        onCancel={() => setRowDialog(null)}
+      />
+    </>
+  )
+
+  if (!open) return rowDialogs
 
   let flatIdx = 0
 
   return (
+    <>
+    {rowDialogs}
     <DetachedWindow
+      // A new key opens the window anew, which gives it the keyboard back
+      // after the row menu had it.
+      key={windowKey}
       open={open}
-      title="Search - Newbro"
+      title="Search - Vimperium"
       width={760}
       height={640}
       closeOnBlur
       matchRunwaPalette
       // In Vim mode Esc first leaves the search box; the window handles it.
       closeOnEscape={!vimKeymap}
-      onClose={() => onOpenChange(false)}
+      // Not while the row menu has the keyboard: it took it from here.
+      onClose={() => { if (!rowMenuOpenRef.current) onOpenChange(false) }}
       onWindowChange={setPopupWindow}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
@@ -628,6 +837,9 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
                 <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
                 <Hint label="Open" keys={vimKeyCaps(vimKeymap, 'row-open')} />
                 {hints.labels[0] && <Hint label="Open row" keys={[`${hints.labels[0]}…`]} />}
+                {flatResults[selectedIndex] && flatResults[selectedIndex].type !== 'profile' && (
+                  <Hint label="Menu" keys={vimKeyCaps(searchKeymap, 'row-menu')} />
+                )}
                 <Hint label="Filter" keys={vimKeyCaps(vimKeymap, 'search-all', 'search-profiles', 'search-workspaces', 'search-groups', 'search-tabs')} />
                 {scopeApplies && <Hint label="Scope" keys={vimKeyCaps(vimKeymap, 'search-scope')} />}
                 <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
@@ -654,5 +866,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
         </div>
       </div>
     </DetachedWindow>
+    </>
   )
 }

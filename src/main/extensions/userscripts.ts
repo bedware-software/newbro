@@ -280,7 +280,7 @@ export function injectMatchingUserScripts(
   // bootstraps, when injected via executeJavaScriptInIsolatedWorld into
   // a regular web page, attempt a synchronous handshake with the SW
   // through chrome.runtime.connect/sendMessage. Our bridge for those
-  // is fetch-based to newbro-ext-ipc.test, but the page's CSP
+  // is fetch-based to vimperium-ext-ipc.test, but the page's CSP
   // (e.g. yandex.ru's strict connect-src) blocks the fetch BEFORE the
   // webRequest interceptor in main can catch it. The handshake never
   // completes, TM busy-waits, and on macOS where webContents in one
@@ -290,9 +290,9 @@ export function injectMatchingUserScripts(
   // Until we ship a CSP-bypassing transport (likely a hidden iframe at
   // chrome-extension://<id>/bridge.html that postMessage-tunnels to the
   // page, then fetches main from chrome-extension origin where our CSP
-  // patch already allows newbro-ext-ipc.test), keep injection OFF by
-  // default. Set NEWBRO_ENABLE_USERSCRIPTS=1 to opt in for testing.
-  if (process.env['NEWBRO_ENABLE_USERSCRIPTS'] !== '1') {
+  // patch already allows vimperium-ext-ipc.test), keep injection OFF by
+  // default. Set VIMPERIUM_ENABLE_USERSCRIPTS=1 to opt in for testing.
+  if (process.env['VIMPERIUM_ENABLE_USERSCRIPTS'] !== '1') {
     return
   }
   const reg = registries.get(partition)
@@ -374,7 +374,7 @@ export function injectMatchingUserScripts(
   // never lands in main's log, the executeJavaScriptInIsolatedWorld call
   // is being silently dropped (worldId mismatch, Electron quirk, etc.).
   try {
-    fetch('https://newbro-ext-ipc.test/userscript-setup-entry', {
+    fetch('https://vimperium-ext-ipc.test/userscript-setup-entry', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -388,10 +388,10 @@ export function injectMatchingUserScripts(
   if (!g.chrome) g.chrome = {};
   var c = g.chrome;
   if (!c.runtime) c.runtime = {};
-  var __newbroRpc = 'http://127.0.0.1:' + ${JSON.stringify(rpcPort)};
-  var __newbroExtId = ${JSON.stringify(extensionId)};
-  var __newbroRpcHeaders = function (extra) {
-    var h = { 'X-Newbro-Token': ${JSON.stringify(rpcSecret)}, 'X-Newbro-Partition': '*' };
+  var __vimperiumRpc = 'http://127.0.0.1:' + ${JSON.stringify(rpcPort)};
+  var __vimperiumExtId = ${JSON.stringify(extensionId)};
+  var __vimperiumRpcHeaders = function (extra) {
+    var h = { 'X-Vimperium-Token': ${JSON.stringify(rpcSecret)}, 'X-Vimperium-Partition': '*' };
     if (extra) for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) h[k] = extra[k];
     return h;
   };
@@ -403,25 +403,25 @@ export function injectMatchingUserScripts(
   // packets never reach the SW. TM's content.js handshake hangs forever
   // on a port the SW never sees. Replacing unconditionally with our
   // loopback-RPC bridge is the only way to get cross-context delivery.
-  var __newbroBeforeConnect = typeof c.runtime.connect;
-  var __newbroBeforeSend = typeof c.runtime.sendMessage;
-  var __newbroAssignErrors = {};
-  function __newbroForce(obj, prop, value) {
+  var __vimperiumBeforeConnect = typeof c.runtime.connect;
+  var __vimperiumBeforeSend = typeof c.runtime.sendMessage;
+  var __vimperiumAssignErrors = {};
+  function __vimperiumForce(obj, prop, value) {
     try {
       Object.defineProperty(obj, prop, { configurable: true, enumerable: true, writable: true, value: value });
       return 'defineProperty';
     } catch (e1) {
-      __newbroAssignErrors[prop + '/define'] = String((e1 && e1.message) || e1).slice(0, 120);
+      __vimperiumAssignErrors[prop + '/define'] = String((e1 && e1.message) || e1).slice(0, 120);
       try { obj[prop] = value; return 'assign'; }
       catch (e2) {
-        __newbroAssignErrors[prop + '/assign'] = String((e2 && e2.message) || e2).slice(0, 120);
+        __vimperiumAssignErrors[prop + '/assign'] = String((e2 && e2.message) || e2).slice(0, 120);
         return 'failed';
       }
     }
   }
-  __newbroForce(c.runtime, 'id', __newbroExtId);
-  __newbroForce(c.runtime, 'getURL', function (path) {
-    return 'chrome-extension://' + __newbroExtId + '/' + String(path || '').replace(/^\\/+/, '');
+  __vimperiumForce(c.runtime, 'id', __vimperiumExtId);
+  __vimperiumForce(c.runtime, 'getURL', function (path) {
+    return 'chrome-extension://' + __vimperiumExtId + '/' + String(path || '').replace(/^\\/+/, '');
   });
   // Real sendMessage bridge: POST payload to main, await SW's listener
   // response. Signature variants Chrome supports:
@@ -431,7 +431,7 @@ export function injectMatchingUserScripts(
   //   sendMessage(extensionId, message, options, callback)
   // For the bridge we only need the cross-context same-extension form;
   // unpack defensively so the common single-arg case works.
-  __newbroForce(c.runtime, 'sendMessage', function (a, b, c2, d) {
+  __vimperiumForce(c.runtime, 'sendMessage', function (a, b, c2, d) {
     var message;
     var callback;
     if (typeof a === 'string' && typeof b !== 'undefined') {
@@ -444,10 +444,10 @@ export function injectMatchingUserScripts(
     }
     var p = (function () {
       try {
-        return fetch(__newbroRpc + '/runtime-msg-send', {
+        return fetch(__vimperiumRpc + '/runtime-msg-send', {
           method: 'POST',
-          headers: __newbroRpcHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ extId: __newbroExtId, payload: { message: message } }),
+          headers: __vimperiumRpcHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ extId: __vimperiumExtId, payload: { message: message } }),
         }).then(function (r) { return r.json(); }).then(function (j) { return j && j.result; });
       } catch (e) { return Promise.resolve(undefined); }
     })();
@@ -456,14 +456,14 @@ export function injectMatchingUserScripts(
   });
   if (!c.runtime.onMessage) {
     try { c.runtime.onMessage = { addListener: function () {}, removeListener: function () {}, hasListener: function () { return false; } }; }
-    catch (e) { __newbroAssignErrors['onMessage/assign'] = String((e && e.message) || e).slice(0, 120); }
+    catch (e) { __vimperiumAssignErrors['onMessage/assign'] = String((e && e.message) || e).slice(0, 120); }
   }
   // Force-overwrite. Same reason as sendMessage above — the native
   // binding (if any) doesn't reach our SW, and our bridge does.
   // Tampermonkey's content.js handshake hangs on a half-bound native
   // port; our bridge round-trips through main and into the SW shim's
   // bridged onConnect dispatcher.
-  __newbroForce(c.runtime, 'connect', function (a, b) {
+  __vimperiumForce(c.runtime, 'connect', function (a, b) {
     var name = '';
     if (typeof a === 'string' && typeof b === 'object' && b && typeof b.name === 'string') name = b.name;
     else if (a && typeof a === 'object' && typeof a.name === 'string') name = a.name;
@@ -491,8 +491,8 @@ export function injectMatchingUserScripts(
       function loop() {
         if (disconnected || !portId) return;
         try {
-          fetch(__newbroRpc + '/runtime-port-content-poll?portId=' + encodeURIComponent(portId), {
-            method: 'GET', headers: __newbroRpcHeaders(),
+          fetch(__vimperiumRpc + '/runtime-port-content-poll?portId=' + encodeURIComponent(portId), {
+            method: 'GET', headers: __vimperiumRpcHeaders(),
           }).then(function (r) { return r.json(); }).then(function (j) {
             if (j && j.event) {
               if (j.event.type === 'msg') fireMsg(j.event.message);
@@ -506,10 +506,10 @@ export function injectMatchingUserScripts(
       }
       loop();
     }
-    fetch(__newbroRpc + '/runtime-port-connect', {
+    fetch(__vimperiumRpc + '/runtime-port-connect', {
       method: 'POST',
-      headers: __newbroRpcHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ extId: __newbroExtId, name: name }),
+      headers: __vimperiumRpcHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ extId: __vimperiumExtId, name: name }),
     }).then(function (r) { return r.json(); }).then(function (j) {
       portId = j && j.portId ? j.portId : null;
       connecting = false;
@@ -517,9 +517,9 @@ export function injectMatchingUserScripts(
       // Drain any postMessage calls that landed before connect resolved.
       for (var i = 0; i < pendingSend.length; i++) {
         var m = pendingSend[i];
-        fetch(__newbroRpc + '/runtime-port-content-send', {
+        fetch(__vimperiumRpc + '/runtime-port-content-send', {
           method: 'POST',
-          headers: __newbroRpcHeaders({ 'Content-Type': 'application/json' }),
+          headers: __vimperiumRpcHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ portId: portId, message: m }),
         }).catch(function () {});
       }
@@ -528,14 +528,14 @@ export function injectMatchingUserScripts(
     }, function () { connecting = false; fireDisconnect(); });
     var port = {
       name: name,
-      sender: { id: __newbroExtId, frameId: 0, origin: 'newbro-bridge' },
+      sender: { id: __vimperiumExtId, frameId: 0, origin: 'vimperium-bridge' },
       postMessage: function (m) {
         if (disconnected) return;
         if (connecting || !portId) { pendingSend.push(m); return; }
         try {
-          fetch(__newbroRpc + '/runtime-port-content-send', {
+          fetch(__vimperiumRpc + '/runtime-port-content-send', {
             method: 'POST',
-            headers: __newbroRpcHeaders({ 'Content-Type': 'application/json' }),
+            headers: __vimperiumRpcHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ portId: portId, message: m }),
           }).catch(function () {});
         } catch (e) {}
@@ -545,9 +545,9 @@ export function injectMatchingUserScripts(
         disconnected = true;
         if (portId) {
           try {
-            fetch(__newbroRpc + '/runtime-port-disconnect', {
+            fetch(__vimperiumRpc + '/runtime-port-disconnect', {
               method: 'POST',
-              headers: __newbroRpcHeaders({ 'Content-Type': 'application/json' }),
+              headers: __vimperiumRpcHeaders({ 'Content-Type': 'application/json' }),
               body: JSON.stringify({ portId: portId, side: 'content' }),
             }).catch(function () {});
           } catch (e) {}
@@ -573,7 +573,7 @@ export function injectMatchingUserScripts(
     return port;
   });
   if (!c.storage) {
-    try { c.storage = {}; } catch (e) { __newbroAssignErrors['storage/assign'] = String((e && e.message) || e).slice(0, 120); }
+    try { c.storage = {}; } catch (e) { __vimperiumAssignErrors['storage/assign'] = String((e && e.message) || e).slice(0, 120); }
   }
   if (c.storage && !c.storage.local) {
     try {
@@ -583,30 +583,30 @@ export function injectMatchingUserScripts(
         remove: function (k, cb) { if (cb) cb(); return Promise.resolve(); },
         clear: function (cb) { if (cb) cb(); return Promise.resolve(); }
       };
-    } catch (e) { __newbroAssignErrors['storage.local/assign'] = String((e && e.message) || e).slice(0, 120); }
+    } catch (e) { __vimperiumAssignErrors['storage.local/assign'] = String((e && e.message) || e).slice(0, 120); }
   }
   // Diagnostic: post the resulting shape of chrome.runtime to main so we
   // can confirm whether the force-replace actually landed in this
   // isolated world. Sent fire-and-forget; reaches main as a webRequest
-  // beacon via the standard newbro-ext-ipc.test interceptor.
+  // beacon via the standard vimperium-ext-ipc.test interceptor.
   try {
     var __nbCheckOurs = function (fn) {
-      try { return typeof fn === 'function' && String(fn).indexOf('__newbroRpc') !== -1; }
+      try { return typeof fn === 'function' && String(fn).indexOf('__vimperiumRpc') !== -1; }
       catch (e) { return false; }
     };
-    fetch('https://newbro-ext-ipc.test/userscript-setup-installed', {
+    fetch('https://vimperium-ext-ipc.test/userscript-setup-installed', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        extId: __newbroExtId,
+        extId: __vimperiumExtId,
         href: (typeof location !== 'undefined' && location.href) || '',
-        before: { connect: __newbroBeforeConnect, sendMessage: __newbroBeforeSend },
+        before: { connect: __vimperiumBeforeConnect, sendMessage: __vimperiumBeforeSend },
         after: {
           connectIsOurs: __nbCheckOurs(c.runtime && c.runtime.connect),
           sendMessageIsOurs: __nbCheckOurs(c.runtime && c.runtime.sendMessage),
           runtimeId: typeof (c.runtime && c.runtime.id),
         },
-        assignErrors: __newbroAssignErrors,
+        assignErrors: __vimperiumAssignErrors,
       }),
     }).catch(function () {});
   } catch (e) { /* ignore */ }

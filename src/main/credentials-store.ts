@@ -1,7 +1,7 @@
 // Saved HTTP-auth credentials for corporate sign-ins (Basic / Digest / NTLM /
 // Negotiate). When Integrated Windows Authentication won't do — the Windows
 // account this PC is logged into isn't the corporate account the server
-// expects — the user can save explicit corp credentials once and have Newbro
+// expects — the user can save explicit corp credentials once and have Vimperium
 // answer future 401/407 challenges for that host automatically, instead of
 // retyping them on every launch.
 //
@@ -42,7 +42,7 @@ export interface SavedCredentialInfo {
 }
 
 const store = new Store<{ credentials: Record<string, SavedCredential> }>({
-  name: 'newbro-credentials',
+  name: 'vimperium-credentials',
   defaults: { credentials: {} },
 })
 

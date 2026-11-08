@@ -1,11 +1,12 @@
 {
-  "name": "Newbro",
-  "version": "1.1.244",
+  "name": "vimperium",
+  "productName": "Vimperium",
+  "version": "1.1.245",
   "author": "Dmitry Surin <dmitry.surin@gmail.com>",
   "description": "Workspace-based browser with profiles and tab groups",
   "repository": {
     "type": "git",
-    "url": "https://github.com/bedware-software/newbro.git"
+    "url": "https://github.com/bedware-software/vimperium.git"
   },
   "main": "./out/main/index.js",
   "scripts": {
@@ -40,7 +41,7 @@
     "vite": "^7.3.1"
   },
   "build": {
-    "appId": "com.newbro.browser",
+    "appId": "com.vimperium.browser",
     "directories": {
       "output": "release"
     },
@@ -66,7 +67,14 @@
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "timestamp": "none"
+      "timestamp": "none",
+      "extendInfo": {
+        "NSBluetoothAlwaysUsageDescription": "Vimperium uses Bluetooth to sign in with a passkey from your iPhone.",
+        "NSBluetoothPeripheralUsageDescription": "Vimperium uses Bluetooth to sign in with a passkey from your iPhone.",
+        "NSCameraUsageDescription": "Vimperium lets the websites you allow use the camera.",
+        "NSMicrophoneUsageDescription": "Vimperium lets the websites you allow use the microphone.",
+        "NSAudioCaptureUsageDescription": "Vimperium lets the websites you allow record this Mac's audio."
+      }
     },
     "linux": {
       "target": [
@@ -76,12 +84,13 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "guid": "47ded20f-0973-5f4e-a153-6fc5ae43dad6"
     },
     "publish": {
       "provider": "github",
       "owner": "bedware-software",
-      "repo": "newbro"
+      "repo": "vimperium"
     }
   },
   "dependencies": {

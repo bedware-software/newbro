@@ -1,4 +1,4 @@
-// chrome.identity.launchWebAuthFlow for Newbro.
+// chrome.identity.launchWebAuthFlow for Vimperium.
 //
 // Chrome opens the provider's auth URL in a browser-owned window and
 // finishes the flow when the provider redirects to

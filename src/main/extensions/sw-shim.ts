@@ -7,7 +7,7 @@
 // own session preload. The library does NOT implement
 // chrome.userScripts (Tampermonkey/Violentmonkey gate userscript
 // injection on this) or chrome.scripting.executeScript, so we still ship
-// a polyfill for those and forward to main via newbro-ipc://.
+// a polyfill for those and forward to main via vimperium-ipc://.
 //
 // The reason this is prepended on disk rather than registered as a
 // session preload: in Electron 41 we observed `registerPreloadScript`
@@ -67,7 +67,7 @@
 //         extension's chrome.proxy.config to main, which converts to
 //         Electron's session.setProxy() shape and applies to every
 //         partitioned session. Browsec / Hola / Hoxx / similar VPN
-//         extensions can now actually route traffic via Newbro.
+//         extensions can now actually route traffic via Vimperium.
 //   V35 — chrome.runtime.onStartup actually fires on cold app start.
 //         The library exposes runtime.onInstalled but not onStartup,
 //         so until V35 listeners landed on a noop event stub. Browsec
@@ -104,14 +104,64 @@
 //         response time.
 //   V50 — and with the error text of failed responses.
 
-export const SW_SHIM_MAGIC = '// __NEWBRO_SW_SHIM_V50__'
-export const SW_SHIM_LEGACY_MAGIC = '// __NEWBRO_SW_SHIM_V1__'
-export const SW_SHIM_FOOTER = '// __NEWBRO_SW_SHIM_END__'
+import {
+  LEGACY_CS_STORAGE_PORT,
+  LEGACY_SW_SHIM_FOOTER,
+  LEGACY_SW_SHIM_HEADER_PREFIX,
+  LEGACY_SW_SHIM_V1_MAGIC,
+} from './legacy-names'
+
+export const SW_SHIM_MAGIC = '// __VIMPERIUM_SW_SHIM_V50__'
+export const SW_SHIM_FOOTER = '// __VIMPERIUM_SW_SHIM_END__'
 // Module service workers get the shim as a sibling module imported first
 // (see injectSwShim) instead of prepended inline.
-export const SW_SHIM_MODULE_FILE = 'newbro-sw-shim.js'
+export const SW_SHIM_MODULE_FILE = 'vimperium-sw-shim.js'
 
-export const SW_SHIM_HOST = 'newbro-ext-ipc.test'
+export const SW_SHIM_HOST = 'vimperium-ext-ipc.test'
+/** The privileged scheme main serves round-trips on (index.ts). */
+export const SW_IPC_SCHEME = 'vimperium-ipc'
+
+/** The port content scripts' storage polyfill (manager.ts) opens to the
+ *  worker. The worker answers Newbro's old name as well. */
+export const CS_STORAGE_PORT = '__vimperium_cs_storage'
+
+/** Every shim header we ever wrote that has a footer: ours (any version)
+ *  and Newbro's. */
+const SW_SHIM_HEADERS: ReadonlyArray<{ prefix: string; footer: string }> = [
+  { prefix: '// __VIMPERIUM_SW_SHIM_', footer: SW_SHIM_FOOTER },
+  { prefix: LEGACY_SW_SHIM_HEADER_PREFIX, footer: LEGACY_SW_SHIM_FOOTER },
+]
+
+/** Take every shim off the top of a worker file and return the extension's
+ *  own code. Repeats, so a file that somehow carries two shims (Newbro's
+ *  under ours) comes out clean. Also eats the blank lines after a footer —
+ *  earlier versions wrote `shim + '\n' + body`, and keeping them would add
+ *  a line on every launch and break the byte-identity check. A header
+ *  without its footer (or a V1 shim without its IIFE close) can't be cut
+ *  out safely: that's reported, and the caller leaves the file alone. */
+export function stripSwShims(source: string): { body: string; removed: number } | { error: string } {
+  let body = source
+  let removed = 0
+  for (;;) {
+    if (body.startsWith(LEGACY_SW_SHIM_V1_MAGIC)) {
+      // V1 had no footer; it ended at its IIFE's close.
+      const v1Close = '\n})();\n'
+      const closeIdx = body.indexOf(v1Close, LEGACY_SW_SHIM_V1_MAGIC.length)
+      if (closeIdx === -1) return { error: 'V1 shim header without a recognisable IIFE close' }
+      body = body.slice(closeIdx + v1Close.length).replace(/^[\r\n]+/, '')
+      removed++
+      continue
+    }
+    const header = SW_SHIM_HEADERS.find((h) => body.startsWith(h.prefix))
+    if (!header) return { body, removed }
+    const footerIdx = body.indexOf(header.footer)
+    if (footerIdx === -1) return { error: `shim header ${body.slice(0, body.indexOf('\n'))} without its footer` }
+    let cursor = footerIdx + header.footer.length
+    while (cursor < body.length && (body[cursor] === '\n' || body[cursor] === '\r')) cursor++
+    body = body.slice(cursor)
+    removed++
+  }
+}
 
 /** Build the SW shim source with the loopback RPC server's port +
  *  secret baked in. The port comes from a loopback HTTP server we
@@ -137,15 +187,15 @@ export function buildSwShimSource(rpcPort: number, rpcSecret: string, partition:
   const secretLit = JSON.stringify(rpcSecret)
   const partitionLit = JSON.stringify(partition)
   return SW_SHIM_TEMPLATE
-    .replace(/__NEWBRO_RPC_PORT__/g, portLit)
-    .replace(/"__NEWBRO_RPC_SECRET__"/g, secretLit)
-    .replace(/"__NEWBRO_PARTITION__"/g, partitionLit)
+    .replace(/__VIMPERIUM_RPC_PORT__/g, portLit)
+    .replace(/"__VIMPERIUM_RPC_SECRET__"/g, secretLit)
+    .replace(/"__VIMPERIUM_PARTITION__"/g, partitionLit)
 }
 
 const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
 // Polyfills chrome.userScripts + chrome.scripting.executeScript in MV3
 // service-worker contexts. The rest of the chrome.* surface is provided
-// by electron-chrome-extensions's own preload. Auto-injected by Newbro
+// by electron-chrome-extensions's own preload. Auto-injected by Vimperium
 // at install time. Safe to remove if you re-pack the extension.
 ;(function () {
   'use strict';
@@ -161,13 +211,13 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
   // webRequest cancel (no body), webRequest redirect to data: URL
   // (ERR_UNSAFE_REDIRECT). The HTTP server is the only path that
   // delivers a real JSON response body to a SW fetch.
-  var IPC_RPC = 'http://127.0.0.1:__NEWBRO_RPC_PORT__';
-  var IPC_RPC_SECRET = "__NEWBRO_RPC_SECRET__";
-  var IPC_RPC_PARTITION = "__NEWBRO_PARTITION__";
+  var IPC_RPC = 'http://127.0.0.1:__VIMPERIUM_RPC_PORT__';
+  var IPC_RPC_SECRET = "__VIMPERIUM_RPC_SECRET__";
+  var IPC_RPC_PARTITION = "__VIMPERIUM_PARTITION__";
   function rpcHeaders(extra) {
     var h = {
-      'X-Newbro-Token': IPC_RPC_SECRET,
-      'X-Newbro-Partition': IPC_RPC_PARTITION,
+      'X-Vimperium-Token': IPC_RPC_SECRET,
+      'X-Vimperium-Partition': IPC_RPC_PARTITION,
     };
     if (extra) {
       for (var k in extra) {
@@ -187,25 +237,25 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
   function swLog(ctx, e) {
     var msg = '';
     try { msg = (e && (e.message || e.stack || String(e))) || ''; } catch (_) { msg = '(unstringifiable)'; }
-    try { console.error('[newbro-sw-shim] ' + ctx + ': ' + msg); } catch (_) { /* console may be torn down — last-resort, nothing else to do */ }
+    try { console.error('[vimperium-sw-shim] ' + ctx + ': ' + msg); } catch (_) { /* console may be torn down — last-resort, nothing else to do */ }
     if (swLogPending) return;
     swLogPending = true;
     try {
       sendPost('sw-shim-error', { ctx: String(ctx).slice(0, 120), msg: String(msg).slice(0, 600) });
     } catch (inner) {
-      try { console.error('[newbro-sw-shim] swLog/sendPost itself threw: ' + String(inner)); } catch (_) { /* nothing more we can do */ }
+      try { console.error('[vimperium-sw-shim] swLog/sendPost itself threw: ' + String(inner)); } catch (_) { /* nothing more we can do */ }
     } finally {
       swLogPending = false;
     }
   }
   // ── IPC bridge helpers ────────────────────────────────────────────
-  // The SW preload realm (extension-shim.ts) installs __newbroIpc into
+  // The SW preload realm (extension-shim.ts) installs __vimperiumIpc into
   // this world shortly after SW start (one hello round-trip). Every
   // transport decision point re-checks it so the shim upgrades from
   // loopback HTTP to IPC the moment the facade lands.
   function getIpc() {
     try {
-      var ipc = (typeof globalThis !== 'undefined') ? globalThis.__newbroIpc : undefined;
+      var ipc = (typeof globalThis !== 'undefined') ? globalThis.__vimperiumIpc : undefined;
       if (ipc && typeof ipc.invoke === 'function' && typeof ipc.on === 'function') return ipc;
       return undefined;
     } catch (_) { return undefined; }
@@ -233,19 +283,19 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
 
   function sendPost(action, body) {
     // Prefer the IPC bridge installed by the SW preload realm
-    // (extension-shim.ts → __newbroIpc). It replaces the sentinel-host
+    // (extension-shim.ts → __vimperiumIpc). It replaces the sentinel-host
     // fetch: un-interceptable by extension webRequest/DNR rules, no
     // connection budget, no ERR_NETWORK_CHANGED casualties. The fetch
     // path below remains as fallback until the preload handshake lands
     // (first ~ms of SW life) or on Electron without preload realms.
     try {
-      var ipc = (typeof globalThis !== 'undefined') ? globalThis.__newbroIpc : undefined;
+      var ipc = (typeof globalThis !== 'undefined') ? globalThis.__vimperiumIpc : undefined;
       if (ipc && typeof ipc.notify === 'function') {
         ipc.notify('shim', { action: action, body: body });
         return;
       }
     } catch (e) {
-      try { console.error('[newbro-sw-shim] sendPost/__newbroIpc threw: ' + String(e)); }
+      try { console.error('[vimperium-sw-shim] sendPost/__vimperiumIpc threw: ' + String(e)); }
       catch (_) { /* console torn down */ }
     }
     try {
@@ -264,11 +314,11 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         // — webRequest fires before resolution.
         var msg = (err && err.message) ? String(err.message) : String(err);
         if (msg.indexOf('Failed to fetch') !== -1) return;
-        try { console.error('[newbro-sw-shim] sendPost(' + action + ') fetch rejected: ' + msg); }
+        try { console.error('[vimperium-sw-shim] sendPost(' + action + ') fetch rejected: ' + msg); }
         catch (_) { /* console torn down */ }
       });
     } catch (e) {
-      try { console.error('[newbro-sw-shim] sendPost(' + action + ') threw: ' + String(e)); }
+      try { console.error('[vimperium-sw-shim] sendPost(' + action + ') threw: ' + String(e)); }
       catch (_) { /* console torn down */ }
     }
   }
@@ -336,7 +386,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     // Emit autostub hits as a separate, higher-signal beacon so it's
     // trivially greppable in the log. Real Chrome features the extension
     // tried to use that we have NO implementation for surface here —
-    // typical fix path is to add the namespace to NEWBRO_OVERRIDES or
+    // typical fix path is to add the namespace to VIMPERIUM_OVERRIDES or
     // patch it via the lib's preload.
     if (kind === 'autostub') {
       MISS_QUEUE.push({ extId: extId, prop: prop });
@@ -355,8 +405,8 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     return typeof url === 'string' && url.indexOf(IPC_HOST) === 0;
   }
   function installNetworkSpies(extId) {
-    if (self.__newbroNetSpiesInstalled) return;
-    self.__newbroNetSpiesInstalled = true;
+    if (self.__vimperiumNetSpiesInstalled) return;
+    self.__vimperiumNetSpiesInstalled = true;
     try {
       var rawFetch = self.fetch && self.fetch.bind(self);
       if (rawFetch) {
@@ -430,7 +480,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
   // refuse to be redefined via Object.defineProperty — those
   // properties land in here so the wrapping Proxy at the end of this
   // shim can return our values regardless. See wrapChromeWithAutoStub.
-  var NEWBRO_OVERRIDES = Object.create(null);
+  var VIMPERIUM_OVERRIDES = Object.create(null);
 
   function patch(c) {
     if (!c || typeof c !== 'object') return;
@@ -446,7 +496,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     // patch so the extId is in scope for every logged event.
     try { installNetworkSpies(extId); } catch (e) { swLog('patch/installNetworkSpies', e); }
 
-    // chrome.userScripts: register OUR namespace into NEWBRO_OVERRIDES
+    // chrome.userScripts: register OUR namespace into VIMPERIUM_OVERRIDES
     // unconditionally. Chromium ships a partial chrome.userScripts in
     // the SW global whose methods are non-writable accessors that
     // resolve to undefined (the chrome://extensions Developer Mode
@@ -459,7 +509,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     // chrome object as a belt-and-suspenders so any code that bypassed
     // the wrapper Proxy also sees our object.
     var us = {}
-    NEWBRO_OVERRIDES['userScripts'] = us
+    VIMPERIUM_OVERRIDES['userScripts'] = us
     try {
       Object.defineProperty(c, 'userScripts', {
         configurable: true,
@@ -535,7 +585,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     us.execute = function (injection, cb) {
       var p = (function () {
         try {
-          var ipc = (typeof globalThis !== 'undefined') ? globalThis.__newbroIpc : undefined;
+          var ipc = (typeof globalThis !== 'undefined') ? globalThis.__vimperiumIpc : undefined;
           if (ipc && typeof ipc.invoke === 'function') {
             return ipc.invoke('userscripts-execute', { extId: extId, injection: injection || {} })
               .then(function (r) {
@@ -570,7 +620,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     // webRequest.onHeadersReceived, so .onAuthRequired is undefined
     // and Browsec crashes with "Cannot read properties of undefined
     // (reading 'addListener')". We add an event-shape stub and
-    // forward registered listeners to main via newbro-ipc so the
+    // forward registered listeners to main via vimperium-ipc so the
     // session-level auth challenge actually reaches Browsec's
     // credentials callback.
     // chrome.webRequest.onAuthRequired stub.
@@ -622,7 +672,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     // the connection wedges until our 15s timeout.
     //
     // Wiring: on first listener registration, start a long-poll loop
-    // against newbro-ipc/auth-poll. When main has a parked challenge
+    // against vimperium-ipc/auth-poll. When main has a parked challenge
     // for this partition, the response payload is { challenge: { id,
     // details } }. We dispatch to every listener; for asyncBlocking
     // mode we pass an asyncCallback as the 2nd arg and POST the
@@ -824,14 +874,14 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         return true;
       },
     });
-    NEWBRO_OVERRIDES['webRequest'] = newWR;
+    VIMPERIUM_OVERRIDES['webRequest'] = newWR;
     // Also fetch our own bg.js once so main can log the source around
     // the crash line — turns "Cannot read properties of undefined" at
     // line N into the actual code at line N. Cheap, fires once per SW.
     try {
       var ownUrl = (self.location && self.location.href) ? self.location.href : '';
-      if (ownUrl && !self.__newbroSourceLogged) {
-        self.__newbroSourceLogged = true;
+      if (ownUrl && !self.__vimperiumSourceLogged) {
+        self.__vimperiumSourceLogged = true;
         fetch(ownUrl).then(function (r) { return r.text(); }).then(function (text) {
           var allLines = text.split('\\n');
           var win = [];
@@ -1175,7 +1225,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
           // the original cb reference. We can't perfectly support that
           // because the spy is a different function; but for diagnostic
           // logging we accept that limitation.
-          spy.__newbroOriginal = cb;
+          spy.__vimperiumOriginal = cb;
           return origAdd(spy);
         },
         removeListener: origRm ? function (cb) {
@@ -1223,7 +1273,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
           }).catch(function (err) { swLog('bridged-msg/respond-fetch', err); });
         } catch (e) { swLog('bridged-msg/respond-throw', e); }
       }
-      var sender = { id: extId, origin: 'newbro-bridge', frameId: 0, tab: undefined };
+      var sender = { id: extId, origin: 'vimperium-bridge', frameId: 0, tab: undefined };
       var anyAsync = false;
       for (var i = 0; i < snap.length; i++) {
         try {
@@ -1309,7 +1359,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       bridgedPorts[portId] = portState;
       var port = {
         name: name || '',
-        sender: { id: extId, frameId: 0, origin: 'newbro-bridge' },
+        sender: { id: extId, frameId: 0, origin: 'vimperium-bridge' },
         postMessage: function (msg) {
           if (portState.disconnected) return;
           if (ipcInvoke('port-sw-send', { portId: portId, message: msg })) return;
@@ -1477,7 +1527,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         return true;
       },
     });
-    NEWBRO_OVERRIDES['runtime'] = runtimeProxy;
+    VIMPERIUM_OVERRIDES['runtime'] = runtimeProxy;
 
     // ── chrome.storage.onChanged bridge ────────────────────────────
     // In Electron 41, chrome.storage.onChanged fires in the writing
@@ -1492,7 +1542,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     // the popup looks like it took, but the actual IP doesn't change.
     //
     // Fix: bridge through main. The popup-side preload posts each
-    // chrome.storage.onChanged payload to main via newbro-ipc; main
+    // chrome.storage.onChanged payload to main via vimperium-ipc; main
     // queues per extId; SW long-polls /storage-poll and dispatches
     // received changes to the SW's own onChanged listeners. We wrap
     // chrome.storage.onChanged.addListener so we can keep an
@@ -1625,7 +1675,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
           catch (e) { swLog('storage-proxy/set:' + String(prop), e); return true; }
         },
       });
-      NEWBRO_OVERRIDES['storage'] = storageProxy;
+      VIMPERIUM_OVERRIDES['storage'] = storageProxy;
     } else {
       sendPost('storage-onChanged-missing', { extId: extId, hasStorage: typeof realStorage });
     }
@@ -1634,8 +1684,8 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     // Content scripts can't touch native chrome.storage in Electron
     // ("Access to storage is not allowed from this context"), which
     // breaks Vimium (self-disables) and YouTube→NotebookLM (crashes on
-    // undefined storage). Their prepended polyfill (newbro-cs-storage.js)
-    // opens a dedicated '__newbro_cs_storage' port to the SW and routes
+    // undefined storage). Their prepended polyfill (vimperium-cs-storage.js)
+    // opens a dedicated '__vimperium_cs_storage' port to the SW and routes
     // each op through it; service them with the SW's own working storage
     // so the backend stays consistent with what the extension reads/
     // writes everywhere else. A named port (not runtime.sendMessage)
@@ -1644,7 +1694,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     try {
       if (c.runtime && c.runtime.onConnect && typeof c.runtime.onConnect.addListener === 'function') {
         c.runtime.onConnect.addListener(function (port) {
-          if (!port || port.name !== '__newbro_cs_storage') return;
+          if (!port || (port.name !== ${JSON.stringify(CS_STORAGE_PORT)} && port.name !== ${JSON.stringify(LEGACY_CS_STORAGE_PORT)})) return;
           port.onMessage.addListener(function (req) {
             if (!req || typeof req.id === 'undefined') return;
             var area = (req.area === 'sync' || req.area === 'managed') ? 'local' : (req.area || 'local');
@@ -1717,7 +1767,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         hasListener: function () { return false; },
       },
     };
-    // Register chrome.proxy into NEWBRO_OVERRIDES so the wrapping
+    // Register chrome.proxy into VIMPERIUM_OVERRIDES so the wrapping
     // Proxy returns OUR object regardless of whether the underlying
     // assignment lands. Chromium intrinsics for chrome.proxy can be
     // non-writable accessors in the same way chrome.userScripts and
@@ -1742,7 +1792,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       onError: proxyErrorEvent,
       onProxyError: proxyErrorEvent,
     }
-    NEWBRO_OVERRIDES['proxy'] = proxyNamespace
+    VIMPERIUM_OVERRIDES['proxy'] = proxyNamespace
     try { c.proxy = proxyNamespace; }
     catch (e1) {
       swLog('patch/proxy/assign', e1);
@@ -1847,7 +1897,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       },
       onChanged: noopEvent,
     };
-    NEWBRO_OVERRIDES['cookies'] = cookiesNamespace;
+    VIMPERIUM_OVERRIDES['cookies'] = cookiesNamespace;
     try {
       Object.defineProperty(c, 'cookies', {
         configurable: true,
@@ -1885,11 +1935,11 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     // chrome.management.getSelf) so the Proxy preserves their real
     // shape via Reflect.get.
 
-    // chrome.scripting: register into NEWBRO_OVERRIDES same as
+    // chrome.scripting: register into VIMPERIUM_OVERRIDES same as
     // chrome.userScripts above. Chromium's intrinsic chrome.scripting
     // has the same non-writable-method problem.
     var scripting = {}
-    NEWBRO_OVERRIDES['scripting'] = scripting
+    VIMPERIUM_OVERRIDES['scripting'] = scripting
     try {
       Object.defineProperty(c, 'scripting', {
         configurable: true,
@@ -2049,7 +2099,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
   // avoid that; report any worker that still slips through.
   // Over sendPost's HTTP fallback — the IPC facade can't exist here.
   try {
-    if (!self.__newbroPreloadRan) {
+    if (!self.__vimperiumPreloadRan) {
       var noPreloadExtId = (self.chrome && self.chrome.runtime && self.chrome.runtime.id) ? String(self.chrome.runtime.id) : '';
       sendPost('sw-no-preload', { extId: noPreloadExtId });
     }
@@ -2168,7 +2218,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     return new Proxy(emptyTarget, {
       get: function (_t, prop) {
         // Our explicit overrides win first.
-        var override = (typeof prop === 'string') ? NEWBRO_OVERRIDES[prop] : undefined;
+        var override = (typeof prop === 'string') ? VIMPERIUM_OVERRIDES[prop] : undefined;
         // Then whatever Chromium / the library actually installed.
         var v = Reflect.get(real, prop);
         // V23: log every unique top-level chrome.<ns> read so we can
@@ -2209,7 +2259,7 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         return makeAutoStub();
       },
       has: function (_t, prop) {
-        if (typeof prop === 'string' && NEWBRO_OVERRIDES[prop]) return true;
+        if (typeof prop === 'string' && VIMPERIUM_OVERRIDES[prop]) return true;
         return Reflect.has(real, prop);
       },
       set: function (_t, prop, value) {
@@ -2231,15 +2281,15 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
   // for self.chrome are sometimes pinned non-configurable / non-writable;
   // when that happens, neither defineProperty nor plain assignment can
   // replace self.chrome with our Proxy wrap, and chrome.<ns> reads bypass
-  // NEWBRO_OVERRIDES entirely. The user-visible cost is partial — for
+  // VIMPERIUM_OVERRIDES entirely. The user-visible cost is partial — for
   // namespaces where patch() already does a direct sub-property install
   // (chrome.proxy, chrome.userScripts, chrome.scripting, chrome.tabs),
   // those land fine, since pin-ness can differ per sub-property. But
-  // namespaces that ONLY live in NEWBRO_OVERRIDES (chrome.webRequest,
+  // namespaces that ONLY live in VIMPERIUM_OVERRIDES (chrome.webRequest,
   // chrome.runtime, chrome.storage) lose their override.
   //
   // Recovery: when the top-level wrap fails, fall back to installing
-  // every NEWBRO_OVERRIDES key as a direct property on self.chrome via
+  // every VIMPERIUM_OVERRIDES key as a direct property on self.chrome via
   // defineProperty. Each install is independently tried so a single
   // pinned sub-property doesn't poison the rest.
   var wrapDiag = {
@@ -2293,14 +2343,14 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
     wrapDiag.finalChromeIsWrapped = self.chrome === wrapped;
   } catch (e) { swLog('main/wrap-chrome/final-cmp', e); }
 
-  // If the top-level wrap didn't take, push each NEWBRO_OVERRIDES key
+  // If the top-level wrap didn't take, push each VIMPERIUM_OVERRIDES key
   // directly onto self.chrome. patch() already covered userScripts /
   // scripting / proxy / tabs; this is the safety net for everything else
   // — most importantly webRequest / runtime / storage, which are the
   // namespaces that hide the SW-bridge events (onAuthRequired, onStartup,
   // onChanged) extensions reach for.
   if (!wrapDiag.finalChromeIsWrapped && self.chrome) {
-    var keys = Object.keys(NEWBRO_OVERRIDES);
+    var keys = Object.keys(VIMPERIUM_OVERRIDES);
     for (var ki = 0; ki < keys.length; ki++) {
       var key = keys[ki];
       var current;
@@ -2309,21 +2359,21 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
       var subDesc = null;
       try { subDesc = Object.getOwnPropertyDescriptor(self.chrome, key); }
       catch (e) { swLog('main/override-desc/' + key, e); }
-      var attempted = { hasCurrent: typeof current !== 'undefined', alreadyOurs: current === NEWBRO_OVERRIDES[key], defineOk: false, defineErr: null, assignOk: false, assignErr: null };
+      var attempted = { hasCurrent: typeof current !== 'undefined', alreadyOurs: current === VIMPERIUM_OVERRIDES[key], defineOk: false, defineErr: null, assignOk: false, assignErr: null };
       if (attempted.alreadyOurs) { wrapDiag.perOverrideInstall[key] = 'already-ours'; continue; }
       try {
         Object.defineProperty(self.chrome, key, {
           configurable: true,
           enumerable: true,
           writable: true,
-          value: NEWBRO_OVERRIDES[key],
+          value: VIMPERIUM_OVERRIDES[key],
         });
-        attempted.defineOk = self.chrome[key] === NEWBRO_OVERRIDES[key];
+        attempted.defineOk = self.chrome[key] === VIMPERIUM_OVERRIDES[key];
       } catch (e3) {
         attempted.defineErr = String((e3 && e3.message) || e3).slice(0, 200);
         try {
-          self.chrome[key] = NEWBRO_OVERRIDES[key];
-          attempted.assignOk = self.chrome[key] === NEWBRO_OVERRIDES[key];
+          self.chrome[key] = VIMPERIUM_OVERRIDES[key];
+          attempted.assignOk = self.chrome[key] === VIMPERIUM_OVERRIDES[key];
         } catch (e4) {
           attempted.assignErr = String((e4 && e4.message) || e4).slice(0, 200);
         }
@@ -2404,11 +2454,11 @@ const SW_SHIM_TEMPLATE = `${SW_SHIM_MAGIC}
         scrGetRegisteredType: Array.isArray(results[1]) ? 'array' : (results[1] && results[1].__err ? 'error:' + results[1].__err : typeof results[1]),
         proxyGetType: results[2] && results[2].__err ? 'error:' + results[2].__err : typeof results[2],
         chromeIsOurProxy: (function () {
-          try { return self.chrome.userScripts === NEWBRO_OVERRIDES['userScripts']; }
+          try { return self.chrome.userScripts === VIMPERIUM_OVERRIDES['userScripts']; }
           catch (e) { swLog('post-patch/chromeIsOurProxy-probe', e); return false; }
         })(),
         wrIsOurProxy: (function () {
-          try { return self.chrome.webRequest === NEWBRO_OVERRIDES['webRequest']; }
+          try { return self.chrome.webRequest === VIMPERIUM_OVERRIDES['webRequest']; }
           catch (e) { swLog('post-patch/wrIsOurProxy-probe', e); return false; }
         })(),
         wrOnAuthRequiredType: (function () {

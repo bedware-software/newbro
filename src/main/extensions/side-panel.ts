@@ -1,4 +1,4 @@
-// chrome.sidePanel for Newbro.
+// chrome.sidePanel for Vimperium.
 //
 // Chrome docks an extension page beside the tab content. We do the same
 // with a WebContentsView in the workspace window: the renderer lays out a

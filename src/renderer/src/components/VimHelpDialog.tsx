@@ -6,7 +6,7 @@ import { VimModeBadge } from './VimModeBadge'
 import { usePopupVimMode, type VimMode } from '../lib/vim-mode'
 import { vimKeyCaps } from './KeyHints'
 import { fuzzyFilter } from '../lib/fuzzy'
-import { keysFor, vimCommandLabel, vimCommandsInOrder, type ParsedVimKeymap, type VimContext, type VimKeymap } from '../lib/vim-keymap'
+import { keysFor, settingsCommandLabel, settingsCommandsInOrder, settingsKeymap, vimCommandLabel, vimCommandsInOrder, type ParsedVimKeymap, type VimContext, type VimKeymap } from '../lib/vim-keymap'
 
 interface Props {
   open: boolean
@@ -19,11 +19,16 @@ interface Props {
   onClose: () => void
 }
 
-const SECTIONS: Array<{ context: VimContext; title: string; mode: VimMode | null; note: string }> = [
+// Settings isn't a context of the keymap's own: its keys come from the
+// main window's (settingsKeymap), and are listed here with the rest.
+type HelpContext = VimContext | 'settings'
+
+const SECTIONS: Array<{ context: HelpContext; title: string; mode: VimMode | null; note: string }> = [
   { context: 'command', title: 'COMMAND', mode: 'command', note: 'The page and the browser. In the page, keys not listed here reach it.' },
   { context: 'search', title: 'Search Everything · Command Palette', mode: null, note: 'Their COMMAND mode, out of the box (Esc); i types again.' },
   { context: 'find', title: 'Find in Page', mode: null, note: 'Its COMMAND mode, out of typing (Enter or Esc); i types again.' },
   { context: 'url', title: 'Address editor', mode: null, note: 'E in COMMAND. Blocks: h protocol, d domain, n port, 1–9 path levels, p parameters, f fragment. The intent\'s key again (yy, cc, rr): the whole address.' },
+  { context: 'settings', title: 'Settings', mode: null, note: 'Its COMMAND mode, which it opens in. Every setting wears a two-letter label too; typing it goes there.' },
 ]
 
 interface Row {
@@ -135,15 +140,19 @@ export function VimHelpDialog({ open, keymap, vimKeymap, fromMode, onClose }: Pr
   const insertKey = vimKeyCaps(vimKeymap, 'insert-mode')[0]
   const scrollKeys = vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')
 
-  const maps: Record<VimContext, ParsedVimKeymap['main']> = { command: keymap.main, search: keymap.search, find: keymap.find, url: keymap.url }
+  const maps: Record<HelpContext, ParsedVimKeymap['main']> = {
+    command: keymap.main, search: keymap.search, find: keymap.find, url: keymap.url, settings: settingsKeymap(keymap),
+  }
   const commands = vimCommandsInOrder()
+  const settingsCommands = settingsCommandsInOrder()
   const ordered = [...SECTIONS].sort((a, b) => Number(b.mode === fromMode) - Number(a.mode === fromMode))
   const sections = ordered.map((section) => {
     const map = maps[section.context]
     // Each map holds its own context's commands (Search also borrows the
     // cursor keys); list the bound ones in the config's order, or by match.
-    const rows: Row[] = commands
-      .map((command) => ({ command, label: vimCommandLabel(command), keys: keysFor(map, command) }))
+    const settings = section.context === 'settings'
+    const rows: Row[] = (settings ? settingsCommands : commands)
+      .map((command) => ({ command, label: settings ? settingsCommandLabel(command) : vimCommandLabel(command), keys: keysFor(map, command) }))
       .filter((row) => row.keys.length > 0)
     const matching = fuzzyFilter(query, rows, (row) => [
       { value: row.label, weight: 1 },
@@ -157,7 +166,7 @@ export function VimHelpDialog({ open, keymap, vimKeymap, fromMode, onClose }: Pr
   return (
     <DetachedWindow
       open={open}
-      title="Vim Keys - Newbro"
+      title="Vim Keys - Vimperium"
       width={760}
       height={640}
       closeOnBlur

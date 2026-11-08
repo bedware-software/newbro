@@ -1,4 +1,4 @@
-// Dark pages in the renderer: the config and Newbro's theme as main has them
+// Dark pages in the renderer: the config and Vimperium's theme as main has them
 // (src/main/dark-pages.ts), kept current for the address bar's moon, its
 // popover and Settings → Dark pages, and the actions they take.
 
@@ -16,7 +16,7 @@ import {
 
 export interface DarkPagesState {
   config: DarkPagesConfig
-  /** Newbro's own theme is dark right now — 'With Newbro's theme' follows it. */
+  /** Vimperium's own theme is dark right now — 'With Vimperium's theme' follows it. */
   appDark: boolean
   ready: boolean
 }

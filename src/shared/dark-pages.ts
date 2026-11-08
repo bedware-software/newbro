@@ -1,21 +1,23 @@
-// Dark pages — Newbro's own dark mode for web pages (main/dark-pages.ts runs
+// Dark pages — Vimperium's own dark mode for web pages (main/dark-pages.ts runs
 // it; the address bar's moon and Settings → Dark pages drive it). Shared so
 // main and the renderer decide a page's look the same way.
 //
 // A page is dark when its site has a rule saying so, or — with no rule — when
-// Dark pages is on (`mode`: 'on', or 'theme' while Newbro's own theme is
+// Dark pages is on (`mode`: 'on', or 'theme' while Vimperium's own theme is
 // dark). A dark page asks the site for its own dark theme
 // (prefers-color-scheme: dark); in the 'smart' style — and on a site the user
 // marked Dark — Chromium also darkens whatever the site paints light, at
 // paint time, so there's nothing to parse and nothing to flash. The comfort
 // sliders tone dark pages down with one filter on the page's root.
 
+import { PSEUDO_FULLSCREEN_ROOT_ATTR } from './page-markers'
+
 export type DarkPagesMode = 'off' | 'on' | 'theme'
 export type DarkPagesStyle = 'smart' | 'native'
 export type DarkPagesRule = 'dark' | 'light'
 
 export interface DarkPagesConfig {
-  /** 'off', 'on', or 'theme' — on while Newbro's theme is dark. */
+  /** 'off', 'on', or 'theme' — on while Vimperium's theme is dark. */
   mode: DarkPagesMode
   /** 'smart': the site's own dark theme where it has one, Chromium darkens
    *  the rest. 'native': sites' own dark themes only — nothing repainted. */
@@ -91,8 +93,10 @@ export function normalizeDarkPages(raw: unknown): DarkPagesConfig {
   }
 }
 
-/** Schemes whose pages Dark pages leaves alone: DevTools and Chromium's own. */
-const UNTOUCHED_SCHEMES = new Set(['devtools:', 'chrome:', 'chrome-untrusted:', 'chrome-search:', 'newbro:'])
+/** Schemes whose pages Dark pages leaves alone: DevTools, Chromium's own and
+ *  our internal pages, under their old `newbro:` scheme too (saved tabs and
+ *  devices still on Newbro keep it, see renderer lib/internal-pages.ts). */
+const UNTOUCHED_SCHEMES = new Set(['devtools:', 'chrome:', 'chrome-untrusted:', 'chrome-search:', 'vimperium:', 'newbro:'])
 
 /** Whether Dark pages acts on a page at this address at all. */
 export function darkPagesApplies(url: string): boolean {
@@ -161,7 +165,7 @@ export function darkPagesInUse(config: DarkPagesConfig, appDark: boolean): boole
 
 /** The comfort filter (brightness, contrast, warmth) as CSS, or '' when the
  *  sliders are all at rest. It goes on the root — the whole page, its canvas
- *  and its frames — but not while a video plays in Newbro's stand-in
+ *  and its frames — but not while a video plays in Vimperium's stand-in
  *  fullscreen (src/preload/webview-stealth.ts), nor on paper. */
 export function comfortCss(config: DarkPagesConfig): string {
   const parts: string[] = []
@@ -169,7 +173,7 @@ export function comfortCss(config: DarkPagesConfig): string {
   if (config.contrast !== 100) parts.push(`contrast(${config.contrast / 100})`)
   if (config.warmth !== 0) parts.push(`sepia(${config.warmth / 100})`)
   if (parts.length === 0) return ''
-  return `@media screen { html:not([data-newbro-pseudo-fullscreen]) { filter: ${parts.join(' ')} !important; } }`
+  return `@media screen { html:not([${PSEUDO_FULLSCREEN_ROOT_ATTR}]) { filter: ${parts.join(' ')} !important; } }`
 }
 
 /** The media feature main's session emulates on every page it looks after
@@ -187,7 +191,7 @@ export const SESSION_MARKER = { name: 'color-gamut', value: 'rec2020' } as const
 export function darkPageCss(config: DarkPagesConfig, look: DarkPageLook): string {
   if (!look.dark) return ''
   const guard = `@media screen and (not (${SESSION_MARKER.name}: ${SESSION_MARKER.value})) { `
-    + 'html:not([data-newbro-pseudo-fullscreen]), html[data-newbro-pseudo-fullscreen] { filter: brightness(0.07) !important; } }'
+    + `html:not([${PSEUDO_FULLSCREEN_ROOT_ATTR}]), html[${PSEUDO_FULLSCREEN_ROOT_ATTR}] { filter: brightness(0.07) !important; } }`
   return [comfortCss(config), guard].filter(Boolean).join('\n')
 }
 

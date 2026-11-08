@@ -3,7 +3,7 @@
 //
 // Why this exists despite our existing webRequest IPC channel:
 // Chromium's SW fetch refuses three transports we tried before this:
-//   1. Custom schemes (newbro-ipc://) → ERR_UNKNOWN_URL_SCHEME
+//   1. Custom schemes (vimperium-ipc://) → ERR_UNKNOWN_URL_SCHEME
 //   2. webRequest cancel → no response body, only fire-and-forget
 //   3. webRequest redirect to data: URL → ERR_UNSAFE_REDIRECT (Chromium
 //      explicitly rejects redirecting fetch to data:)
@@ -15,7 +15,7 @@
 //
 // Security: bound to 127.0.0.1 (loopback) so external machines
 // can't reach it. Each request must include the per-process secret
-// in the X-Newbro-Token header — without that, the server returns
+// in the X-Vimperium-Token header — without that, the server returns
 // 403 immediately. The secret is generated once and persisted to
 // userData/sw-rpc-config.json; only main and the SW shim (via
 // injection at install time) ever see it.
@@ -39,6 +39,7 @@ import { app } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { log } from '../log'
+import { LEGACY_RPC_PARTITION_HEADER, LEGACY_RPC_TOKEN_HEADER } from './legacy-names'
 
 export interface SwRpcServerInfo {
   port: number
@@ -73,7 +74,7 @@ export interface SwRpcRoutes {
    *  41 chrome.storage.onChanged DOES fire in the writing context but
    *  doesn't propagate cross-context to chrome-extension service
    *  workers, so we bridge it manually: the popup preload posts each
-   *  onChanged payload to main via newbro-ipc, main queues it per
+   *  onChanged payload to main via vimperium-ipc, main queues it per
    *  extId, and the SW shim consumes it via this poll → re-fires
    *  chrome.storage.onChanged in the SW realm. Resolves with the next
    *  queued change or {} on timeout. */
@@ -243,7 +244,10 @@ async function handleRequest(
     // secret token is the actual access control.
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Newbro-Token, X-Newbro-Partition')
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      `Content-Type, X-Vimperium-Token, X-Vimperium-Partition, ${LEGACY_RPC_TOKEN_HEADER}, ${LEGACY_RPC_PARTITION_HEADER}`,
+    )
     res.setHeader('Access-Control-Max-Age', '86400')
     try { res.end(JSON.stringify(body)) }
     catch (err) { log.warn('sw-rpc-server: res.end threw', { err: String(err) }) }
@@ -256,8 +260,9 @@ async function handleRequest(
   }
 
   // Per-process secret check. Hides the server from anything that
-  // didn't get the token via SW shim injection.
-  const token = req.headers['x-newbro-token']
+  // didn't get the token via SW shim injection. A worker Newbro patched
+  // sends the same secret under its old header name.
+  const token = req.headers['x-vimperium-token'] ?? req.headers[LEGACY_RPC_TOKEN_HEADER.toLowerCase()]
   if (typeof token !== 'string' || token !== secret) {
     log.warn('sw-rpc-server: rejected (bad token)', { url: req.url })
     respondJson(403, { error: 'forbidden' })

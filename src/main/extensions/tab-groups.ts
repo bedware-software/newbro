@@ -1,6 +1,6 @@
-// Chrome tab groups for extensions, backed by Newbro's sidebar groups.
+// Chrome tab groups for extensions, backed by Vimperium's sidebar groups.
 //
-// A Newbro window shows one workspace, and its sidebar groups are Chrome's
+// A Vimperium window shows one workspace, and its sidebar groups are Chrome's
 // tab groups by another name: a titled, coloured, collapsible set of tabs.
 // So chrome.tabGroups and chrome.tabs.group / ungroup operate on them
 // directly:
@@ -43,7 +43,7 @@ interface ChromeTabGroup {
 }
 
 // The sidebar palette is Edge's group palette, so Chrome's nine colours
-// land on their twins; the three extra Newbro colours read back as the
+// land on their twins; the three extra Vimperium colours read back as the
 // nearest Chrome one.
 const CHROME_TO_HEX: Record<string, string> = {
   grey: '#9C9C9C',

@@ -34,6 +34,8 @@ import {
 import { loadSettings, DEFAULT_KEYBINDINGS, type ProxySettings, type Settings } from './settings-store'
 import { attachDownloadHandler } from './downloads'
 import { log, startLogSession } from './log'
+import { flushRenameMigrationLog, handleRenameMigrationBlocked } from './rename-migration'
+import { adoptLegacyDefaultBrowser } from './default-browser'
 import { runwaPaletteBounds, wantsRunwaPaletteGeometry } from './runwa-palette'
 import {
   registerWorkspaceWindowForTabs,
@@ -64,6 +66,8 @@ import { ElectronChromeExtensions } from 'electron-chrome-extensions'
 import { backfillOriginalManifests, loadEnabledExtensionsInto, readBgSourceWindow, rehydrateExtensionsOnStartup, getExtensionEntry, onExtensionDeactivated } from './extensions/manager'
 import { startSwCdpInspector, setSwCdpAuthHandler, CDP_PORT, type SwCdpAuthResponse } from './extensions/sw-cdp-inspector'
 import { startSwRpcServer, getSwRpcServerInfo, type SwRpcRoutes } from './extensions/sw-rpc-server'
+import { LEGACY_IPC_HOST, LEGACY_IPC_SCHEME, LEGACY_PRELOAD_PATCH_MARKER } from './extensions/legacy-names'
+import { SW_IPC_SCHEME, SW_SHIM_HOST } from './extensions/sw-shim'
 import {
   wireServiceWorkerBridge,
   registerSwInvokeHandler,
@@ -78,8 +82,8 @@ import {
 
 // ── Single-instance lock ──
 // Required for the OS-level "default browser" handoff to work end-to-end.
-// On Windows and Linux, clicking an http(s) link launches `newbro <url>` —
-// without the lock, every click spawns a brand-new Newbro process whose
+// On Windows and Linux, clicking an http(s) link launches `vimperium <url>` —
+// without the lock, every click spawns a brand-new Vimperium process whose
 // own window opens with no awareness of the URL we were asked to handle.
 // With the lock, only the first instance survives; later launches deliver
 // their argv to it via the `second-instance` event below, and we route the
@@ -96,6 +100,9 @@ if (!app.requestSingleInstanceLock()) {
   process.exit(0)
 }
 startLogSession()
+// The Newbro → Vimperium migration ran in branding.ts, before the log's file
+// was known; its lines were held until now.
+flushRenameMigrationLog(log)
 
 // Keep minidumps of native crashes locally (userData/Crashpad, or
 // app.getPath('crashDumps')), never uploaded: without them a crash inside
@@ -104,17 +111,24 @@ crashReporter.start({ uploadToServer: false })
 
 // ── Chromium flags ──
 
-// Register newbro-ipc:// as a privileged scheme so the SW shim we
-// inject into MV3 background scripts can do `fetch('newbro-ipc://...')`
+// Register vimperium-ipc:// as a privileged scheme so the SW shim we
+// inject into MV3 background scripts can do `fetch('vimperium-ipc://...')`
 // to query main and get a JSON response back. Without privileged +
 // supportFetchAPI, fetch() of a custom scheme from a service worker
-// just errors. MUST run before app.ready.
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: 'newbro-ipc',
+// just errors. MUST run before app.ready. Newbro's name for it stays
+// registered for workers Newbro patched (see LEGACY_IPC_SCHEME).
+protocol.registerSchemesAsPrivileged(
+  [SW_IPC_SCHEME, LEGACY_IPC_SCHEME].map((scheme) => ({
+    scheme,
     privileges: { secure: true, standard: true, supportFetchAPI: true, corsEnabled: true },
-  },
-])
+  })),
+)
+
+/** The SW shim's sentinel host, ours and Newbro's (see LEGACY_IPC_HOST):
+ *  a worker Newbro patched still pings the old one. */
+const SW_IPC_HOSTS = [SW_SHIM_HOST, LEGACY_IPC_HOST]
+const SW_IPC_HOST_URLS = SW_IPC_HOSTS.flatMap((host) => [`https://${host}/*`, `http://${host}/*`])
+const isSwIpcHostUrl = (url: string): boolean => SW_IPC_HOSTS.some((host) => url.includes(host))
 
 // Disable Chromium's User-Agent Client Hints so we don't send sec-ch-ua/
 // sec-ch-ua-mobile/sec-ch-ua-platform headers or expose navigator.userAgentData.
@@ -228,27 +242,63 @@ app.on('certificate-error', (event, _wc, url, _error, _cert, callback) => {
 // so visible-branding sites in this file (window titles, menus, About)
 // stay in sync with the chosen userData directory.
 
-// Remove "Electron/x.y.z" from the default user agent string. The "Newbro"
-// regex stays as-is — even in dev mode the UA token (when present) uses
-// the production product name; the dev suffix is purely for branding /
-// directory isolation.
-app.userAgentFallback = app.userAgentFallback
-  .replace(/\s*Electron\/[\w.]+/, '')
-  .replace(/\s*newbro-browser\/[\w.]+/, '')
-  .replace(/\s*Newbro\/[\w.]+/, '')
+// Product tokens builds from before the rename put in the UA: `Newbro/…`,
+// `NewbroDev/…` in dev, and the package name `newbro-browser/…` earlier
+// still. Nothing should produce them now, but if one ever turns up it must
+// not tell a site which browser this is, so they are stripped as well.
+const LEGACY_UA_PRODUCT_TOKENS = ['Newbro', 'Newbro Dev', 'newbro-browser']
 
-// In dev mode, patch the Electron binary's Info.plist so macOS menu bar
-// shows the dev name instead of "Electron".
+// Matches every product token of ours: Electron writes the app name with its
+// spaces removed (`VimperiumDev/1.2.3`), other builds kept them
+// (`Vimperium Dev/1.2.3`), so both spellings of every name are listed.
+const APP_UA_TOKEN_RE = (() => {
+  const names = new Set<string>()
+  for (const name of [APP_NAME, app.getName(), 'Vimperium', 'Vimperium Dev', ...LEGACY_UA_PRODUCT_TOKENS]) {
+    names.add(name)
+    names.add(name.replace(/\s+/g, ''))
+  }
+  const alternatives = [...names]
+    .filter((name) => name.length > 0)
+    .sort((a, b) => b.length - a.length)
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  return new RegExp(`\\s*\\b(?:${alternatives.join('|')})\\/\\S+`, 'gi')
+})()
+
+/** The UA without Electron's token or ours, so sites see a plain Chrome UA. */
+function stripAppUaTokens(ua: string): string {
+  return ua.replace(/\s*\bElectron\/\S+/g, '').replace(APP_UA_TOKEN_RE, '')
+}
+
+app.userAgentFallback = stripAppUaTokens(app.userAgentFallback)
+
+// In dev mode, patch the Electron binary's Info.plist so the macOS menu bar
+// shows the dev name instead of "Electron". Each value is set by its key,
+// whatever it holds, so a plist an older build renamed to "Newbro Dev" is
+// renamed too, and a plist that is already right is not rewritten. Older
+// builds also renamed CFBundleExecutable, which must name the binary in
+// Contents/MacOS, so that one is put back.
 if (is.dev && process.platform === 'darwin') {
   try {
     const plistPath = join(
       process.execPath, '..', '..', 'Info.plist'
     )
     const plist = readFileSync(plistPath, 'utf8')
-    if (plist.includes('<string>Electron</string>')) {
-      const patched = plist.replace(/<string>Electron<\/string>/g, `<string>${APP_NAME}</string>`)
+    const wanted: Record<string, string> = {
+      CFBundleName: APP_NAME,
+      CFBundleDisplayName: APP_NAME,
+      CFBundleExecutable: process.execPath.split('/').pop() || 'Electron',
+    }
+    let patched = plist
+    for (const [key, value] of Object.entries(wanted)) {
+      const escaped = value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      patched = patched.replace(
+        new RegExp(`(<key>${key}</key>\\s*<string>)[^<]*(</string>)`),
+        (_match, open: string, close: string) => `${open}${escaped}${close}`,
+      )
+    }
+    if (patched !== plist) {
       writeFileSync(plistPath, patched, 'utf8')
-      log.info(`patched Info.plist: Electron → ${APP_NAME} (restart to take full effect)`)
+      log.info(`patched Info.plist: app name → ${APP_NAME} (restart to take full effect)`)
     }
   } catch (err) {
     log.warn('could not patch Info.plist for branding', err)
@@ -271,7 +321,7 @@ const workspaceProfiles = new Map<string, string>() // workspaceId → profileId
 let lastKnownOpenWindows: OpenWindowEntry[] = []
 
 // URLs handed to us by the OS (default-browser handoff) before any workspace
-// window exists yet — typically when Newbro itself was launched by the click.
+// window exists yet — typically when Vimperium itself was launched by the click.
 // Flushed by `flushPendingUrlsTo` once a window finishes loading.
 const pendingExternalUrls: string[] = []
 
@@ -599,7 +649,7 @@ function portDisconnect(portId: string, side: 'content' | 'sw'): void {
 
 /** Pending HTTP auth challenges from ses.webRequest.onAuthRequired,
  *  keyed by a synthetic challenge id. Resolved when the extension's
- *  SW POSTs back via newbro-ipc/auth-respond. */
+ *  SW POSTs back via vimperium-ipc/auth-respond. */
 type PendingAuthChallenge = {
   partition: string
   details: Record<string, unknown>
@@ -967,7 +1017,7 @@ const iconIco = join(__dirname, '../../resources/icon.ico')
 const windowIcon = process.platform === 'win32' ? iconIco : iconPng
 
 /** A local file handed to us as a bare path rather than a URL — Explorer's
- *  "Open with → Newbro" on an .html file, or `newbro page.html` from a
+ *  "Open with → Vimperium" on an .html file, or `vimperium page.html` from a
  *  shell — turned into the file:// URL a tab can actually load. Returns null
  *  for anything that isn't an existing *file*: Chromium switches (`--flag`),
  *  paths that don't exist, and directories, which matters in dev where argv[1]
@@ -997,7 +1047,7 @@ function pickUrlFromArgv(argv: string[]): string | null {
 }
 
 // Tracks the workspace window the user touched most recently. External URL
-// handoffs from other apps land here, since at that moment Newbro itself is
+// handoffs from other apps land here, since at that moment Vimperium itself is
 // NOT focused (the OS-source app is), so `BrowserWindow.getFocusedWindow()`
 // is the wrong question to ask. Updated by a `focus` listener registered
 // per workspace window in `createWorkspaceWindow`, and seeded on window
@@ -1074,7 +1124,7 @@ function flushPendingUrlsTo(win: BrowserWindow): void {
   })
 }
 
-// Second-instance: another `newbro …` invocation handed us its argv via the
+// Second-instance: another `vimperium …` invocation handed us its argv via the
 // single-instance lock. Pull the URL out (if any) and route it; otherwise
 // just bring an existing window forward.
 app.on('second-instance', (_e, argv) => {
@@ -1253,29 +1303,6 @@ function runMatchingExtensionCommand(input: Electron.Input, targetWindow: Browse
   return false
 }
 
-// Esc tapped twice: pins the hidden Sidebar open, or lets it go (renderer
-// App.tsx). A keyboard that makes a lone Ctrl an Esc too (Karabiner's
-// to_if_alone) sends it as Ctrl goes up, so modifiers pressed in between
-// don't break the pair; any other key does.
-const ESC_DOUBLE_TAP_MS = 400
-const lastEscAt = new WeakMap<BrowserWindow, number>()
-
-/** Follows the keys in `win` — the page or the chrome — and says when Esc
- *  has just been tapped twice. */
-function isEscDoubleTap(win: BrowserWindow, input: Electron.Input): boolean {
-  if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return false
-  if (['Control', 'Shift', 'Alt', 'Meta'].includes(input.key)) return false
-  const plainEsc = input.key === 'Escape' && !input.isAutoRepeat && !input.control && !input.shift && !input.alt && !input.meta
-  const last = lastEscAt.get(win)
-  const now = Date.now()
-  if (plainEsc && (last === undefined || now - last > ESC_DOUBLE_TAP_MS)) {
-    lastEscAt.set(win, now)
-    return false
-  }
-  lastEscAt.delete(win)
-  return plainEsc
-}
-
 function installShortcutInterceptor(source: Electron.WebContents, targetWindow: BrowserWindow): void {
   let tabDown = false
   let tabResetTimer: NodeJS.Timeout | null = null
@@ -1299,13 +1326,11 @@ function installShortcutInterceptor(source: Electron.WebContents, targetWindow: 
 
   source.on('before-input-event', (event, input) => {
     // Vim mode: Ctrl pressed and let go anywhere in the window — the page or
-    // the chrome. Held in COMMAND it brings up the Sidebar's keys (renderer
-    // lib/vim-mode.ts), which the release ends.
+    // the chrome. Letting it go ends the walk through the Sidebar's rows that
+    // Ctrl+J/K started (renderer lib/vim-mode.ts), handing the keyboard to
+    // the page shown.
     if (input.key === 'Control' && !input.isAutoRepeat && loadSettings().vimMode && !targetWindow.isDestroyed()) {
       targetWindow.webContents.send('vim-ctrl', input.type !== 'keyUp')
-    }
-    if (isEscDoubleTap(targetWindow, input) && loadSettings().vimMode && !targetWindow.isDestroyed()) {
-      targetWindow.webContents.send('vim-esc-double-tap')
     }
     if (input.type !== 'keyDown' && input.type !== 'rawKeyDown') return
 
@@ -1726,12 +1751,7 @@ export function resolvePermissionRequest(
  *  permissions, apply proxy settings. Applied to both the default session and
  *  partitioned webview sessions. */
 function configureSession(ses: Electron.Session, partition: string): void {
-  const rawUA = ses.getUserAgent()
-  const cleanUA = rawUA
-    .replace(/\s*Electron\/\S+/g, '')
-    .replace(/\s*newbro-browser\/\S+/g, '')
-    .replace(/\s*Newbro\/\S+/g, '')
-  ses.setUserAgent(cleanUA)
+  ses.setUserAgent(stripAppUaTokens(ses.getUserAgent()))
   installPermissionHandlers(ses, partition)
   // Listen for file downloads so the Downloads page can show progress +
   // history. Idempotent — guarded inside attachDownloadHandler.
@@ -1841,10 +1861,10 @@ function configureSession(ses: Electron.Session, partition: string): void {
     // ERR_CACHE_MISS is a normal cache-cold miss on first load — Chromium
     // refetches and succeeds. Logging it as a failure is misleading.
     if (details.error === 'net::ERR_CACHE_MISS') return
-    // Our SW shim's sentinel ping (newbro-ext-ipc.test/*) is cancelled on
+    // Our SW shim's sentinel ping (vimperium-ext-ipc.test/*) is cancelled on
     // purpose — webRequest reports it as ERR_BLOCKED_BY_CLIENT; that's a
     // success path, not a failure.
-    if (details.error === 'net::ERR_BLOCKED_BY_CLIENT' && details.url.includes('newbro-ext-ipc.test')) return
+    if (details.error === 'net::ERR_BLOCKED_BY_CLIENT' && isSwIpcHostUrl(details.url)) return
     log.warn('ext fetch failed', {
       url: details.url,
       method: details.method,
@@ -1853,28 +1873,24 @@ function configureSession(ses: Electron.Session, partition: string): void {
     })
   })
 
-  // Specifically capture errors on the SW IPC host AND the newbro-ipc://
+  // Specifically capture errors on the SW IPC host AND the vimperium-ipc://
   // scheme. fetch() inside a SW only surfaces "Failed to fetch" — the
   // real net::ERR_* code lives here. The previous handler filtered to
   // http(s) only and would fall through ERR_BLOCKED_BY_CLIENT for the
   // sentinel host (intentional cancel) without giving us visibility
   // into UNEXPECTED errors on those URLs.
   const ipcFilter = {
-    urls: [
-      'https://newbro-ext-ipc.test/*',
-      'http://newbro-ext-ipc.test/*',
-      'newbro-ipc://*/*',
-    ],
+    urls: [...SW_IPC_HOST_URLS, `${SW_IPC_SCHEME}://*/*`, `${LEGACY_IPC_SCHEME}://*/*`],
   }
   ses.webRequest.onErrorOccurred(ipcFilter, (details) => {
-    // Cancellation of fire-and-forget posts to newbro-ext-ipc.test is
+    // Cancellation of fire-and-forget posts to vimperium-ext-ipc.test is
     // by design (one-way IPC). Anything ELSE on these URLs is a real
     // problem worth logging — DNS, CORS, scheme policy, etc.
     if (
       details.error === 'net::ERR_BLOCKED_BY_CLIENT' &&
-      details.url.includes('newbro-ext-ipc.test')
+      isSwIpcHostUrl(details.url)
     ) return
-    log.warn('newbro IPC fetch failed', {
+    log.warn('vimperium IPC fetch failed', {
       url: details.url,
       method: details.method,
       error: details.error,
@@ -1884,7 +1900,7 @@ function configureSession(ses: Electron.Session, partition: string): void {
   ses.webRequest.onCompleted(ipcFilter, (details) => {
     // Track even successful IPC requests so we can correlate
     // "Failed to fetch" in the SW with what main actually did.
-    log.info('newbro IPC fetch completed', {
+    log.info('vimperium IPC fetch completed', {
       url: details.url,
       method: details.method,
       statusCode: details.statusCode,
@@ -1919,7 +1935,7 @@ function configureSession(ses: Electron.Session, partition: string): void {
   try {
     const handle = (ses.protocol as { handle?: (scheme: string, h: (req: Request) => Promise<Response> | Response) => void }).handle
     if (typeof handle === 'function') {
-      handle.call(ses.protocol, 'newbro-ipc', async (req: Request): Promise<Response> => {
+      const handleIpcRequest = async (req: Request): Promise<Response> => {
         try {
           const u = new URL(req.url)
           const action = u.hostname || u.pathname.replace(/^\/+/, '')
@@ -1928,7 +1944,7 @@ function configureSession(ses: Electron.Session, partition: string): void {
           // failure is BEFORE the handler runs (CORS preflight, scheme
           // policy, etc.). If we DO see it, the failure is in our
           // response shape or the SW's reading of it.
-          log.info('extensions: newbro-ipc request', {
+          log.info('extensions: vimperium-ipc request', {
             partition,
             action,
             method: req.method,
@@ -1984,18 +2000,21 @@ function configureSession(ses: Electron.Session, partition: string): void {
           }
           return jsonResponse({ error: 'unknown-action', action })
         } catch (err) {
+          log.warn('extensions: vimperium-ipc request failed', { partition, url: req.url.slice(0, 200), err: String(err) })
           return jsonResponse({ error: String(err) }, 500)
         }
-      })
+      }
+      // Newbro's scheme too (see LEGACY_IPC_SCHEME).
+      for (const scheme of [SW_IPC_SCHEME, LEGACY_IPC_SCHEME]) handle.call(ses.protocol, scheme, handleIpcRequest)
     } else {
-      log.warn('extensions: ses.protocol.handle missing — SW newbro-ipc:// won\'t work', { partition })
+      log.warn('extensions: ses.protocol.handle missing — SW vimperium-ipc:// won\'t work', { partition })
     }
   } catch (err) {
     log.warn('extensions: ses.protocol.handle setup failed', { partition, err: String(err) })
   }
 
   ses.webRequest.onBeforeRequest(
-    { urls: ['https://newbro-ext-ipc.test/*', 'http://newbro-ext-ipc.test/*'] },
+    { urls: SW_IPC_HOST_URLS },
     (details, callback) => {
       try {
         const u = new URL(details.url)
@@ -2211,7 +2230,7 @@ function dispatchSwShimAction(
  *  call site off loopback HTTP. The long-poll routes (auth-poll,
  *  storage-poll, runtime-msg-poll, port polls) are intentionally
  *  absent: on IPC they invert into main→SW pushes over the bridge's
- *  'newbro-sw-event' channel instead of polls. */
+ *  'vimperium-sw-event' channel instead of polls. */
 function installSwBridgeRoutes(routes: SwRpcRoutes): void {
   registerSwNotifyHandler('shim', (ctx, payload) => {
     const p = (payload ?? {}) as { action?: unknown; body?: unknown; params?: unknown }
@@ -2261,7 +2280,7 @@ function installSwBridgeRoutes(routes: SwRpcRoutes): void {
   // Frame-context (popup/options) messages from extension-shim.ts.
   // Replaces the frames' sentinel-host fetches — a frame's ipcRenderer
   // reaches the global ipcMain directly.
-  ipcMain.on('newbro-ext-frame', (_event, payload: unknown) => {
+  ipcMain.on('vimperium-ext-frame', (_event, payload: unknown) => {
     const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     if (p.kind === 'storage-bridge') {
       const extId = typeof p.extId === 'string' ? p.extId : ''
@@ -2273,7 +2292,7 @@ function installSwBridgeRoutes(routes: SwRpcRoutes): void {
       }
       return
     }
-    log.warn('extensions: unknown newbro-ext-frame kind', { kind: String(p.kind) })
+    log.warn('extensions: unknown vimperium-ext-frame kind', { kind: String(p.kind) })
   })
   registerSwInvokeHandler('cookies-get', (ctx, payload) =>
     routes.cookiesGet(ctx.partition, asObj(payload)),
@@ -2416,24 +2435,25 @@ function chromeProxyToElectron(value: unknown): Electron.ProxyConfig | null {
 // loopback HTTP server (sw-rpc-server.ts).
 
 /** Bypass list we ALWAYS append to whatever an extension supplies, so
- *  Newbro's own machinery never gets routed through a VPN proxy by
- *  accident. The newbro-ext-ipc.test sentinel host is the channel our
+ *  Vimperium's own machinery never gets routed through a VPN proxy by
+ *  accident. The vimperium-ext-ipc.test sentinel host is the channel our
  *  SW shim uses to talk back to main; if a PAC script swallows that
- *  fetch (Browsec's PAC has no idea what newbro-ext-ipc is and routes
+ *  fetch (Browsec's PAC has no idea what vimperium-ext-ipc is and routes
  *  it through some random server), the SW's diagnostic stream goes
  *  silent and we lose every fetch-error / sw-error / patch-step beacon.
- *  loopback covers localhost and 127.0.0.1 for dev-server / IPC ports. */
-const NEWBRO_PROXY_BYPASS = 'newbro-ext-ipc.test;<-loopback>'
+ *  loopback covers localhost and 127.0.0.1 for dev-server / IPC ports.
+ *  Newbro's sentinel host is in it too, for a worker Newbro patched. */
+const VIMPERIUM_PROXY_BYPASS = [...SW_IPC_HOSTS, '<-loopback>'].join(';')
 
 /** Merge the extension-supplied bypass list with our mandatory entries.
  *  Idempotent — adding our markers twice is harmless to Chromium's
  *  parser, but we still de-dupe for clean logs. */
-function withNewbroBypass(extensionBypass: string | undefined): string {
-  if (!extensionBypass) return NEWBRO_PROXY_BYPASS
+function withVimperiumBypass(extensionBypass: string | undefined): string {
+  if (!extensionBypass) return VIMPERIUM_PROXY_BYPASS
   // Bypass-rule separator in Chromium is ';' (also accepts ',' but
   // we normalize to ';' on output).
   const parts = new Set(
-    (extensionBypass + ';' + NEWBRO_PROXY_BYPASS)
+    (extensionBypass + ';' + VIMPERIUM_PROXY_BYPASS)
       .split(/[;,]/)
       .map((s) => s.trim())
       .filter(Boolean)
@@ -2445,15 +2465,15 @@ function withNewbroBypass(extensionBypass: string | undefined): string {
  *  by chrome.proxy.settings.set/clear forwarding so VPN extensions can
  *  actually route traffic.
  *
- *  Notably skips session.defaultSession: that one is the Newbro UI
+ *  Notably skips session.defaultSession: that one is the Vimperium UI
  *  shell (toolbar, sidebar, dropdown windows). User browsing happens
  *  in profile partitions. Putting Browsec's PAC on the default session
- *  caused Newbro's own UI to attempt proxy auth — fired login events
+ *  caused Vimperium's own UI to attempt proxy auth — fired login events
  *  for partition 'persist:default' that no SW could ever answer (no
  *  extension lives in that session), wedging the auth pipeline with
  *  doomed-to-timeout challenges.
  *
- *  ALWAYS forces our newbro-ext-ipc.test host into the bypass list —
+ *  ALWAYS forces our vimperium-ext-ipc.test host into the bypass list —
  *  without it the SW shim's IPC channel back to main goes through
  *  whatever proxy the extension installed and dies on Failed to
  *  fetch, taking out our entire diagnostic pipeline. */
@@ -2475,7 +2495,7 @@ const lastExtensionProxyByPartition = new Map<string, Electron.ProxyConfig>()
  *  not owned by an extension. */
 let proxyOwnerExtId: string | null = null
 const EXTENSION_PROXY_STORE_PATH = (): string =>
-  join(app.getPath('userData'), 'newbro-extension-proxy.json')
+  join(app.getPath('userData'), 'vimperium-extension-proxy.json')
 
 interface PersistedProxyFile {
   owner: string | null
@@ -2533,7 +2553,7 @@ function applyPersistedExtensionProxyToSession(partition: string, ses: Electron.
   if (file.owner && persisted.mode !== 'system') proxyOwnerExtId = file.owner
   const merged: Electron.ProxyConfig = {
     ...persisted,
-    proxyBypassRules: withNewbroBypass(persisted.proxyBypassRules),
+    proxyBypassRules: withVimperiumBypass(persisted.proxyBypassRules),
   }
   lastExtensionProxyByPartition.set(partition, merged)
   ses.setProxy(merged)
@@ -2554,7 +2574,7 @@ function applyProxyConfigToAllSessions(cfg: Electron.ProxyConfig, ownerExtId?: s
   proxyOwnerExtId = cfg.mode === 'system' ? null : (ownerExtId ?? proxyOwnerExtId)
   const merged: Electron.ProxyConfig = {
     ...cfg,
-    proxyBypassRules: withNewbroBypass(cfg.proxyBypassRules),
+    proxyBypassRules: withVimperiumBypass(cfg.proxyBypassRules),
   }
   // Snapshot to disk every time — cheap and covers app crashes.
   let anyChanged = false
@@ -2615,7 +2635,7 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: {
       'Content-Type': 'application/json',
-      // SW fetches cross-origin (chrome-extension:// → newbro-ipc://)
+      // SW fetches cross-origin (chrome-extension:// → vimperium-ipc://)
       // and Chromium enforces CORS on the response read even though
       // the scheme is registered with corsEnabled. Without these
       // headers the response body is opaque and the SW's auth-poll
@@ -2719,15 +2739,16 @@ function patchLibraryPreloadForMV3SetIcon(): void {
     log.warn('extensions: cannot read preload for MV3-setIcon patch', { path: preloadPath, err: String(err) })
     return
   }
-  if (source.startsWith('// __NEWBRO_PRELOAD_PATCH_V5__')) {
+  if (source.startsWith('// __VIMPERIUM_PRELOAD_PATCH_V5__')) {
     log.info('extensions: preload-patch already applied (V3), skip')
     return
   }
   // Strip stale markers from earlier revisions so we can re-mark V3. A
   // file marked V1/V2 already has the setIcon patches applied on disk;
   // the idempotent applyPatch below detects that and only adds the new
-  // content-script storage patch.
-  source = source.replace(/^\/\/ __NEWBRO_PRELOAD_PATCH_V[1234]__\n/, '')
+  // content-script storage patch. Newbro's markers (any version) go the
+  // same way, so the file isn't marked twice.
+  source = source.replace(/^\/\/ __VIMPERIUM_PRELOAD_PATCH_V[1234]__\n/, '').replace(LEGACY_PRELOAD_PATCH_MARKER, '')
 
   // Each patch is idempotent: if the find-string is present, replace it;
   // if it's gone but the replacement's `sentinel` is already present
@@ -2864,7 +2885,7 @@ function patchLibraryPreloadForMV3SetIcon(): void {
     return
   }
 
-  const patched = '// __NEWBRO_PRELOAD_PATCH_V5__\n' + r3.out
+  const patched = '// __VIMPERIUM_PRELOAD_PATCH_V5__\n' + r3.out
   try {
     writeFileSync(preloadPath, patched)
     log.info('extensions: patched library preload (MV3 setIcon imageData)')
@@ -3007,8 +3028,8 @@ export function setupPartitionSession(partition: string): void {
   // Use registerPreloadScript (Electron 35+) instead of setPreloads
   // (deprecated). The new API additionally lets us scope to frames vs
   // service workers explicitly.
-  registerFramePreload(ses, WEBVIEW_STEALTH_PRELOAD, 'newbro-stealth')
-  registerFramePreload(ses, EXTENSION_SHIM_PRELOAD, 'newbro-extension-shim')
+  registerFramePreload(ses, WEBVIEW_STEALTH_PRELOAD, 'vimperium-stealth')
+  registerFramePreload(ses, EXTENSION_SHIM_PRELOAD, 'vimperium-extension-shim')
   // The shim ALSO needs to run inside MV3 service workers, where most
   // extensions (Tampermonkey's icon-click handler in particular) host
   // their chrome.tabs.create calls. registerPreloadScript with
@@ -3027,7 +3048,7 @@ export function setupPartitionSession(partition: string): void {
       ext.call(ses, {
         type: 'service-worker',
         filePath: EXTENSION_SHIM_PRELOAD,
-        id: 'newbro-extension-shim-sw',
+        id: 'vimperium-extension-shim-sw',
       })
       log.info('extensions: registered SW shim preload', { partition })
     } else {
@@ -3388,11 +3409,11 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
       // Palette-style popups open where Runwa's search window sits. Null
       // when Runwa isn't running: the renderer's own bounds stand.
       if (wantsRunwaPaletteGeometry(features)) pendingPopupBounds = runwaPaletteBounds()
-      pendingPopupId = /(?:^|,)\s*newbro-popup-id=([\w-]{1,64})\s*(?:,|$)/.exec(features)?.[1] ?? null
-      pendingPopupModal = /(?:^|,)\s*newbro-modal=yes\s*(?:,|$)/.test(features)
-      // The renderer passes its themed page background (newbro-bg=RRGGBB in
+      pendingPopupId = /(?:^|,)\s*vimperium-popup-id=([\w-]{1,64})\s*(?:,|$)/.exec(features)?.[1] ?? null
+      pendingPopupModal = /(?:^|,)\s*vimperium-modal=yes\s*(?:,|$)/.test(features)
+      // The renderer passes its themed page background (vimperium-bg=RRGGBB in
       // DetachedWindow) so the native window never shows default white.
-      const background = /(?:^|,)\s*newbro-bg=([0-9a-f]{6})\s*(?:,|$)/i.exec(features)?.[1]
+      const background = /(?:^|,)\s*vimperium-bg=([0-9a-f]{6})\s*(?:,|$)/i.exec(features)?.[1]
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
@@ -3751,11 +3772,17 @@ app.whenReady().then(async () => {
     }
   }
 
+  // ── Newbro → Vimperium ──
+  // A launch that couldn't move Newbro's data (Newbro still open) runs on a
+  // throwaway profile: it only asks the user to quit Newbro, then relaunches
+  // or quits. Nothing else may start on that profile.
+  if (await handleRenameMigrationBlocked(log)) return
+
   // ── About panel ──
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
     applicationVersion: app.getVersion(),
-    copyright: 'Newbro Browser',
+    copyright: 'Vimperium',
     version: '',
   })
 
@@ -4045,7 +4072,7 @@ app.whenReady().then(async () => {
     log.warn('extensions: rehydrate failed', String(err))
   })
   // Once things have settled, recover the original manifests of
-  // extensions installed before Newbro kept them (one download each).
+  // extensions installed before Vimperium kept them (one download each).
   setTimeout(() => {
     backfillOriginalManifests().catch((err) => {
       log.warn('extensions: original manifest backfill failed', String(err))
@@ -4137,6 +4164,11 @@ app.whenReady().then(async () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWorkspaceWindow('', '', 'Default')
   }
+
+  // Right after the move from Newbro: if Newbro was the default browser, ask
+  // macOS to make Vimperium it (links otherwise keep going to Newbro's bundle
+  // id). Once the windows are up, so the system prompt has context.
+  void adoptLegacyDefaultBrowser()
 })
 
 app.on('before-quit', () => {

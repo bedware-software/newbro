@@ -116,7 +116,7 @@ export function MoveGroupDialog({ open, groupId, currentProfileId, onClose }: Pr
     <PickerDialog
       open={open}
       title="Move Group"
-      windowTitle="Move Group - Newbro"
+      windowTitle="Move Group - Vimperium"
       placeholder="Move group to workspace…"
       subtitle={subtitle}
       items={items}

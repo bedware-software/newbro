@@ -1,7 +1,7 @@
 // Extension keyboard shortcuts: the manifest's `commands`, as Chrome's
 // chrome://extensions/shortcuts handles them. Each command starts on its
 // `suggested_key` and the user can rebind or clear it in Settings →
-// Extensions. Bindings are stored in Newbro's accelerator format (the one
+// Extensions. Bindings are stored in Vimperium's accelerator format (the one
 // app keybindings use, e.g. "CmdOrCtrl+Shift+Y"); the shortcut
 // interceptor in index.ts matches them after the app's own bindings, and
 // chrome.commands.getAll reports them back in Chrome's format.
@@ -14,9 +14,9 @@ import { extensionLocalizer, listExtensions } from './manager'
 export interface ExtensionCommand {
   name: string
   description: string
-  /** Current binding (Newbro accelerator), '' when unbound. */
+  /** Current binding (Vimperium accelerator), '' when unbound. */
   shortcut: string
-  /** The manifest's suggested key for this platform (Newbro accelerator). */
+  /** The manifest's suggested key for this platform (Vimperium accelerator). */
   suggested: string
 }
 
@@ -31,14 +31,14 @@ export const ACTION_COMMANDS = new Set(['_execute_action', '_execute_browser_act
 
 /** User choices: extensionId → command → accelerator ('' = cleared). */
 const store = new Store<{ overrides: Record<string, Record<string, string>> }>({
-  name: 'newbro-extension-commands',
+  name: 'vimperium-extension-commands',
   defaults: { overrides: {} },
 })
 
 const isMac = process.platform === 'darwin'
 const platformKey = isMac ? 'mac' : process.platform === 'win32' ? 'windows' : 'linux'
 
-// Chrome key names → Newbro's (see eventToKeyToken in SettingsDialog).
+// Chrome key names → Vimperium's (see eventToKeyToken in SettingsDialog).
 const CHROME_KEYS: Record<string, string> = {
   comma: ',',
   period: '.',
@@ -61,7 +61,7 @@ const CHROME_KEYS: Record<string, string> = {
 }
 
 /** "Ctrl+Shift+Y" (Chrome) → "CmdOrCtrl+Shift+Y". Chrome's Ctrl means ⌘ on
- *  macOS and MacCtrl means Control; Newbro accelerators don't tell the two
+ *  macOS and MacCtrl means Control; Vimperium accelerators don't tell the two
  *  apart, so both land on CmdOrCtrl. */
 export function chromeKeyToAccelerator(chromeKey: string): string {
   const mods: string[] = []

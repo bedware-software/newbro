@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Cloud, FolderOpen } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { log } from '../lib/log'
@@ -12,15 +12,23 @@ interface Props {
   onClose: () => void
 }
 
+/** Main's reply to choosing a folder (FolderPickInfo in cloud-sync.ts):
+ *  `picked` is false when no folder was taken — the user cancelled the picker
+ *  or one of main's questions about the folder, or main refused it and said
+ *  why in its own dialog. */
+type FolderPick = CloudSyncInfo & { picked?: boolean }
+
 /** First-run offer to turn on Cloud Sync. Defaults to an iCloud Drive folder
  *  when one is detected, but the user can pick any folder their cloud client
- *  mirrors (OneDrive / Dropbox / Google Drive). The first reconcile can take a
- *  while (downloading another device's data), so we show a progress bar and
- *  keep the app responsive — see the async/timeout reads in cloud-sync.ts. */
+ *  mirrors (OneDrive / Dropbox / Google Drive). The sync files go straight into
+ *  that folder. The first reconcile can take a while (downloading another
+ *  device's data), so we show a progress bar and keep the app responsive — see
+ *  the async/timeout reads in cloud-sync.ts. */
 export function CloudSyncSetupDialog({ open, prompt, onClose }: Props) {
   const [phase, setPhase] = useState<'offer' | 'syncing'>('offer')
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<CloudSyncInfo | null>(null)
+  const primaryRef = useRef<HTMLButtonElement>(null)
   const { icloudAvailable, suggestedFolder } = prompt
 
   // Live status drives the progress bar while the first reconcile runs.
@@ -30,12 +38,27 @@ export function CloudSyncSetupDialog({ open, prompt, onClose }: Props) {
     return cleanup
   }, [open])
 
+  // The primary action takes the keyboard (Enter / Space) as the dialog
+  // opens, and again when a failed setup brings the offer back. Deferred like
+  // ConfirmDialog's: the popup's content mounts a moment after `open`.
+  useEffect(() => {
+    if (!open || phase !== 'offer') return
+    const timer = setTimeout(() => primaryRef.current?.focus(), 50)
+    return () => clearTimeout(timer)
+  }, [open, phase])
+
   // Run an enable action, showing the syncing view + progress while it works.
   const runSetup = async (begin: () => Promise<CloudSyncInfo>): Promise<void> => {
     setError(null)
     setPhase('syncing')
     try {
-      const info = await begin()
+      const info: FolderPick = await begin()
+      // Main took no folder and has already told the user why, if there was
+      // anything to tell: back to the offer, no error line.
+      if (info.picked === false) {
+        setPhase('offer')
+        return
+      }
       if (info.state === 'error') {
         setPhase('offer')
         setError(info.error ?? 'Sync failed. Check the folder and try again.')
@@ -59,9 +82,11 @@ export function CloudSyncSetupDialog({ open, prompt, onClose }: Props) {
   const chooseFolder = async (): Promise<void> => {
     setError(null)
     try {
-      const picked = await window.electronAPI.cloudSyncSetFolder()
-      // Empty folderPath ⇒ the user cancelled the native picker; keep the offer.
-      if (!picked.folderPath) return
+      const picked: FolderPick = await window.electronAPI.cloudSyncSetFolder()
+      // No folder taken (cancelled, or refused) — keep the offer. Checking
+      // `picked` rather than the folder path, which an earlier visit to
+      // Settings may have set: a cancel mustn't turn sync on in that folder.
+      if (picked.picked === false || !picked.folderPath) return
       await runSetup(() => window.electronAPI.cloudSyncSetEnabled(true))
     } catch (err) {
       log.error('cloud-sync choose-folder failed', { err: String(err) })
@@ -70,7 +95,12 @@ export function CloudSyncSetupDialog({ open, prompt, onClose }: Props) {
   }
 
   const dontShowAgain = async (): Promise<void> => {
-    try { await window.electronAPI.cloudSyncDismissPrompt() } catch { /* best-effort */ }
+    try {
+      await window.electronAPI.cloudSyncDismissPrompt()
+    } catch (err) {
+      // The dialog closes anyway; the offer just comes back next launch.
+      log.warn('cloud-sync dismiss-prompt failed', { err: String(err) })
+    }
     onClose()
   }
 
@@ -85,7 +115,7 @@ export function CloudSyncSetupDialog({ open, prompt, onClose }: Props) {
   return (
     <DetachedWindow
       open={open}
-      title="Set up Cloud Sync - Newbro"
+      title="Set up Cloud Sync - Vimperium"
       width={520}
       height={360}
       resizable={false}
@@ -141,8 +171,9 @@ export function CloudSyncSetupDialog({ open, prompt, onClose }: Props) {
               )}
 
               <p className="text-[11px] text-muted-foreground/80">
-                Your data is mirrored into the folder and merged across devices (last write wins).
-                Nothing is sent to Newbro — only your own cloud handles the transfer.
+                Vimperium puts its sync files directly into that folder and merges them across
+                devices (last write wins). Nothing is sent to Vimperium — only your own cloud
+                handles the transfer.
               </p>
 
               {error && <p className="text-[11px] text-destructive mt-3">{error}</p>}
@@ -174,6 +205,7 @@ export function CloudSyncSetupDialog({ open, prompt, onClose }: Props) {
                     Choose folder…
                   </button>
                   <button
+                    ref={primaryRef}
                     onClick={enableSuggested}
                     className="h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90"
                   >
@@ -182,6 +214,7 @@ export function CloudSyncSetupDialog({ open, prompt, onClose }: Props) {
                 </>
               ) : (
                 <button
+                  ref={primaryRef}
                   onClick={chooseFolder}
                   className="h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90"
                 >

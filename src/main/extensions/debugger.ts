@@ -1,4 +1,4 @@
-// chrome.debugger for Newbro, over Electron's webContents.debugger.
+// chrome.debugger for Vimperium, over Electron's webContents.debugger.
 //
 // Chrome's debugger API attaches an extension to a tab's DevTools
 // protocol session. Electron exposes the same session per webContents,
@@ -8,7 +8,7 @@
 // service worker, and to the page that attached when a page did. Claude
 // in Chrome takes its screenshots and drives clicks and typing this way.
 //
-// Only tab targets: Newbro has no chrome.debugger for extension or
+// Only tab targets: Vimperium has no chrome.debugger for extension or
 // browser targets.
 //
 // Dark pages (main/dark-pages.ts) may hold the same session — Electron has
@@ -57,7 +57,7 @@ function targetTabId(target: unknown): number {
 function emit(caller: ExtensionApiCaller, channel: string, payload: unknown): void {
   sendToExtensionWorkers(caller.partition, caller.extensionId, channel, payload)
   const frame = caller.frame
-  if (frame && !frame.isDestroyed()) frame.send('newbro-ext-frame-event', channel, payload)
+  if (frame && !frame.isDestroyed()) frame.send('vimperium-ext-frame-event', channel, payload)
 }
 
 function release(att: Attachment): void {

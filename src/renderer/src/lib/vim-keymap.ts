@@ -18,7 +18,8 @@ export { keyTokenFromEvent, matchKeys, isPageCommand, type VimKeymap, type VimKe
 export { DEFAULT_VIM_KEYMAP, type VimContext } from '../../../shared/vim-default-keymap'
 
 /** What each Vim command does, for the help window. App commands use the
- *  regular shortcuts' names. */
+ *  regular shortcuts' names (ACTION_LABELS); the ones keymap v13 brought in
+ *  are named here as well, word for word. */
 const VIM_COMMAND_LABELS: Record<string, string> = {
   'scroll-down': 'Scroll down',
   'scroll-up': 'Scroll up',
@@ -79,6 +80,22 @@ const VIM_COMMAND_LABELS: Record<string, string> = {
   'search-scope': 'This workspace / all',
   'find-next': 'Next match',
   'find-prev': 'Previous match',
+  'new-group': ACTION_LABELS['new-group'],
+  'new-profile': ACTION_LABELS['new-profile'],
+  'close-group': ACTION_LABELS['close-group'],
+  'app-menu': ACTION_LABELS['app-menu'],
+  'profile-menu': ACTION_LABELS['profile-menu'],
+  'workspace-menu': ACTION_LABELS['workspace-menu'],
+  'extensions-menu': ACTION_LABELS['extensions-menu'],
+  'site-info': ACTION_LABELS['site-info'],
+  'dark-pages-menu': ACTION_LABELS['dark-pages-menu'],
+  'chrome-hints': ACTION_LABELS['chrome-hints'],
+  'zoom-in': ACTION_LABELS['zoom-in'],
+  'zoom-out': ACTION_LABELS['zoom-out'],
+  'zoom-reset': ACTION_LABELS['zoom-reset'],
+  'check-updates': ACTION_LABELS['check-updates'],
+  'install-update': ACTION_LABELS['install-update'],
+  'manage-extensions': ACTION_LABELS['manage-extensions'],
 }
 for (let n = 1; n <= 9; n++) VIM_COMMAND_LABELS[`search-row-${n}`] = `Open result ${n}`
 
@@ -87,7 +104,8 @@ export function vimCommandLabel(command: string): string {
 }
 
 /** Commands that act on the Sidebar's row under the cursor — the active
- *  tab's. Using one shows the cursor (and a hidden Sidebar). */
+ *  tab's. Using one shows the cursor; they work with the Sidebar hidden
+ *  too. */
 export const SIDEBAR_COMMANDS = [
   'cursor-down-show',
   'cursor-up-show',
@@ -325,6 +343,128 @@ export function helpKeymap(parsed: ParsedVimKeymap): VimKeymap {
   for (const [seq, command] of parsed.main) {
     const help = fromMain.get(command)
     if (help) map.set(seq, help)
+  }
+  return map
+}
+
+// ── Settings ──
+//
+// Settings' own COMMAND keys (lib/vim-form.ts drives them): the main
+// window's motions move a cursor through the settings — j/k, gg/G,
+// <C-d>/<C-u> — h/l (back and forward) change the one under it, i types in
+// it, / filters, dd removes a row (dd closes a tab), y copies from it, e
+// edits it, , (the key that opened Settings) closes and ? lists the keys.
+// Taken from the user's map, so a rebind carries over; the rest are fixed:
+// Enter and Space press, J/K (and gt/gT) go through the sections, H/L
+// move a slider ten, Y copies a password, ZZ (or Ctrl+S) saves and ZQ
+// throws the changes away, as vim's do. A fixed key the user's map already
+// gives to something else here isn't bound.
+
+/** Settings command → the main window's command whose keys it takes. */
+const SETTINGS_FROM_MAIN: Record<string, string> = {
+  'cursor-down': 'scroll-down',
+  'cursor-up': 'scroll-up',
+  'cursor-first': 'page-top',
+  'cursor-last': 'page-bottom',
+  'half-page-down': 'half-page-down',
+  'half-page-up': 'half-page-up',
+  'section-next': 'next-tab',
+  'section-prev': 'prev-tab',
+  'value-prev': 'back',
+  'value-next': 'forward',
+  'insert-mode': 'insert-mode',
+  filter: 'find-in-page',
+  'row-remove': 'close-tab',
+  'row-copy': 'copy-url',
+  'row-edit': 'edit-url',
+  close: 'settings',
+  help: 'help',
+}
+
+/** Settings' own keys. `fallback`: only while the user's map gives the
+ *  command no key of its own here. */
+const SETTINGS_FIXED: Array<{ keys: string; command: string; fallback?: boolean }> = [
+  { keys: '<CR>', command: 'activate' },
+  { keys: '<Space>', command: 'toggle' },
+  { keys: 'J', command: 'section-next' },
+  { keys: 'K', command: 'section-prev' },
+  { keys: 'gt', command: 'section-next' },
+  { keys: 'gT', command: 'section-prev' },
+  { keys: 'H', command: 'value-prev-big' },
+  { keys: 'L', command: 'value-next-big' },
+  { keys: 'Y', command: 'row-copy-password' },
+  { keys: 'ZZ', command: 'save' },
+  { keys: '<C-s>', command: 'save' },
+  { keys: 'ZQ', command: 'discard' },
+  // A form's keys out of habit: the arrows, and Tab through the fields.
+  { keys: '<Down>', command: 'cursor-down' },
+  { keys: '<Up>', command: 'cursor-up' },
+  { keys: '<Left>', command: 'value-prev' },
+  { keys: '<Right>', command: 'value-next' },
+  { keys: '<Tab>', command: 'cursor-down' },
+  { keys: '<S-Tab>', command: 'cursor-up' },
+  { keys: 'j', command: 'cursor-down', fallback: true },
+  { keys: 'k', command: 'cursor-up', fallback: true },
+  { keys: 'h', command: 'value-prev', fallback: true },
+  { keys: 'l', command: 'value-next', fallback: true },
+  { keys: 'i', command: 'insert-mode', fallback: true },
+  { keys: '/', command: 'filter', fallback: true },
+]
+
+const SETTINGS_COMMAND_LABELS: Record<string, string> = {
+  'cursor-down': 'Next setting',
+  'cursor-up': 'Previous setting',
+  'cursor-first': 'First setting',
+  'cursor-last': 'Last setting',
+  'half-page-down': 'Half a page down',
+  'half-page-up': 'Half a page up',
+  'section-next': 'Next section',
+  'section-prev': 'Previous section',
+  'value-next': 'Next choice · switch on · slider up · the row\'s next button',
+  'value-prev': 'Previous choice · switch off · slider down · the row\'s previous button',
+  'value-next-big': 'A slider up by ten',
+  'value-prev-big': 'A slider down by ten',
+  activate: 'Press · open the list · type in the field',
+  toggle: 'Switch or press',
+  'insert-mode': 'Type in the field',
+  filter: 'Find a setting',
+  'row-remove': 'Remove the row',
+  'row-copy': 'Copy from the row',
+  'row-copy-password': 'Copy the row\'s password',
+  'row-edit': 'Edit the row',
+  save: 'Save and close',
+  discard: 'Close, throwing the changes away',
+  close: 'Close',
+  help: 'Settings\' keys',
+}
+
+/** What a Settings command does, for its hints and Vim help. */
+export function settingsCommandLabel(command: string): string {
+  return SETTINGS_COMMAND_LABELS[command] ?? command
+}
+
+/** Settings' commands in the order its help lists them. */
+export function settingsCommandsInOrder(): string[] {
+  return Object.keys(SETTINGS_COMMAND_LABELS)
+}
+
+/** Settings' COMMAND keys, from the main window's map (see above). */
+export function settingsKeymap(parsed: ParsedVimKeymap): VimKeymap {
+  const map: VimKeymap = new Map()
+  const fromMain = new Map<string, string[]>()
+  for (const [settings, main] of Object.entries(SETTINGS_FROM_MAIN)) {
+    fromMain.set(main, [...(fromMain.get(main) ?? []), settings])
+  }
+  for (const [seq, command] of parsed.main) {
+    for (const settings of fromMain.get(command) ?? []) bind(map, seq.split(SEQUENCE_JOIN), settings)
+  }
+  const bound = new Set(map.values())
+  for (const { keys, command, fallback } of SETTINGS_FIXED) {
+    if (fallback && bound.has(command)) continue
+    const seq = parseKeySequence(keys)
+    if (typeof seq === 'string') continue
+    // A clash (the user's map took the key here) leaves it unbound.
+    bind(map, seq, command)
   }
   return map
 }

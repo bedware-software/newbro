@@ -10,9 +10,12 @@
 - **Иконка приложения.** `resources/icon.png` (1024px) и `resources/icon.ico` нарисованы из полного знака с цветами COMMAND
   на глубоком тёмном фоне `oklch(0.14 0 0)`. В .ico слоты 16–48px взяты из `svg/blade-01-crossed-katana.icon-small.svg`
   (малая версия на той же фасочной табличке), слоты 64–256px из полного знака.
-- **Кнопка Menu в левом верхнем углу.** Малая версия (`BrandMark` в `src/renderer/src/components/BrandMark.tsx`)
-  в цветах режима Vim. При смене режима и при наведении она глитчит, при Reduce motion стоит на месте.
-- **Settings → About.** Полный знак с запечёнными цветами (`src/renderer/src/lib/brand-badge.ts`).
+- **Кнопка Menu — орб в начале тулбара.** Полный знак во всю высоту тулбара (47px), как орб «Пуск» в Vista
+  (`BrandMark variant="full"` в `src/renderer/src/components/BrandMark.tsx`): на своей тёмной табличке при любой теме,
+  в тройке цветов режима Vim. При смене режима и при наведении он глитчит, при Reduce motion стоит на месте.
+  Меню выпадает из него.
+- **Settings → About.** Тот же живой полный знак, 48px, в цветах COMMAND; глитчит при наведении.
+- Малая версия (`BrandMark variant="small"`) осталась в компоненте для мелких размеров.
 
 ## Что здесь
 

@@ -139,7 +139,7 @@ export function MoveBookshelfDialog({ open, target, profileId, onMoved, onClose 
       // Wait for the shelves so the list doesn't flash its empty message.
       open={open && !!target && !!source}
       title={title}
-      windowTitle={`${title} - Newbro`}
+      windowTitle={`${title} - Vimperium`}
       placeholder={isGroup ? 'Move group to profile…' : 'Move to…'}
       subtitle={what ? <>Moving <span className="text-foreground font-medium">{what}</span></> : undefined}
       items={items}

@@ -3,7 +3,7 @@ import { produce } from 'immer'
 import { v4 as uuid } from 'uuid'
 import type { Profile, Workspace, TabGroup, Tab, SearchableItem, SearchPathSegment, WorkspaceCandidate } from './types'
 import { log } from '../lib/log'
-import { internalPageOf, internalTabMeta } from '../lib/internal-pages'
+import { canonicalInternalUrl, internalPageOf, internalTabMeta } from '../lib/internal-pages'
 
 // Edge-style palette: medium-saturation, medium-light hues spread around the
 // HSL wheel so dark text on top stays readable across the whole set. The
@@ -72,8 +72,10 @@ export function consumeEagerLoad(tabId: string): boolean {
 }
 
 function makeTab(url?: string): Tab {
-  const target = url || defaultNewTabUrl
-  // Internal pages (newbro://…) never report a title or favicon of their own —
+  // A legacy newbro:// address (the default-page setting can hold one) opens
+  // as vimperium://.
+  const target = canonicalInternalUrl(url || defaultNewTabUrl)
+  // Internal pages (vimperium://…) never report a title or favicon of their own —
   // there's no page to report them — so they're set up front.
   const meta = internalTabMeta(target)
   return { id: uuid(), title: meta?.title ?? 'New Tab', url: target, favicon: meta?.favicon ?? '' }
@@ -526,7 +528,7 @@ export interface AppState {
   setActiveGroup: (id: string) => void
   updateTabUrl: (id: string, url: string) => void
   /** Point a tab at a URL outside of page navigation, resetting its title and
-   *  favicon to match. For moves between an internal page (newbro://…) and
+   *  favicon to match. For moves between an internal page (vimperium://…) and
    *  the web, which the tab's view can't make itself: WebviewPanel drops the
    *  view when the tab turns internal and creates one on the new URL when it
    *  turns back into a web page. */
@@ -1292,7 +1294,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   })),
 
-  retargetTab: (id, url) => set(produce((s: AppState) => {
+  retargetTab: (id, rawUrl) => set(produce((s: AppState) => {
+    // A typed legacy newbro:// address lands as vimperium://.
+    const url = canonicalInternalUrl(rawUrl)
     const meta = internalTabMeta(url)
     // A web page reports its real title and favicon once it loads; until then
     // the host stands in, like a tab still loading.

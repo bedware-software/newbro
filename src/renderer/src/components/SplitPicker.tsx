@@ -171,7 +171,7 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
   return (
     <DetachedWindow
       open
-      title="Split - Newbro"
+      title="Split - Vimperium"
       width={size.width}
       height={size.height}
       resizable={false}

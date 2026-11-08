@@ -60,7 +60,7 @@ const GROUP_COLORS = [
 ]
 
 const store = new Store({
-  name: 'newbro-bookshelf',
+  name: 'vimperium-bookshelf',
   defaults: { byProfile: {} as Record<string, unknown> },
 })
 

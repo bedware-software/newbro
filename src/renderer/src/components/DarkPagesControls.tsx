@@ -6,6 +6,7 @@ import type { ReactNode } from 'react'
 import { RotateCcw } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { darkPagesActions, useDarkPages } from '../lib/dark-pages'
+import { Switch } from './Switch'
 import { DARK_PAGES_LIMITS, type DarkPagesMode } from '../../../shared/dark-pages'
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.includes('Mac')
@@ -30,16 +31,18 @@ export function acceleratorChord(accelerator: string): string {
 const MODES: { id: DarkPagesMode; label: string; short: string; hint: string }[] = [
   { id: 'off', label: 'Off', short: 'Off', hint: 'Pages look as their sites made them (sites you made always dark aside).' },
   { id: 'on', label: 'On', short: 'On', hint: 'Every page is dark (sites you made never dark aside).' },
-  { id: 'theme', label: "With Newbro's theme", short: 'Auto', hint: "Pages are dark while Newbro's own theme is — Settings → Appearance; under System, as the OS switches." },
+  { id: 'theme', label: "With Vimperium's theme", short: 'Auto', hint: "Pages are dark while Vimperium's own theme is — Settings → Appearance; under System, as the OS switches." },
 ]
 
-/** Off / On / With Newbro's theme, as a segmented control. */
-export function DarkPagesModeSwitch({ compact = false, className }: { compact?: boolean; className?: string }) {
+/** Off / On / With Vimperium's theme, as a segmented control. `vimItem`:
+ *  its id for Vim's form keys (Settings). */
+export function DarkPagesModeSwitch({ compact = false, className, vimItem }: { compact?: boolean; className?: string; vimItem?: string }) {
   const { config } = useDarkPages()
   return (
     <div
       role="radiogroup"
       aria-label="Dark pages"
+      data-vim-item={vimItem}
       className={cn('flex w-fit items-center rounded-md bg-secondary p-0.5', compact ? 'h-7' : 'h-9', className)}
     >
       {MODES.map((m) => {
@@ -66,29 +69,9 @@ export function DarkPagesModeSwitch({ compact = false, className }: { compact?: 
   )
 }
 
-/** A small on/off switch. */
+/** A small on/off switch — Settings' own (components/Switch.tsx). */
 export function ToggleSwitch({ on, onToggle, title, label }: { on: boolean; onToggle: () => void; title?: string; label: string }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      title={title}
-      onClick={onToggle}
-      className={cn(
-        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition-colors',
-        on ? 'bg-primary' : 'bg-muted-foreground/30 hover:bg-muted-foreground/40',
-      )}
-    >
-      <span
-        className={cn(
-          'h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200',
-          on ? 'translate-x-4' : 'translate-x-0',
-        )}
-      />
-    </button>
-  )
+  return <Switch checked={on} onChange={() => onToggle()} title={title} label={label} />
 }
 
 type ComfortKey = 'brightness' | 'contrast' | 'warmth'
@@ -100,8 +83,9 @@ const SLIDERS: { key: ComfortKey; label: string; hint: string }[] = [
 ]
 
 /** Brightness, contrast and warmth of dark pages: live as they move.
- *  Double-click a slider to put it back. */
-export function ComfortSliders({ compact = false, disabled = false }: { compact?: boolean; disabled?: boolean }) {
+ *  Double-click a slider to put it back. `vimItems`: each control has its
+ *  id for Vim's form keys (Settings), dark:brightness and so on. */
+export function ComfortSliders({ compact = false, disabled = false, vimItems = false }: { compact?: boolean; disabled?: boolean; vimItems?: boolean }) {
   const { config } = useDarkPages()
   const atRest = SLIDERS.every(({ key }) => config[key] === DARK_PAGES_LIMITS[key].default)
   return (
@@ -114,6 +98,7 @@ export function ComfortSliders({ compact = false, disabled = false }: { compact?
           <label key={key} className="flex items-center gap-3" title={`${hint}. Double-click to reset.`}>
             <span className={cn('shrink-0 text-muted-foreground', compact ? 'w-[68px] text-[11px]' : 'w-24 text-xs')}>{label}</span>
             <input
+              data-vim-item={vimItems ? `dark:${key}` : undefined}
               type="range"
               className="slider min-w-0 flex-1"
               min={min}
@@ -136,6 +121,7 @@ export function ComfortSliders({ compact = false, disabled = false }: { compact?
         <div className="flex justify-end">
           <button
             type="button"
+            data-vim-item={vimItems ? 'dark:reset' : undefined}
             disabled={atRest || disabled}
             onClick={() => darkPagesActions.set({ brightness: 100, contrast: 100, warmth: 0 })}
             className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40"

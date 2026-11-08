@@ -29,7 +29,7 @@ const IS_SW_REALM = (() => {
 
 function reportLoaded(stage: string): void {
   try {
-    ipcRenderer.send('newbro-ext-shim-loaded', {
+    ipcRenderer.send('vimperium-ext-shim-loaded', {
       stage,
       href: typeof location !== 'undefined' ? location?.href : null,
       hasChrome: typeof (globalThis as { chrome?: unknown }).chrome !== 'undefined',
@@ -39,7 +39,7 @@ function reportLoaded(stage: string): void {
   } catch (err) {
     // ipcRenderer.send during page teardown can throw; console.error
     // here surfaces via the page's existing console-message → main pipe.
-    try { console.error('[newbro-ext-shim] reportLoaded ipc.send failed:', err) }
+    try { console.error('[vimperium-ext-shim] reportLoaded ipc.send failed:', err) }
     catch { /* console torn down too — last resort */ }
   }
 }
@@ -49,14 +49,14 @@ const proto = (() => {
   try {
     if (typeof location !== 'undefined' && location?.protocol) return location.protocol
   } catch (err) {
-    try { console.error('[newbro-ext-shim] location.protocol read threw:', err) }
+    try { console.error('[vimperium-ext-shim] location.protocol read threw:', err) }
     catch { /* nothing more we can do */ }
   }
   try {
     const sw = (globalThis as { location?: { protocol?: string } }).location
     if (sw?.protocol) return sw.protocol
   } catch (err) {
-    try { console.error('[newbro-ext-shim] sw location.protocol read threw:', err) }
+    try { console.error('[vimperium-ext-shim] sw location.protocol read threw:', err) }
     catch { /* nothing more we can do */ }
   }
   return ''
@@ -74,10 +74,10 @@ const proto = (() => {
 // so retrying with Chrome-style values is safe.
 function makeLibraryIpcCloneSafe(): void {
   const ipc = ipcRenderer as unknown as {
-    invoke: ((channel: string, ...args: unknown[]) => Promise<unknown>) & { __newbroCloneSafe?: true }
+    invoke: ((channel: string, ...args: unknown[]) => Promise<unknown>) & { __vimperiumCloneSafe?: true }
   }
   const original = ipc.invoke
-  if (typeof original !== 'function' || original.__newbroCloneSafe) return
+  if (typeof original !== 'function' || original.__vimperiumCloneSafe) return
   const isCloneError = (err: unknown): boolean => /could not be cloned/i.test(String(err))
   const wrapped = function (this: unknown, channel: string, ...args: unknown[]): Promise<unknown> {
     if (channel !== 'crx-msg') return original.call(this, channel, ...args)
@@ -91,7 +91,7 @@ function makeLibraryIpcCloneSafe(): void {
       return retry(err)
     }
   } as typeof ipc.invoke
-  wrapped.__newbroCloneSafe = true
+  wrapped.__vimperiumCloneSafe = true
   try {
     ipc.invoke = wrapped
   } catch {
@@ -142,14 +142,14 @@ if (IS_SW_REALM) {
   // match — that guard silently disabling this file in SW realms is
   // exactly what the old "SW preload doesn't fire in Electron 41" bug
   // actually was. Realm detection must use process.type.
-  const onSwEvent = createEventHub('newbro-sw-event', fromSwWire)
+  const onSwEvent = createEventHub('vimperium-sw-event', fromSwWire)
   installMainWorldApis(invokeSw, onSwEvent)
   initSwRealm(onSwEvent)
 } else if (proto === 'chrome-extension:') {
   reportLoaded('preload-start')
   installMainWorldApis(
-    (channel, payload) => ipcRenderer.invoke('newbro-ext-frame', channel, payload),
-    createEventHub('newbro-ext-frame-event'),
+    (channel, payload) => ipcRenderer.invoke('vimperium-ext-frame', channel, payload),
+    createEventHub('vimperium-ext-frame-event'),
   )
   // Wrap install() in try-catch — a thrown error in our shim would
   // bubble up out of the preload and have prevented the page's own
@@ -159,13 +159,13 @@ if (IS_SW_REALM) {
     install()
   } catch (err) {
     try {
-      ipcRenderer.send('newbro-ext-shim-trace', {
+      ipcRenderer.send('vimperium-ext-shim-trace', {
         kind: 'install-threw',
         href: typeof location !== 'undefined' ? location?.href : null,
         err: String(err),
       })
     } catch (sendErr) {
-      try { console.error('[newbro-ext-shim] install threw, ipc.send also failed:', err, sendErr) }
+      try { console.error('[vimperium-ext-shim] install threw, ipc.send also failed:', err, sendErr) }
       catch { /* nothing more we can do */ }
     }
   }
@@ -195,7 +195,7 @@ function fromSwWire(value: unknown): unknown {
 /** SW → main request over the bridge, resolving to the decoded
  *  { ok, data } | { ok: false, error }. */
 function invokeSw(channel: string, payload: unknown): Promise<unknown> {
-  return ipcRenderer.invoke('newbro-sw', String(channel), payload).then(fromSwWire)
+  return ipcRenderer.invoke('vimperium-sw', String(channel), payload).then(fromSwWire)
 }
 
 /** Main → realm event fan-out for one ipcRenderer channel carrying
@@ -213,14 +213,14 @@ function createEventHub(ipcChannel: string, decode: (wire: unknown) => unknown =
     try {
       payload = decode(wire)
     } catch (err) {
-      console.error('[newbro-ext-shim] undecodable event payload:', ch, err)
+      console.error('[vimperium-ext-shim] undecodable event payload:', ch, err)
       return
     }
     const cbs = listeners.get(ch)
     if (!cbs || cbs.length === 0) {
       const buf = buffered.get(ch) ?? []
       if (buf.length >= MAX_BUFFERED) {
-        console.error('[newbro-ext-shim] event buffer overflow, dropping oldest:', ch)
+        console.error('[vimperium-ext-shim] event buffer overflow, dropping oldest:', ch)
         buf.shift()
       }
       buf.push(payload)
@@ -231,7 +231,7 @@ function createEventHub(ipcChannel: string, decode: (wire: unknown) => unknown =
       try {
         cb(payload)
       } catch (err) {
-        console.error('[newbro-ext-shim] event listener threw:', ch, err)
+        console.error('[vimperium-ext-shim] event listener threw:', ch, err)
       }
     }
   })
@@ -247,7 +247,7 @@ function createEventHub(ipcChannel: string, decode: (wire: unknown) => unknown =
         try {
           cb(payload)
         } catch (err) {
-          console.error('[newbro-ext-shim] buffered event replay threw:', ch, err)
+          console.error('[vimperium-ext-shim] buffered event replay threw:', ch, err)
         }
       }
     }
@@ -265,7 +265,7 @@ function installMainWorldApis(
   try {
     cb.executeInMainWorld({ func: mainWorldApis as (...a: never[]) => void, args: [invoke, subscribe] })
   } catch (err) {
-    try { console.error('[newbro-ext-shim] main-world API install failed:', err) }
+    try { console.error('[vimperium-ext-shim] main-world API install failed:', err) }
     catch { /* console torn down */ }
   }
 }
@@ -291,7 +291,7 @@ function mainWorldApis(
   // Electron skips SW preloads in unsandboxed renderer processes, and
   // sw-shim.ts reports workers that land in one.
   try {
-    Object.defineProperty(globalThis, '__newbroPreloadRan', { value: true })
+    Object.defineProperty(globalThis, '__vimperiumPreloadRan', { value: true })
   } catch {
     /* already defined */
   }
@@ -445,7 +445,7 @@ function mainWorldApis(
     })
   }
 
-  // Tab groups are Newbro's sidebar groups (main/extensions/tab-groups.ts).
+  // Tab groups are Vimperium's sidebar groups (main/extensions/tab-groups.ts).
   // chrome.tabs.group / ungroup belong to chrome.tabs and need no
   // permission; added onto whichever tabs object is there — the library's
   // own tabs namespace spreads it along if it lands after us.
@@ -508,25 +508,25 @@ function mainWorldApis(
   }
 }
 
-// ── Service-worker realm: __newbroIpc transport facade ──
+// ── Service-worker realm: __vimperiumIpc transport facade ──
 //
 // Exposes into the SW MAIN world:
-//   __newbroIpc.invoke(channel, payload) → Promise<{ok,data|error}>
-//   __newbroIpc.notify(channel, payload) → void  (fire-and-forget)
-//   __newbroIpc.on(channel, cb)          → void  (main-pushed events)
+//   __vimperiumIpc.invoke(channel, payload) → Promise<{ok,data|error}>
+//   __vimperiumIpc.notify(channel, payload) → void  (fire-and-forget)
+//   __vimperiumIpc.on(channel, cb)          → void  (main-pushed events)
 // The polyfill shim (sw-shim.ts) prefers this facade over the legacy
 // loopback-HTTP transport when present.
 //
 // Order matters: the event hub (listener + buffers, createEventHub) is
 // registered BEFORE 'hello' is invoked, because main flips the worker to push-ready on
-// hello — any push arriving before the shim's __newbroIpc.on()
+// hello — any push arriving before the shim's __vimperiumIpc.on()
 // subscription lands in the per-channel buffer and is flushed to the
 // first subscriber.
 function initSwRealm(on: EventSubscribe): void {
   const facade = {
     invoke: invokeSw,
     notify: (channel: string, payload: unknown): void => {
-      ipcRenderer.send('newbro-sw-notify', String(channel), payload)
+      ipcRenderer.send('vimperium-sw-notify', String(channel), payload)
     },
     on,
   }
@@ -542,7 +542,7 @@ function initSwRealm(on: EventSubscribe): void {
       if (!ok) {
         // Reached the bridge but got a refusal — log loudly, this is
         // not an expected state for an extension worker.
-        console.error('[newbro-ext-shim] sw hello refused:', JSON.stringify(ack))
+        console.error('[vimperium-ext-shim] sw hello refused:', JSON.stringify(ack))
         return
       }
       try {
@@ -556,7 +556,7 @@ function initSwRealm(on: EventSubscribe): void {
           const nonTabViews = (ack as { data?: { nonTabViewIds?: unknown } }).data?.nonTabViewIds
           cb.executeInMainWorld({
             func: ((invoke: unknown, notify: unknown, on: unknown, nonTabViews: unknown) => {
-              ;(globalThis as Record<string, unknown>).__newbroIpc = Object.freeze({
+              ;(globalThis as Record<string, unknown>).__vimperiumIpc = Object.freeze({
                 invoke,
                 notify,
                 on,
@@ -567,17 +567,17 @@ function initSwRealm(on: EventSubscribe): void {
           })
           // Confirm facade installation on the main side (shows up in
           // the log next to the worker's 'hello').
-          ipcRenderer.send('newbro-sw-notify', 'log', { facade: 'installed' })
+          ipcRenderer.send('vimperium-sw-notify', 'log', { facade: 'installed' })
         } else {
           // Electron without executeInMainWorld can't reach the SW main
           // world from a preload realm — the legacy HTTP transport stays
           // in charge. Loud log so this never silently degrades.
           console.error(
-            '[newbro-ext-shim] contextBridge.executeInMainWorld missing — __newbroIpc not installed',
+            '[vimperium-ext-shim] contextBridge.executeInMainWorld missing — __vimperiumIpc not installed',
           )
         }
       } catch (err) {
-        console.error('[newbro-ext-shim] __newbroIpc install failed:', err)
+        console.error('[vimperium-ext-shim] __vimperiumIpc install failed:', err)
       }
     })
     .catch(() => {
@@ -704,23 +704,23 @@ function applyPatches(chrome: Record<string, unknown>): void {
         try {
           rawGetSelf((info: unknown) => resolve(info))
         } catch (err) {
-          console.error('[newbro-ext-shim] management.getSelf callback-style raw threw:', err)
+          console.error('[vimperium-ext-shim] management.getSelf callback-style raw threw:', err)
           resolve(undefined)
         }
       })
     } catch (err) {
-      console.error('[newbro-ext-shim] management.getSelf promise-style raw threw:', err)
+      console.error('[vimperium-ext-shim] management.getSelf promise-style raw threw:', err)
       return Promise.resolve(undefined)
     }
   }
   management.getSelf = (callback?: (info: unknown) => void) => {
     const promise = callRaw().then(decorate, (err) => {
-      console.error('[newbro-ext-shim] management.getSelf raw rejected:', err)
+      console.error('[vimperium-ext-shim] management.getSelf raw rejected:', err)
       return decorate({})
     })
     if (typeof callback === 'function') promise.then((info) => {
       try { callback(info) }
-      catch (err) { console.error('[newbro-ext-shim] management.getSelf user-cb threw:', err) }
+      catch (err) { console.error('[vimperium-ext-shim] management.getSelf user-cb threw:', err) }
     })
     return promise
   }
@@ -790,7 +790,7 @@ function mapStorageSyncToLocal(chrome: Record<string, unknown>): void {
         done = true
       }
     } catch (err) {
-      try { console.error('[newbro-ext-shim] mapStorageSyncToLocal probe threw:', err) } catch { /* console gone */ }
+      try { console.error('[vimperium-ext-shim] mapStorageSyncToLocal probe threw:', err) } catch { /* console gone */ }
     }
     if (!done && tries < 60) setTimeout(tick, 50)
   }
@@ -798,15 +798,15 @@ function mapStorageSyncToLocal(chrome: Record<string, unknown>): void {
 }
 
 interface StorageBridgeGuard {
-  __newbroStorageBridgeInstalled?: boolean
-  __newbroStorageBridgePolling?: boolean
+  __vimperiumStorageBridgeInstalled?: boolean
+  __vimperiumStorageBridgePolling?: boolean
 }
 
 function installStorageBridge(chrome: Record<string, unknown>): void {
   const guard = chrome as unknown as StorageBridgeGuard
-  if (guard.__newbroStorageBridgeInstalled) return
-  if (guard.__newbroStorageBridgePolling) return
-  guard.__newbroStorageBridgePolling = true
+  if (guard.__vimperiumStorageBridgeInstalled) return
+  if (guard.__vimperiumStorageBridgePolling) return
+  guard.__vimperiumStorageBridgePolling = true
 
   let attempt = 0
   const maxAttempts = 60 // ~3s at 50ms intervals — plenty for the lib to land
@@ -824,16 +824,16 @@ function installStorageBridge(chrome: Record<string, unknown>): void {
       hasLocal = !!cs?.local
       onChanged = cs?.onChanged
     } catch (err) {
-      try { console.error('[newbro-ext-shim] storage-bridge probe threw:', err) }
+      try { console.error('[vimperium-ext-shim] storage-bridge probe threw:', err) }
       catch { /* console torn down */ }
     }
     const hasOnChangedAddListener = typeof onChanged?.addListener === 'function'
 
     if (hasOnChangedAddListener && onChanged) {
-      guard.__newbroStorageBridgeInstalled = true
-      guard.__newbroStorageBridgePolling = false
+      guard.__vimperiumStorageBridgeInstalled = true
+      guard.__vimperiumStorageBridgePolling = false
       try {
-        ipcRenderer.send('newbro-ext-shim-trace', {
+        ipcRenderer.send('vimperium-ext-shim-trace', {
           kind: 'storage-bridge-install',
           href: typeof location !== 'undefined' ? location?.href : null,
           hasStorage,
@@ -851,7 +851,7 @@ function installStorageBridge(chrome: Record<string, unknown>): void {
               ? Object.keys(changes as Record<string, unknown>)
               : []
           try {
-            ipcRenderer.send('newbro-ext-shim-trace', {
+            ipcRenderer.send('vimperium-ext-shim-trace', {
               kind: 'storage-bridge-fire',
               href: typeof location !== 'undefined' ? location?.href : null,
               extId,
@@ -863,18 +863,18 @@ function installStorageBridge(chrome: Record<string, unknown>): void {
           // Frame contexts reach the global ipcMain directly — no need
           // for the sentinel-host fetch the SW realm historically used.
           try {
-            ipcRenderer.send('newbro-ext-frame', {
+            ipcRenderer.send('vimperium-ext-frame', {
               kind: 'storage-bridge',
               extId,
               areaName,
               changes,
             })
           } catch (err) {
-            try { console.error('[newbro-ext-shim] storage-bridge ipc.send failed:', err) }
+            try { console.error('[vimperium-ext-shim] storage-bridge ipc.send failed:', err) }
             catch { /* console torn down */ }
           }
         } catch (err) {
-          try { console.error('[newbro-ext-shim] storage-bridge dispatch threw:', err) }
+          try { console.error('[vimperium-ext-shim] storage-bridge dispatch threw:', err) }
           catch { /* console torn down */ }
         }
       })
@@ -882,9 +882,9 @@ function installStorageBridge(chrome: Record<string, unknown>): void {
     }
 
     if (attempt >= maxAttempts) {
-      guard.__newbroStorageBridgePolling = false
+      guard.__vimperiumStorageBridgePolling = false
       try {
-        ipcRenderer.send('newbro-ext-shim-trace', {
+        ipcRenderer.send('vimperium-ext-shim-trace', {
           kind: 'storage-bridge-install-gaveup',
           href: typeof location !== 'undefined' ? location?.href : null,
           hasStorage,

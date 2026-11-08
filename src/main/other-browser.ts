@@ -1,4 +1,4 @@
-// Passing a link on to another browser. A link another app hands Newbro (as
+// Passing a link on to another browser. A link another app hands Vimperium (as
 // the default browser) lands in the Open Link picker; Ctrl+Enter (or ⌘↵ on
 // the Mac) there opens it in a browser the user picked once instead — Safari,
 // Chrome, Edge — for a site that works better there, like one whose passkey
@@ -33,7 +33,7 @@ export type OpenResult =
   | { opened: false; browsers: OtherBrowser[]; failed?: OtherBrowser }
 
 const store = new Store<{ browser: OtherBrowser | null }>({
-  name: 'newbro-other-browser',
+  name: 'vimperium-other-browser',
   defaults: { browser: null },
 })
 
@@ -78,6 +78,11 @@ for (let i = 0; i < urls.count; i++) {
 JSON.stringify(apps)
 `
 
+/** Newbro's bundle ids, the app's name before the rename: its bundle may
+ *  still be installed, or linger in LaunchServices, and it's no other browser. */
+const LEGACY_BUNDLE_ID_PREFIX = 'com.newbro.'
+const OWN_BUNDLE_ID_PREFIXES = ['com.vimperium.', LEGACY_BUNDLE_ID_PREFIX]
+
 async function listMacBrowsers(): Promise<OtherBrowser[]> {
   const { stdout } = await execFileAsync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', MAC_LIST_SCRIPT], { timeout: 10_000 })
   const apps = JSON.parse(stdout) as Array<{ id: string; name: string; path: string }>
@@ -85,7 +90,7 @@ async function listMacBrowsers(): Promise<OtherBrowser[]> {
   const ownBundle = resolve(app.getPath('exe'), '../../..')
   const browsers: OtherBrowser[] = []
   for (const entry of apps) {
-    if (entry.path === ownBundle || entry.id.startsWith('com.newbro.')) continue
+    if (entry.path === ownBundle || OWN_BUNDLE_ID_PREFIXES.some((prefix) => entry.id.startsWith(prefix))) continue
     // Test builds tools keep in hidden cache folders (puppeteer's Chrome for
     // Testing) aren't anyone's browser.
     if (entry.path.split('/').some((part) => part.startsWith('.'))) continue
@@ -131,7 +136,7 @@ export function exeOf(command: string): string | null {
   return exe && /\.exe$/i.test(exe) ? exe : null
 }
 
-/** The listing script's JSON → browsers, Newbro itself left out. HKCU comes
+/** The listing script's JSON → browsers, Vimperium itself left out. HKCU comes
  *  first, and wins over the machine-wide key of the same name. */
 export function parseWindowsBrowsers(json: string, ownExe: string): Array<OtherBrowser & { exe: string }> {
   const parsed = JSON.parse(json.replace(/^﻿/, '') || '[]') as unknown
@@ -143,8 +148,10 @@ export function parseWindowsBrowsers(json: string, ownExe: string): Array<OtherB
     if (!entry || typeof entry !== 'object') continue
     const exe = typeof entry.command === 'string' ? exeOf(entry.command) : null
     if (!exe || exe.toLowerCase() === ownExe.toLowerCase()) continue
-    // Newbro's own registration (default-browser.ts): "Newbro", "NewbroDev".
-    if (typeof entry.id === 'string' && /^Newbro(Dev)?$/i.test(entry.id)) continue
+    // This app's own registration (default-browser.ts): "Vimperium", "VimperiumDev"
+    // ("VimperiumTest" in the migration's test mode), and Newbro's from before the
+    // rename, "Newbro" / "NewbroDev", until default-browser.ts removes it.
+    if (typeof entry.id === 'string' && /^(Vimperium|Newbro)(Dev|Test)?$/i.test(entry.id)) continue
     const browser = addBrowser(browsers, { id: entry.id, name: entry.name || entry.id })
     if (browser) out.push({ ...browser, exe })
   }
@@ -170,7 +177,7 @@ async function openOnWindows(browser: OtherBrowser, url: string): Promise<void> 
   const exe = windowsCommands.get(browser.id)
   if (!exe) throw new Error(`${browser.name} isn't installed.`)
   await new Promise<void>((done, fail) => {
-    // Detached: the browser outlives Newbro. A running browser takes the URL
+    // Detached: the browser outlives Vimperium. A running browser takes the URL
     // into its open window, as it does for a link from any other app.
     const child = spawn(exe, [url], { detached: true, stdio: 'ignore' })
     child.once('error', (err) => {
@@ -187,7 +194,7 @@ async function openOnWindows(browser: OtherBrowser, url: string): Promise<void> 
 
 // ── Both ──
 
-/** Browsers installed here, Newbro itself left out. */
+/** Browsers installed here, Vimperium itself left out. */
 export async function listBrowsers(): Promise<OtherBrowser[]> {
   if (!supported) return []
   const browsers = process.platform === 'win32' ? await listWindowsBrowsers() : await listMacBrowsers()

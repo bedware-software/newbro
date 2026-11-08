@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Lock } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
+import { InputField } from './InputField'
+import { Hint, vimKeyCaps } from './KeyHints'
+import { usePopupVimMode } from '../lib/vim-mode'
+import { paletteKeymap } from '../lib/vim-keymap'
+import { keymapOnly, useWindowVimKeymap } from '../lib/window-vim-keymap'
 import type { HttpAuthRequest } from '../App'
 
 interface Props {
@@ -42,6 +47,62 @@ export function HttpAuthDialog({ request, onDone }: Props) {
   const submit = (): void => respond({ id: request.id, username, password, remember: canSave && remember })
   const cancel = (): void => respond({ id: request.id, cancel: true })
 
+  // ── Vim mode ──
+  // The two boxes share the popup's pair of modes: typing in either is
+  // INSERT; Esc leaves it for COMMAND, where i types in the box last left,
+  // Tab goes to the user name, Space ticks Remember, Enter signs in and Esc
+  // cancels. Null while Vim mode is off.
+  const [popup, setPopup] = useState<Window | null>(null)
+  const [activeField, setActiveField] = useState<'user' | 'pass'>(request.savedUsername ? 'pass' : 'user')
+  const activeFieldRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => { activeFieldRef.current = activeField === 'pass' ? passRef.current : userRef.current })
+  const parsedKeymap = useWindowVimKeymap()
+  const vimKeymap = useMemo(
+    () => (parsedKeymap ? keymapOnly(paletteKeymap(parsedKeymap.search), ['insert-mode']) : null),
+    [parsedKeymap],
+  )
+  const vim = usePopupVimMode({
+    keymap: vimKeymap,
+    popup,
+    box: activeFieldRef,
+    initial: 'insert',
+    open: true,
+    onCommand: (command) => { if (command === 'insert-mode') (activeField === 'pass' ? passRef : userRef).current?.focus() },
+    onEscape: cancel,
+    intercept: (e) => {
+      if (e.key === 'Enter' && !e.ctrlKey) {
+        submit()
+        return true
+      }
+      if (e.key === 'Tab' && !e.ctrlKey) {
+        (e.shiftKey ? passRef : userRef).current?.focus()
+        return true
+      }
+      if (e.key === ' ' && canSave && !e.ctrlKey) {
+        setRemember((v) => !v)
+        return true
+      }
+      return false
+    },
+  })
+  const fieldProps = (field: 'user' | 'pass') => ({
+    onFocus: () => {
+      setActiveField(field)
+      vim.onBoxFocus()
+    },
+    onBlur: vim.onBoxBlur,
+    onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      // Kept from the popup's own Esc (cancelling) in both modes.
+      e.stopPropagation()
+      if (vim.modeRef.current) e.currentTarget.blur()
+      else cancel()
+    },
+  })
+  // The mode shows on the box being typed in, or last left.
+  const fieldMode = (field: 'user' | 'pass') => (vim.mode && activeField === field ? vim.mode : null)
+
   const target = request.isProxy ? `proxy ${request.host}` : request.host
   // NTLM / Negotiate typically want a domain-qualified name.
   const wantsDomain = request.scheme === 'ntlm' || request.scheme === 'negotiate'
@@ -49,12 +110,14 @@ export function HttpAuthDialog({ request, onDone }: Props) {
   return (
     <DetachedWindow
       open
-      title="Sign in - Newbro"
+      title="Sign in - Vimperium"
       width={440}
       height={288 + (wantsDomain ? 24 : 0) + (canSave ? 40 : 0) + (request.hadSavedCredential ? 32 : 0)}
       resizable={false}
-      closeOnEscape
+      // In Vim mode Esc first leaves the box; the dialog handles it.
+      closeOnEscape={!vimKeymap}
       onClose={cancel}
+      onWindowChange={setPopup}
     >
       <form
         onSubmit={(e) => { e.preventDefault(); submit() }}
@@ -83,25 +146,31 @@ export function HttpAuthDialog({ request, onDone }: Props) {
           ) : null}
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-medium text-muted-foreground">User name</span>
-            <input
-              ref={userRef}
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-              className="h-8 px-2 field rounded-lg text-sm text-foreground outline-none"
-            />
+            <InputField inputRef={userRef} mode={fieldMode('user')} pending={vim.pending} className="h-8 rounded-lg pl-2">
+              <input
+                ref={userRef}
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                {...fieldProps('user')}
+                className="flex-1 min-w-0 h-full bg-transparent border-none outline-none text-sm text-foreground"
+              />
+            </InputField>
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-medium text-muted-foreground">Password</span>
-            <input
-              ref={passRef}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              className="h-8 px-2 field rounded-lg text-sm text-foreground outline-none"
-            />
+            <InputField inputRef={passRef} mode={fieldMode('pass')} pending={vim.pending} className="h-8 rounded-lg pl-2">
+              <input
+                ref={passRef}
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                {...fieldProps('pass')}
+                className="flex-1 min-w-0 h-full bg-transparent border-none outline-none text-sm text-foreground"
+              />
+            </InputField>
           </label>
           {wantsDomain ? (
             <p className="text-[10px] text-muted-foreground/80">Use <span className="text-foreground">DOMAIN\username</span> (or username@domain) if your organization requires it.</p>
@@ -122,6 +191,12 @@ export function HttpAuthDialog({ request, onDone }: Props) {
         </div>
 
         <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-border bg-toolbar shrink-0">
+          {/* The keys, at the bar's start — the hint bars' look. */}
+          <div className="mr-auto flex items-center gap-x-3 text-[11px] font-medium text-muted-foreground whitespace-nowrap">
+            <Hint label="Sign in" keys={['Enter']} />
+            {vim.mode === 'command' && <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />}
+            <Hint label={vim.mode === 'insert' ? 'Command mode' : 'Cancel'} keys={['Esc']} />
+          </div>
           <button
             type="button"
             onClick={cancel}

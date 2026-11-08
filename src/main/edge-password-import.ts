@@ -94,7 +94,7 @@ async function readLocalState(root: string): Promise<LocalState> {
 async function withLoginDatabase<T>(loginDataPath: string, action: (db: DatabaseSync) => T): Promise<T> {
   // Copy the database and its WAL sidecars so a running Edge process cannot
   // leave us with a locked or internally inconsistent read.
-  const scratch = await fs.mkdtemp(path.join(tmpdir(), 'newbro-edge-import-'))
+  const scratch = await fs.mkdtemp(path.join(tmpdir(), 'vimperium-edge-import-'))
   const copyPath = path.join(scratch, 'Login Data')
   try {
     await fs.copyFile(loginDataPath, copyPath)
@@ -292,13 +292,13 @@ async function windowsEdgeKey(root: string): Promise<Buffer> {
   const script = [
     "$ErrorActionPreference = 'Stop'",
     'Add-Type -AssemblyName System.Security',
-    '$bytes = [Convert]::FromBase64String($env:NEWBRO_EDGE_WRAPPED_KEY)',
+    '$bytes = [Convert]::FromBase64String($env:VIMPERIUM_EDGE_WRAPPED_KEY)',
     '$key = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)',
     '[Convert]::ToBase64String($key)',
   ].join('; ')
   const output = await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
     ...process.env,
-    NEWBRO_EDGE_WRAPPED_KEY: encryptedKey,
+    VIMPERIUM_EDGE_WRAPPED_KEY: encryptedKey,
   })
   const key = Buffer.from(output, 'base64')
   if (key.length !== 32) throw new Error('Microsoft Edge returned an invalid encryption key.')

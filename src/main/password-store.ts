@@ -48,7 +48,7 @@ export interface PasswordImportResult {
 }
 
 const store = new Store<{ entries: Record<string, StoredPasswordEntry> }>({
-  name: 'newbro-passwords',
+  name: 'vimperium-passwords',
   defaults: { entries: {} },
 })
 
@@ -67,7 +67,7 @@ const asyncSafeStorage = safeStorage as typeof safeStorage & {
 export function normalizePartition(partition: string): string {
   const value = String(partition || '').trim()
   if (!/^persist:profile-[A-Za-z0-9-]+$/.test(value)) {
-    throw new Error('A valid Newbro profile is required.')
+    throw new Error('A valid Vimperium profile is required.')
   }
   return value
 }
@@ -101,7 +101,7 @@ async function encryptionAvailable(): Promise<boolean> {
 
 export async function encryptSecret(value: string): Promise<string> {
   if (!(await encryptionAvailable())) {
-    throw new Error('The operating system password vault is unavailable, so Newbro cannot save passwords safely.')
+    throw new Error('The operating system password vault is unavailable, so Vimperium cannot save passwords safely.')
   }
   const encrypted = typeof asyncSafeStorage.encryptStringAsync === 'function'
     ? await asyncSafeStorage.encryptStringAsync(value)

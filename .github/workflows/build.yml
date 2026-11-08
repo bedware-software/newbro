@@ -24,7 +24,7 @@ jobs:
         include:
           - os: windows-latest
             script: dist:win
-            artifact_name: newbro-windows
+            artifact_name: vimperium-windows
             # Installers + latest.yml metadata (electron-updater needs the yml).
             # *.blockmap lets the updater do delta downloads on subsequent upgrades.
             artifact_paths: |
@@ -33,7 +33,7 @@ jobs:
               release/*.blockmap
           - os: macos-latest
             script: dist:mac
-            artifact_name: newbro-macos
+            artifact_name: vimperium-macos
             artifact_paths: |
               release/*.dmg
               release/*.zip
@@ -41,7 +41,7 @@ jobs:
               release/*.blockmap
           - os: ubuntu-latest
             script: dist:linux
-            artifact_name: newbro-linux
+            artifact_name: vimperium-linux
             artifact_paths: |
               release/*.AppImage
               release/latest-linux*.yml

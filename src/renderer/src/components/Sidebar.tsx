@@ -10,8 +10,7 @@ import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dro
 import { useVimSidebar } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { displayKeySequence, keysFor, type SidebarCommand, type VimKeymap } from '../lib/vim-keymap'
-import { RowHint, SidebarHintBar } from './KeyHints'
-import { useHintLabels, useHintTargets } from '../lib/hint-labels'
+import { SidebarHintBar } from './KeyHints'
 import { SplitGlyph } from './SplitPanes'
 import { isSplitShown, useSplitStore } from '../lib/split-view'
 
@@ -86,7 +85,7 @@ function describeSelection(groupCount: number, tabCount: number): string {
 
 const MIN_WIDTH = 180
 const DEFAULT_WIDTH = 256
-const SIDEBAR_WIDTH_KEY = 'newbro-sidebar-width'
+const SIDEBAR_WIDTH_KEY = 'vimperium-sidebar-width'
 
 // Pill text colour, the guide-line geometry, and the per-theme group
 // colour resolution are all owned by globals.css now (see the
@@ -118,17 +117,11 @@ interface Props {
   vimActive: boolean
   /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
   vimKeymap: VimKeymap | null
-  /** Its rows wear two-letter labels that pick them (lib/hint-labels.ts):
-   *  Vim's COMMAND with the Sidebar open of itself, not shown by Ctrl. */
-  hintsOn: boolean
   /** Keys typed so far of an unfinished COMMAND sequence. */
   vimPending: string
 }
 
-// Its rows' ids among the window's hint targets (the group page has its own).
-const hintId = (rowId: string): string => `sidebar:${rowId}`
-
-export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn, vimPending }: Props) {
+export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, vimPending }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -204,7 +197,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
     // Tabs are now WebContentsViews layered on top of the renderer; with
     // them visible, pointermove would be eaten by the guest. Tell the
     // WebviewPanel to zero out tab bounds for the duration of the drag.
-    window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+    window.dispatchEvent(new CustomEvent('vimperium-tab-hide'))
   }, [])
 
   useEffect(() => {
@@ -221,7 +214,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       localStorage.setItem(SIDEBAR_WIDTH_KEY, String(currentW.current))
-      window.dispatchEvent(new CustomEvent('newbro-tab-show'))
+      window.dispatchEvent(new CustomEvent('vimperium-tab-show'))
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -269,7 +262,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       if (!dragActivated.current && Math.abs(dx) + Math.abs(dy) < 6) return
       dragActivated.current = true
       setDragging({ type, id, ids })
-      window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+      window.dispatchEvent(new CustomEvent('vimperium-tab-hide'))
       // Determine drop target from pointer position
       updateDropTarget(me.clientY, type)
     }
@@ -392,7 +385,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
     // Clean up immediately
     setDragging(null)
     setDropTarget(null)
-    window.dispatchEvent(new CustomEvent('newbro-tab-show'))
+    window.dispatchEvent(new CustomEvent('vimperium-tab-show'))
 
     if (!d || !dt) return
 
@@ -423,7 +416,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       if (!dragActivated.current) {
         dragActivated.current = true
         setDragging({ type, id, ids })
-        window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+        window.dispatchEvent(new CustomEvent('vimperium-tab-hide'))
       }
     }
 
@@ -493,22 +486,10 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
   const vimCursorId = vimCursorOverride !== null && visibleRowIds.includes(vimCursorOverride)
     ? vimCursorOverride
     : activeRowId
-  // COMMAND's labels on every row showing, after the group page's.
-  useHintTargets('sidebar', 1, hintsOn
-    ? visibleRowIds.map((id) => ({
-      id: hintId(id),
-      activate: () => {
-        const ws = useAppStore.getState().getActiveWorkspace()
-        if (ws?.tabGroups.some((g) => g.id === id)) setActiveGroup(id)
-        else setActiveTab(id)
-      },
-    }))
-    : null)
-  const hintLabels = useHintLabels()
-
-  // Listening whenever it's showing: the first Ctrl+J arrives before
-  // vimActive does.
-  const { runMenu } = useVimSidebar(visible, (cmd) => handleVimCommand(cmd))
+  // Listening whenever Vim mode is on, hidden too: Ctrl+J/K still step
+  // through the rows, showing each, and Ctrl+H/L fold the active tab's
+  // group. The first Ctrl+J arrives before vimActive does.
+  const { runMenu } = useVimSidebar(vimKeymap !== null, (cmd) => handleVimCommand(cmd))
   const findVimRow = (id: string): Element | null =>
     sidebarRef.current?.querySelector(`[data-vim-row="${CSS.escape(id)}"]`) ?? null
   useEffect(() => {
@@ -772,7 +753,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       // but context menu lets the user act on any tab or the whole
       // multi-selection.
       window.dispatchEvent(
-        new CustomEvent('newbro:open-move-tab', { detail: { tabIds: actionTargets } }),
+        new CustomEvent('vimperium:open-move-tab', { detail: { tabIds: actionTargets } }),
       )
       if (useSelection) setSelectedIds(new Set())
     }
@@ -832,7 +813,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
     // The copy lands right below the original and nothing else changes.
     else if (action === 'duplicate-group') duplicateItems([groupId])
     else if (action === 'move-group') {
-      window.dispatchEvent(new CustomEvent('newbro:open-move-group', { detail: { groupId } }))
+      window.dispatchEvent(new CustomEvent('vimperium:open-move-group', { detail: { groupId } }))
     }
   }
 
@@ -989,6 +970,8 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       <div
         key={tab.id}
         data-sidebar-row=""
+        // Vim's ; (chrome-hints) labels it: typing the label clicks the row.
+        data-chrome-hint=""
         data-vim-row={tab.id}
         data-drop-tab-id={tab.id}
         data-drop-container={containerAttr}
@@ -1040,7 +1023,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
         {/* A numbered row keeps its stub clear of the 24×24 slot below. */}
         <span
           className="min-w-title-stub flex-1 truncate text-xs"
-          style={tabNumber !== undefined || hintLabels.has(hintId(tab.id)) ? { ['--title-stub-reserve' as string]: '1.5rem' } : undefined}
+          style={tabNumber !== undefined ? { ['--title-stub-reserve' as string]: '1.5rem' } : undefined}
           title={tab.title}
         >
           {tab.title}
@@ -1053,9 +1036,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
             stays easy to hit. */}
         <div className="absolute right-1 top-0 bottom-0 flex items-center">
           <div className="relative h-6 w-6 flex items-center justify-center">
-            {hintLabels.has(hintId(tab.id)) ? (
-              <RowHint mode="command" label={hintLabels.get(hintId(tab.id))} number={0} pending={vimPending} className="group-hover/tab:opacity-0" />
-            ) : tabNumber !== undefined && (
+            {tabNumber !== undefined && (
               <span
                 className="w-4 h-4 inline-flex items-center justify-center rounded bg-card/85 backdrop-blur-sm text-[10px] font-medium tabular-nums text-muted-foreground group-hover/tab:opacity-0 transition-opacity pointer-events-none"
                 title={tabNumberKeys ? `Switch to this tab — ${tabNumberKeys}` : undefined}
@@ -1107,6 +1088,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       <div
         data-sidebar-row=""
         data-sidebar-group-row=""
+        data-chrome-hint=""
         data-vim-row={group.id}
         data-drop-group-header={group.id}
         data-sidebar-index={sidebarIdx}
@@ -1202,11 +1184,6 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
             <span className="flex-1 min-w-0 truncate">{group.name}</span>
           )}
         </span>
-        {hintLabels.has(hintId(group.id)) && (
-          <div className="absolute right-2 top-0 bottom-0 flex items-center group-hover:opacity-0 pointer-events-none">
-            <RowHint mode="command" label={hintLabels.get(hintId(group.id))} number={0} pending={vimPending} />
-          </div>
-        )}
         {/* Action overlay — absolute right, sits ON TOP of the pill on
             hover so the pill underneath isn't squeezed by reserved button
             space. Each button has a card-tone background so the icons
@@ -1316,7 +1293,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
           </button>
         </div>
 
-        {vimKeymap && <SidebarHintBar keymap={vimKeymap} active={vimActive} />}
+        {vimKeymap && <SidebarHintBar keymap={vimKeymap} active={vimActive} pending={vimPending} />}
 
         <div
           className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"

@@ -6,22 +6,22 @@ import { log } from './log'
 // Runwa is the sibling command-palette launcher. Its window switcher, app
 // launcher and command palette all share one search window, and Runwa
 // remembers the size and position the user gives it. While Runwa is running,
-// Newbro's palette-style popups (Command Palette, Search, the pickers) open
+// Vimperium's palette-style popups (Command Palette, Search, the pickers) open
 // at that same geometry so every search box on the machine lands in one
-// spot. Runwa owns the values and Newbro only reads them, fresh on every
-// open, so resizing Runwa's palette shows up on the next Newbro palette with
+// spot. Runwa owns the values and Vimperium only reads them, fresh on every
+// open, so resizing Runwa's palette shows up on the next Vimperium palette with
 // nothing to sync.
 
 /** Token a renderer puts in `window.open`'s features string to ask for this
  *  geometry. Mirrored in src/renderer/src/components/DetachedWindow.tsx. */
-const RUNWA_PALETTE_FEATURE = 'newbro-runwa-palette'
+const RUNWA_PALETTE_FEATURE = 'vimperium-runwa-palette'
 
 /** Runwa's userData folder names under appData: the installed build, then
  *  `npm run dev`. The first one that's running wins. */
 const RUNWA_USER_DATA_DIRS = ['Runwa', 'Runwa Dev']
 
 // Mirrors runwa/src/main/palette-window.ts, so with nothing stored (or a
-// stored position that's gone offscreen) Newbro opens exactly where Runwa's
+// stored position that's gone offscreen) Vimperium opens exactly where Runwa's
 // own palette would.
 const DEFAULT_WIDTH = 720
 const DEFAULT_HEIGHT = 520
@@ -127,13 +127,13 @@ export function runwaPaletteBounds(): Rectangle | null {
     if (!isRunning(dir)) continue
     const settings = readSettings(dir)
     if (!settings) {
-      logOnChange(`${name} is running but its settings are unreadable, using Newbro's bounds`)
+      logOnChange(`${name} is running but its settings are unreadable, using Vimperium's bounds`)
       return null
     }
     const b = paletteBounds(settings)
     logOnChange(`${name} is running, palettes open at ${b.width}x${b.height}@${b.x},${b.y}`)
     return b
   }
-  logOnChange("Runwa isn't running, using Newbro's bounds")
+  logOnChange("Runwa isn't running, using Vimperium's bounds")
   return null
 }

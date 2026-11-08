@@ -17,7 +17,7 @@ interface BangsData {
 }
 
 const store = new Store<BangsData>({
-  name: 'newbro-bangs',
+  name: 'vimperium-bangs',
   defaults: { bangs: null, removedBuiltins: [] },
 })
 

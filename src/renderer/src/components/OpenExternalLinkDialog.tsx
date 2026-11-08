@@ -142,11 +142,11 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
       <PickerDialog
         open={open}
         title="Open in Another Browser"
-        windowTitle="Open Link - Newbro"
+        windowTitle="Open Link - Vimperium"
         placeholder="Open link in…"
         subtitle={failed
           ? <>{failed.name} couldn&apos;t open the link. Choose another browser for {passOnKeys}.</>
-          : <>Newbro remembers it for {passOnKeys}. Change it in Settings → General.</>}
+          : <>Vimperium remembers it for {passOnKeys}. Change it in Settings → General.</>}
         items={browsers.map((browser) => ({ id: browser.id, label: browser.name }))}
         emptyMessage="No other browser is installed"
         confirmVerb="Open"
@@ -165,7 +165,7 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
     <PickerDialog
       open={open}
       title="Open Link"
-      windowTitle="Open Link - Newbro"
+      windowTitle="Open Link - Vimperium"
       placeholder="Open link in…"
       subtitle={subtitle}
       items={items}

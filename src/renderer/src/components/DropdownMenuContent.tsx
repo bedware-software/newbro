@@ -45,6 +45,9 @@ function SortableRow({
   sortable,
   editable,
   deletable,
+  focused = false,
+  keyboard = false,
+  digit,
   onEmit,
 }: {
   item: DropdownItem
@@ -53,6 +56,13 @@ function SortableRow({
   sortable: boolean
   editable: boolean
   deletable: boolean
+  /** Highlighted by keyboard navigation: its rename and delete show, with
+   *  their keys. */
+  focused?: boolean
+  /** The list was opened from the keyboard: rows show their keys. */
+  keyboard?: boolean
+  /** The digit that picks it at once (the first nine rows). */
+  digit?: string
   onEmit: (evt: DropdownEventBody) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -71,11 +81,12 @@ function SortableRow({
       style={style}
       {...(sortable ? attributes : {})}
       {...(sortable ? listeners : {})}
+      {...(focused ? { 'data-key-focus': '' } : {})}
       className={`flex items-center gap-2 px-3 py-1.5 group/row transition-colors ${
         selected
           ? 'bg-accent text-accent-foreground'
-          : 'text-foreground hover:bg-accent/50'
-      } ${isDragging ? 'opacity-60' : ''} ${sortable ? 'cursor-grab active:cursor-grabbing' : ''}`}
+          : focused ? 'bg-accent/50 text-foreground' : 'text-foreground hover:bg-accent/50'
+      } ${focused ? 'ring-1 ring-inset ring-primary/60' : ''} ${isDragging ? 'opacity-60' : ''} ${sortable ? 'cursor-grab active:cursor-grabbing' : ''}`}
     >
       <button
         className="flex items-center gap-2 flex-1 min-w-0 text-left"
@@ -84,7 +95,11 @@ function SortableRow({
         <Icon size={12} className="text-muted-foreground shrink-0" />
         <span className="truncate">{item.name}</span>
       </button>
-      <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover/row:opacity-100 transition-all">
+      {/* Shown on hover, on a Tab-focused button, and on the row the keys
+          are on — with their keys then. */}
+      <div className={`flex items-center gap-0.5 shrink-0 transition-all ${
+        focused ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100'
+      }`}>
         {editable && (
           <button
             data-row-action
@@ -99,6 +114,7 @@ function SortableRow({
             <Pencil size={11} />
           </button>
         )}
+        {focused && editable && <kbd className="font-mono mr-1">{ROW_KEYS.rename}</kbd>}
         {deletable && (
           <button
             data-row-action
@@ -113,7 +129,9 @@ function SortableRow({
             <Trash2 size={11} />
           </button>
         )}
+        {focused && deletable && <kbd className="font-mono">{ROW_KEYS.delete}</kbd>}
       </div>
+      {keyboard && digit && <kbd className="font-mono text-muted-foreground shrink-0">{digit}</kbd>}
     </div>
   )
 }
@@ -170,17 +188,24 @@ function ColorStrip({
   )
 }
 
-// The menu's own moves (j/k through the actions, h/l across the swatches),
-// which no action's key may take.
+// The menu's own moves (j/k through the rows and actions, h/l across the
+// swatches), which no action's key may take.
 const MOVE_KEYS = new Set(['j', 'k', 'h', 'l'])
+
+// A list's keys for the row the keys are on (the toolbar's profiles and
+// workspaces): rename it, delete it (d, as dd deletes), make a new one.
+// Shift+J/K move it down and up; a digit picks one of the first nine.
+const ROW_KEYS = { rename: 'r', delete: 'd', new: 'n' } as const
+const ROW_MOVE_KEYS = ['J', 'K']
+const DIGITS = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
 
 /** Each enabled action's one key, by index: its own `key`, else its
  *  shortcut when that's one plain key (the Downloads page's f, c, x…), else
  *  the first letter of a word of its label no other action has, else of
- *  anywhere in it, else a digit. */
-export function menuKeys(actions: DropdownAction[]): Map<number, string> {
+ *  anywhere in it, else a digit. None of `reserved` (a list's row keys). */
+export function menuKeys(actions: DropdownAction[], reserved: Iterable<string> = []): Map<number, string> {
   const keys = new Map<number, string>()
-  const taken = new Set(MOVE_KEYS)
+  const taken = new Set([...MOVE_KEYS, ...reserved])
   actions.forEach((a, i) => {
     const own = a.key ?? (a.shortcut?.length === 1 && /^[a-zA-Z0-9]$/.test(a.shortcut[0]) ? a.shortcut[0] : undefined)
     if (a.disabled || !own || taken.has(own)) return
@@ -230,6 +255,7 @@ function ActionRow({
   const disabled = !!action.disabled
   return (
     <button
+      {...(focused ? { 'data-key-focus': '' } : {})}
       onClick={() => { if (!disabled) onEmit({ type: 'action', actionId: action.id }) }}
       disabled={disabled}
       title={disabled ? action.disabledTitle : undefined}
@@ -312,27 +338,101 @@ export function DropdownMenuContent({
     return () => document.removeEventListener('keydown', handler)
   }, [onEmit])
 
-  const items = spec.items ?? []
+  // The rows in the order shown: moved with the keys or a drag, they move
+  // here at once (the opener reorders its own list as the events come, and
+  // the next spec brings its order).
+  const [moved, setMoved] = useState<{ spec: DropdownSpec; items: DropdownItem[] } | null>(null)
+  const items = moved && moved.spec === spec ? moved.items : spec.items ?? []
+  const setItems = (next: DropdownItem[]): void => setMoved({ spec, items: next })
   const Icon = resolveIcon(spec.iconName)
   const actions = spec.actions ?? []
   const colors = spec.colors ?? []
+  const canEdit = !!spec.editable
+  const canDelete = !!spec.deletable && !!spec.canDelete
 
-  // Keyboard navigation for menus opened from the keyboard: j/k (or ↓/↑)
-  // step through the enabled actions, h/l across the colour swatches, and
-  // Enter picks whichever was moved to last; an action's own key picks it.
-  const keys = useMemo(() => (spec.keyboard ? menuKeys(actions) : new Map<number, string>()), [spec, actions])
-  const [keyFocus, setKeyFocus] = useState<{ zone: 'actions' | 'colors'; index: number } | null>(null)
+  // Keyboard navigation for menus and lists opened from the keyboard: j/k
+  // (or ↓/↑) step through the rows, the New… row and the enabled actions,
+  // h/l across the colour swatches, and Enter picks whichever was moved to
+  // last; an action's own key picks it. On a list's row, r renames it, d
+  // deletes it, Shift+J/K move it; n is New…, a digit picks a row.
+  const rowKeys = items.length > 0
+  const reserved = useMemo(
+    () => (rowKeys ? [...Object.values(ROW_KEYS), ...ROW_MOVE_KEYS, ...DIGITS.slice(0, items.length)] : []),
+    [rowKeys, items.length],
+  )
+  const keys = useMemo(() => (spec.keyboard ? menuKeys(actions, reserved) : new Map<number, string>()), [spec, actions, reserved])
+  type KeyFocus = { zone: 'items' | 'new' | 'actions' | 'colors'; index: number }
+  const [keyFocus, setKeyFocus] = useState<KeyFocus | null>(null)
   useEffect(() => {
-    const first = actions.findIndex((a) => !a.disabled)
-    setKeyFocus(spec.keyboard && first !== -1 ? { zone: 'actions', index: first } : null)
+    if (!spec.keyboard) {
+      setKeyFocus(null)
+      return
+    }
+    const list = spec.items ?? []
+    // A list starts on the current row; a menu on its first action.
+    const current = list.findIndex((it) => it.id === spec.selectedId)
+    const first = (spec.actions ?? []).findIndex((a) => !a.disabled)
+    setKeyFocus(
+      list.length > 0 ? { zone: 'items', index: Math.max(0, current) }
+        : spec.newAction ? { zone: 'new', index: 0 }
+          : first !== -1 ? { zone: 'actions', index: first } : null,
+    )
   }, [spec])
+
+  // The focused row stays in sight in a long list.
+  useEffect(() => {
+    ref.current?.querySelector('[data-key-focus]')?.scrollIntoView({ block: 'nearest' })
+  }, [keyFocus])
 
   useEffect(() => {
     if (!spec.keyboard) return
+    // j/k's stops, top to bottom.
+    const stops: KeyFocus[] = [
+      ...items.map((_, index) => ({ zone: 'items' as const, index })),
+      ...(spec.newAction ? [{ zone: 'new' as const, index: 0 }] : []),
+      ...actions.flatMap((a, index) => (a.disabled ? [] : [{ zone: 'actions' as const, index }])),
+    ]
+    const focusedItem = keyFocus?.zone === 'items' ? items[keyFocus.index] : undefined
     const handler = (e: KeyboardEvent): void => {
       if (e.metaKey || e.ctrlKey || e.altKey) return
       const pressed = positionalKey(e)
       if (pressed && !MOVE_KEYS.has(pressed)) {
+        // A list's own keys first.
+        if (rowKeys) {
+          if (pressed === ROW_KEYS.new && spec.newAction) {
+            e.preventDefault()
+            onEmit({ type: 'new' })
+            return
+          }
+          if (pressed === ROW_KEYS.rename && focusedItem && canEdit) {
+            e.preventDefault()
+            onEmit({ type: 'edit', id: focusedItem.id, name: focusedItem.name })
+            return
+          }
+          if (pressed === ROW_KEYS.delete && focusedItem && canDelete) {
+            e.preventDefault()
+            onEmit({ type: 'delete', id: focusedItem.id, name: focusedItem.name })
+            return
+          }
+          if (ROW_MOVE_KEYS.includes(pressed) && focusedItem && spec.reorder && keyFocus) {
+            e.preventDefault()
+            const from = keyFocus.index
+            const to = from + (pressed === 'J' ? 1 : -1)
+            if (to < 0 || to >= items.length) return
+            const next = [...items]
+            next.splice(to, 0, ...next.splice(from, 1))
+            setItems(next)
+            setKeyFocus({ zone: 'items', index: to })
+            onEmit({ type: 'reorder', sourceId: focusedItem.id, sourceIndex: from, targetIndex: to })
+            return
+          }
+          const digit = DIGITS.indexOf(pressed)
+          if (digit !== -1 && items[digit]) {
+            e.preventDefault()
+            onEmit({ type: 'select', id: items[digit].id })
+            return
+          }
+        }
         for (const [index, key] of keys) {
           if (key !== pressed) continue
           e.preventDefault()
@@ -342,18 +442,15 @@ export function DropdownMenuContent({
       }
       // The moves go by position too.
       const move = pressed && MOVE_KEYS.has(pressed) ? pressed : e.key
-      const enabled = actions.flatMap((a, i) => (a.disabled ? [] : [i]))
       const step = move === 'j' || move === 'ArrowDown' ? 1 : move === 'k' || move === 'ArrowUp' ? -1 : 0
       if (step !== 0) {
-        if (enabled.length === 0) return
+        if (stops.length === 0) return
         e.preventDefault()
         setKeyFocus((prev) => {
-          // Back from the swatches: resume on the action last highlighted.
-          if (prev?.zone === 'actions' && enabled.includes(prev.index)) {
-            const at = enabled.indexOf(prev.index) + step
-            return { zone: 'actions', index: enabled[Math.max(0, Math.min(enabled.length - 1, at))] }
-          }
-          return { zone: 'actions', index: enabled[0] }
+          // Back from the swatches: resume on the stop last highlighted.
+          const at = prev ? stops.findIndex((st) => st.zone === prev.zone && st.index === prev.index) : -1
+          if (at === -1) return stops[0]
+          return stops[Math.max(0, Math.min(stops.length - 1, at + step))]
         })
       } else if (move === 'h' || move === 'l') {
         if (colors.length === 0) return
@@ -371,6 +468,10 @@ export function DropdownMenuContent({
         if (keyFocus.zone === 'colors') {
           const color = colors[keyFocus.index]
           if (color) onEmit({ type: 'color', color: color.value })
+        } else if (keyFocus.zone === 'items') {
+          if (focusedItem) onEmit({ type: 'select', id: focusedItem.id })
+        } else if (keyFocus.zone === 'new') {
+          onEmit({ type: 'new' })
         } else {
           const action = actions[keyFocus.index]
           if (action && !action.disabled) onEmit({ type: 'action', actionId: action.id })
@@ -379,7 +480,7 @@ export function DropdownMenuContent({
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [spec, actions, colors, keyFocus, keys, onEmit])
+  }, [spec, items, actions, colors, keyFocus, keys, rowKeys, canEdit, canDelete, onEmit])
 
   const handleDragEnd = (event: DragEndEvent): void => {
     const { active, over } = event
@@ -390,6 +491,10 @@ export function DropdownMenuContent({
     const sourceIndex = items.findIndex((it) => it.id === sourceId)
     const targetIndex = items.findIndex((it) => it.id === targetId)
     if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) return
+    const next = [...items]
+    next.splice(targetIndex, 0, ...next.splice(sourceIndex, 1))
+    setItems(next)
+    if (keyFocus?.zone === 'items' && keyFocus.index === sourceIndex) setKeyFocus({ zone: 'items', index: targetIndex })
     onEmit({ type: 'reorder', sourceId, sourceIndex, targetIndex })
   }
 
@@ -399,15 +504,18 @@ export function DropdownMenuContent({
       return (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={items.map((it) => it.id)} strategy={verticalListSortingStrategy}>
-            {items.map((it) => (
+            {items.map((it, index) => (
               <SortableRow
                 key={it.id}
                 item={it}
                 selected={it.id === spec.selectedId}
                 Icon={Icon}
                 sortable={true}
-                editable={!!spec.editable}
-                deletable={!!spec.deletable && !!spec.canDelete}
+                editable={canEdit}
+                deletable={canDelete}
+                focused={keyFocus?.zone === 'items' && keyFocus.index === index}
+                keyboard={!!spec.keyboard}
+                digit={DIGITS[index]}
                 onEmit={onEmit}
               />
             ))}
@@ -415,15 +523,18 @@ export function DropdownMenuContent({
         </DndContext>
       )
     }
-    return items.map((it) => (
+    return items.map((it, index) => (
       <SortableRow
         key={it.id}
         item={it}
         selected={it.id === spec.selectedId}
         Icon={Icon}
         sortable={false}
-        editable={!!spec.editable}
-        deletable={!!spec.deletable && !!spec.canDelete}
+        editable={canEdit}
+        deletable={canDelete}
+        focused={keyFocus?.zone === 'items' && keyFocus.index === index}
+        keyboard={!!spec.keyboard}
+        digit={DIGITS[index]}
         onEmit={onEmit}
       />
     ))
@@ -458,11 +569,15 @@ export function DropdownMenuContent({
         <>
           {items.length > 0 && <div className="h-px bg-border" />}
           <button
-            className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-primary hover:bg-accent/50"
+            {...(keyFocus?.zone === 'new' ? { 'data-key-focus': '' } : {})}
+            className={`w-full text-left px-3 py-1.5 flex items-center gap-2 text-primary hover:bg-accent/50 ${
+              keyFocus?.zone === 'new' ? 'bg-accent' : ''
+            }`}
             onClick={() => onEmit({ type: 'new' })}
           >
             <Plus size={12} />
-            {spec.newAction.label}
+            <span className="flex-1">{spec.newAction.label}</span>
+            {spec.keyboard && rowKeys && <kbd className="font-mono text-muted-foreground">{ROW_KEYS.new}</kbd>}
           </button>
         </>
       )}

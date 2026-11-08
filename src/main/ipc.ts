@@ -51,6 +51,7 @@ import {
   tabStop,
   tabStopFindInPage,
   tabToggleDevTools,
+  tabZoom,
   getChromeTabIdForTab,
   pickPartitionForWindow,
   type TabBounds,
@@ -353,7 +354,7 @@ function applyIncomingSettings(settings: Settings): void {
   saveSettings(settings)
   applyProxySettingsToAllSessions(settings)
   rebuildMenu()
-  // Dark pages can follow Newbro's theme.
+  // Dark pages can follow Vimperium's theme.
   refreshDarkPagesTheme()
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('settings:updated', settings)
@@ -494,6 +495,12 @@ export function registerIpcHandlers(): void {
     tabToggleDevTools(tabId)
   })
 
+  // Vim's zoom-in / zoom-out / zoom-reset on the active tab's page.
+  ipcMain.handle('tab:zoom', (_e, tabId: string, step: unknown) => {
+    if (step !== 'in' && step !== 'out' && step !== 'reset') return null
+    return tabZoom(tabId, step)
+  })
+
   ipcMain.handle('tab:save-page', (_e, tabId: string) => {
     return tabSavePage(tabId)
   })
@@ -579,7 +586,7 @@ export function registerIpcHandlers(): void {
       return { shown: false, error: 'Notifications are not supported on this system.' }
     }
     const notification = new Notification({
-      title: 'Newbro',
+      title: 'Vimperium',
       body: 'Test notification. If you can see this, notifications work — including the ones extensions such as Claude send.',
       icon: nativeImage.createFromPath(path.join(__dirname, '../../resources/icon.png')),
     })
@@ -1230,7 +1237,7 @@ export function registerIpcHandlers(): void {
     try {
       const pid = process.pid
       const tmpDir = app.getPath('temp')
-      const scriptPath = path.join(tmpDir, `newbro-wipe-${pid}-${Date.now()}.js`)
+      const scriptPath = path.join(tmpDir, `vimperium-wipe-${pid}-${Date.now()}.js`)
 
       // Capture the current launch command so the helper can relaunch a
       // fresh instance with the same executable and args. ELECTRON_RUN_AS_NODE
@@ -1260,7 +1267,7 @@ const shouldRelaunch = ${JSON.stringify(shouldRelaunch)};
 // so console.* goes nowhere visible. Without this file we'd silently
 // lose the cause of any wipe/relaunch failure. Stable path so a user
 // can grab it after the fact.
-const logPath = path.join(os.tmpdir(), 'newbro-wipe-' + pid + '.log');
+const logPath = path.join(os.tmpdir(), 'vimperium-wipe-' + pid + '.log');
 function diag(msg) {
   try { fs.appendFileSync(logPath, new Date().toISOString() + ' ' + msg + '\\n'); }
   catch (e) { /* logfile path is unwritable — last resort, nowhere to forward to */ }

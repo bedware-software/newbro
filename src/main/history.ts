@@ -132,7 +132,7 @@ const SCHEMA = `
 `
 
 function dbFile(): string {
-  return path.join(app.getPath('userData'), 'newbro-history.db')
+  return path.join(app.getPath('userData'), 'vimperium-history.db')
 }
 
 function openDatabase(): DatabaseSync | null {
@@ -239,7 +239,7 @@ function importLegacyOnce(handle: DatabaseSync): void {
   if (done) return
   let legacy: HistoryEntry[] = []
   try {
-    const store = new Store<{ entries: HistoryEntry[] }>({ name: 'newbro-history', defaults: { entries: [] } })
+    const store = new Store<{ entries: HistoryEntry[] }>({ name: 'vimperium-history', defaults: { entries: [] } })
     const raw = store.get('entries')
     legacy = Array.isArray(raw) ? raw : []
   } catch (err) {

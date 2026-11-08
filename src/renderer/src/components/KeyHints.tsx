@@ -7,6 +7,7 @@
 import type { ReactNode } from 'react'
 import { cn } from '../lib/utils'
 import { displayKeySequence, keysFor, type VimKeymap } from '../lib/vim-keymap'
+import { useWhichKey, type WhichKeyEntry } from '../lib/which-key'
 
 export function Hint({ label, keys }: { label: ReactNode; keys: ReactNode[] }) {
   if (keys.length === 0) return null
@@ -59,9 +60,19 @@ export function HintBar({ children, wrap = false, className }: BarProps) {
 }
 
 /** The Sidebar's keys, at the bottom of it — wrapping, since it's narrow.
- *  Faded until one of them is used, which brings them to life. */
-export function SidebarHintBar({ keymap, active }: { keymap: VimKeymap; active: boolean }) {
+ *  Faded until one of them is used, which brings them to life. While a
+ *  prefix is pending (o, d, n…) it lists what can follow it instead
+ *  (which-key, components/WhichKey.tsx). */
+export function SidebarHintBar({ keymap, active, pending = '' }: { keymap: VimKeymap; active: boolean; pending?: string }) {
+  const whichKey = useWhichKey(keymap, pending)
   const caps = (...commands: string[]): string[] => vimKeyCaps(keymap, ...commands)
+  if (whichKey.length > 0) {
+    return (
+      <HintBar wrap className="px-2">
+        <WhichKeyHints pending={pending} entries={whichKey} />
+      </HintBar>
+    )
+  }
   return (
     <HintBar wrap className={cn('px-2 transition-opacity', !active && 'opacity-50')}>
       <Hint label="Switch" keys={caps('cursor-down-show', 'cursor-up-show')} />
@@ -120,5 +131,21 @@ export function RowHint({ mode, label, number, pending, className }: {
         ? <><span className="text-primary">{label!.slice(0, typed)}</span>{label!.slice(typed)}</>
         : number}
     </span>
+  )
+}
+
+/** The entries as hint bar items: the prefix typed, lit as the mode's
+ *  showcmd is, then each next key with what it does. */
+export function WhichKeyHints({ pending, entries }: { pending: string; entries: WhichKeyEntry[] }) {
+  return (
+    <>
+      <span className="flex items-center gap-1 whitespace-nowrap text-foreground">
+        <kbd className="font-mono text-primary">{displayKeySequence(pending)}</kbd>
+        <span aria-hidden="true">→</span>
+      </span>
+      {entries.map((entry) => (
+        <Hint key={entry.keys} label={entry.label} keys={[entry.keys]} />
+      ))}
+    </>
   )
 }
