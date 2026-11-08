@@ -110,7 +110,7 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
     if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId)
   }
 
-  // COMMAND mode's two-letter row labels (lib/hint-labels.ts).
+  // COMMAND mode's row labels (lib/hint-labels.ts).
   const hints = usePopupHints(vimKeymap, rows.length)
   const vim = usePopupVimMode({
     keymap: hints.keymap,

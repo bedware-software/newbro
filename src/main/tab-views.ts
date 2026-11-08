@@ -32,7 +32,7 @@ import { setupPartitionSession, shouldDropExtConsoleMessage } from './index'
 import { ensureExtensionInSession } from './extensions/manager'
 import { injectMatchingUserScripts } from './extensions/userscripts'
 import { getExtensionsFor, suppressLibrarySelectTab } from './chrome-extensions-bridge'
-import { trackDarkPages } from './dark-pages'
+import { readyDarkFirstLoad, trackDarkPages } from './dark-pages'
 
 export interface TabBounds {
   x: number
@@ -105,6 +105,12 @@ interface TabRecord {
    *  see-through, or dark while Dark pages darkens the page over Vimperium's
    *  light theme (main/dark-pages.ts). */
   restingBackground: string
+  /** Counts navigations startTabNavigation began: one that waited finds out
+   *  whether a later one took over meanwhile. */
+  navSeq: number
+  /** The tab is loading about:blank before its first page, for Dark pages
+   *  (readyDarkFirstLoad): that load isn't the user's navigation. */
+  priming: boolean
 }
 
 const WEBVIEW_STEALTH_PRELOAD = join(__dirname, '../preload/webview-stealth.js')
@@ -726,6 +732,7 @@ function wireEvents(rec: TabRecord): void {
   // to: another page starting first (a link clicked meanwhile) or the load
   // failing drops the note.
   wc.on('did-start-navigation', (details) => {
+    if (rec.priming && details.url === 'about:blank') return
     if (details.isMainFrame && !details.isSameDocument) dropTypedNavigation(rec.tabId, details.url)
   })
   wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
@@ -1049,6 +1056,8 @@ export function createTab(opts: {
     activated: false,
     lastBounds: HIDDEN_BOUNDS,
     restingBackground: TAB_BG_TRANSPARENT,
+    navSeq: 0,
+    priming: false,
   }
   tabs.set(opts.tabId, rec)
   wcIdToTabId.set(view.webContents.id, opts.tabId)
@@ -1161,6 +1170,7 @@ async function startTabNavigation(rec: TabRecord, url: string): Promise<void> {
   if (url.startsWith('extension://')) {
     url = 'chrome-' + url
   }
+  const seq = ++rec.navSeq
   const extId = extractExtensionIdFromExtUrl(url)
   if (extId) {
     // Extension is supposed to already be loaded into this partition
@@ -1169,12 +1179,41 @@ async function startTabNavigation(rec: TabRecord, url: string): Promise<void> {
     // race with the loadURL below.
     await ensureExtensionInSession(rec.view.webContents.session, extId).catch(() => false)
   }
-  rec.view.webContents.loadURL(url).catch((err) => {
+  // A tab's first page that Dark pages darkens takes its look on
+  // about:blank first, so its request already asks for the dark theme.
+  const wc = rec.view.webContents
+  rec.priming = true
+  await readyDarkFirstLoad(wc, url).catch(() => false)
+  // A later navigation took over meanwhile: it loads, this one doesn't.
+  if (seq !== rec.navSeq || wc.isDestroyed()) return
+  rec.priming = false
+  // The tab's only page is the about:blank it was primed on (this time, or
+  // by a navigation this one took over from).
+  if (wc.getURL() === 'about:blank' && wc.navigationHistory.length() === 1) dropPrimingEntry(rec)
+  wc.loadURL(url).catch((err) => {
     // ERR_ABORTED is normal during user-initiated redirects (e.g. Google's
     // consent.google.com flow interrupting a chromewebstore load). Skip.
     const msg = String(err)
     if (msg.includes('ERR_ABORTED')) return
     log.warn('tab-views: loadURL failed', { tabId: rec.tabId, url, err: msg })
+  })
+}
+
+/** Once the tab's first page commits, the about:blank it took Dark pages'
+ *  look on leaves its history: Back never goes to it. Ahead of wireEvents'
+ *  did-navigate, which tells the page and the renderer whether Back can go
+ *  anywhere. */
+function dropPrimingEntry(rec: TabRecord): void {
+  const wc = rec.view.webContents
+  wc.prependOnceListener('did-navigate', () => {
+    try {
+      const nav = wc.navigationHistory
+      if (nav.length() > 1 && nav.getActiveIndex() > 0 && nav.getEntryAtIndex(0)?.url === 'about:blank') {
+        nav.removeEntryAtIndex(0)
+      }
+    } catch (err) {
+      log.warn('tab-views: dropping the priming entry failed', { tabId: rec.tabId, err: String(err) })
+    }
   })
 }
 

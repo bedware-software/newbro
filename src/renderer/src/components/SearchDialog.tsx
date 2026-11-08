@@ -538,7 +538,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
   }
 
   // ── Vim COMMAND mode ──
-  // COMMAND mode's two-letter row labels (lib/hint-labels.ts).
+  // COMMAND mode's row labels (lib/hint-labels.ts).
   const hints = usePopupHints(searchKeymap, flatResults.length)
   const runVimCommand = (command: string): void => {
     if (command === 'row-menu') {

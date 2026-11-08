@@ -115,9 +115,9 @@ function normalizeVimKeymap(raw: unknown): string | null {
   return typeof raw === 'string' ? raw.slice(0, MAX_VIM_KEYMAP_LENGTH) : null
 }
 
-/** The Vim keymap version this build writes: v14, the one
+/** The Vim keymap version this build writes: v15, the one
  *  migrateVimKeymap below moves a saved keymap to. */
-export const VIM_KEYMAP_VERSION = 14
+export const VIM_KEYMAP_VERSION = 15
 
 /** Settings with the keymap's version stamp set for what's stored on this
  *  device: none without a keymap text, else the current version — every
@@ -489,21 +489,23 @@ function migrateNewKeybindingDefaults(): void {
  * not Ctrl held, <C-o>/<C-i>/<C-p>/<Space>; v11: od Downloads, ob Bangs;
  * v12: D Dark pages on this site; v13: vim's grammar — <C-d>/<C-u>, the
  * Sidebar on <C-h/j/k/l> and <Tab>, n new, d delete, o open, t toggle, u
- * reopens; v14: nw a new workspace (was nv), nn a new tab beside nt — see
- * src/shared/vim-default-keymap.ts): a keymap saved under v1 to v13 keeps what its owner changed and takes the new defaults for
+ * reopens; v14: nw a new workspace (was nv), nn a new tab beside nt; v15:
+ * dw deletes the workspace (was dv), the Sidebar's rows labelled (no
+ * <C-1>…<C-9>) and m their menu (was <C-m>) — see
+ * src/shared/vim-default-keymap.ts): a keymap saved under v1 to v14 keeps what its owner changed and takes the new defaults for
  * everything else.
  * Once.
  */
 function migrateVimKeymap(): void {
   const raw = store as unknown as { get(key: string): unknown; set(key: string, value: unknown): void }
-  const marker = 'vim-keymap-v14'
+  const marker = 'vim-keymap-v15'
   const migratedList = raw.get('migratedKeybindingDefaults')
   const migrated = new Set(Array.isArray(migratedList) ? (migratedList as string[]) : [])
   if (migrated.has(marker)) return
 
   const saved = store.get('settings')
   if (saved && typeof saved.vimKeymap === 'string') {
-    const from = migrated.has('vim-keymap-v13') ? 13 : migrated.has('vim-keymap-v12') ? 12 : migrated.has('vim-keymap-v11') ? 11 : migrated.has('vim-keymap-v10') ? 10 : migrated.has('vim-keymap-v9') ? 9 : migrated.has('vim-keymap-v8') ? 8 : migrated.has('vim-keymap-v7') ? 7 : migrated.has('vim-keymap-v6') ? 6 : migrated.has('vim-keymap-v5') ? 5 : migrated.has('vim-keymap-v4') ? 4 : migrated.has('vim-keymap-v3') ? 3 : migrated.has('vim-keymap-v2') ? 2 : 1
+    const from = migrated.has('vim-keymap-v14') ? 14 : migrated.has('vim-keymap-v13') ? 13 : migrated.has('vim-keymap-v12') ? 12 : migrated.has('vim-keymap-v11') ? 11 : migrated.has('vim-keymap-v10') ? 10 : migrated.has('vim-keymap-v9') ? 9 : migrated.has('vim-keymap-v8') ? 8 : migrated.has('vim-keymap-v7') ? 7 : migrated.has('vim-keymap-v6') ? 6 : migrated.has('vim-keymap-v5') ? 5 : migrated.has('vim-keymap-v4') ? 4 : migrated.has('vim-keymap-v3') ? 3 : migrated.has('vim-keymap-v2') ? 2 : 1
     store.set('settings', { ...saved, vimKeymap: migrateVimKeymapText(saved.vimKeymap, from, (note) => log.info(`vim keymap v${from} → v${VIM_KEYMAP_VERSION}: ${note}`)) })
   }
 
@@ -519,6 +521,7 @@ function migrateVimKeymap(): void {
   migrated.add('vim-keymap-v11')
   migrated.add('vim-keymap-v12')
   migrated.add('vim-keymap-v13')
+  migrated.add('vim-keymap-v14')
   migrated.add(marker)
   raw.set('migratedKeybindingDefaults', [...migrated])
 }
@@ -532,7 +535,7 @@ type VimKeymapVersion = Parameters<typeof migrateVimKeymapText>[1] | typeof VIM_
 /** Commands each keymap version brought in, newest first: what a keymap
  *  text with no version stamp shows of the defaults it was written under.
  *  Versions that added no command read as the newest that looks the same:
- *  v8 to v10 as v10, v3 to v5 as v5, v14 as v13. */
+ *  v8 to v10 as v10, v3 to v5 as v5, v14 and v15 as v13. */
 const VIM_KEYMAP_VERSION_MARKS: ReadonlyArray<readonly [VimKeymapVersion, readonly string[]]> = [
   [13, [
     'new-group', 'new-profile', 'close-group', 'app-menu', 'extensions-menu', 'site-info',
@@ -567,8 +570,8 @@ function vimKeymapVersionOf(text: string): VimKeymapVersion {
  * migrateVimKeymap does for the saved one at load. A keymap stamped current
  * or later is taken as it is: carrying a current keymap over again would
  * undo what its owner changed. One with an older stamp or none reads as the
- * newest version whose commands it names — v13 at most: v14 brought in no
- * command, and its step leaves a text already on v14's keys as it is. Says
+ * newest version whose commands it names — v13 at most: v14 and v15 brought
+ * in no command, and their steps leave a text already on their keys as it is. Says
  * which version it carried the keymap over from, or null.
  */
 export function syncedSettingsForSave(incoming: Settings): { settings: Settings; vimKeymapFrom: number | null; vimTurnedOn: boolean } {

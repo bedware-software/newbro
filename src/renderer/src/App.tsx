@@ -1606,7 +1606,7 @@ export default function App() {
     window.electronAPI.tabFocus?.(s.activeTabId)
     return true
   }
-  // Two-letter labels on the rows the group page shows
+  // Labels on the rows the group page, the Bookshelf and the Sidebar show
   // in COMMAND (lib/hint-labels.ts), bound in the window's keymap — the one
   // pages run too.
   const hinted = useHintKeymap(vimReady ? vimKeymap.main : null)
@@ -1729,6 +1729,9 @@ export default function App() {
           visible={sidebarShown}
           vimActive={vim.sidebarKeys}
           vimKeymap={vimReady ? vimKeymap.main : null}
+          vimMode={vim.mode}
+          vimPending={vim.pending}
+          hintsOn={!popupOpen}
         />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
           <UrlEditor anchorRef={webviewColumnRef} vimKeymap={vimReady ? vimKeymap.url : null} />

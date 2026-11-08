@@ -2,7 +2,7 @@
 // filter box over a list of destinations, Search Everything's look. In Vim
 // mode it has Search Everything's two modes too: it opens typing in the box
 // (INSERT); Ctrl+C goes to COMMAND, where the scroll keys move through the
-// rows, each row wears a two-letter label that picks it, and i types again;
+// rows, each row wears a label that picks it, and i types again;
 // Esc cancels from either.
 // Enter (Shift+Enter, Ctrl/⌘+Enter) works the same in both.
 

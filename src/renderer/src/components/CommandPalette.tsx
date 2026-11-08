@@ -284,7 +284,7 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
   // Vim mode: the palette opens in INSERT — typing filters, like vim's `:`
   // command line. Ctrl+C goes to COMMAND, where j/k walk the list and a
   // row's label runs it; i types again. Esc closes from either.
-  // COMMAND mode's two-letter row labels (lib/hint-labels.ts).
+  // COMMAND mode's row labels (lib/hint-labels.ts).
   const hints = usePopupHints(vimKeymap, rows.length)
   const vim = usePopupVimMode({
     keymap: hints.keymap,

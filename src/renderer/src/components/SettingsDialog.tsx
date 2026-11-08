@@ -1369,7 +1369,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   // saved (an edit to it takes effect on Save). It
   // opens in COMMAND, a cursor on the section's first setting: j / k walk
   // the settings, h / l change the one under the cursor, Enter or Space
-  // presses it, J / K go through the sections, a setting's two-letter label
+  // presses it, J / K go through the sections, a setting's label
   // goes to it, / finds a setting in any section (lib/vim-keymap.ts has the
   // keys, lib/vim-form.ts the cursor). A text field taking the keyboard is
   // INSERT; Esc comes back to COMMAND. Esc in COMMAND steps back out: an

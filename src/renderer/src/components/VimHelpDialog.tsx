@@ -82,7 +82,7 @@ function sectionNote(context: HelpContext, keymap: ParsedVimKeymap): string {
       ].filter(Boolean).join(' ')
     }
     case 'settings':
-      return `Its COMMAND mode, which it opens in. Every setting wears a two-letter label too; typing it goes there. ${LEAVE_INSERT_CAP} leaves a field; Esc steps back out — a list, the filter — then closes.`
+      return `Its COMMAND mode, which it opens in. Every setting wears a label too; typing it goes there. ${LEAVE_INSERT_CAP} leaves a field; Esc steps back out — a list, the filter — then closes.`
   }
 }
 

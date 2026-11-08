@@ -1,5 +1,6 @@
 // Vimium-style hints for Vim mode's lists: in COMMAND each row wears a
-// two-letter label — home-row letters first, and only letters the list's
+// label of one, two or three letters, as few as the rows allow — home-row
+// letters first, and only letters the list's
 // keymap leaves free, so a label never shadows a command — and typing it
 // picks the row. The labels go into the keymap as `hint-<n>` commands, so
 // the usual sequencer runs them (the first letter shows as pending until the
@@ -46,15 +47,16 @@ export function hintAlphabet(keymap: VimKeymap | null): string[] {
   return HINT_KEYS.filter((k) => !first.has(k))
 }
 
-/** Two-letter labels for `count` rows, the first letter changing slowest, so
- *  the top rows share it: ff fj fd fk… More rows than two letters can name
- *  get three letters each — all of them, as a two-letter label would be the
- *  start of three-letter ones and fire before they could be typed. As many
- *  as the alphabet allows. */
+/** Labels for `count` rows, all of one length — the shortest that names
+ *  them all: a letter each while the alphabet has enough, else two, the
+ *  first changing slowest so the top rows share it (ff fj fd fk…), else
+ *  three. Never mixed, as a shorter label would be the start of longer ones
+ *  and fire before they could be typed. As many as the alphabet allows. */
 export function hintLabels(count: number, alphabet: string[]): string[] {
   const out: string[] = []
   if (count <= 0) return out
-  const length = count > alphabet.length * alphabet.length ? 3 : 2
+  const n = alphabet.length
+  const length = count <= n ? 1 : count <= n * n ? 2 : 3
   const extend = (prefix: string): boolean => {
     if (prefix.length === length) {
       out.push(prefix)

@@ -100,8 +100,7 @@ export const LEAVE_INSERT_CAP = displayKeySequence('<C-c>')
 
 /** A list row's key in Vim mode, as a keycap filling the row's left padding
  *  (positioned by the row, so its content never moves; a span, as the
- *  global kbd style's padding would widen it): in COMMAND its two-letter
- *  label — the part typed so far lit, rows it no longer fits faded — and in
+ *  global kbd style's padding would widen it): in COMMAND its label — the part typed so far lit, rows it no longer fits faded — and in
  *  INSERT just its number, to read. Nothing while Vim mode is off. */
 export function RowHint({ mode, label, number, pending, className }: {
   mode: 'command' | 'insert' | null

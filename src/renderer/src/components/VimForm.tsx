@@ -1,4 +1,4 @@
-// What a form's Vim keys (lib/vim-form.ts) draw: each control's two-letter
+// What a form's Vim keys (lib/vim-form.ts) draw: each control's
 // label, vimium-style, at its top-left corner — the part typed so far lit,
 // the ones it no longer fits faded — and the hints for the control under
 // the cursor, for the form's hint bar.

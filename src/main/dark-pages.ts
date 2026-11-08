@@ -14,9 +14,12 @@
 //     isn't darkened twice.
 // Both outlive navigations — a cross-site one swaps the renderer, and the
 // session carries them over before the new page commits — so a page's first
-// frame is already dark: no white flash. Out-of-process iframes (a cross-site
-// embed) are their own targets: the session attaches to each as it appears
-// and gives it the page's look.
+// frame is already dark: no white flash. They take effect only once the page
+// has a renderer, though, and a new tab gets its first with its first
+// navigation, after the request for the page has gone out: a tab's first
+// load waits for its look on about:blank (readyDarkFirstLoad).
+// Out-of-process iframes (a cross-site embed) are their own targets: the
+// session attaches to each as it appears and gives it the page's look.
 //
 // The comfort sliders (brightness, contrast, warmth) are a CSS filter on the
 // page's root that the tab preload (src/preload/webview-stealth.ts) asks for
@@ -136,9 +139,10 @@ function sameLook(a: DarkPageLook | null, b: DarkPageLook): boolean {
   return !!a && a.dark === b.dark && a.repaint === b.repaint
 }
 
-function command(page: Page, method: string, params: object, sessionId?: string): void {
-  if (page.wc.isDestroyed() || !page.wc.debugger.isAttached()) return
-  page.wc.debugger.sendCommand(method, params, sessionId).catch((err: unknown) => {
+/** Settles when the command is done, failed or not. */
+function command(page: Page, method: string, params: object, sessionId?: string): Promise<void> {
+  if (page.wc.isDestroyed() || !page.wc.debugger.isAttached()) return Promise.resolve()
+  return page.wc.debugger.sendCommand(method, params, sessionId).then(() => {}, (err: unknown) => {
     // A frame that went away before its command arrived is no news.
     if (sessionId && !page.frames.has(sessionId)) return
     if (page.failures++ < 5) log.warn('dark-pages: command failed', { method, sessionId, err: String(err) })
@@ -147,11 +151,13 @@ function command(page: Page, method: string, params: object, sessionId?: string)
 
 /** Give the page's root (no session) or one of its frames a look — and the
  *  session's marker, whatever the look (see darkPageCss). */
-function sendLook(page: Page, sessionId: string | undefined, look: DarkPageLook): void {
-  command(page, 'Emulation.setAutoDarkModeOverride', look.repaint ? { enabled: true } : {}, sessionId)
-  command(page, 'Emulation.setEmulatedMedia', {
-    features: look.dark ? [SESSION_MARKER, PREFERS_DARK] : [SESSION_MARKER],
-  }, sessionId)
+function sendLook(page: Page, sessionId: string | undefined, look: DarkPageLook): Promise<void> {
+  return Promise.all([
+    command(page, 'Emulation.setAutoDarkModeOverride', look.repaint ? { enabled: true } : {}, sessionId),
+    command(page, 'Emulation.setEmulatedMedia', {
+      features: look.dark ? [SESSION_MARKER, PREFERS_DARK] : [SESSION_MARKER],
+    }, sessionId),
+  ]).then(() => {})
 }
 
 function lookOf(page: Page): DarkPageLook {
@@ -343,6 +349,50 @@ export function trackDarkPages(wc: WebContents, opts: { setBackground: (color: s
     pages.delete(wc.id)
   })
   sync(page)
+}
+
+/** How long a tab's first load waits for its look, at most. */
+const FIRST_LOAD_WAIT_MS = 1500
+
+/**
+ * Before a tab's first load (main/tab-views.ts): a page that's to be dark
+ * gets its look before its request goes out. The session's Emulation
+ * commands take effect only once the page has a renderer, and a tab that has
+ * loaded nothing gets its first with its first navigation — after the
+ * request has gone out without the dark preference, so a site that picks its
+ * theme on the server (Google, by the Sec-CH-Prefers-Color-Scheme client
+ * hint) sends its light one, until a reload. So the tab loads about:blank
+ * first and takes the look there; the page's own navigation then carries it
+ * from its first request. True when it did: about:blank is then the first
+ * entry of the tab's history.
+ */
+export async function readyDarkFirstLoad(wc: WebContents, url: string): Promise<boolean> {
+  const page = pages.get(wc.id)
+  if (!page || wc.isDestroyed() || !page.held || page.releaseTimer) return false
+  // A document's there already: its renderer has had the look.
+  if (safeUrl(wc)) return false
+  const look = darkPageLook(config, url, appDark)
+  if (!look.dark) return false
+  try {
+    await wc.loadURL('about:blank')
+  } catch (err) {
+    // ERR_ABORTED: another navigation of the tab's took over.
+    if (!String(err).includes('ERR_ABORTED')) log.warn('dark-pages: about:blank before the first load failed', String(err))
+    return false
+  }
+  if (wc.isDestroyed() || !page.held) return false
+  // The look for the page to come, sent again now that there's a renderer
+  // to take it.
+  page.url = url
+  page.applied = look
+  let timer: ReturnType<typeof setTimeout> | null = null
+  await Promise.race([
+    sendLook(page, undefined, look),
+    new Promise<void>((resolve) => { timer = setTimeout(resolve, FIRST_LOAD_WAIT_MS) }),
+  ])
+  if (timer) clearTimeout(timer)
+  paint(page)
+  return true
 }
 
 /** The stylesheet for a document starting in a tracked page (sync IPC from

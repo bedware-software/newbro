@@ -8,7 +8,7 @@
 // reading here and Shift+Enter in a new tab, dd archives a reading (removes
 // an archived one, deletes a group), dg deletes the group, u undoes the
 // last dd, <C-m> is the row's menu, <C-S-j>/<C-S-k> move the row, y copies
-// its address, ng makes a group of it; each row wears a two-letter label
+// its address, ng makes a group of it; each row wears a label
 // that opens it. Esc hands the keyboard back to the page. The keys come
 // through the window's keymap (lib/vim-mode.ts usePageKeys), so the rest of
 // COMMAND's keys work as ever, tb closing it again.

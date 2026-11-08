@@ -6,7 +6,7 @@
 // Vim mode: there's no tab view to run COMMAND's keys, so the page takes
 // them (lib/vim-mode.ts usePageKeys) — the keymap's scroll keys move
 // through the tabs, insert-mode (i) types in the box, and Enter comes ahead
-// of the keymap. In COMMAND each row wears a two-letter label that picks it
+// of the keymap. In COMMAND each row wears a label that picks it
 // (lib/hint-labels.ts); typing in the box, just its number, to read. Esc in
 // the box goes back to COMMAND.
 

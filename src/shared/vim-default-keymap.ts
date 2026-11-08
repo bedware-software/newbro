@@ -29,7 +29,7 @@ export const DEFAULT_VIM_KEYMAP = `" Vim mode keys.
 " letter that starts a pair is a verb, and the second letter says what it
 " acts on:
 "   n  new       nt (or nn) a tab, ng a group, nw a workspace, np a profile
-"   d  delete    dd closes the tab, dg its group, dv deletes the workspace
+"   d  delete    dd closes the tab, dg its group, dw deletes the workspace
 "   o  open      ot ow og op search tabs, workspaces, groups, profiles;
 "                od Downloads, ob Bangs, om the menu, and the rest below
 "   t  toggle    ts the Sidebar, tb the Bookshelf
@@ -62,13 +62,16 @@ zoom-reset          =
 " and goes to its header; Ctrl+l unfolds a folded group, or steps into an
 " unfolded one. They work with the Sidebar hidden too. Tab (or ts) shows
 " or hides it; in a text field Tab moves on through the form as ever.
+" While it's shown, each row wears a label of one to three letters (the
+" more rows, the longer) — typing one shows that row — and m opens the
+" menu of the row the cursor is on.
 cursor-down-show    <C-j>
 cursor-up-show      <C-k>
 row-move-down       <C-S-j>
 row-move-up         <C-S-k>
 row-fold            <C-h>
 row-unfold          <C-l>
-row-menu            <C-m>
+row-menu            m
 toggle-sidebar      <Tab> ts
 
 " ── COMMAND: split view ───────────────────────────────────────────────
@@ -91,10 +94,10 @@ new-profile         np
 
 " ── COMMAND: d, delete ────────────────────────────────────────────────
 " dd closes the tab and dg its group, all its tabs; u brings them back,
-" the last closed first. dv deletes the workspace, once you say so.
+" the last closed first. dw deletes the workspace, once you say so.
 close-tab           dd
 close-group         dg
-delete-workspace    dv
+delete-workspace    dw
 reopen-closed-tab   u
 
 " ── COMMAND: o, open ──────────────────────────────────────────────────
@@ -139,15 +142,15 @@ page-devtools       I
 ui-devtools
 find-in-page        /
 save-page
-tab-1               <C-1>
-tab-2               <C-2>
-tab-3               <C-3>
-tab-4               <C-4>
-tab-5               <C-5>
-tab-6               <C-6>
-tab-7               <C-7>
-tab-8               <C-8>
-tab-9               <C-9>
+tab-1
+tab-2
+tab-3
+tab-4
+tab-5
+tab-6
+tab-7
+tab-8
+tab-9
 duplicate-tab
 move-tab
 set-comment         gcc
@@ -185,8 +188,9 @@ quit
 " COMMAND, and insert-mode (i) drops back into the box. Esc closes the
 " window, from either. The scroll keys above (j/k, gg/G) move through
 " the results, Enter runs one. The filters are Search Everything's.
-" In COMMAND every result wears a two-letter label, home-row letters first
-" and only ones these keys leave free, and typing it picks the result
+" In COMMAND every result wears a label of one to three letters (the more
+" results, the longer), home-row letters first and only ones these keys
+" leave free, and typing it picks the result
 " (vimium's hints); typing in the box, the results show their numbers, and
 " digits type. So does the group page. search-row-N picks result N, when
 " bound.
@@ -293,19 +297,22 @@ export function contextOf(command: string): VimContext {
 // p; og, the menus), t toggle (tb, was B) — with u reopening a closed tab
 // (was T); it also listed the palette's commands, unbound, so they can be
 // bound. v14 put a new workspace on nw (was nv: w is a workspace, as in ow
-// and oW) and gave a new tab nn beside nt. A saved
+// and oW) and gave a new tab nn beside nt. v15 put deleting the workspace
+// on dw (was dv), w as in nw and ow; labelled the Sidebar's rows, so the
+// tab numbers lost <C-1>…<C-9> (unbound now), and put the row's menu on m
+// (was <C-m>), live while the Sidebar is shown. A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
 // the rest, including commands it couldn't know about. A key a version
 // brings in that the owner's own binding already uses stays the owner's:
 // the command it's new for goes without it (unbound, if it was its only
-// one). A command v13 moved that loses all its new keys that way keeps its
+// one). A command v13 to v15 moved that loses all its new keys that way keeps its
 // old key instead, when nothing uses that now — x still closes the tab for
 // an owner whose own d took dd's place; one v13 added has no old key and
 // goes unbound. And a line the owner changed that kept a moved command's
 // old default beside keys of their own (`half-page-down d <C-d>`) keeps
 // their keys, with the new default in place of the old one, so the old d
-// doesn't take dd, dg and dv's place.
+// doesn't take dd, dg and dw's place.
 
 /** v3's name for an older command: null when v3 has no such command. */
 const RENAMED_IN_V3: Record<string, string | null> = {
@@ -458,6 +465,14 @@ const V13_DEFAULT_KEYS: Record<string, string> = {
   'new-workspace': 'nv',
 }
 
+/** v14 defaults of the commands v15 rebound: the tab numbers, on Ctrl
+ *  since v4, and the row menu, on <C-m> since v3. */
+const V14_DEFAULT_KEYS: Record<string, string> = {
+  'delete-workspace': 'dv',
+  'row-menu': '<C-m>',
+  ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`tab-${n}`, `<C-${n}>`])),
+}
+
 /** Old keys a moved command never falls back to: Enter makes no tab. */
 const NO_FALLBACK_KEYS: Record<string, string[]> = {
   'new-tab': ['<CR>'],
@@ -547,7 +562,7 @@ function sameKeys(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1 to v13) over to the
+ * Carries a keymap saved under older defaults (v1 to v14) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
  * nothing to keep. `log` hears each key the migration had to decide on for
@@ -556,7 +571,7 @@ function sameKeys(a: string, b: string): boolean {
  */
 export function migrateVimKeymap(
   saved: string,
-  fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+  fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
   log: (message: string) => void = () => {},
 ): string | null {
   // What the owner had, by the old name.
@@ -581,6 +596,7 @@ export function migrateVimKeymap(
     (fromVersion <= 10 ? V10_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 12 ? V12_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 13 ? V13_DEFAULT_KEYS[command] : undefined) ??
+    (fromVersion <= 14 ? V14_DEFAULT_KEYS[command] : undefined) ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
@@ -596,9 +612,12 @@ export function migrateVimKeymap(
     ...Object.keys(RENAMED_IN_V3).filter((old) => RENAMED_IN_V3[old] === command),
   ].filter(existed)
 
-  // Commands v13 or v14 moved off their old keys.
+  // Commands v13, v14 or v15 moved off their old keys.
   const movedInV13 = (command: string): boolean =>
-    (fromVersion <= 12 && command in V12_DEFAULT_KEYS) || (fromVersion <= 13 && command in V13_DEFAULT_KEYS)
+    (fromVersion <= 12 && command in V12_DEFAULT_KEYS) || (fromVersion <= 13 && command in V13_DEFAULT_KEYS) ||
+    // Only where the saved keymap had it: v13 added delete-workspace, so an
+    // older one never had dv to keep.
+    (fromVersion <= 14 && command in V14_DEFAULT_KEYS && existed(command))
 
   const lines = DEFAULT_VIM_KEYMAP.split('\n')
   // command → [line index, keys] for every binding line, as it stands.
@@ -679,6 +698,7 @@ export function migrateVimKeymap(
     ...(fromVersion <= 11 ? NEW_IN_V12 : []),
     ...(fromVersion <= 12 ? Object.keys(V12_DEFAULT_KEYS) : []),
     ...(fromVersion <= 13 ? Object.keys(V13_DEFAULT_KEYS) : []),
+    ...(fromVersion <= 14 ? Object.keys(V14_DEFAULT_KEYS) : []),
   ])
   // Commands that lost every key that way, with what took them ("dd (your
   // d, half-page-down)").
@@ -711,9 +731,10 @@ export function migrateVimKeymap(
     own.keys = line.slice(1)
   }
 
-  // A command v13 or v14 moved that lost all its new keys to the owner's
+  // A command v13 to v15 moved that lost all its new keys to the owner's
   // keeps its old one — x for close-tab, T for reopen-closed-tab, B for
-  // toggle-bookshelf, nv for new-workspace — where nothing in its context
+  // toggle-bookshelf, nv for new-workspace, dv for delete-workspace, <C-m>
+  // for row-menu — where nothing in its context
   // uses that now; never <CR> for new-tab: Enter makes no tab. The keys it had at the saved keymap's version first, then
   // v12's (a v9 keymap migrated straight to v13 never had v10's <Down>, but
   // would have got it on the way). A command v13 added has no old key.

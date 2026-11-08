@@ -10,7 +10,8 @@ import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dro
 import { useVimSidebar } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { type SidebarCommand, type VimKeymap } from '../lib/vim-keymap'
-import { SidebarHintBar } from './KeyHints'
+import { RowHint, SidebarHintBar } from './KeyHints'
+import { useHintLabels, useHintTargets } from '../lib/hint-labels'
 import { SplitGlyph } from './SplitPanes'
 import { isSplitShown, useSplitStore } from '../lib/split-view'
 
@@ -113,9 +114,16 @@ interface Props {
   vimActive: boolean
   /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
   vimKeymap: VimKeymap | null
+  vimMode: 'command' | 'insert' | null
+  /** Keys typed so far of an unfinished COMMAND sequence. */
+  vimPending: string
+  /** The rows may wear COMMAND's labels: no popup has its own up. */
+  hintsOn: boolean
 }
 
-export function Sidebar({ visible, vimActive, vimKeymap }: Props) {
+const hintId = (rowId: string): string => `sidebar:${rowId}`
+
+export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hintsOn }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -470,7 +478,7 @@ export function Sidebar({ visible, vimActive, vimKeymap }: Props) {
   // hiding the active tab. Ctrl+J/K step through the rows showing each — a
   // tab's page, or parked on a group, its tabs — so it follows what's shown;
   // folding a group leaves it on the header.
-  // Activating something else (a click, 1-9, Search) or the keys ending
+  // Activating something else (a click, a row's label, Search) or the keys ending
   // brings it back to the active row.
   const [vimCursorOverride, setVimCursorOverride] = useState<string | null>(null)
   useEffect(() => { setVimCursorOverride(null) }, [activeTabId, activeTabGroupId, vimActive])
@@ -484,6 +492,28 @@ export function Sidebar({ visible, vimActive, vimKeymap }: Props) {
   // through the rows, showing each, and Ctrl+H/L fold the active tab's
   // group. The first Ctrl+J arrives before vimActive does.
   const { runMenu } = useVimSidebar(vimKeymap !== null, (cmd) => handleVimCommand(cmd))
+  // COMMAND's labels on the rows while the Sidebar is shown (lib/
+  // hint-labels.ts), after the group page's and the Bookshelf's: typing one
+  // shows that row — a tab's page, or a group's tabs — as Ctrl+J/K landing
+  // on it would.
+  useHintTargets('sidebar', 2, visible && hintsOn && vimMode === 'command' && workspace
+    ? visibleRowIds.map((id) => ({
+      id: hintId(id),
+      activate: () => {
+        if (workspace.tabGroups.some((g) => g.id === id)) setActiveGroup(id)
+        else setActiveTab(id)
+      },
+    }))
+    : null)
+  const hintLabels = useHintLabels()
+  /** The row's label, at its right edge over the title's end — out of the
+   *  way of the hover buttons, which take its place. */
+  const rowHint = (rowId: string, hoverHides: string): React.ReactNode => {
+    const label = hintLabels.get(hintId(rowId))
+    return label
+      ? <RowHint mode="command" label={label} number={0} pending={vimPending} className={`absolute right-1.5 top-1/2 -translate-y-1/2 bg-toolbar ${hoverHides}`} />
+      : null
+  }
   const findVimRow = (id: string): Element | null =>
     sidebarRef.current?.querySelector(`[data-vim-row="${CSS.escape(id)}"]`) ?? null
   useEffect(() => {
@@ -969,6 +999,7 @@ export function Sidebar({ visible, vimActive, vimKeymap }: Props) {
         {showBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
+        {rowHint(tab.id, 'group-hover/tab:opacity-0')}
         <TabFavicon favicon={tab.favicon} />
         {split && splitPane && (
           <span
@@ -1082,6 +1113,7 @@ export function Sidebar({ visible, vimActive, vimKeymap }: Props) {
         {showGroupBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
+        {rowHint(group.id, 'group-hover:opacity-0')}
         {/* Count badge — leading-edge column. Sized to match a tab row's
             favicon (w-4 h-4) so the leftmost glyph in every sidebar row
             sits on the same vertical axis. Colored with the group's hue
