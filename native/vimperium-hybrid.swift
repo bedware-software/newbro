@@ -1,9 +1,9 @@
-// Newbro's macOS helper for signing in with a passkey from a phone (hybrid /
+// Vimperium's macOS helper for signing in with a passkey from a phone (hybrid /
 // caBLE v2; the protocol itself lives in src/main/hybrid.ts).
 //
-//   newbro-hybrid qr <text>   prints the QR code for <text> as a base64 PNG,
+//   vimperium-hybrid qr <text>   prints the QR code for <text> as a base64 PNG,
 //                              one pixel per module
-//   newbro-hybrid scan        scans Bluetooth LE and prints one line per event:
+//   vimperium-hybrid scan        scans Bluetooth LE and prints one line per event:
 //                                state on|off|unauthorized|unsupported|unknown
 //                                advert <40 hex chars>   (FIDO hybrid service data)
 //                              until stdin closes
@@ -76,7 +76,7 @@ final class Scanner: NSObject, CBCentralManagerDelegate {
 let arguments = CommandLine.arguments
 switch arguments.count > 1 ? arguments[1] : "" {
 case "qr":
-    guard arguments.count > 2 else { fail("usage: newbro-hybrid qr <text>") }
+    guard arguments.count > 2 else { fail("usage: vimperium-hybrid qr <text>") }
     qr(arguments[2])
 case "scan":
     let scanner = Scanner()
@@ -88,5 +88,5 @@ case "scan":
     }
     RunLoop.main.run()
 default:
-    fail("usage: newbro-hybrid qr <text> | scan")
+    fail("usage: vimperium-hybrid qr <text> | scan")
 }

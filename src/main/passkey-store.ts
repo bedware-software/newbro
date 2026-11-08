@@ -1,9 +1,9 @@
-// Passkeys held by Newbro's own platform authenticator (see webauthn.ts).
+// Passkeys held by Vimperium's own platform authenticator (see webauthn.ts).
 //
 // macOS hands iCloud Keychain passkeys only to browsers Apple entitles, and
 // Chromium's Touch ID authenticator (Electron's app.configureWebAuthn) needs a
 // keychain-access-groups entitlement that an ad-hoc signed app can't carry —
-// macOS kills it at launch. So Newbro keeps its passkeys itself: one P-256 key
+// macOS kills it at launch. So Vimperium keeps its passkeys itself: one P-256 key
 // pair per credential, the private key encrypted with the OS vault like saved
 // passwords, scoped to one profile. They stay on this device: no export, no
 // Cloud Sync.
@@ -48,7 +48,7 @@ export interface CreatedPasskey {
 }
 
 const store = new Store<{ entries: Record<string, StoredPasskey> }>({
-  name: 'newbro-passkeys',
+  name: 'vimperium-passkeys',
   defaults: { entries: {} },
 })
 

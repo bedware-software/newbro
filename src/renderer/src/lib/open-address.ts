@@ -22,7 +22,7 @@ export function openAddress(text: string, inNewTab: boolean, why: string): boole
     s.addTabNearActive(s.activeWorkspaceId, url, true)
     return true
   }
-  // Internal pages (newbro://…) have no view to navigate: going to or from
+  // Internal pages (vimperium://…) have no view to navigate: going to or from
   // one is a store change, and WebviewPanel drops or creates the view.
   if (isInternalUrl(url) || isInternalUrl(tab.url)) {
     s.retargetTab(tab.id, url)

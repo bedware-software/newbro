@@ -7,7 +7,10 @@ import { openAddress } from './lib/open-address'
 import { log } from './lib/log'
 import { focusAndSelectUrlBar } from './lib/focus-url-bar'
 import { useVimMode, dispatchSidebarCommand, dispatchPageCommand, type VimMode } from './lib/vim-mode'
-import { hintIndex, useHintKeymap } from './lib/hint-labels'
+import { HINT_CANCEL_COMMAND, hintIndex, useHintKeymap } from './lib/hint-labels'
+import { cancelChromeHints, toggleChromeHints } from './lib/chrome-hints'
+import { ChromeHintsOverlay } from './components/ChromeHintsOverlay'
+import { WhichKeyStrip } from './components/WhichKey'
 import { parseVimKeymap, paletteKeymap, helpKeymap, DEFAULT_VIM_KEYMAP, isPageCommand, isSidebarCommand } from './lib/vim-keymap'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
@@ -37,6 +40,7 @@ import { BANGS_URL, DOWNLOADS_URL, internalPageOf, isInternalUrl } from './lib/i
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import { applyVimIndicator, normalizeVimIndicator, type VimIndicator } from './lib/vim-indicator'
 import { applyVimEdge, normalizeVimEdge, type VimEdge } from './lib/vim-edge'
+import { usePublishWindowVimKeymap } from './lib/window-vim-keymap'
 import { darkPagesActions } from './lib/dark-pages'
 import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
 
@@ -51,11 +55,13 @@ interface Settings {
   darkVariant: string
   density: Density
   newTabFocus: NewTabFocus
-  showTabNumbers: boolean
-  /** Vim mode: COMMAND / INSERT modes, see lib/vim-mode.ts. */
+  /** Vim's COMMAND / INSERT modes, see lib/vim-mode.ts. Always true — Vim is
+   *  the only mode — and read by nothing here: it stays in the settings for
+   *  older builds that read them through Cloud Sync. */
   vimMode: boolean
-  /** With Vim mode on: the Sidebar hides, its keys in COMMAND show it. */
-  sidebarAutoHide: boolean
+  /** INSERT in a page hides the Sidebar and COMMAND brings it back —
+   *  derived, the saved toggle stays as it is. */
+  hideSidebarInInsert: boolean
   /** How the mode's key cap shows its colour, see lib/vim-indicator.ts. */
   vimIndicator: VimIndicator
   /** How a field's edge shows the mode, see lib/vim-edge.ts. */
@@ -149,7 +155,7 @@ export interface PasswordEntryInfo {
   lastUsedAt: number
 }
 
-/** A passkey Newbro saved (Settings → Passwords → Passkeys). */
+/** A passkey Vimperium saved (Settings → Passwords → Passkeys). */
 export interface PasskeyInfo {
   id: string
   partition: string
@@ -217,8 +223,6 @@ declare global {
       /** Ctrl pressed (true) or let go (false) anywhere in this window. */
       onVimCtrl?: (callback: (down: boolean) => void) => () => void
       onWindowActive?: (callback: (active: boolean) => void) => () => void
-      /** Esc tapped twice in this window. */
-      onVimEscDoubleTap?: (callback: () => void) => () => void
       reclaimWindowRendererFocus?: () => void
       minimizeWindow: () => Promise<void>
       maximizeWindow: () => Promise<void>
@@ -328,6 +332,8 @@ declare global {
       tabGetState?: (tabId: string) => Promise<{ isLoading: boolean; url: string; canGoBack: boolean; canGoForward: boolean } | null>
       tabExecuteJS?: (tabId: string, code: string) => Promise<unknown>
       tabToggleDevTools?: (tabId: string) => Promise<void>
+      /** The page's zoom a step in or out, or back to actual size; the new factor. */
+      tabZoom?: (tabId: string, step: 'in' | 'out' | 'reset') => Promise<number | null>
       tabSavePage?: (tabId: string) => Promise<boolean>
       tabFindInPage?: (
         tabId: string,
@@ -396,7 +402,7 @@ declare global {
       historyNoteTyped?: (tabId: string, url: string) => void
       historyClear?: () => Promise<boolean>
       omniboxSuggest?: (query: string, partition?: string) => Promise<string[]>
-      // Dark pages — Newbro's own dark mode for web pages (lib/dark-pages.ts).
+      // Dark pages — Vimperium's own dark mode for web pages (lib/dark-pages.ts).
       darkPagesGet?: () => Promise<unknown>
       darkPagesSet?: (patch: unknown) => Promise<unknown>
       darkPagesSetSite?: (site: string, rule: 'dark' | 'light' | null) => Promise<unknown>
@@ -422,6 +428,7 @@ declare global {
       bookshelfAdd?: (profileId: string, input: { url: string; title?: string; favicon?: string }) => Promise<Reading | null>
       bookshelfUpdate?: (profileId: string, id: string, patch: { title?: string; status?: 'toread' | 'archived' }) => Promise<boolean>
       bookshelfRemove?: (profileId: string, id: string) => Promise<boolean>
+      bookshelfRestore?: (profileId: string, reading: Reading, beforeId: string | null) => Promise<{ readings: Reading[]; groups: ReadingGroup[] }>
       bookshelfMoveReading?: (profileId: string, readingId: string, groupId: string | null) => Promise<boolean>
       bookshelfPlaceReadings?: (profileId: string, ids: string[], target: { groupId: string | null; archived?: boolean }, beforeId: string | null) => Promise<{ readings: Reading[]; groups: ReadingGroup[] }>
       bookshelfPlaceGroup?: (profileId: string, groupId: string, beforeGroupId: string | null) => Promise<{ readings: Reading[]; groups: ReadingGroup[] }>
@@ -562,7 +569,7 @@ function applyTheme(theme: ThemeChoice, lightVariant: string, darkVariant: strin
   log.info('theme applied:', theme, variant)
 }
 
-const SIDEBAR_VISIBLE_KEY = 'newbro-sidebar-visible'
+const SIDEBAR_VISIBLE_KEY = 'vimperium-sidebar-visible'
 
 /** Vim's COMMAND keys that open Search Everything on one kind of thing,
  *  typing (INSERT) at once. */
@@ -589,8 +596,8 @@ export default function App() {
   // tabs. Shown one at a time; each is answered or cancelled back to main.
   const [httpAuthQueue, setHttpAuthQueue] = useState<HttpAuthRequest[]>([])
   // Right-hand Bookshelf sidebar visibility, persisted per machine.
-  const [bookshelfOpen, setBookshelfOpen] = useState<boolean>(() => localStorage.getItem('newbro-bookshelf-open') === '1')
-  useEffect(() => { localStorage.setItem('newbro-bookshelf-open', bookshelfOpen ? '1' : '0') }, [bookshelfOpen])
+  const [bookshelfOpen, setBookshelfOpen] = useState<boolean>(() => localStorage.getItem('vimperium-bookshelf-open') === '1')
+  useEffect(() => { localStorage.setItem('vimperium-bookshelf-open', bookshelfOpen ? '1' : '0') }, [bookshelfOpen])
 
   // Offer to set up Cloud Sync on launch — and every launch until the user
   // enables it or picks "Don't show again". main's claim guarantees only one
@@ -601,7 +608,7 @@ export default function App() {
     const t = setTimeout(() => {
       window.electronAPI.cloudSyncClaimSetupPrompt?.()
         .then((p) => { if (!cancelled && p?.shouldPrompt) setSyncPrompt(p) })
-        .catch(() => {})
+        .catch((err: unknown) => log.warn('cloud-sync: setup prompt claim failed', String(err)))
     }, 1200)
     return () => { cancelled = true; clearTimeout(t) }
   }, [])
@@ -657,22 +664,7 @@ export default function App() {
   const hydrate = useAppStore((s) => s.hydrate)
   const { profileId: windowProfileId, workspaceId: windowWorkspaceId, tabId: windowTabId } = getWindowParams()
 
-  // Settings → Keyboard Shortcuts → Hide the Sidebar (with Vim mode on): it
-  // stays out of the way, its keys in COMMAND show it, and toggling it (Space,
-  // the toolbar button, Esc tapped twice) pins it open for the time being.
-  const sidebarAutoHide = settings?.vimMode === true && settings.sidebarAutoHide === true
-  const sidebarAutoHideRef = useRef(sidebarAutoHide)
-  sidebarAutoHideRef.current = sidebarAutoHide
-  const [sidebarPinned, setSidebarPinned] = useState(false)
-  useEffect(() => {
-    if (!sidebarAutoHide) setSidebarPinned(false)
-  }, [sidebarAutoHide])
-
   const toggleSidebar = useCallback(() => {
-    if (sidebarAutoHideRef.current) {
-      setSidebarPinned((v) => !v)
-      return
-    }
     setSidebarVisible((v) => {
       const next = !v
       localStorage.setItem(SIDEBAR_VISIBLE_KEY, String(next))
@@ -684,14 +676,6 @@ export default function App() {
   const [vimHelpFrom, setVimHelpFrom] = useState<VimMode | null>(null)
   // The Vim mode API for the shortcut handler, which is registered once.
   const vimRef = useRef<ReturnType<typeof useVimMode> | null>(null)
-
-  // Esc tapped twice pins the hidden Sidebar, or lets it go — then at once,
-  // a walk its keys were on included.
-  useEffect(() => window.electronAPI.onVimEscDoubleTap?.(() => {
-    if (!sidebarAutoHideRef.current) return
-    setSidebarPinned((v) => !v)
-    vimRef.current?.endSidebarKeys()
-  }), [])
 
   // Page-fullscreen "cinema mode". A video going fullscreen fills only the
   // tab's view rect, so the window chrome stays on screen. We lean into
@@ -919,7 +903,7 @@ export default function App() {
     const ws = getActiveWorkspace()
     const profile = getActiveProfile()
     if (ws && profile) {
-      window.electronAPI.setWindowTitle(`${ws.name} — ${profile.name} — Newbro`)
+      window.electronAPI.setWindowTitle(`${ws.name} — ${profile.name} — Vimperium`)
     }
   }, [activeWorkspaceId, getActiveWorkspace, getActiveProfile])
 
@@ -963,8 +947,8 @@ export default function App() {
     const handleAction = (action: string) => {
       const s = useAppStore.getState()
       // tab-1..tab-9 quick-jump: parse the digit and index into the visible
-      // tabs (unlike cycleTab, group headers don't count), so what you press
-      // matches what you see numbered in the sidebar.
+      // tabs (unlike cycleTab, group headers don't count), so the Nth is the
+      // Nth tab the Sidebar shows, top down.
       if (action.startsWith('tab-')) {
         const n = parseInt(action.slice('tab-'.length), 10)
         if (Number.isInteger(n) && n >= 1 && n <= 9) {
@@ -978,8 +962,25 @@ export default function App() {
         case 'new-tab':
           if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId)
           break
+        case 'new-group':
+          // Asks for the name first; the group then comes with a new tab in
+          // it (the dialog's confirm, below).
+          if (s.activeWorkspaceId) {
+            setNewGroupForTabId(null)
+            setNewGroupDialogOpen(true)
+          }
+          break
         case 'close-tab':
           if (s.activeTabId) s.closeTab(s.activeTabId)
+          break
+        case 'close-group':
+          // The active tab's group (or the one parked on), all its tabs —
+          // as the group's menu does, unasked; reopen-closed-tab brings the
+          // group back whole.
+          if (s.activeTabGroupId) {
+            log.action('close-group', { groupId: s.activeTabGroupId })
+            s.closeGroup(s.activeTabGroupId)
+          }
           break
         case 'reopen-closed-tab':
           s.reopenClosedTab(windowWorkspaceId ?? undefined)
@@ -1042,7 +1043,7 @@ export default function App() {
           break
         case 'about':
         case 'open-settings-about':
-          // Sent by the macOS app menu's "About Newbro" entry and the
+          // Sent by the macOS app menu's "About Vimperium" entry and the
           // in-app About affordances. Opens the settings window (if not
           // already open) and forces the About pane via a versioned
           // request so re-clicking always lands there.
@@ -1079,7 +1080,7 @@ export default function App() {
           break
         }
         case 'edit-url':
-          openUrlEditor()
+          if (!openUrlEditor()) log.info("edit-url: no address to edit here (a group, or a page of the browser's own)")
           break
         case 'split-close':
           closeSplit()
@@ -1142,34 +1143,38 @@ export default function App() {
           // Workspace creation needs a name from a dialog; the Toolbar already
           // owns that dialog (it's used by the New Workspace button), so we
           // just ping it via a window event rather than duplicating the UI.
-          window.dispatchEvent(new Event('newbro-open-new-workspace-dialog'))
+          window.dispatchEvent(new Event('vimperium-open-new-workspace-dialog'))
+          break
+        case 'new-profile':
+          // The profile dropdown's New Profile, which the Toolbar owns too.
+          window.dispatchEvent(new Event('vimperium-open-new-profile-dialog'))
           break
         case 'import-workspaces':
           // Same pattern as new-workspace: the Toolbar owns the file picker
           // + ImportWorkspaceDialog state, we just trigger it from afar.
-          window.dispatchEvent(new Event('newbro-open-import-workspaces'))
+          window.dispatchEvent(new Event('vimperium-open-import-workspaces'))
           break
         case 'export-workspaces':
           // Same pattern: the Toolbar owns the ExportWorkspaceDialog and the
           // save-bookmark-file IPC call.
-          window.dispatchEvent(new Event('newbro-open-export-workspaces'))
+          window.dispatchEvent(new Event('vimperium-open-export-workspaces'))
           break
         case 'rename-profile':
           // Toolbar owns the rename InputDialog + the rename-profile case
           // in handleDialogConfirm. The listener side picks "active profile"
           // as the rename target — same thing the user would get from the
           // profile-dropdown row.
-          window.dispatchEvent(new Event('newbro-rename-active-profile'))
+          window.dispatchEvent(new Event('vimperium-rename-active-profile'))
           break
         case 'delete-profile':
           // Toolbar owns the confirm dialog + window-close cascade.
-          window.dispatchEvent(new Event('newbro-delete-active-profile'))
+          window.dispatchEvent(new Event('vimperium-delete-active-profile'))
           break
         case 'rename-workspace':
-          window.dispatchEvent(new Event('newbro-rename-active-workspace'))
+          window.dispatchEvent(new Event('vimperium-rename-active-workspace'))
           break
         case 'delete-workspace':
-          window.dispatchEvent(new Event('newbro-delete-active-workspace'))
+          window.dispatchEvent(new Event('vimperium-delete-active-workspace'))
           break
         case 'set-comment': {
           const tab = s.getActiveTab()
@@ -1245,6 +1250,77 @@ export default function App() {
           if (ws) ws.tabGroups.forEach((g) => { if (!g.isCollapsed) s.toggleTabGroupCollapse(g.id) })
           break
         }
+        // The toolbar's menus and popovers, opened with the keyboard on
+        // them (j/k, Enter, a row's letter). Their owners listen: the Menu,
+        // the profile and workspace lists, the extensions and the padlock
+        // in the Toolbar, the moon in DarkPagesButton.
+        case 'app-menu':
+          window.dispatchEvent(new Event('vimperium-open-app-menu'))
+          break
+        case 'profile-menu':
+          window.dispatchEvent(new Event('vimperium-open-profile-menu'))
+          break
+        case 'workspace-menu':
+          window.dispatchEvent(new Event('vimperium-open-workspace-menu'))
+          break
+        case 'extensions-menu':
+          window.dispatchEvent(new Event('vimperium-open-extensions-menu'))
+          break
+        case 'site-info':
+          window.dispatchEvent(new Event('vimperium-open-site-info'))
+          break
+        case 'dark-pages-menu':
+          window.dispatchEvent(new Event('vimperium-open-dark-pages-menu'))
+          break
+        case 'chrome-hints': {
+          // Its labels are typed with COMMAND's keys; in INSERT they'd be
+          // typed into the field.
+          const vimNow = vimRef.current
+          if (!vimNow?.mode) {
+            log.info('chrome-hints: Vim has not started yet')
+            break
+          }
+          if (vimNow.mode === 'insert') vimNow.enterCommand(false)
+          toggleChromeHints()
+          break
+        }
+        case 'zoom-in':
+        case 'zoom-out':
+        case 'zoom-reset': {
+          // A web page's zoom; the pages this window draws have none.
+          const tab = s.getActiveTab()
+          if (!tab || isInternalUrl(tab.url)) break
+          const step = action === 'zoom-in' ? 'in' : action === 'zoom-out' ? 'out' : 'reset'
+          window.electronAPI.tabZoom?.(tab.id, step)
+            .catch((err: unknown) => log.warn('zoom failed', { step, err: String(err) }))
+          break
+        }
+        case 'check-updates':
+          window.electronAPI.checkForUpdates()
+            .then((status) => log.info('check-updates:', status.phase))
+            .catch((err: unknown) => log.warn('check-updates failed', String(err)))
+          break
+        case 'install-update':
+          // Only with an update downloaded, as the Menu offers it — on
+          // Windows installing with none would quit for nothing. With none
+          // yet it looks for one (the Menu's badge shows how that goes).
+          window.electronAPI.getUpdaterStatus()
+            .then(async (status) => {
+              if (status.phase === 'downloaded') return window.electronAPI.installUpdate()
+              if (status.phase === 'checking' || status.phase === 'available' || status.phase === 'downloading' || status.phase === 'unsupported') {
+                log.info('install-update: not ready to install', status.phase)
+                return
+              }
+              log.info('install-update: nothing downloaded yet, checking', status.phase)
+              const checked = await window.electronAPI.checkForUpdates()
+              log.info('install-update: check:', checked.phase)
+            })
+            .catch((err: unknown) => log.warn('install-update failed', String(err)))
+          break
+        case 'manage-extensions':
+          setSettingsTabRequest({ tab: 'extensions', v: Date.now() })
+          setSettingsOpen(true)
+          break
       }
     }
     shortcutHandlerRef.current = handleAction
@@ -1293,7 +1369,7 @@ export default function App() {
     // between the foreground and background IPC channels — only the
     // `background` arg differs.
     const placeIncomingTab = (url: string, background: boolean): void => {
-      // Pages (and extensions) can ask for new tabs, but never for Newbro's
+      // Pages (and extensions) can ask for new tabs, but never for Vimperium's
       // own pages — like Chrome refusing chrome:// links from the web.
       if (isInternalUrl(url)) {
         log.warn('open-url-as-tab: refusing internal page', url)
@@ -1402,8 +1478,8 @@ export default function App() {
       setGroupPickerGroupId(detail.groupId)
       setGroupPickerOpen(true)
     }
-    window.addEventListener('newbro:open-move-tab', handleOpenMoveTab)
-    window.addEventListener('newbro:open-move-group', handleOpenMoveGroup)
+    window.addEventListener('vimperium:open-move-tab', handleOpenMoveTab)
+    window.addEventListener('vimperium:open-move-group', handleOpenMoveGroup)
 
     return () => {
       cleanupShortcut()
@@ -1415,8 +1491,8 @@ export default function App() {
       cleanupSettings()
       cleanupActivateTab()
       cleanupContextSearch?.()
-      window.removeEventListener('newbro:open-move-tab', handleOpenMoveTab)
-      window.removeEventListener('newbro:open-move-group', handleOpenMoveGroup)
+      window.removeEventListener('vimperium:open-move-tab', handleOpenMoveTab)
+      window.removeEventListener('vimperium:open-move-group', handleOpenMoveGroup)
     }
   }, [hydrate, windowWorkspaceId, toggleSidebar])
 
@@ -1497,17 +1573,25 @@ export default function App() {
   }, [])
 
   // ── Vim mode ──
-  const vimEnabled = settings?.vimMode === true
+  // Vim is the only mode. It starts once the settings are in — its keymap is
+  // one of them, as it always has: for that beat at launch the keymaps
+  // below are null, the way the components take Vim being off.
+  const vimReady = settings !== null
   const vimKeymap = useMemo(
     () => parseVimKeymap(settings?.vimKeymap ?? DEFAULT_VIM_KEYMAP),
     [settings?.vimKeymap],
   )
+  // For the dialogs that open from anywhere (pickers, confirmations, name
+  // prompts): they read it rather than being handed it down.
+  usePublishWindowVimKeymap(vimReady ? vimKeymap : null)
   const focusActivePage = (mode: VimMode = 'insert'): boolean => {
     const s = useAppStore.getState()
     if (!s.activeTabId) return false
-    // Internal pages are drawn by this renderer (data-vim-page). Focused,
-    // their own keys run, which is INSERT; in COMMAND they let go, and the
-    // window keeps the keys for COMMAND's.
+    // Internal pages are drawn by this renderer. Downloads and Bangs are
+    // COMMAND's — the window's keymap runs on them (lib/internal-page-keys.ts)
+    // and there's no view to hand the keys to; only a form one shows (the
+    // bang form, data-vim-page) keeps its own keys, which is INSERT, and in
+    // COMMAND it lets go.
     if (isInternalUrl(s.getActiveTab()?.url)) {
       const page = document.querySelector<HTMLElement>('[data-vim-page]')
       if (!page) return false
@@ -1522,18 +1606,31 @@ export default function App() {
     window.electronAPI.tabFocus?.(s.activeTabId)
     return true
   }
-  // Two-letter labels on the rows the group page and a pinned Sidebar show
+  // Two-letter labels on the rows the group page shows
   // in COMMAND (lib/hint-labels.ts), bound in the window's keymap — the one
   // pages run too.
-  const hinted = useHintKeymap(vimEnabled ? vimKeymap.main : null)
+  const hinted = useHintKeymap(vimReady ? vimKeymap.main : null)
   const runVimCommand = (command: string): void => {
     const hint = hintIndex(command)
     if (hint !== null) {
       hinted.targets[hint]?.activate()
       return
     }
-    // Parked on a group: its page takes the keys it knows (j/k, i).
+    // A key no label of ;'s starts with: they go, the key does nothing else.
+    if (command === HINT_CANCEL_COMMAND) {
+      cancelChromeHints('key')
+      return
+    }
+    // Parked on a group: its page takes the keys it knows (j/k, i) — the
+    // Bookshelf too while it holds the keyboard.
     if (dispatchPageCommand(command)) return
+    runAppCommand(command)
+  }
+  /** A command past what holds the page's keys (a group page, the Bookshelf)
+   *  and the hint labels: what's left of COMMAND's keys, and the Command
+   *  Palette's entries — so the palette's Close Tab closes the tab even
+   *  with the Bookshelf holding the keyboard. */
+  const runAppCommand = (command: string): void => {
     const pickFilter = VIM_PICK_FILTERS[command]
     if (pickFilter) {
       setSearchOpenFilter(pickFilter)
@@ -1560,7 +1657,7 @@ export default function App() {
     if (isSidebarCommand(command)) {
       vimRef.current?.startTabWalk()
       if (dispatchSidebarCommand(command)) return
-      // No Sidebar showing: Ctrl+J/K still go through the tabs.
+      // No Sidebar to take it: Ctrl+J/K still go through the tabs.
       if (command === 'cursor-down-show') shortcutHandlerRef.current?.('next-tab')
       else if (command === 'cursor-up-show') shortcutHandlerRef.current?.('prev-tab')
       return
@@ -1568,7 +1665,7 @@ export default function App() {
     shortcutHandlerRef.current?.(command)
   }
   const vim = useVimMode({
-    enabled: vimEnabled,
+    enabled: vimReady,
     keymap: hinted.keymap ?? vimKeymap.main,
     onCommand: runVimCommand,
     // The other split pane's page counts too: clicking into it focuses it.
@@ -1576,12 +1673,21 @@ export default function App() {
     focusPage: focusActivePage,
   })
   vimRef.current = vim
-  // Shown unless toggled off, or — hiding (Settings) — while pinned open or
-  // its keys are in use.
-  const sidebarShown = sidebarAutoHide ? (sidebarPinned || vim.sidebarKeys) && !pageFullscreen : sidebarVisible
-  // A page this window draws (Downloads, Bangs) keeps COMMAND's plain keys
-  // for itself, so labels in the window couldn't be typed over it.
+  // For the Command Palette, which runs what the keys run (Search tabs,
+  // the Vim help, the app's actions) — never the page's keys' holder's.
+  const runAppCommandRef = useRef(runAppCommand)
+  runAppCommandRef.current = runAppCommand
+  // A page this window draws (Downloads, Bangs).
   const activeIsInternal = useAppStore((s) => isInternalUrl(s.getActiveTab()?.url))
+  // Shown unless toggled off — or, with Settings' Hide the Sidebar in
+  // INSERT, while typing in a web page. Not for INSERT in a chrome field (the
+  // address bar, a tab's rename in the Sidebar itself), nor on a page this
+  // window draws — its search box or the bang form, which take the keys
+  // only to type. Derived, as
+  // cinema mode's hiding is not: the saved toggle stays as it is.
+  const hiddenForInsert = settings?.hideSidebarInInsert === true && vim.mode === 'insert'
+    && !vim.insertInChrome && !activeIsInternal
+  const sidebarShown = sidebarVisible && !hiddenForInsert
 
   // A popup window (Search, Command Palette, Settings) closing hands focus
   // back to this window — sometimes to the page view. In COMMAND mode the
@@ -1621,30 +1727,22 @@ export default function App() {
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           visible={sidebarShown}
-          showTabNumbers={settings?.showTabNumbers ?? true}
           vimActive={vim.sidebarKeys}
-          vimKeymap={vimEnabled ? vimKeymap.main : null}
-          // Letters on its rows only while it's pinned open (Esc twice) — a
-          // mode of its own, as they take those letters from the pages; shown
-          // by its keys (the arrows) it keeps its numbers. Not while a popup has its own
-          // labels up, nor over a page this window draws.
-          hintsOn={vimEnabled && sidebarAutoHide && sidebarPinned && sidebarShown && !vim.sidebarKeys
-            && vim.mode === 'command' && !popupOpen && !activeIsInternal}
-          vimPending={vim.pending}
+          vimKeymap={vimReady ? vimKeymap.main : null}
         />
         <div ref={webviewColumnRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-          <UrlEditor anchorRef={webviewColumnRef} vimKeymap={vimEnabled ? vimKeymap.url : null} />
+          <UrlEditor anchorRef={webviewColumnRef} vimKeymap={vimReady ? vimKeymap.url : null} />
           <FindPopup
             open={findBarOpen}
             focusTick={findBarFocusTick}
             onClose={closeFind}
             anchorRef={webviewColumnRef}
-            vimKeymap={vimEnabled ? vimKeymap.find : null}
+            vimKeymap={vimReady ? vimKeymap.find : null}
           />
           <WebviewPanel
-            splitPickerKeymap={vimEnabled ? paletteKeymap(vimKeymap.search) : null}
+            splitPickerKeymap={vimReady ? paletteKeymap(vimKeymap.search) : null}
             splitPickerFocusTick={splitPickerFocusTick}
-            vimKeymap={vimEnabled ? vimKeymap.main : null}
+            vimKeymap={vimReady ? vimKeymap.main : null}
             vimMode={vim.mode}
             vimPending={vim.pending}
             groupHintsOn={!popupOpen}
@@ -1659,6 +1757,8 @@ export default function App() {
         <Bookshelf
           open={bookshelfVisible}
           profileId={windowProfileId ?? activeProfileId}
+          pageFullscreen={pageFullscreen}
+          vimPending={vim.pending}
           onClose={() => setBookshelfOpen(false)}
         />
       </div>
@@ -1666,13 +1766,13 @@ export default function App() {
         open={searchOpen}
         onOpenChange={setSearchOpen}
         windowWorkspaceId={windowWorkspaceId}
-        vimKeymap={vimEnabled ? vimKeymap.search : null}
+        vimKeymap={vimReady ? vimKeymap.search : null}
         openFilter={searchOpenFilter}
       />
       <VimHelpDialog
         open={vimHelpFrom !== null}
         keymap={vimKeymap}
-        vimKeymap={vimEnabled ? helpKeymap(vimKeymap) : null}
+        vimKeymap={vimReady ? helpKeymap(vimKeymap) : null}
         fromMode={vimHelpFrom ?? 'command'}
         onClose={() => setVimHelpFrom(null)}
       />
@@ -1708,18 +1808,18 @@ export default function App() {
         onSave={handleSaveSettings}
         onAppearancePreview={(p) => { applyTheme(p.theme, p.lightVariant, p.darkVariant); applyDensity(p.density); applyVimIndicator(p.vimIndicator); applyVimEdge(p.vimEdge, p.vimEdgeEverywhere) }}
         tabRequest={settingsTabRequest}
+        vimKeymap={vimReady ? vimKeymap : null}
       />
       <CommandPalette
         open={commandPaletteOpen}
         onOpenChange={setCommandPaletteOpen}
-        vimKeymap={vimEnabled ? paletteKeymap(vimKeymap.search) : null}
+        vimKeymap={vimReady ? paletteKeymap(vimKeymap.search) : null}
         onAction={(action) => {
           setCommandPaletteOpen(false)
-          // Dispatch the action through the same shortcut handler
-          setTimeout(() => {
-            const handler = shortcutHandlerRef.current
-            if (handler) handler(action)
-          }, 100)
+          // Run it as its keys would: the app's actions through the
+          // shortcut handler, Search tabs / the Vim help through Vim's —
+          // but not taken by a Bookshelf or group page holding the keys.
+          setTimeout(() => runAppCommandRef.current(action), 100)
         }}
       />
       <InputDialog
@@ -1740,8 +1840,16 @@ export default function App() {
         title="New Group"
         placeholder="Group name"
         onConfirm={(name) => {
+          const s = useAppStore.getState()
           if (newGroupForTabId) {
-            useAppStore.getState().moveTabsToNewGroup([newGroupForTabId], name)
+            s.moveTabsToNewGroup([newGroupForTabId], name)
+          } else if (s.activeWorkspaceId) {
+            // New Group (ng): a new tab, made the way New Tab makes one (its
+            // address bar focused if Settings says so), wrapped in a group of
+            // its own where it landed — just below the active tab or group.
+            const tabId = s.addUngroupedTab(s.activeWorkspaceId)
+            const groupId = s.groupTabsInNewGroup([tabId], name)
+            log.action('new-group', { workspaceId: s.activeWorkspaceId, groupId, tabId })
           }
           setNewGroupForTabId(null)
           setNewGroupDialogOpen(false)
@@ -1810,6 +1918,12 @@ export default function App() {
           onDone={() => setHttpAuthQueue((q) => q.slice(1))}
         />
       )}
+      {/* Vim's ; labels on the browser's own controls. */}
+      <ChromeHintsOverlay mode={vim.mode} pending={vim.pending} />
+      {/* What can follow a prefix typed (o, d, n…): a strip along the
+          bottom of the page area, the Sidebar shown or not — its own hint
+          bar keeps to its own keys. */}
+      <WhichKeyStrip keymap={vimReady ? vimKeymap.main : null} pending={vim.pending} anchorRef={webviewColumnRef} />
     </>
   )
 }

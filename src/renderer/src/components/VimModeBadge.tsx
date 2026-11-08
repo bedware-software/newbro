@@ -15,7 +15,7 @@ interface Props {
 
 const MODE_STYLE: Record<VimMode, { label: string; title: string }> = {
   command: { label: 'CMD', title: 'Vim: COMMAND mode — the page and the browser, driven by Vim keys' },
-  insert: { label: 'INS', title: 'Vim: INSERT mode — keys go where you type; Esc to leave' },
+  insert: { label: 'INS', title: 'Vim: INSERT mode — keys go where you type; Esc or Ctrl+[ to leave (in a popup Ctrl+C, where Esc closes it)' },
 }
 
 /** Vim's mode as a key cap, the hint bars' kind: CMD or INS, in the

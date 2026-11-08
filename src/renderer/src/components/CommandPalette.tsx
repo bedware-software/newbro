@@ -2,9 +2,10 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Command } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
-import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, LEAVE_INSERT_CAP, RowHint, vimKeyCaps } from './KeyHints'
 import { hintIndex, usePopupHints } from '../lib/hint-labels'
 import { useAppStore } from '../store/app-store'
+import { isInternalUrl } from '../lib/internal-pages'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { usePopupVimMode } from '../lib/vim-mode'
 import type { VimKeymap } from '../lib/vim-keymap'
@@ -42,8 +43,10 @@ const COMMANDS: CommandItem[] = [
   { id: 'move-group', label: 'Move Group...', category: 'Active Group' },
   { id: 'duplicate-group', label: 'Duplicate Group', category: 'Active Group' },
   { id: 'ungroup-all-tabs', label: 'Ungroup All Tabs', category: 'Active Group' },
+  { id: 'close-group', label: 'Close Group', category: 'Active Group', keywords: 'delete remove' },
   { id: 'new-tab', label: 'New Tab', category: 'Tabs' },
-  { id: 'reopen-closed-tab', label: 'Reopen Closed Tab', category: 'Tabs' },
+  { id: 'new-group', label: 'New Group…', category: 'Tabs', keywords: 'tab group create' },
+  { id: 'reopen-closed-tab', label: 'Reopen Closed Tab', category: 'Tabs', keywords: 'undo restore' },
   { id: 'next-tab', label: 'Next Tab', category: 'Tabs' },
   { id: 'prev-tab', label: 'Previous Tab', category: 'Tabs' },
   { id: 'add-to-bookshelf', label: 'Add to Bookshelf', category: 'Bookshelf' },
@@ -54,10 +57,17 @@ const COMMANDS: CommandItem[] = [
   { id: 'delete-workspace', label: 'Delete Workspace…', category: 'Workspaces' },
   { id: 'import-workspaces', label: 'Import Workspaces…', category: 'Workspaces' },
   { id: 'export-workspaces', label: 'Export Workspaces…', category: 'Workspaces' },
+  { id: 'workspace-menu', label: 'Workspace Menu', category: 'Workspaces', keywords: 'switch list' },
+  { id: 'new-profile', label: 'New Profile…', category: 'Profile', keywords: 'create' },
   { id: 'rename-profile', label: 'Rename Profile…', category: 'Profile' },
   { id: 'delete-profile', label: 'Delete Profile…', category: 'Profile' },
+  { id: 'profile-menu', label: 'Profile Menu', category: 'Profile', keywords: 'switch list' },
   { id: 'expand-all-groups', label: 'Expand All Tab Groups', category: 'View' },
   { id: 'collapse-all-groups', label: 'Collapse All Tab Groups', category: 'View' },
+  { id: 'chrome-hints', label: 'Hints on Browser Controls', category: 'View', keywords: 'labels buttons click keyboard vimium' },
+  { id: 'zoom-in', label: 'Zoom In', category: 'View', keywords: 'bigger larger page' },
+  { id: 'zoom-out', label: 'Zoom Out', category: 'View', keywords: 'smaller page' },
+  { id: 'zoom-reset', label: 'Actual Size', category: 'View', keywords: 'zoom reset 100' },
   { id: 'focus-url', label: 'Focus Address Bar', category: 'Navigation' },
   { id: 'edit-url', label: 'Edit Address…', category: 'Navigation' },
   { id: 'back', label: 'Navigate Back', category: 'Navigation' },
@@ -67,18 +77,33 @@ const COMMANDS: CommandItem[] = [
   { id: 'ui-devtools', label: 'Toggle UI Developer Tools', category: 'View' },
   { id: 'find-in-page', label: 'Find in Page...', category: 'Navigation' },
   { id: 'save-page', label: 'Save Page As…', category: 'Navigation' },
+  { id: 'copy-url', label: 'Copy Address', category: 'Navigation', keywords: 'url link clipboard' },
+  { id: 'paste-url', label: 'Open Copied Address', category: 'Navigation', keywords: 'url link clipboard paste' },
+  { id: 'paste-url-new-tab', label: 'Open Copied Address in New Tab', category: 'Navigation', keywords: 'url link clipboard paste' },
+  { id: 'site-info', label: 'Site Info', category: 'Navigation', keywords: 'certificate padlock security connection' },
   { id: 'search', label: 'Search Everything', category: 'General' },
+  { id: 'pick-tab', label: 'Search Tabs', category: 'General' },
+  { id: 'pick-workspace', label: 'Search Workspaces', category: 'General' },
+  { id: 'pick-group', label: 'Search Tab Groups', category: 'General' },
+  { id: 'pick-profile', label: 'Search Profiles', category: 'General' },
+  { id: 'app-menu', label: 'Open Menu', category: 'General' },
   { id: 'open-downloads', label: 'Open Downloads', category: 'General' },
   { id: 'open-bangs', label: 'Bangs & Search Engine', category: 'General' },
   { id: 'toggle-sidebar', label: 'Toggle Sidebar', category: 'View' },
   { id: 'dark-pages', label: 'Turn Dark Pages On / Off', category: 'Dark Pages', keywords: 'dark mode night theme' },
   { id: 'dark-pages-site', label: 'Dark Pages on This Site', category: 'Dark Pages', keywords: 'dark mode site night theme' },
   { id: 'dark-pages-settings', label: 'Dark Pages Settings…', category: 'Dark Pages', keywords: 'dark mode night theme brightness contrast' },
+  { id: 'dark-pages-menu', label: 'Dark Pages Menu', category: 'Dark Pages', keywords: 'dark mode night theme brightness contrast popover' },
+  { id: 'extensions-menu', label: 'Extensions Menu', category: 'Extensions', keywords: 'add-ons plugins' },
+  { id: 'manage-extensions', label: 'Manage Extensions', category: 'Extensions', keywords: 'add-ons plugins settings' },
   { id: 'split-right', label: 'Split Right', category: 'Split View' },
   { id: 'split-down', label: 'Split Down', category: 'Split View' },
   { id: 'split-focus', label: 'Switch Split Pane', category: 'Split View' },
   { id: 'split-close', label: 'Close Split', category: 'Split View' },
   { id: 'settings', label: 'Open Settings', category: 'General' },
+  { id: 'help', label: 'Vim Mode Keys', category: 'General', keywords: 'help keymap shortcuts bindings' },
+  { id: 'check-updates', label: 'Check for Updates', category: 'General', keywords: 'upgrade version' },
+  { id: 'install-update', label: 'Restart to Install Update', category: 'General', keywords: 'upgrade version' },
   { id: 'about', label: 'About', category: 'General' },
   { id: 'close-window', label: 'Close Window', category: 'Window' },
   { id: 'minimize-window', label: 'Minimize', category: 'Window' },
@@ -178,16 +203,22 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
         cmd.id === 'rename-tab-group' ||
         cmd.id === 'move-group' ||
         cmd.id === 'duplicate-group' ||
-        cmd.id === 'ungroup-all-tabs'
+        cmd.id === 'ungroup-all-tabs' ||
+        cmd.id === 'close-group'
       ) {
         return !!activeTabGroupId
       }
+      // Vim mode's own: the labels are typed with COMMAND's keys.
+      if (cmd.id === 'chrome-hints' || cmd.id === 'help') return !!vimKeymap
       // A tab in a group (not the group header parked with no active tab).
       if (cmd.id === 'ungroup-tab') return !!activeTab && !!activeTabGroupId
       if (cmd.id === 'split-focus' || cmd.id === 'split-close') return splitShown
+      // An address to edit: not parked on a group, nor on a page of the
+      // browser's own (openUrlEditor refuses those).
+      if (cmd.id === 'edit-url') return !!activeTab && !isInternalUrl(activeTab.url)
       return true
     })
-  }, [activeTab, activeTabGroupId, splitShown])
+  }, [activeTab, activeTabGroupId, splitShown, vimKeymap])
 
   useEffect(() => {
     if (open) {
@@ -251,8 +282,8 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
   }, [onAction])
 
   // Vim mode: the palette opens in INSERT — typing filters, like vim's `:`
-  // command line. Esc goes to COMMAND, where j/k walk the list and 1–9 run
-  // a numbered row; i types again, Esc closes.
+  // command line. Ctrl+C goes to COMMAND, where j/k walk the list and a
+  // row's label runs it; i types again. Esc closes from either.
   // COMMAND mode's two-letter row labels (lib/hint-labels.ts).
   const hints = usePopupHints(vimKeymap, rows.length)
   const vim = usePopupVimMode({
@@ -297,15 +328,10 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
       e.preventDefault()
       if (rows[selectedIndex]) handleSelect(rows[selectedIndex])
     } else if (e.key === 'Escape') {
-      // Vim: Esc leaves the box for COMMAND mode; Esc there closes.
-      if (vim.modeRef.current) {
-        e.preventDefault()
-        inputRef.current?.blur()
-      } else {
-        onOpenChange(false)
-      }
+      // In Vim mode Esc never gets here: the palette's Vim keys close it.
+      onOpenChange(false)
     }
-  }, [rows, selectedIndex, handleSelect, onOpenChange, vim.modeRef])
+  }, [rows, selectedIndex, handleSelect, onOpenChange])
 
   if (!open) return null
 
@@ -314,12 +340,12 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
   return (
     <DetachedWindow
       open={open}
-      title="Command Palette - Newbro"
+      title="Command Palette - Vimperium"
       width={760}
       height={640}
       closeOnBlur
       matchRunwaPalette
-      // In Vim mode Esc first leaves the box; the palette handles it.
+      // In Vim mode Esc is the palette's Vim keys' (usePopupVimMode), which close it.
       closeOnEscape={!vimKeymap}
       onClose={() => onOpenChange(false)}
       onWindowChange={setPopupWindow}
@@ -407,7 +433,8 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
               <>
                 <Hint label="Navigate" keys={['↓', '↑']} />
                 <Hint label="Run" keys={['Enter']} />
-                <Hint label={vim.mode ? 'Command mode' : 'Close'} keys={['Esc']} />
+                {vim.mode && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
+                <Hint label="Close" keys={['Esc']} />
               </>
             )}
             {appVersion && <span className="text-muted-foreground/60 tabular-nums">v{appVersion}</span>}

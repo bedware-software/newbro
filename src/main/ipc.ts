@@ -4,7 +4,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { spawn } from 'child_process'
 import { loadState, saveState, loadLastUsedWorkspace } from './store'
-import { loadSettings, saveSettings, type Settings } from './settings-store'
+import { loadSettings, saveSettings, syncedSettingsForSave, type Settings } from './settings-store'
 import { applySyncedDarkPages, getDarkPagesConfig, refreshDarkPagesTheme, registerDarkPagesIpc } from './dark-pages'
 import { setupPartitionSession, createWorkspaceWindow, getOpenWorkspaceWindows, rebuildMenu, applyProxySettingsToAllSessions, addBypassedCertOrigin, getBrowserActionStateForWindow, bindWebContentsToPartition, resolvePermissionRequest, getPartitionForSession, partitionForBrowserWindow } from './index'
 import { listGrants, setGrant, clearGrant, clearAllGrants, exportGrants, replaceGrants, type PermissionKind, type PermissionDecision } from './permissions-store'
@@ -51,6 +51,7 @@ import {
   tabStop,
   tabStopFindInPage,
   tabToggleDevTools,
+  tabZoom,
   getChromeTabIdForTab,
   pickPartitionForWindow,
   type TabBounds,
@@ -353,11 +354,41 @@ function applyIncomingSettings(settings: Settings): void {
   saveSettings(settings)
   applyProxySettingsToAllSessions(settings)
   rebuildMenu()
-  // Dark pages can follow Newbro's theme.
+  // Dark pages can follow Vimperium's theme.
   refreshDarkPagesTheme()
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('settings:updated', settings)
   }
+}
+
+// LEGACY_: a device still on Newbro may read the same sync folder, and it
+// knows internal pages only as newbro:// (favicon marker newbro-icon:), so a
+// vimperium://downloads tab would reach it as a web page it can't open. The
+// synced state carries them in the old form. Vimperium reads both forms for
+// good (renderer lib/internal-pages.ts) and writes vimperium:// again the next
+// time it points a tab. Drop this with the other LEGACY_* aliases, once no
+// device runs Newbro.
+const INTERNAL_PAGE_URL = /^(\s*)vimperium:\/\//i
+const LEGACY_INTERNAL_PAGE_SCHEME = 'newbro://'
+const INTERNAL_PAGE_ICON_PREFIX = 'vimperium-icon:'
+const LEGACY_INTERNAL_PAGE_ICON_PREFIX = 'newbro-icon:'
+
+/** A copy of the synced workspace tree with every tab's internal-page URL
+ *  and favicon marker in Newbro's form; the rest as it is. */
+function withLegacyInternalPages(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withLegacyInternalPages)
+  if (!value || typeof value !== 'object') return value
+  const out: Record<string, unknown> = {}
+  for (const [key, field] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'url' && typeof field === 'string') {
+      out[key] = field.replace(INTERNAL_PAGE_URL, `$1${LEGACY_INTERNAL_PAGE_SCHEME}`)
+    } else if (key === 'favicon' && typeof field === 'string' && field.startsWith(INTERNAL_PAGE_ICON_PREFIX)) {
+      out[key] = LEGACY_INTERNAL_PAGE_ICON_PREFIX + field.slice(INTERNAL_PAGE_ICON_PREFIX.length)
+    } else {
+      out[key] = withLegacyInternalPages(field)
+    }
+  }
+  return out
 }
 
 export function registerIpcHandlers(): void {
@@ -494,6 +525,12 @@ export function registerIpcHandlers(): void {
     tabToggleDevTools(tabId)
   })
 
+  // Vim's zoom-in / zoom-out / zoom-reset on the active tab's page.
+  ipcMain.handle('tab:zoom', (_e, tabId: string, step: unknown) => {
+    if (step !== 'in' && step !== 'out' && step !== 'reset') return null
+    return tabZoom(tabId, step)
+  })
+
   ipcMain.handle('tab:save-page', (_e, tabId: string) => {
     return tabSavePage(tabId)
   })
@@ -579,7 +616,7 @@ export function registerIpcHandlers(): void {
       return { shown: false, error: 'Notifications are not supported on this system.' }
     }
     const notification = new Notification({
-      title: 'Newbro',
+      title: 'Vimperium',
       body: 'Test notification. If you can see this, notifications work — including the ones extensions such as Claude send.',
       icon: nativeImage.createFromPath(path.join(__dirname, '../../resources/icon.png')),
     })
@@ -1230,7 +1267,7 @@ export function registerIpcHandlers(): void {
     try {
       const pid = process.pid
       const tmpDir = app.getPath('temp')
-      const scriptPath = path.join(tmpDir, `newbro-wipe-${pid}-${Date.now()}.js`)
+      const scriptPath = path.join(tmpDir, `vimperium-wipe-${pid}-${Date.now()}.js`)
 
       // Capture the current launch command so the helper can relaunch a
       // fresh instance with the same executable and args. ELECTRON_RUN_AS_NODE
@@ -1260,7 +1297,7 @@ const shouldRelaunch = ${JSON.stringify(shouldRelaunch)};
 // so console.* goes nowhere visible. Without this file we'd silently
 // lose the cause of any wipe/relaunch failure. Stable path so a user
 // can grab it after the fact.
-const logPath = path.join(os.tmpdir(), 'newbro-wipe-' + pid + '.log');
+const logPath = path.join(os.tmpdir(), 'vimperium-wipe-' + pid + '.log');
 function diag(msg) {
   try { fs.appendFileSync(logPath, new Date().toISOString() + ' ' + msg + '\\n'); }
   catch (e) { /* logfile path is unwritable — last resort, nowhere to forward to */ }
@@ -1402,7 +1439,7 @@ function alive(p) {
   // selections are per-window/device and would otherwise churn the synced file
   // on every tab switch.
   registerSyncCategory('state', {
-    read: () => ({ profiles: (loadState() as { profiles?: unknown } | null)?.profiles ?? [] }),
+    read: () => ({ profiles: withLegacyInternalPages((loadState() as { profiles?: unknown } | null)?.profiles ?? []) }),
     write: (data) => {
       const incoming = (data as { profiles?: unknown }) || {}
       const cur = (loadState() as Record<string, unknown> | null) || {}
@@ -1415,7 +1452,17 @@ function alive(p) {
   })
   registerSyncCategory('settings', {
     read: () => loadSettings(),
-    write: (data) => applyIncomingSettings(data as Settings),
+    write: (data) => {
+      // A Vim keymap from a device still on Newbro comes in under its old
+      // defaults: carried over first, then published as this device's copy
+      // (true), so the folder ends on the current keymap. Vim mode off there
+      // (an older build) comes in on, and is published the same way.
+      const { settings, vimKeymapFrom, vimTurnedOn } = syncedSettingsForSave(data as Settings)
+      if (vimKeymapFrom !== null) log.info('cloud-sync: carried a synced Vim keymap over to the current defaults', { from: vimKeymapFrom })
+      if (vimTurnedOn) log.info('cloud-sync: synced settings had Vim mode off; Vim is the only mode, so it stays on')
+      applyIncomingSettings(settings)
+      return vimKeymapFrom !== null || vimTurnedOn
+    },
   })
   registerSyncCategory('bookshelf', {
     read: () => exportShelves(),

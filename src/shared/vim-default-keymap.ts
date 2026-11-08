@@ -18,16 +18,32 @@ export const DEFAULT_VIM_KEYMAP = `" Vim mode keys.
 "            commands. Keys not bound here reach the page.
 "   INSERT   keys go to the page or the field you type in
 " i (or gi, picking a text field) goes into INSERT; Esc or Ctrl+[ comes back
-" to COMMAND. Clicking a text field is INSERT, anywhere else COMMAND. The
-" regular shortcuts (⌘T, ⌘L, …) are off while Vim mode is on.
+" to COMMAND. In a popup — Search Everything, Find, the address editor, a
+" dialog — Ctrl+C or Ctrl+[ leaves its field for COMMAND, and Esc closes the
+" popup. Clicking a text field is INSERT, anywhere else COMMAND. The
+" browser's commands are these keys, not ⌘T or ⌘L; the system's copy,
+" paste and undo work as ever.
+"
+" COMMAND reads like vim. The motions are vim's: j/k scroll, <C-d>/<C-u>
+" half a page, gg/G to the top and the bottom, h/l back and forward. A
+" letter that starts a pair is a verb, and the second letter says what it
+" acts on:
+"   n  new       nt (or nn) a tab, ng a group, nw a workspace, np a profile
+"   d  delete    dd closes the tab, dg its group, dv deletes the workspace
+"   o  open      ot ow og op search tabs, workspaces, groups, profiles;
+"                od Downloads, ob Bangs, om the menu, and the rest below
+"   t  toggle    ts the Sidebar, tb the Bookshelf
+" u undoes: it brings back what dd or dg closed. Ctrl+h/j/k/l drive the
+" Sidebar, and Tab shows or hides it.
 
 " ── COMMAND: the page ─────────────────────────────────────────────────
 " focus-input outlines the page's text fields: h/j/k/l (or Tab) pick one,
-" <CR> types into it, Esc cancels.
+" <CR> types into it, Esc cancels. + and - zoom the page, = back to its
+" actual size.
 scroll-down         j
 scroll-up           k
-half-page-down      d
-half-page-up        u
+half-page-down      <C-d>
+half-page-up        <C-u>
 page-top            gg
 page-bottom         G
 back                h <C-o>
@@ -35,21 +51,25 @@ forward             l <C-i>
 insert-mode         i
 focus-input         gi
 help                ?
+zoom-in             +
+zoom-out            -
+zoom-reset          =
 
 " ── COMMAND: the Sidebar ──────────────────────────────────────────────
-" Its keys put a cursor on the active row (and show the Sidebar while it's
-" hidden — Settings → Keyboard Shortcuts) until a second passes without
-" one, or Ctrl is let go after a Ctrl chord. <Down>/<Up> step through the
-" rows, showing each: a tab's page, or a group's tabs. row-fold folds the
-" group the cursor is in and goes to its header; row-unfold unfolds a
-" folded group, or steps into an unfolded one.
-cursor-down-show    <Down>
-cursor-up-show      <Up>
+" Ctrl+j/k step through its rows, showing each — a tab's page, or a
+" group's tabs — with the keyboard kept in the browser until Ctrl is let
+" go, when the page shown gets it. Ctrl+h folds the group the cursor is in
+" and goes to its header; Ctrl+l unfolds a folded group, or steps into an
+" unfolded one. They work with the Sidebar hidden too. Tab (or ts) shows
+" or hides it; in a text field Tab moves on through the form as ever.
+cursor-down-show    <C-j>
+cursor-up-show      <C-k>
 row-move-down       <C-S-j>
 row-move-up         <C-S-k>
-row-fold            <Left>
-row-unfold          <Right>
+row-fold            <C-h>
+row-unfold          <C-l>
 row-menu            <C-m>
+toggle-sidebar      <Tab> ts
 
 " ── COMMAND: split view ───────────────────────────────────────────────
 " V splits the page area with a pane on the right (vim's :vsplit), S with
@@ -60,22 +80,52 @@ split-down          S
 split-focus         <C-w>
 split-close         q
 
-" ── COMMAND: Search Everything on one kind of thing ───────────────────
-" Opens typing (INSERT) with the filter set; Esc goes to its COMMAND keys.
-pick-workspace      w
-pick-tab            t
-pick-group
-pick-profile        p
+" ── COMMAND: n, new ───────────────────────────────────────────────────
+" A new group comes with a new tab in it; a new profile and a new
+" workspace open in a window of their own. Each asks for a name first.
+" nn is a new tab too: the verb doubled, as dd closes one.
+new-tab             nt nn
+new-group           ng
+new-workspace       nw
+new-profile         np
+
+" ── COMMAND: d, delete ────────────────────────────────────────────────
+" dd closes the tab and dg its group, all its tabs; u brings them back,
+" the last closed first. dv deletes the workspace, once you say so.
+close-tab           dd
+close-group         dg
+delete-workspace    dv
+reopen-closed-tab   u
+
+" ── COMMAND: o, open ──────────────────────────────────────────────────
+" ot ow og op open Search Everything on one kind of thing, typing (INSERT);
+" Ctrl+C goes to its COMMAND keys. The menus open with the keyboard on them:
+" om the app's menu, oe extensions, oi the site's padlock, oD dark pages,
+" oP and oW the toolbar's profile and workspace lists.
+pick-tab            ot
+pick-workspace      ow
+pick-group          og
+pick-profile        op
+open-downloads      od
+open-bangs          ob
+app-menu            om
+extensions-menu     oe
+site-info           oi
+dark-pages-menu     oD
+profile-menu        oP
+workspace-menu      oW
+
+" ── COMMAND: t, toggle ────────────────────────────────────────────────
+" ts is the Sidebar's (above); tb shows or hides the Bookshelf.
+toggle-bookshelf    tb
 
 " ── COMMAND: app commands (the regular shortcuts' ids) ────────────────
-new-tab             <CR>
-close-tab           x
-reopen-closed-tab   T
+" ; labels every button of the browser's own, as f does a page's in
+" vimium; typing a label presses it.
+chrome-hints        ;
 close-window
-new-workspace       N
 next-tab
 prev-tab
-toggle-sidebar      <Space>
 focus-url
 edit-url            e
 search              f
@@ -102,27 +152,44 @@ duplicate-tab
 move-tab
 set-comment         gcc
 remove-comment
+add-to-new-group
+ungroup-tab
 rename-tab-group
 move-group
 duplicate-group
+ungroup-all-tabs
+expand-all-groups
+collapse-all-groups
 add-to-bookshelf
-toggle-bookshelf    B
-open-downloads      od
-open-bangs          ob
+rename-workspace
+close-workspace
+import-workspaces
+export-workspaces
+rename-profile
+delete-profile
 " Dark pages: D turns them on or off for this site; dark-pages everywhere.
 dark-pages
 dark-pages-site     D
+dark-pages-settings
+manage-extensions
+check-updates
+install-update
+about
+minimize-window
+maximize-window
+restore-window
+quit
 
 " ── Search Everything and the Command Palette ─────────────────────────
-" Search Everything and the Command Palette open in INSERT; Esc goes to
-" COMMAND, and insert-mode (i) drops back into the box. Esc in
-" COMMAND closes the window. The scroll keys above (j/k, gg/G) move through
+" Search Everything and the Command Palette open in INSERT; Ctrl+C goes to
+" COMMAND, and insert-mode (i) drops back into the box. Esc closes the
+" window, from either. The scroll keys above (j/k, gg/G) move through
 " the results, Enter runs one. The filters are Search Everything's.
 " In COMMAND every result wears a two-letter label, home-row letters first
 " and only ones these keys leave free, and typing it picks the result
 " (vimium's hints); typing in the box, the results show their numbers, and
-" digits type. So do the group page and an open Sidebar (not one Ctrl
-" shows). search-row-N picks result N, when bound.
+" digits type. So does the group page. search-row-N picks result N, when
+" bound.
 search-all          a
 search-profiles     p
 search-workspaces   w
@@ -141,7 +208,7 @@ search-row-9
 
 " ── Address editor (e) ───────────────────────────────────────────────
 " Opens typing (INSERT) over the whole address, selected, as other
-" browsers' address bars do; Esc goes to its COMMAND keys.
+" browsers' address bars do; Ctrl+C goes to its COMMAND keys.
 " The page's title, and its address big, cut into blocks with a key each:
 " h protocol, d domain, n port, 1–9 the path's levels, p parameters,
 " f fragment. An intent and a block's key act on that block — c changes it
@@ -150,7 +217,7 @@ search-row-9
 " parameters — so yy and cc act on the whole address, D removes all of it,
 " P pastes over all of it and C clears it to type; yt copies the title.
 " gu goes up a level, gt keeps only the site; u undoes, <C-r> redoes.
-" <CR> goes there, Shift+<CR> in a new tab; Esc leaves typing, then closes.
+" <CR> goes there, Shift+<CR> in a new tab; Esc closes, typing or not.
 url-change          c
 url-remove          d
 url-remove-all      D
@@ -170,8 +237,8 @@ url-go              <CR>
 
 " ── Find in page ──────────────────────────────────────────────────────
 " Opens in INSERT, only for typing what to find (the first match lights up
-" as you type). <CR> or Esc goes to COMMAND, where these keys step through
-" the matches; i types again and Esc closes.
+" as you type). <CR> or Ctrl+C goes to COMMAND, where these keys step
+" through the matches; i types again. Esc closes, from either.
 find-next           j n
 find-prev           k N
 `
@@ -218,10 +285,27 @@ export function contextOf(command: string): VimContext {
 // the arrows, history onto <C-o>/<C-i> (was [ and ]), the Command Palette
 // onto <C-p> (was :) and toggling the Sidebar onto <Space> (was \). v11
 // put the browser's own pages behind o: od Downloads (was D), ob Bangs.
-// A saved
+// v12 added dark pages (D this site). v13 made COMMAND read like vim's:
+// half a page on <C-d>/<C-u> (was d/u), the Sidebar back on Ctrl chords
+// (<C-j>/<C-k>/<C-h>/<C-l>, was the arrows) and toggled by <Tab> or ts (was
+// <Space>), and verbs as prefixes — n new (nt, was <CR>; nv, was N; ng and
+// np new), d delete (dd, was x; dg and dv new), o open (ot ow op, were t w
+// p; og, the menus), t toggle (tb, was B) — with u reopening a closed tab
+// (was T); it also listed the palette's commands, unbound, so they can be
+// bound. v14 put a new workspace on nw (was nv: w is a workspace, as in ow
+// and oW) and gave a new tab nn beside nt. A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
-// the rest, including commands it couldn't know about.
+// the rest, including commands it couldn't know about. A key a version
+// brings in that the owner's own binding already uses stays the owner's:
+// the command it's new for goes without it (unbound, if it was its only
+// one). A command v13 moved that loses all its new keys that way keeps its
+// old key instead, when nothing uses that now — x still closes the tab for
+// an owner whose own d took dd's place; one v13 added has no old key and
+// goes unbound. And a line the owner changed that kept a moved command's
+// old default beside keys of their own (`half-page-down d <C-d>`) keeps
+// their keys, with the new default in place of the old one, so the old d
+// doesn't take dd, dg and dv's place.
 
 /** v3's name for an older command: null when v3 has no such command. */
 const RENAMED_IN_V3: Record<string, string | null> = {
@@ -348,6 +432,37 @@ const V10_DEFAULT_KEYS: Record<string, string> = {
   'open-downloads': 'D',
 }
 
+/** v12 defaults of the commands v13 rebound. */
+const V12_DEFAULT_KEYS: Record<string, string> = {
+  'half-page-down': 'd',
+  'half-page-up': 'u',
+  'cursor-down-show': '<Down>',
+  'cursor-up-show': '<Up>',
+  'row-fold': '<Left>',
+  'row-unfold': '<Right>',
+  'new-tab': '<CR>',
+  'new-workspace': 'N',
+  'close-tab': 'x',
+  'reopen-closed-tab': 'T',
+  'pick-workspace': 'w',
+  'pick-tab': 't',
+  'pick-group': '',
+  'pick-profile': 'p',
+  'toggle-sidebar': '<Space>',
+  'toggle-bookshelf': 'B',
+}
+
+/** v13 defaults of the commands v14 rebound. */
+const V13_DEFAULT_KEYS: Record<string, string> = {
+  'new-tab': 'nt',
+  'new-workspace': 'nv',
+}
+
+/** Old keys a moved command never falls back to: Enter makes no tab. */
+const NO_FALLBACK_KEYS: Record<string, string[]> = {
+  'new-tab': ['<CR>'],
+}
+
 /** v8 defaults of the commands v9 rebound: the results' digits. */
 const V8_DEFAULT_KEYS: Record<string, string> = Object.fromEntries(
   [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`search-row-${n}`, String(n)]),
@@ -377,6 +492,20 @@ const NEW_IN_V11 = new Set(['open-bangs'])
 /** Commands v12 added. A default key of theirs that an owner's own binding
  *  already uses stays the owner's: the new command goes unbound. */
 const NEW_IN_V12 = new Set(['dark-pages', 'dark-pages-site'])
+
+/** Commands v13 added: new ones, and the Command Palette's that had no line
+ *  (delete-workspace and the unbound ones). Their keys yield to an owner's
+ *  as v12's do. */
+const NEW_IN_V13 = new Set([
+  'new-group', 'new-profile', 'close-group', 'delete-workspace',
+  'app-menu', 'extensions-menu', 'site-info', 'dark-pages-menu', 'profile-menu', 'workspace-menu',
+  'chrome-hints', 'zoom-in', 'zoom-out', 'zoom-reset',
+  'check-updates', 'install-update', 'manage-extensions',
+  'rename-workspace', 'close-workspace', 'import-workspaces', 'export-workspaces',
+  'rename-profile', 'delete-profile', 'ungroup-tab', 'ungroup-all-tabs', 'add-to-new-group',
+  'expand-all-groups', 'collapse-all-groups', 'dark-pages-settings',
+  'about', 'quit', 'minimize-window', 'maximize-window', 'restore-window',
+])
 
 /** Commands v3 added under new names; no older keymap mentions them. */
 const NEW_IN_V3 = new Set([
@@ -412,13 +541,24 @@ function sequencesClash(a: string, b: string): boolean {
   return n > 0 && x.slice(0, n).every((t, i) => t === y[i])
 }
 
+/** Whether two written sequences are the same keys (`<cr>` is `<CR>`). */
+function sameKeys(a: string, b: string): boolean {
+  return keyTokens(a).join('\u0000') === keyTokens(b).join('\u0000')
+}
+
 /**
- * Carries a keymap saved under older defaults (v1 to v11) over to the
+ * Carries a keymap saved under older defaults (v1 to v13) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
- * nothing to keep.
+ * nothing to keep. `log` hears each key the migration had to decide on for
+ * the owner: a command that keeps its old key, one left unbound, an old
+ * default moved on.
  */
-export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11): string | null {
+export function migrateVimKeymap(
+  saved: string,
+  fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+  log: (message: string) => void = () => {},
+): string | null {
   // What the owner had, by the old name.
   const mine = new Map<string, string>()
   for (const line of saved.split('\n')) {
@@ -439,11 +579,13 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 |
     (fromVersion <= 8 ? V8_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 9 ? V9_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 10 ? V10_DEFAULT_KEYS[command] : undefined) ??
+    (fromVersion <= 12 ? V12_DEFAULT_KEYS[command] : undefined) ??
+    (fromVersion <= 13 ? V13_DEFAULT_KEYS[command] : undefined) ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
   const existed = (command: string): boolean =>
-    NEW_IN_V12.has(command) || (fromVersion <= 10 && NEW_IN_V11.has(command)) || (fromVersion <= 7 && NEW_IN_V8.has(command)) || (fromVersion <= 6 && NEW_IN_V7.has(command)) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
+    (fromVersion <= 12 && NEW_IN_V13.has(command)) || (fromVersion <= 11 && NEW_IN_V12.has(command)) || (fromVersion <= 10 && NEW_IN_V11.has(command)) || (fromVersion <= 7 && NEW_IN_V8.has(command)) || (fromVersion <= 6 && NEW_IN_V7.has(command)) || (fromVersion <= 5 && NEW_IN_V6.has(command)) ? false
     : fromVersion >= 3
       ? !(command in RENAMED_IN_V3)
       : !NEW_IN_V3.has(command) && !(fromVersion === 1 && NEW_IN_V2.has(command))
@@ -454,10 +596,27 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 |
     ...Object.keys(RENAMED_IN_V3).filter((old) => RENAMED_IN_V3[old] === command),
   ].filter(existed)
 
+  // Commands v13 or v14 moved off their old keys.
+  const movedInV13 = (command: string): boolean =>
+    (fromVersion <= 12 && command in V12_DEFAULT_KEYS) || (fromVersion <= 13 && command in V13_DEFAULT_KEYS)
+
   const lines = DEFAULT_VIM_KEYMAP.split('\n')
   // command → [line index, keys] for every binding line, as it stands.
   const bindings = new Map<string, { index: number; keys: string[] }>()
   const changed: string[] = []
+  // The command of `among`, other than `command` and in its context, whose
+  // binding already uses `key` (or starts it, or is started by it); null for
+  // none.
+  const takenBy = (key: string, command: string, among: Iterable<string>): string | null => {
+    for (const other of among) {
+      if (other === command || contextOf(other) !== contextOf(command)) continue
+      if (bindings.get(other)!.keys.some((k) => sequencesClash(key, k))) return other
+    }
+    return null
+  }
+  // Owner-changed lines of moved commands that kept the old default beside
+  // keys of their own: those keys, which go with the new default.
+  const keptOldDefault = new Map<string, string[]>()
   lines.forEach((line, index) => {
     const trimmed = line.trim()
     if (!isBindingLine(trimmed)) return
@@ -467,40 +626,122 @@ export function migrateVimKeymap(saved: string, fromVersion: 1 | 2 | 3 | 4 | 5 |
     // defaults: equal is untouched.
     let touched = false
     const ownKeys: string[] = []
+    // The sources' old default keys the new default dropped.
+    const oldKeys: string[] = []
     for (const source of sourcesOf(command)) {
       const before = oldDefault(source, defaults.join(' '))
       // A line the owner deleted is a command they unbound.
       const theirs = mine.get(source) ?? ''
       if (theirs !== before) touched = true
       for (const key of theirs.split(' ')) if (key && !ownKeys.includes(key)) ownKeys.push(key)
+      for (const key of before.split(' ')) if (key && !defaults.some((d) => sameKeys(d, key))) oldKeys.push(key)
     }
     if (!touched) return
+    if (movedInV13(command)) {
+      // A key that's the old default isn't the owner's choice but the
+      // default they kept, beside keys of their own: it moves on with the
+      // default.
+      const theirOwn = ownKeys.filter((key) => !oldKeys.some((old) => sameKeys(old, key)))
+      if (theirOwn.length < ownKeys.length) {
+        // Nothing of their own (the old key twice): untouched, as it were.
+        if (theirOwn.length === 0) return
+        keptOldDefault.set(command, theirOwn)
+        bindings.set(command, { index, keys: theirOwn })
+        changed.push(command)
+        return
+      }
+    }
     bindings.set(command, { index, keys: ownKeys })
     changed.push(command)
   })
 
-  // A command new to this version whose default key an owner's binding
-  // already uses goes unbound: the owner chose that key.
-  for (const command of NEW_IN_V12) {
+  // The owner's own bindings, before the new keys yield to them.
+  const owned = new Set(changed)
+  // A moved command whose line kept its old default gets the new default
+  // instead, where no key of the owner's own uses it.
+  for (const [command, theirOwn] of keptOldDefault) {
+    const binding = bindings.get(command)!
+    const defaults = lines[binding.index].trim().split(/\s+/).slice(1)
+    // Not one of theirs, nor started by one of theirs or starting one (their
+    // n beside nt would clash on the line itself).
+    const free = defaults.filter((key) => !theirOwn.some((k) => sequencesClash(k, key)) && takenBy(key, command, owned) === null)
+    binding.keys = [...free, ...theirOwn]
+    log(`${command}: your line kept its old default beside your ${theirOwn.join(' ')}; now ${binding.keys.join(' ')}`)
+  }
+
+  // Keys this step brings in: those of commands new since the saved
+  // keymap's version, and the new keys of commands it moved. Where the owner
+  // never touched such a command, a key of its that one of the owner's own
+  // bindings already uses (or starts, or is started by) stays the owner's:
+  // the command goes without it, unbound if it was its only one.
+  const bringsKeys = new Set([
+    ...(fromVersion <= 12 ? NEW_IN_V13 : []),
+    ...(fromVersion <= 11 ? NEW_IN_V12 : []),
+    ...(fromVersion <= 12 ? Object.keys(V12_DEFAULT_KEYS) : []),
+    ...(fromVersion <= 13 ? Object.keys(V13_DEFAULT_KEYS) : []),
+  ])
+  // Commands that lost every key that way, with what took them ("dd (your
+  // d, half-page-down)").
+  const keyless: Array<{ command: string; lost: string }> = []
+  for (const command of bringsKeys) {
+    if (owned.has(command)) continue
     const fresh = bindings.get(command)
     if (!fresh || fresh.keys.length === 0) continue
-    const taken = fresh.keys.some((key) => changed.some((other) =>
-      contextOf(other) === contextOf(command) && bindings.get(other)!.keys.some((k) => sequencesClash(key, k))))
-    if (!taken) continue
-    fresh.keys = []
+    const free = fresh.keys.filter((key) => takenBy(key, command, owned) === null)
+    if (free.length === fresh.keys.length) continue
+    if (free.length === 0) {
+      const lost = fresh.keys.map((key) => {
+        const other = takenBy(key, command, owned)!
+        return `${key} (your ${bindings.get(other)!.keys.join(' ')}, ${other})`
+      })
+      keyless.push({ command, lost: lost.join(', ') })
+    }
+    fresh.keys = free
     changed.push(command)
   }
 
   // An owner's binding that clashes with another in its context goes back
   // to the default.
   for (const command of changed) {
-    if (NEW_IN_V12.has(command)) continue
+    if (!owned.has(command)) continue
     const own = bindings.get(command)!
-    const clashes = own.keys.some((key) => [...bindings].some(([other, b]) =>
-      other !== command && contextOf(other) === contextOf(command) && b.keys.some((k) => sequencesClash(key, k))))
+    const clashes = own.keys.some((key) => takenBy(key, command, bindings.keys()) !== null)
     if (!clashes) continue
     const line = lines[own.index].trim().split(/\s+/)
     own.keys = line.slice(1)
+  }
+
+  // A command v13 or v14 moved that lost all its new keys to the owner's
+  // keeps its old one — x for close-tab, T for reopen-closed-tab, B for
+  // toggle-bookshelf, nv for new-workspace — where nothing in its context
+  // uses that now; never <CR> for new-tab: Enter makes no tab. The keys it had at the saved keymap's version first, then
+  // v12's (a v9 keymap migrated straight to v13 never had v10's <Down>, but
+  // would have got it on the way). A command v13 added has no old key.
+  for (const { command, lost } of keyless) {
+    const binding = bindings.get(command)!
+    const free = (keys: string[]): string[] => {
+      const out: string[] = []
+      for (const key of keys) {
+        if (key && !out.some((k) => sequencesClash(k, key)) && takenBy(key, command, bindings.keys()) === null) out.push(key)
+      }
+      return out
+    }
+    // Its new keys are free again when the binding that took them clashed
+    // elsewhere and went back to the default.
+    const again = free(lines[binding.index].trim().split(/\s+/).slice(1))
+    if (again.length > 0) {
+      binding.keys = again
+      continue
+    }
+    if (movedInV13(command)) {
+      const never = NO_FALLBACK_KEYS[command] ?? []
+      const usable = (keys: string): string[] => free(keys.split(' ').filter((key) => !never.some((k) => sameKeys(k, key))))
+      const old = usable(oldDefault(command, ''))
+      binding.keys = old.length > 0 ? old : usable(V12_DEFAULT_KEYS[command] ?? '')
+    } else binding.keys = []
+    log(binding.keys.length > 0
+      ? `${command}: its new key is taken — ${lost}; keeps its old ${binding.keys.join(' ')}`
+      : `${command}: its new key is taken — ${lost}; left unbound`)
   }
 
   for (const command of changed) {

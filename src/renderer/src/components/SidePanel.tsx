@@ -10,7 +10,7 @@ import { X } from 'lucide-react'
 
 const MIN_WIDTH = 320
 const DEFAULT_WIDTH = 400
-const WIDTH_KEY = 'newbro-side-panel-width'
+const WIDTH_KEY = 'vimperium-side-panel-width'
 const ZERO = { x: 0, y: 0, width: 0, height: 0 }
 
 interface ExtensionMeta {
@@ -56,7 +56,7 @@ export function SidePanel({ suppressed }: { suppressed: boolean }) {
   const visible = !!extensionId && !suppressed
 
   // Report the placeholder rect while shown; park the view when hidden.
-  // Also honours the 'newbro-tab-hide' / 'newbro-tab-show' events other
+  // Also honours the 'vimperium-tab-hide' / 'vimperium-tab-show' events other
   // panels fire during drags — the native view would otherwise swallow
   // the pointer when the drag crosses it.
   useEffect(() => {
@@ -95,13 +95,13 @@ export function SidePanel({ suppressed }: { suppressed: boolean }) {
     const ro = new ResizeObserver(() => report())
     ro.observe(el)
     window.addEventListener('resize', report)
-    window.addEventListener('newbro-tab-hide', hide)
-    window.addEventListener('newbro-tab-show', show)
+    window.addEventListener('vimperium-tab-hide', hide)
+    window.addEventListener('vimperium-tab-show', show)
     return () => {
       ro.disconnect()
       window.removeEventListener('resize', report)
-      window.removeEventListener('newbro-tab-hide', hide)
-      window.removeEventListener('newbro-tab-show', show)
+      window.removeEventListener('vimperium-tab-hide', hide)
+      window.removeEventListener('vimperium-tab-show', show)
       if (frame) cancelAnimationFrame(frame)
     }
   }, [visible])
@@ -121,7 +121,7 @@ export function SidePanel({ suppressed }: { suppressed: boolean }) {
     startW.current = currentW.current
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
-    window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+    window.dispatchEvent(new CustomEvent('vimperium-tab-hide'))
   }, [])
 
   useEffect(() => {
@@ -138,7 +138,7 @@ export function SidePanel({ suppressed }: { suppressed: boolean }) {
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       localStorage.setItem(WIDTH_KEY, String(currentW.current))
-      window.dispatchEvent(new CustomEvent('newbro-tab-show'))
+      window.dispatchEvent(new CustomEvent('vimperium-tab-show'))
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)

@@ -82,7 +82,7 @@ export function GroupPage({ group, vimKeymap, vimMode, vimPending, hintsOn }: Pr
     return keyTokenFromEvent(e) === '<CR>' && open(selected)
   }
 
-  // COMMAND's labels, ahead of a pinned Sidebar's.
+  // COMMAND's labels on its rows.
   useHintTargets('group-page', 0, vimMode === 'command' && hintsOn
     ? rows.map((tab, i) => ({ id: hintId(tab.id), activate: () => { open(i) } }))
     : null)

@@ -3,7 +3,7 @@ import { ChevronUp, ChevronDown, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
-import { Hint, HintBar, vimKeyCaps, vimKeyCapsAll } from './KeyHints'
+import { Hint, HintBar, LEAVE_INSERT_CAP, vimKeyCaps, vimKeyCapsAll } from './KeyHints'
 import { usePopupVimMode } from '../lib/vim-mode'
 import { usePagePlacement } from '../lib/page-placement'
 import type { VimKeymap } from '../lib/vim-keymap'
@@ -47,8 +47,9 @@ interface MatchInfo {
  * the page rather than pushing it down. Calls into webContents.findInPage /
  * stopFindInPage via IPC and listens for 'found-in-page' on the tab-event
  * stream. In Vim mode it opens in INSERT, only for typing what to find (the
- * first match lights up as you type); Enter or Esc goes to COMMAND, the one
- * place j/k (n/N) step through the matches, i types again and Esc closes.
+ * first match lights up as you type); Enter or Ctrl+C goes to COMMAND, the
+ * one place j/k (n/N) step through the matches, i types again; Esc closes
+ * from either.
  * Without Vim mode Enter / Shift+Enter step, as in any browser.
  */
 export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Props) {
@@ -162,9 +163,8 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
   const handleKeyDown = (e: React.KeyboardEvent): void => {
     if (e.key === 'Escape') {
       e.preventDefault()
-      // Vim: Esc leaves the box for COMMAND mode; Esc there closes.
-      if (vim.modeRef.current) inputRef.current?.blur()
-      else onClose()
+      // In Vim mode Esc never gets here: the popup's Vim keys close it.
+      onClose()
       return
     }
     if (e.key === 'Enter') {
@@ -188,11 +188,11 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
   return (
     <DetachedWindow
       open={open}
-      title="Find - Newbro"
+      title="Find - Vimperium"
       width={WIDTH}
       height={HEIGHT}
       resizable={false}
-      // In Vim mode Esc first leaves the box; the popup handles it.
+      // In Vim mode Esc is the popup's Vim keys' (usePopupVimMode).
       closeOnEscape={!vimKeymap}
       placement={placement}
       focusTick={focusTick}
@@ -256,7 +256,10 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
               <Hint label="Close" keys={['Esc']} />
             </>
           ) : vim.mode ? (
-            <Hint label="Command mode" keys={['Enter', 'Esc']} />
+            <>
+              <Hint label="Command mode" keys={['Enter', LEAVE_INSERT_CAP]} />
+              <Hint label="Close" keys={['Esc']} />
+            </>
           ) : (
             <>
               <Hint label="Next" keys={['Enter']} />

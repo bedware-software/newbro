@@ -1,5 +1,5 @@
 // A page has one DevTools protocol client in Electron — its
-// webContents.debugger — and more than one part of Newbro drives it: Dark
+// webContents.debugger — and more than one part of Vimperium drives it: Dark
 // pages (main/dark-pages.ts) and the chrome.debugger API extensions use
 // (main/extensions/debugger.ts). Each holds it under its own name: it
 // attaches with the first holder and detaches with the last, so neither
@@ -25,7 +25,7 @@ function holdersOf(wc: WebContents): Set<DebuggerHolder> {
 }
 
 /** Take a hold on the page's debugger, attaching it if nobody has. False
- *  when it can't be attached (the page is gone, or someone outside Newbro's
+ *  when it can't be attached (the page is gone, or someone outside Vimperium's
  *  holders has it). */
 export function holdDebugger(wc: WebContents, holder: DebuggerHolder): boolean {
   if (wc.isDestroyed()) return false

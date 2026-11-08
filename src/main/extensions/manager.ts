@@ -31,14 +31,25 @@
 
 import { app, BrowserWindow, session, type Session } from 'electron'
 import Store from 'electron-store'
+import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { log } from '../log'
 import { deriveExtensionIdFromPublicKey, extractCrxPublicKey, parseCrx } from './crx'
 import { extractExtensionIdFromUrl as _extract, fetchCrx } from './store'
 import { unzipTo } from './zip'
-import { buildSwShimSource, SW_SHIM_MAGIC, SW_SHIM_LEGACY_MAGIC, SW_SHIM_FOOTER, SW_SHIM_MODULE_FILE } from './sw-shim'
+import { buildSwShimSource, stripSwShims, SW_SHIM_MAGIC, SW_SHIM_FOOTER, SW_SHIM_MODULE_FILE } from './sw-shim'
+import {
+  LEGACY_BOOTSTRAP_MARKER,
+  LEGACY_CS_STORAGE_POLYFILL_FILENAME,
+  LEGACY_CS_STORAGE_PORT,
+  LEGACY_FRAME_STORAGE_BRIDGE_FILENAME,
+  LEGACY_FRAME_STORAGE_BRIDGE_TAG,
+  LEGACY_ORIGINAL_MANIFEST_FILE,
+  LEGACY_SW_SHIM_HEADER_PREFIX,
+  LEGACY_SW_SHIM_MODULE_FILE,
+} from './legacy-names'
 import { getSwRpcServerInfo } from './sw-rpc-server'
 import { clearUserScriptsForExtension } from './userscripts'
 import { notifyCloudChange } from '../cloud-sync'
@@ -55,7 +66,7 @@ export interface ExtensionInfo {
   pinned: boolean
   path: string
   /** What the extension asks for, read from its own manifest (not the
-   *  copy Newbro patches): sites it wants to access (host permissions,
+   *  copy Vimperium patches): sites it wants to access (host permissions,
    *  MV2 host patterns from `permissions`), API permissions, optional
    *  ones it may request later, and the sites its content scripts run on. */
   hostPermissions: string[]
@@ -63,9 +74,9 @@ export interface ExtensionInfo {
   optionalPermissions: string[]
   contentScriptMatches: string[]
   /** False when the extension's original manifest is unknown (installed
-   *  before Newbro kept it, and not yet re-fetched): the lists above then
+   *  before Vimperium kept it, and not yet re-fetched): the lists above then
    *  come from the patched manifest, which also carries the <all_urls>
-   *  access Newbro grants every extension. */
+   *  access Vimperium grants every extension. */
   permissionsFromOriginal: boolean
   hasOptionsPage: boolean
   /** When true, the renderer should render a toolbar action button for
@@ -114,9 +125,16 @@ interface LedgerEntry {
   changedAt: number
 }
 
-const store = new Store<{ extensions: Record<string, PersistedEntry>; syncLedger: Record<string, LedgerEntry> }>({
-  name: 'newbro-extensions',
-  defaults: { extensions: {}, syncLedger: {} },
+const store = new Store<{
+  extensions: Record<string, PersistedEntry>
+  syncLedger: Record<string, LedgerEntry>
+  /** Per profile session (its storage folder, relative to userData), per
+   *  extension: the fingerprint of the worker shim that session last
+   *  dropped its cached worker for. See clearRewrittenSwRegistration. */
+  swShimCleared: Record<string, Record<string, string>>
+}>({
+  name: 'vimperium-extensions',
+  defaults: { extensions: {}, syncLedger: {}, swShimCleared: {} },
 })
 
 export const extractExtensionIdFromUrl = _extract
@@ -477,14 +495,14 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
   //    SW shim's IPC channels back to main aren't blocked.
   //
   //    Strict-CSP extensions (Browsec et al.) ship a connect-src
-  //    allowlist that doesn't include our newbro-ipc:// scheme or our
+  //    allowlist that doesn't include our vimperium-ipc:// scheme or our
   //    HTTPS sentinel. Result: every fetch from the SW to those URLs
   //    is rejected at the renderer-side CSP check BEFORE main even
   //    sees it, the auth-poll long-poll never reaches our protocol
   //    handler, and proxy auth challenges hit the 15s timeout.
   //
   //    Adding the two scheme/host literals to connect-src keeps the
-  //    extension's existing allowlist intact while letting Newbro's
+  //    extension's existing allowlist intact while letting Vimperium's
   //    own RPC through. This is the same pragmatic approach Chrome's
   //    --load-extension dev mode takes — it relaxes CSP for the
   //    developer-loaded code path. We don't grant any web-facing
@@ -499,6 +517,11 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
   // src/main/extensions/userscripts.ts. This replaced the hardcoded
   // per-extension file map with data-driven detection that works for any
   // manager.
+
+  // Patch 5.5: bootstrap entries Newbro declared carry its marker; mark
+  // them ours, so they're replaced rather than kept as the extension's own
+  // (which would inject a userscript manager's bootstraps twice).
+  if (adoptLegacyBootstrapEntries(manifest)) modified = true
 
   // Patch 6: prepend the content-script chrome.storage polyfill to the
   // extension's own declared content_scripts (Vimium, NotebookLM, etc.).
@@ -521,12 +544,61 @@ function patchManifest(extDir: string, publicKey: Buffer | null): boolean {
       return false
     }
   }
+  // Newbro's polyfill goes once the manifest on disk no longer lists it
+  // (Patch 6 swaps it for ours unless writing ours failed).
+  if (!listsContentScriptFile(manifest, LEGACY_CS_STORAGE_POLYFILL_FILENAME)) {
+    removeLegacyFile(join(extDir, LEGACY_CS_STORAGE_POLYFILL_FILENAME))
+  }
   return modified
 }
 
+/** Delete a file Newbro left in an extension folder, now that nothing
+ *  loads it. */
+function removeLegacyFile(path: string): void {
+  if (!existsSync(path)) return
+  try {
+    rmSync(path, { force: true })
+    log.info('extensions: removed a file Newbro left', { path })
+  } catch (err) {
+    log.warn('extensions: could not remove a file Newbro left', { path, err: String(err) })
+  }
+}
+
+function listsContentScriptFile(manifest: Record<string, unknown>, file: string): boolean {
+  const entries = manifest.content_scripts
+  return Array.isArray(entries)
+    && (entries as Array<Record<string, unknown>>).some((e) => Array.isArray(e?.js) && (e.js as unknown[]).includes(file))
+}
+
+/** True for a content_scripts entry we declared ourselves (a userscript
+ *  manager's bootstrap), under either name. */
+function isOurBootstrapEntry(entry: Record<string, unknown> | null | undefined): boolean {
+  return !!entry && !!(entry[VIMPERIUM_BOOTSTRAP_MARKER] || entry[LEGACY_BOOTSTRAP_MARKER])
+}
+
+/** Re-mark Newbro's bootstrap entries with our marker, keeping the key's
+ *  place at the end of the entry, so a re-declare of the same bootstraps
+ *  compares equal and doesn't reload the extension. */
+function adoptLegacyBootstrapEntries(manifest: Record<string, unknown>): boolean {
+  const entries = manifest.content_scripts
+  if (!Array.isArray(entries)) return false
+  let changed = false
+  for (const entry of entries as Array<Record<string, unknown>>) {
+    if (!entry || typeof entry !== 'object' || !(LEGACY_BOOTSTRAP_MARKER in entry)) continue
+    const ours = !!entry[LEGACY_BOOTSTRAP_MARKER]
+    delete entry[LEGACY_BOOTSTRAP_MARKER]
+    if (ours) {
+      delete entry[VIMPERIUM_BOOTSTRAP_MARKER]
+      entry[VIMPERIUM_BOOTSTRAP_MARKER] = true
+    }
+    changed = true
+  }
+  return changed
+}
+
 /** Add our IPC scheme + host to the manifest's `extension_pages` CSP
- *  connect-src so the SW shim's fetches to newbro-ipc:// and
- *  https://newbro-ext-ipc.test aren't rejected by the extension's own
+ *  connect-src so the SW shim's fetches to vimperium-ipc:// and
+ *  https://vimperium-ext-ipc.test aren't rejected by the extension's own
  *  CSP before reaching main. Idempotent: a re-load that's already
  *  patched leaves the manifest untouched.
  *
@@ -545,7 +617,7 @@ export interface BootstrapContentScript {
 /** Marker so we can tell OUR injected content_scripts entries apart from
  *  ones the extension shipped in its own manifest, and rewrite ours
  *  idempotently without ever touching the extension's originals. */
-const NEWBRO_BOOTSTRAP_MARKER = '__newbro_bootstrap__'
+const VIMPERIUM_BOOTSTRAP_MARKER = '__vimperium_bootstrap__'
 
 /** Accumulated file-based bootstraps per extension. A manager registers
  *  each bootstrap file in a SEPARATE chrome.userScripts.register call
@@ -632,7 +704,7 @@ export async function declareBootstrapContentScripts(
     js: [CS_STORAGE_POLYFILL_FILENAME, ...b.js.filter((f) => f !== CS_STORAGE_POLYFILL_FILENAME)],
     run_at: b.runAt,
     all_frames: b.allFrames,
-    [NEWBRO_BOOTSTRAP_MARKER]: true,
+    [VIMPERIUM_BOOTSTRAP_MARKER]: true,
   }))
 
   const existing = Array.isArray(manifest.content_scripts)
@@ -641,9 +713,9 @@ export async function declareBootstrapContentScripts(
   // Theirs = entries the extension shipped in its own manifest — never
   // touch those. Replace all of our previously-injected marked entries
   // with the current union.
-  const theirs = existing.filter((e) => !e[NEWBRO_BOOTSTRAP_MARKER])
+  const theirs = existing.filter((e) => !isOurBootstrapEntry(e))
   const next = [...theirs, ...nextOurs]
-  const prevOurs = existing.filter((e) => e[NEWBRO_BOOTSTRAP_MARKER])
+  const prevOurs = existing.filter((e) => isOurBootstrapEntry(e))
   if (JSON.stringify(prevOurs) === JSON.stringify(nextOurs)) return // idempotent — no change
 
   manifest.content_scripts = next
@@ -713,10 +785,18 @@ async function reloadExtensionEverywhere(extensionId: string): Promise<void> {
 // every content_scripts[].js so it runs first, in the same isolated
 // world, and overrides chrome.storage to route each op through the
 // extension's own service worker (chrome.runtime.sendMessage →
-// __newbroCsStorage, serviced in sw-shim.ts with the SW's working
+// __vimperiumCsStorage, serviced in sw-shim.ts with the SW's working
 // storage). sync/managed alias to local, matching Electron/library.
-const CS_STORAGE_POLYFILL_FILENAME = 'newbro-cs-storage.js'
-const CS_STORAGE_POLYFILL_MARKER = '// __NEWBRO_CS_STORAGE_V5__'
+//
+// LEGACY_CS_STORAGE_PORT, not CS_STORAGE_PORT: until a profile drops the
+// Newbro-patched worker Chromium cached for it (clearRewrittenSwRegistration),
+// that worker is the one answering, and it knows the port by Newbro's name
+// alone. Ours answers both names (sw-shim.ts), so the old name reaches
+// whichever worker runs. Back to CS_STORAGE_PORT when the other LEGACY_*
+// runtime aliases go.
+const CS_STORAGE_CONNECT_PORT = LEGACY_CS_STORAGE_PORT
+const CS_STORAGE_POLYFILL_FILENAME = 'vimperium-cs-storage.js'
+const CS_STORAGE_POLYFILL_MARKER = '// __VIMPERIUM_CS_STORAGE_V5__'
 const CS_STORAGE_POLYFILL_SOURCE = `${CS_STORAGE_POLYFILL_MARKER}
 (function () {
   try {
@@ -726,12 +806,12 @@ const CS_STORAGE_POLYFILL_SOURCE = `${CS_STORAGE_POLYFILL_MARKER}
     // delivers the FIRST responder's reply, and some extensions'
     // (NotebookLM) own onMessage listeners respond to our request first
     // with the wrong object. A named port is point-to-point, so only the
-    // SW's __newbro_cs_storage handler answers.
+    // SW's cs-storage handler answers.
     var port = null, nextId = 1, pending = {};
     function ensurePort() {
       if (port) return port;
       try {
-        port = rt.connect({ name: "__newbro_cs_storage" });
+        port = rt.connect({ name: ${JSON.stringify(CS_STORAGE_CONNECT_PORT)} });
         port.onMessage.addListener(function (msg) {
           if (!msg || typeof msg.id === "undefined") return;
           var cb = pending[msg.id];
@@ -849,10 +929,11 @@ function prependCsStoragePolyfill(manifest: Record<string, unknown>, extDir: str
   for (const raw of entries as Array<Record<string, unknown>>) {
     if (!raw || !Array.isArray(raw.js)) continue
     const js = raw.js as string[]
-    if (js[0] === CS_STORAGE_POLYFILL_FILENAME) continue // already first
-    // Drop any stray earlier copy, then prepend.
-    const withoutPoly = js.filter((f) => f !== CS_STORAGE_POLYFILL_FILENAME)
-    raw.js = [CS_STORAGE_POLYFILL_FILENAME, ...withoutPoly]
+    // Drop any stray earlier copy and Newbro's polyfill (two polyfills
+    // would both swap chrome.storage), then prepend.
+    const rest = js.filter((f) => f !== CS_STORAGE_POLYFILL_FILENAME && f !== LEGACY_CS_STORAGE_POLYFILL_FILENAME)
+    if (js[0] === CS_STORAGE_POLYFILL_FILENAME && rest.length === js.length - 1) continue // already first, alone
+    raw.js = [CS_STORAGE_POLYFILL_FILENAME, ...rest]
     changed = true
   }
   return changed
@@ -867,12 +948,12 @@ function prependCsStoragePolyfill(manifest: Record<string, unknown>, extDir: str
  *  worker stored, fail its handshake and stay hidden. When no preload ran,
  *  route `session` through the worker (the content-script polyfill's port)
  *  and alias sync/managed to local, matching the library. */
-const FRAME_STORAGE_BRIDGE_FILENAME = 'newbro-frame-storage.js'
+const FRAME_STORAGE_BRIDGE_FILENAME = 'vimperium-frame-storage.js'
 const FRAME_STORAGE_BRIDGE_TAG = `<script src="/${FRAME_STORAGE_BRIDGE_FILENAME}"></script>`
-const FRAME_STORAGE_BRIDGE_SOURCE = `// __NEWBRO_FRAME_STORAGE_V1__
+const FRAME_STORAGE_BRIDGE_SOURCE = `// __VIMPERIUM_FRAME_STORAGE_V1__
 (function () {
   try {
-    if (globalThis.__newbroPreloadRan) return;
+    if (globalThis.__vimperiumPreloadRan) return;
     var rt = (typeof chrome !== "undefined") && chrome.runtime;
     var native = (typeof chrome !== "undefined") && chrome.storage;
     if (!rt || typeof rt.connect !== "function" || !native || !native.local) return;
@@ -880,7 +961,7 @@ const FRAME_STORAGE_BRIDGE_SOURCE = `// __NEWBRO_FRAME_STORAGE_V1__
     function ensurePort() {
       if (port) return port;
       try {
-        port = rt.connect({ name: "__newbro_cs_storage" });
+        port = rt.connect({ name: ${JSON.stringify(CS_STORAGE_CONNECT_PORT)} });
         port.onMessage.addListener(function (msg) {
           if (!msg || typeof msg.id === "undefined") return;
           var cb = pending[msg.id];
@@ -959,11 +1040,14 @@ function injectFrameStorageBridge(extDir: string): void {
     return
   }
   const pages: string[] = []
+  let unreadDirs = 0
   const walk = (dir: string): void => {
     let entries: import('node:fs').Dirent[]
     try {
       entries = readdirSync(dir, { withFileTypes: true })
-    } catch {
+    } catch (err) {
+      unreadDirs++
+      log.warn('extensions: frame storage bridge could not list a folder', { dir, err: String(err) })
       return
     }
     for (const e of entries) {
@@ -975,23 +1059,36 @@ function injectFrameStorageBridge(extDir: string): void {
   }
   walk(extDir)
   let patched = 0
+  // Pages that may still load Newbro's bridge: its file stays until none do.
+  let legacyLeft = unreadDirs
   for (const page of pages) {
     try {
       const html = readFileSync(page, 'utf8')
-      if (html.includes(FRAME_STORAGE_BRIDGE_TAG)) continue
-      const anchor = /<head\b[^>]*>/i.exec(html) ?? /<html\b[^>]*>/i.exec(html) ?? /<!doctype[^>]*>/i.exec(html)
-      if (!anchor) continue
-      const at = anchor.index + anchor[0].length
-      writeFileSync(page, html.slice(0, at) + FRAME_STORAGE_BRIDGE_TAG + html.slice(at))
+      // Newbro's tag comes out first — two bridges would both swap
+      // chrome.storage, and Newbro's doesn't know our preload ran.
+      let next = html.includes(LEGACY_FRAME_STORAGE_BRIDGE_TAG)
+        ? html.split(LEGACY_FRAME_STORAGE_BRIDGE_TAG).join('')
+        : html
+      if (!next.includes(FRAME_STORAGE_BRIDGE_TAG)) {
+        const anchor = /<head\b[^>]*>/i.exec(next) ?? /<html\b[^>]*>/i.exec(next) ?? /<!doctype[^>]*>/i.exec(next)
+        if (anchor) {
+          const at = anchor.index + anchor[0].length
+          next = next.slice(0, at) + FRAME_STORAGE_BRIDGE_TAG + next.slice(at)
+        }
+      }
+      if (next === html) continue
+      writeFileSync(page, next)
       patched++
     } catch (err) {
+      legacyLeft++
       log.warn('extensions: frame storage bridge page patch failed', { page, err: String(err) })
     }
   }
   if (patched > 0) log.info('extensions: frame storage bridge added to pages', { extDir, patched })
+  if (legacyLeft === 0) removeLegacyFile(join(extDir, LEGACY_FRAME_STORAGE_BRIDGE_FILENAME))
 }
 
-const NEWBRO_CSP_CONNECT_SOURCES = ['newbro-ipc:', 'https://newbro-ext-ipc.test']
+const VIMPERIUM_CSP_CONNECT_SOURCES = ['vimperium-ipc:', 'https://vimperium-ext-ipc.test']
 function patchExtensionCsp(manifest: Record<string, unknown>): boolean {
   if (manifest.manifest_version !== 3) return false
   const raw = manifest.content_security_policy
@@ -1016,7 +1113,7 @@ function patchExtensionCsp(manifest: Record<string, unknown>): boolean {
     cspObj = {}
     existing = ''
   }
-  const patched = mergeConnectSrc(existing, NEWBRO_CSP_CONNECT_SOURCES)
+  const patched = mergeConnectSrc(existing, VIMPERIUM_CSP_CONNECT_SOURCES)
   if (patched === existing && raw && typeof raw === 'object') {
     // No change AND original was already in object shape — nothing to do.
     return false
@@ -1024,7 +1121,7 @@ function patchExtensionCsp(manifest: Record<string, unknown>): boolean {
   cspObj.extension_pages = patched
   manifest.content_security_policy = cspObj
   log.info('extensions: patched manifest CSP', {
-    sources: NEWBRO_CSP_CONNECT_SOURCES,
+    sources: VIMPERIUM_CSP_CONNECT_SOURCES,
     originalShape: typeof raw,
     before: existing.length > 200 ? existing.slice(0, 200) + '…' : existing,
     after: patched.length > 200 ? patched.slice(0, 200) + '…' : patched,
@@ -1041,18 +1138,18 @@ function patchExtensionCsp(manifest: Record<string, unknown>): boolean {
  *  violation error against the on-disk manifest), Chromium's CSP
  *  enforcer for very long directives drops our appended sources, AND
  *  even prepending didn't reliably work across Browsec's parser path.
- *  Replacing the entire connect-src with `* newbro-ipc:
- *  https://newbro-ext-ipc.test data: blob:` sidesteps all length
+ *  Replacing the entire connect-src with `* vimperium-ipc:
+ *  https://vimperium-ext-ipc.test data: blob:` sidesteps all length
  *  issues and ensures our scheme is allowed.
  *
  *  Trade-off: the extension loses whatever connect-src restrictions
  *  it shipped with (in Browsec's case, the CDN allowlist that may
- *  serve as a leak prevention mechanism). For Newbro's single-user,
+ *  serve as a leak prevention mechanism). For Vimperium's single-user,
  *  developer-loaded use case this is the same posture Chrome's
  *  --load-extension dev mode applies. Other directives stay strict. */
 function mergeConnectSrc(csp: string, extraSources: readonly string[]): string {
   const directives = csp.split(';').map((d) => d.trim()).filter(Boolean)
-  // `*` covers http(s) / ws(s); custom schemes like newbro-ipc: are
+  // `*` covers http(s) / ws(s); custom schemes like vimperium-ipc: are
   // NOT covered by `*` per CSP3, so they're listed explicitly. data:
   // and blob: keep the door open for inline / generated payloads
   // (used in some chrome-extension flows we want to preserve).
@@ -1145,38 +1242,26 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>, extId?:
     log.warn('extensions: SW shim — RPC server not started yet, skipping', { extDir, swRel })
     return false
   }
-  // Strip ANY existing shim (current MAGIC or older) so we can rewrite
-  // with the current port/secret. body = everything after our closing IIFE.
-  // Also consume any whitespace immediately after the shim — earlier
-  // versions wrote `shimSource + '\n' + body`, and since both shim and
-  // (re-extracted) body started with newlines, every reinjection added
-  // an extra blank line; the file accumulated blank lines indefinitely
-  // and broke byte-identity comparisons across launches.
-  let body = original
-  if (original.startsWith(SW_SHIM_LEGACY_MAGIC)) {
-    const v1Close = '\n})();\n'
-    const closeIdx = original.indexOf(v1Close, SW_SHIM_LEGACY_MAGIC.length)
-    if (closeIdx === -1) {
-      log.warn('extensions: SW shim — found legacy V1 marker without recognisable IIFE close; not migrating', {
-        extDir,
-        swRel,
-      })
-      return false
-    }
-    body = original.slice(closeIdx + v1Close.length).replace(/^[\r\n]+/, '')
-    log.info('extensions: SW shim — migrating V1 → current', { extDir, swRel })
-  } else if (original.startsWith('// __NEWBRO_SW_SHIM_')) {
-    // V2+ shim with footer. Strip the footer line AND any trailing
-    // blank lines so body always starts with the extension's actual code.
-    const footerIdx = original.indexOf(SW_SHIM_FOOTER)
-    if (footerIdx !== -1) {
-      let cursor = footerIdx + SW_SHIM_FOOTER.length
-      while (cursor < original.length && (original[cursor] === '\n' || original[cursor] === '\r')) {
-        cursor++
-      }
-      body = original.slice(cursor)
-    }
+  // Strip ANY existing shim — ours of any version, or Newbro's — so we
+  // can rewrite with the current port/secret. A shim left in would run
+  // twice. A shim that can't be cut out cleanly is left as it is rather
+  // than buried under a second one.
+  const stripped = stripSwShims(original)
+  if ('error' in stripped) {
+    log.warn('extensions: SW shim — existing shim not recognisable; leaving the worker as it is', {
+      extDir,
+      swRel,
+      err: stripped.error,
+    })
+    return false
   }
+  const body = stripped.body
+  if (original.startsWith(LEGACY_SW_SHIM_HEADER_PREFIX)) {
+    log.info('extensions: SW shim — replacing the one Newbro wrote', { extDir, swRel, removed: stripped.removed })
+  }
+  // Newbro's shim module, which module workers imported: gone once the
+  // worker on disk no longer imports it.
+  const legacyShimModule = join(dirname(swPath), LEGACY_SW_SHIM_MODULE_FILE)
   // For now the partition isn't routable from a SW (file shared across
   // sessions), so we pass a sentinel; the loopback server uses a global
   // queue keyed by challengeId.
@@ -1229,10 +1314,13 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>, extId?:
       magic: SW_SHIM_MAGIC,
       rpcPort: rpc.port,
     })
+    if (extId) swShimmedExtIds.add(extId)
+    removeLegacyFile(legacyShimModule)
     return false
   }
   try {
     if (nextContent !== original) writeFileSync(swPath, nextContent)
+    removeLegacyFile(legacyShimModule)
     const bodyLines = body.split('\n')
     const head: { line: number; text: string }[] = []
     for (let i = 0; i < 25 && i < bodyLines.length; i++) {
@@ -1247,7 +1335,11 @@ function injectSwShim(extDir: string, manifest: Record<string, unknown>, extId?:
       bodyLineCount: bodyLines.length,
       bodyHead: head,
     })
-    if (extId) swShimRewrittenExtIds.add(extId)
+    if (extId) {
+      swShimmedExtIds.add(extId)
+      swShimRewrittenExtIds.add(extId)
+      swShimClearedSessions.delete(extId)
+    }
     return true
   } catch (err) {
     log.warn('extensions: SW shim — write failed', { extDir, swRel, err: String(err) })
@@ -1313,15 +1405,36 @@ function resolveIcon(manifest: Record<string, unknown>, extDir: string): string 
  *  at install (patchManifest rewrites permissions, e.g. grants every
  *  extension <all_urls>), so Settings and the install prompt can show
  *  what the extension itself asks for. */
-const ORIGINAL_MANIFEST_FILE = 'newbro-original-manifest.json'
+const ORIGINAL_MANIFEST_FILE = 'vimperium-original-manifest.json'
 
 function readOriginalManifest(extDir: string): Record<string, unknown> | null {
-  const p = join(extDir, ORIGINAL_MANIFEST_FILE)
+  // Newbro's copy still counts if taking it over failed (see
+  // adoptLegacyOriginalManifest) — or the backfill downloads it again.
+  const ours = join(extDir, ORIGINAL_MANIFEST_FILE)
+  const p = existsSync(ours) ? ours : join(extDir, LEGACY_ORIGINAL_MANIFEST_FILE)
   if (!existsSync(p)) return null
   try {
     return parseRelaxedJson(readFileSync(p, 'utf8')) as Record<string, unknown>
   } catch {
     return null
+  }
+}
+
+/** Newbro saved the original manifest under its own name: take it over,
+ *  or drop it when ours is already there. */
+function adoptLegacyOriginalManifest(extDir: string): void {
+  const legacy = join(extDir, LEGACY_ORIGINAL_MANIFEST_FILE)
+  if (!existsSync(legacy)) return
+  const ours = join(extDir, ORIGINAL_MANIFEST_FILE)
+  if (existsSync(ours)) {
+    removeLegacyFile(legacy)
+    return
+  }
+  try {
+    renameSync(legacy, ours)
+    log.info('extensions: took over the original manifest Newbro kept', { extDir })
+  } catch (err) {
+    log.warn('extensions: could not take over the original manifest Newbro kept', { extDir, err: String(err) })
   }
 }
 
@@ -1341,7 +1454,7 @@ const stringList = (v: unknown): string[] =>
 
 /** What a manifest asks for, split the way Chrome presents it. MV2 lists
  *  host patterns among `permissions`; content scripts' `matches` are site
- *  access too. Newbro's own bootstrap content scripts are left out. */
+ *  access too. Vimperium's own bootstrap content scripts are left out. */
 function summarizePermissions(manifest: Record<string, unknown>): {
   permissions: string[]
   hostPermissions: string[]
@@ -1350,7 +1463,7 @@ function summarizePermissions(manifest: Record<string, unknown>): {
 } {
   const declared = stringList(manifest.permissions)
   const scripts = Array.isArray(manifest.content_scripts)
-    ? (manifest.content_scripts as Array<Record<string, unknown>>).filter((c) => c && !c[NEWBRO_BOOTSTRAP_MARKER])
+    ? (manifest.content_scripts as Array<Record<string, unknown>>).filter((c) => c && !isOurBootstrapEntry(c))
     : []
   return {
     permissions: declared.filter((p) => !isHostPattern(p)),
@@ -1466,34 +1579,100 @@ function getAllSessions(): Session[] {
  *  for those extensions before re-registering — otherwise the cached
  *  pre-rewrite SW would activate first and the new shim's
  *  chrome.runtime.onStartup wiring (V35+) wouldn't kick in until the
- *  user did something that forced an SW update check. Cleared per-id
- *  on first session load (clear once is enough). */
+ *  user did something that forced an SW update check. */
 const swShimRewrittenExtIds = new Set<string>()
+/** Extensions whose worker carries the current shim this boot, rewritten
+ *  or already up to date: the ones whose cached worker can be behind. */
+const swShimmedExtIds = new Set<string>()
+/** Sessions that already dropped their cached worker for an extension
+ *  this boot. Once per session, not once per boot: every profile's
+ *  session keeps its own copy of the old worker — after the rename, a
+ *  Newbro-era one. Reset when the shim is rewritten again. */
+const swShimClearedSessions = new Map<string, WeakSet<Session>>()
 
-/** If the shim was rewritten this boot, clear the cached SW
- *  registration + script bytes for this extension's origin so Chromium
- *  can't activate the stale pre-rewrite version. This is
- *  load-the-fresh-shim insurance — without it, the FIRST app launch
- *  after a shim version bump would still run the cached SW (Browsec
- *  sits idle, requires manual Turn on click) until Chromium's separate
- *  update check eventually noticed the byte difference and spawned a
- *  new SW. We DON'T clear other storage types — chrome.storage.local
- *  data must survive so the extension's persisted settings (proxy mode,
- *  country choice, on/off flag) are still there for the new SW's
- *  onStartup listener to read.
+/** A profile session's key in the swShimCleared store: its storage
+ *  folder relative to userData (Partitions/profile-…), stable across
+ *  launches. Null for an in-memory session — its cache starts empty
+ *  every launch. */
+function swShimPartitionKey(ses: Session): string | null {
+  const storagePath = ses.storagePath
+  if (!storagePath) return null
+  const rel = relative(app.getPath('userData'), storagePath)
+  if (!rel || rel.startsWith('..')) return storagePath
+  return rel.split('\\').join('/')
+}
+
+let swShimFingerprintMemo: { port: number; secret: string; value: string } | null = null
+/** What the shim on disk is, as far as a cached worker goes: a hash of
+ *  the shim source with its RPC port and secret (the secret itself never
+ *  lands in the store). Null until the RPC server is up. */
+function currentSwShimFingerprint(): string | null {
+  const rpc = getSwRpcServerInfo()
+  if (!rpc) return null
+  if (!swShimFingerprintMemo || swShimFingerprintMemo.port !== rpc.port || swShimFingerprintMemo.secret !== rpc.secret) {
+    const value = createHash('sha256').update(buildSwShimSource(rpc.port, rpc.secret, '*')).digest('hex').slice(0, 32)
+    swShimFingerprintMemo = { port: rpc.port, secret: rpc.secret, value }
+  }
+  return swShimFingerprintMemo.value
+}
+
+function recordedSwShim(partition: string, extensionId: string): string | undefined {
+  return (store.get('swShimCleared') ?? {})[partition]?.[extensionId]
+}
+
+function recordSwShim(partition: string, extensionId: string, fingerprint: string): void {
+  const all = { ...(store.get('swShimCleared') ?? {}) }
+  all[partition] = { ...(all[partition] ?? {}), [extensionId]: fingerprint }
+  try {
+    store.set('swShimCleared', all)
+  } catch (err) {
+    // Not fatal: the session clears once more next launch.
+    log.warn('extensions: recording the cleared SW shim failed', { id: extensionId, partition, err: String(err) })
+  }
+}
+
+/** Clear the cached SW registration + script bytes for this extension's
+ *  origin in this session, so Chromium can't activate a worker older
+ *  than the shim on disk. This is load-the-fresh-shim insurance —
+ *  without it, the FIRST app launch after a shim version bump would
+ *  still run the cached SW (Browsec sits idle, requires manual Turn on
+ *  click) until Chromium's separate update check eventually noticed the
+ *  byte difference and spawned a new SW. We DON'T clear other storage
+ *  types — chrome.storage.local data must survive so the extension's
+ *  persisted settings (proxy mode, country choice, on/off flag) are
+ *  still there for the new SW's onStartup listener to read.
+ *
+ *  When: the shim was rewritten this boot, or this profile's session
+ *  last cleared under a different shim (swShimCleared) — kept per
+ *  session on disk, not per boot, because the files are rewritten in the
+ *  boot that finds them stale while a profile's session is set up only
+ *  when one of its windows opens. A profile left closed on the first
+ *  Vimperium launch would otherwise keep its Newbro-era worker for good.
  *
  *  Must run BEFORE the extension loads: clearing afterwards drops the
  *  worker registration loadExtension just made, and nothing re-registers
  *  it until the next launch. Returns true if it cleared. */
 async function clearRewrittenSwRegistration(ses: Session, extensionId: string): Promise<boolean> {
-  if (!swShimRewrittenExtIds.has(extensionId)) return false
-  swShimRewrittenExtIds.delete(extensionId)
+  const partition = swShimPartitionKey(ses)
+  const fingerprint = partition !== null && swShimmedExtIds.has(extensionId) ? currentSwShimFingerprint() : null
+  const stamp = partition !== null && fingerprint !== null ? { partition, fingerprint } : null
+  const behind = stamp !== null && recordedSwShim(stamp.partition, extensionId) !== stamp.fingerprint
+  const rewritten = swShimRewrittenExtIds.has(extensionId)
+  if (!behind && !rewritten) return false
+  let cleared = swShimClearedSessions.get(extensionId)
+  if (!cleared) {
+    cleared = new WeakSet()
+    swShimClearedSessions.set(extensionId, cleared)
+  }
+  if (cleared.has(ses)) return false
+  cleared.add(ses)
   try {
     await ses.clearStorageData({
       origin: `chrome-extension://${extensionId}`,
       storages: ['serviceworkers'],
     })
-    log.info('extensions: cleared SW storage after shim rewrite', { id: extensionId })
+    if (stamp) recordSwShim(stamp.partition, extensionId, stamp.fingerprint)
+    log.info('extensions: cleared SW storage for the current shim', { id: extensionId, partition, rewritten })
     return true
   } catch (err) {
     log.warn('extensions: clearStorageData(serviceworkers) failed', { id: extensionId, err: String(err) })
@@ -1905,7 +2084,7 @@ async function downloadToStaging(extensionId: string, ses: Session): Promise<Sta
   if (!publicKey) {
     throw new Error(`Downloaded CRX does not match extension ID ${extensionId}`)
   }
-  const dir = join(app.getPath('temp'), `newbro-extension-${extensionId}-${Date.now()}`)
+  const dir = join(app.getPath('temp'), `vimperium-extension-${extensionId}-${Date.now()}`)
   unzipTo(parseCrx(crx), dir)
   return { dir, publicKey }
 }
@@ -1919,7 +2098,7 @@ function removeStaging(staged: StagedCrx): void {
 }
 
 /** What the install prompt shows: the extension as downloaded, before any
- *  Newbro patching. */
+ *  Vimperium patching. */
 export interface ExtensionInstallPreview {
   id: string
   name: string
@@ -2000,7 +2179,7 @@ export async function installExtensionById(
   }
 }
 
-/** Extensions installed before Newbro kept original manifests show
+/** Extensions installed before Vimperium kept original manifests show
  *  permissions from the patched one. Download each such extension's CRX
  *  once, in the background and one at a time, and keep its manifest as
  *  the original. The store may serve a newer version; its permissions are
@@ -2037,7 +2216,7 @@ export async function backfillOriginalManifests(): Promise<void> {
   if (changed) broadcastExtensionsChanged()
 }
 
-/** Take an unpacked (not yet Newbro-patched) extension directory, apply
+/** Take an unpacked (not yet Vimperium-patched) extension directory, apply
  *  the manifest patches + SW shim, move it into the managed extensions
  *  root, persist the registry entry, and load it into every session.
  *  Shared by installExtensionById and the CWS-site install adoption
@@ -2216,7 +2395,7 @@ export async function loadEnabledExtensionsInto(ses: Session): Promise<void> {
  *  anything the previous run left behind on every startup. */
 export async function rehydrateExtensionsOnStartup(): Promise<void> {
   // Clear any stale extensions left on the default session by older
-  // builds of Newbro. No-op when nothing was registered.
+  // builds of Vimperium. No-op when nothing was registered.
   const stale = sessionGetAllExtensions(session.defaultSession)
   for (const e of stale) {
     try {
@@ -2274,8 +2453,10 @@ export async function rehydrateExtensionsOnStartup(): Promise<void> {
     // web_accessible_resources part — but that's enough for popup/options
     // pages to load. The `key` patch is install-time-only because the
     // public key only exists in the CRX header. Existing entries that
-    // were derived under the wrong id will need a reinstall.
+    // were derived under the wrong id will need a reinstall. The patches
+    // also clear out what Newbro left (its polyfill, bridge, shim).
     try {
+      adoptLegacyOriginalManifest(entry.path)
       patchManifest(entry.path, null)
     } catch (err) {
       log.warn('extensions: rehydrate manifest patch failed', { id, err: String(err) })

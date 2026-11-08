@@ -40,27 +40,14 @@ function resolveTriggerIcon(name: IconName): typeof User {
 
 const isMacOS = navigator.platform.toLowerCase().includes('mac')
 
-/** Convert an Electron accelerator (e.g. "CmdOrCtrl+O") into display segments
- *  for a dropdown row's shortcut chips (e.g. ['Ctrl', 'O'] or ['⌘', 'O']).
- *  Mirrors the <kbd> formatting used in Settings so the menu's shortcut hints
- *  reflect the keybindings the user actually has bound. */
-function acceleratorToSegments(accel: string): string[] {
-  return accel
-    .replace(/CmdOrCtrl/g, isMacOS ? '⌘' : 'Ctrl')
-    .replace(/Shift/g, isMacOS ? '⇧' : 'Shift')
-    .replace(/Alt/g, isMacOS ? '⌥' : 'Alt')
-    .split('+')
-    .filter(Boolean)
-}
-
 interface Props {
   windowWorkspaceId: string | null
   sidebarVisible: boolean
   /** Active tab's page is in HTML fullscreen (video playback) — the bar
    *  stays visible but re-themes to pure black via [data-cinema]. */
   pageFullscreen?: boolean
-  /** Vim mode's current mode, shown in the address bar; null while Vim
-   *  mode is off. */
+  /** Vim's current mode, shown in the address bar; null for the beat at
+   *  launch before Vim starts (App.tsx). */
   vimMode?: VimMode | null
   /** Unfinished key sequence typed in COMMAND mode. */
   vimPending?: string
@@ -132,10 +119,13 @@ interface DropdownTriggerProps {
   // `disabled` mirrors the IPC DropdownAction flag so callers can grey out
   // actions whose preconditions aren't met (e.g. Export with zero workspaces).
   actions?: { id: string; label: string; iconName: IconName; onClick: () => void; disabled?: boolean; disabledTitle?: string }[]
+  /** A window event that opens it with the keyboard on it (Vim's oP / oW,
+   *  sent by App.tsx). */
+  openEvent?: string
 }
 
 function Dropdown(props: DropdownTriggerProps) {
-  const { iconName, items, value, onChange, onDelete, onEdit, onReorder, label, onNew, newLabel, canDelete, actions } = props
+  const { iconName, items, value, onChange, onDelete, onEdit, onReorder, label, onNew, newLabel, canDelete, actions, openEvent } = props
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLDivElement>(null)
@@ -164,18 +154,10 @@ function Dropdown(props: DropdownTriggerProps) {
     if (evt.type !== 'reorder') setOpen(false)
   })
 
-  const handleToggle = (): void => {
-    // `open` can be a stale false here: the same click that's toggling the menu
-    // also blurred the popup, and the resulting 'cancel' already flipped `open`.
-    // pressedOpenRef (set on mousedown, before that cancel can land) is the
-    // race-free signal for "was it open when pressed?".
-    const wasOpen = open || pressedOpenRef.current
-    pressedOpenRef.current = false
-    if (wasOpen) {
-      window.electronAPI.closeDropdown?.()
-      setOpen(false)
-      return
-    }
+  /** Drops the list. One opened from the keys takes them: j/k walk the
+   *  rows (the current one first), Enter picks, r renames, d deletes, n
+   *  makes a new one (DropdownMenuContent). */
+  const openList = (keyboard: boolean): void => {
     const el = triggerRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
@@ -199,16 +181,46 @@ function Dropdown(props: DropdownTriggerProps) {
         ...(a.disabled ? { disabled: true } : {}),
         ...(a.disabledTitle ? { disabledTitle: a.disabledTitle } : {}),
       })),
+      ...(keyboard ? { keyboard: true } : {}),
     }
     window.electronAPI.openDropdown?.(spec)
     setOpen(true)
   }
 
+  const handleToggle = (keyboard: boolean): void => {
+    // `open` can be a stale false here: the same click that's toggling the menu
+    // also blurred the popup, and the resulting 'cancel' already flipped `open`.
+    // pressedOpenRef (set on mousedown, before that cancel can land) is the
+    // race-free signal for "was it open when pressed?".
+    const wasOpen = open || pressedOpenRef.current
+    pressedOpenRef.current = false
+    if (wasOpen) {
+      window.electronAPI.closeDropdown?.()
+      setOpen(false)
+      return
+    }
+    openList(keyboard)
+  }
+
+  // From the keys (App.tsx sends the event): asked again while it's up, the
+  // popup takes the same opener's spec in place.
+  const openListRef = useRef(openList)
+  openListRef.current = openList
+  useEffect(() => {
+    if (!openEvent) return
+    const onOpen = (): void => openListRef.current(true)
+    window.addEventListener(openEvent, onOpen)
+    return () => window.removeEventListener(openEvent, onOpen)
+  }, [openEvent])
+
   return (
     <div ref={triggerRef} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <button
         onMouseDown={() => { pressedOpenRef.current = open }}
-        onClick={handleToggle}
+        // A click with no press behind it (detail 0) came from the keys —
+        // Enter on the focused button, a ; label — so the list comes up
+        // keyboard-driven.
+        onClick={(e) => handleToggle(e.detail === 0)}
         className="shrink-0 flex items-center gap-1.5 h-8 px-2.5 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium transition-colors"
       >
         <Icon size={13} className="text-muted-foreground" />
@@ -245,7 +257,7 @@ function extractExtensionIdFromStoreUrl(url: string | undefined): string | null 
 /** Toolbar affordance for installing the extension currently shown in the
  *  active tab. Both the Chrome Web Store and Edge Add-ons block their own
  *  install buttons when they detect a non-Chrome/non-Edge browser — this
- *  is the reliable Newbro-side path. Visible only when the active tab's
+ *  is the reliable Vimperium-side path. Visible only when the active tab's
  *  URL points at a store detail page. */
 function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined }) {
   const [state, setState] = useState<'idle' | 'installing' | 'ok' | { error: string }>('idle')
@@ -278,7 +290,7 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
   else if (typeof state === 'object') label = 'Install failed'
 
   const title =
-    typeof state === 'object' ? state.error : 'Download and install this extension into Newbro'
+    typeof state === 'object' ? state.error : 'Download and install this extension into Vimperium'
 
   return (
     <button
@@ -440,6 +452,41 @@ function ExtensionActions({
     return api?.onExtensionCommandAction?.((id: string) => commandActionRef.current(id))
   }, [])
 
+  // Vim's oe (App.tsx sends the event): a menu of the extensions with an
+  // action, pinned or not, from the puzzle button, with the keyboard on it.
+  // Picking one is clicking its icon; Manage Extensions is Settings', where
+  // pinning, options, disabling and removing are.
+  const openExtensionsMenuRef = useRef<() => Promise<void>>(async () => {})
+  openExtensionsMenuRef.current = async () => {
+    const r = manageRef.current?.getBoundingClientRect()
+    if (!r) return
+    const withAction = extensions.filter((ext) => ext.enabled && ext.hasAction)
+    const actions: DropdownAction[] = withAction.map((ext) => ({ id: `open:${ext.id}`, label: ext.name, iconName: 'Puzzle' }))
+    actions.push({ id: 'manage', label: 'Manage Extensions', iconName: 'Settings', ...(actions.length > 0 ? { divider: 'before' as const } : {}) })
+    const result = await openDropdownAsync({
+      kind: 'menu',
+      anchor: { x: r.left, y: r.top, width: r.width, height: r.height },
+      ...readThemeAttrs(),
+      header: 'Extensions',
+      actions,
+      keyboard: true,
+    })
+    if (!result || result.type !== 'action') return
+    if (result.actionId === 'manage') {
+      onManageExtensions()
+      return
+    }
+    const ext = withAction.find((e) => `open:${e.id}` === result.actionId)
+    if (ext) handleClick(ext)
+  }
+  useEffect(() => {
+    const onOpen = (): void => {
+      openExtensionsMenuRef.current().catch((err: unknown) => log.warn('extensions menu failed', err))
+    }
+    window.addEventListener('vimperium-open-extensions-menu', onOpen)
+    return () => window.removeEventListener('vimperium-open-extensions-menu', onOpen)
+  }, [])
+
   const handleContextMenu = async (ext: ExtensionInfo, e: React.MouseEvent): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
@@ -456,7 +503,7 @@ function ExtensionActions({
       actions.push({ id: 'options', label: 'Options', iconName: 'Settings' })
     }
     actions.push({ id: 'disable', label: 'Disable extension', iconName: 'EyeOff', divider: 'before' })
-    actions.push({ id: 'remove', label: 'Remove from Newbro', iconName: 'Trash2', destructive: true })
+    actions.push({ id: 'remove', label: 'Remove from Vimperium', iconName: 'Trash2', destructive: true })
     actions.push({ id: 'manage', label: 'Manage extensions', iconName: 'Puzzle', divider: 'before' })
 
     const result = await openDropdownAsync({
@@ -582,19 +629,19 @@ function ExtensionActions({
   )
 }
 
-function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onOpenDownloads }: { sidebarVisible: boolean; vimMode: VimMode | null; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void; onOpenDownloads: () => void }) {
+function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onOpenDownloads }: { sidebarVisible: boolean; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void; onOpenDownloads: () => void }) {
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
-  // The mark on the button glitches as the pointer comes onto it, as it
-  // does when Vim's mode changes.
+  // The mark on the button glitches as the pointer comes onto it.
   const [markGlitch, setMarkGlitch] = useState(0)
-  const [menuLabel, setMenuLabel] = useState('Menu')
+  // A dev build says so on the orb, which has no label to say it in.
+  const [devBuild, setDevBuild] = useState(false)
   // Live updater phase, surfaced as a small badge on the Menu button (replacing
   // the old floating toast): 'checking' → spinner, an update in flight
   // ('available' / 'downloading' / 'downloaded') → down-arrow, else nothing.
   const [updatePhase, setUpdatePhase] = useState<string>('idle')
-  // Live settings so the menu's shortcut hints reflect the user's actual
-  // bindings (or Vim keys) rather than hardcoded defaults. Loaded on mount
+  // Live settings so the menu's shortcut hints reflect the user's own Vim
+  // keymap rather than the default one. Loaded on mount
   // and refreshed whenever settings are saved from anywhere.
   const [hintSettings, setHintSettings] = useState<HintSettings | null>(null)
   const triggerRef = useRef<HTMLDivElement>(null)
@@ -631,8 +678,8 @@ function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onO
 
   useEffect(() => {
     window.electronAPI.getAppPaths?.().then((paths) => {
-      if (paths?.appName === 'Newbro Dev') setMenuLabel('Menu Dev')
-    })
+      if (paths?.appName === 'Vimperium Dev') setDevBuild(true)
+    }).catch((err: unknown) => log.warn('app-menu: getAppPaths failed', err))
   }, [])
 
   const updatesUnsupported = updatePhase === 'unsupported'
@@ -664,13 +711,11 @@ function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onO
   })
 
   const buildActions = (): DropdownAction[] => {
-    // Hint the user's actual first binding (in Vim mode, its COMMAND key) for
-    // each action; omit the chip entirely if there's none, so we never
-    // advertise a dead shortcut.
+    // Hint each action's COMMAND key, as the user's keymap has it; omit the
+    // chip entirely if there's none, so we never advertise a dead shortcut.
     const shortcutFor = (action: string): string[] | undefined => {
       const hint = actionHint(hintSettings, action)
-      if (!hint) return undefined
-      return hint.kind === 'vim' ? [hint.keys] : acceleratorToSegments(hint.accelerator)
+      return hint?.kind === 'vim' ? [hint.keys] : undefined
     }
     return [
       {
@@ -714,7 +759,26 @@ function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onO
     ]
   }
 
-  const handleToggle = (): void => {
+  /** Drops the menu from the orb. One opened from the keys takes them: its
+   *  first row starts highlighted, j/k walk the rows, Enter or a row's own
+   *  letter picks one. */
+  const openMenu = (keyboard: boolean): void => {
+    const el = triggerRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const spec: DropdownSpec = {
+      openerId,
+      kind: 'menu',
+      anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+      ...readThemeAttrs(),
+      actions: buildActions(),
+      ...(keyboard ? { keyboard: true } : {}),
+    }
+    window.electronAPI.openDropdown?.(spec)
+    setOpen(true)
+  }
+
+  const handleToggle = (keyboard: boolean): void => {
     // `open` may already be a stale false (the click that's toggling the menu
     // blurred the popup, whose 'cancel' flipped it). pressedOpenRef, set on
     // mousedown before that cancel lands, is the race-free "was it open?" signal.
@@ -725,50 +789,98 @@ function AppMenu({ sidebarVisible, vimMode, onToggleSidebar, onOpenSettings, onO
       setOpen(false)
       return
     }
-    const el = triggerRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const spec: DropdownSpec = {
-      openerId,
-      kind: 'menu',
-      anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
-      ...readThemeAttrs(),
-      actions: buildActions(),
-    }
-    window.electronAPI.openDropdown?.(spec)
-    setOpen(true)
+    openMenu(keyboard)
   }
 
+  // The keymap's Open Menu (App.tsx sends the event): the menu, from the
+  // keys. Asked again while it is up, it is sent again — the popup takes the
+  // same opener's spec in place.
+  const openMenuRef = useRef(openMenu)
+  openMenuRef.current = openMenu
+  useEffect(() => {
+    const onOpen = (): void => openMenuRef.current(true)
+    window.addEventListener('vimperium-open-app-menu', onOpen)
+    return () => window.removeEventListener('vimperium-open-app-menu', onOpen)
+  }, [])
+
+  const hint = actionHint(hintSettings, 'app-menu')
+  const hintText = hint?.kind === 'vim' ? hint.keys : ''
+
+  // Windows and Linux: the orb sits flush in the window's corner, where a
+  // restored window has resize bands, about 8 px along its top and 5 px down
+  // its left, that the OS hit-tests ahead of the page. The orb leaves them
+  // to the resize: its square still reaches into the corner, the mark about
+  // 7 px in, but the button takes the pointer only inside the bands, so it never lights up or opens
+  // under a resize cursor. A window that fills its screen (maximized, full
+  // screen) has no bands, so there the whole orb, corner and all, is the
+  // button, as the Start orb was.
+  const [resizeBands, setResizeBands] = useState(false)
+  useEffect(() => {
+    if (isMacOS) return
+    const check = (): void => {
+      // A few px short of the work area (rounding at a fractional scale, an
+      // auto-hidden taskbar) still fills it.
+      const fills = window.outerWidth >= window.screen.availWidth - 4 && window.outerHeight >= window.screen.availHeight - 4
+      setResizeBands(!fills)
+    }
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
+
   return (
-    <div ref={triggerRef} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+    // The button: the toolbar's full height, square — the menu drops from
+    // its bottom edge, and on Windows a window filling its screen has its
+    // corner for the button. The mark in it is smaller, centred (.brand-orb);
+    // -mr-1.5 hands the square's empty 6 px on the right back to the gap, so
+    // Profile sits the bar's usual 8 px from the plate.
+    <div ref={triggerRef} className="relative self-stretch aspect-square shrink-0 -mr-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <button
         onMouseDown={() => { pressedOpenRef.current = open }}
-        onClick={handleToggle}
+        // A click with no press behind it (detail 0) came from the keys —
+        // Enter or Space on the focused orb, a hint label — so the menu
+        // comes up keyboard-driven.
+        onClick={(e) => handleToggle(e.detail === 0)}
         onPointerEnter={() => setMarkGlitch((n) => n + 1)}
-        className="h-8 px-2 shrink-0 flex items-center gap-1.5 rounded-md bg-secondary hover:bg-muted text-secondary-foreground text-xs font-medium"
+        className="brand-orb"
+        style={resizeBands ? { pointerEvents: 'none' } : undefined}
+        aria-label="Vimperium menu"
+        aria-haspopup="menu"
+        aria-expanded={open}
         title={
           updateChecking ? 'Checking for updates…'
             : updateReady ? 'Update ready — open menu to restart & install'
             : updateAvailable ? 'New version available'
-            : menuLabel
+            : hintText ? `Menu (${hintText})` : 'Menu'
         }
       >
-        <BrandMark mode={vimMode} glitchKey={markGlitch} />
-        <span>{menuLabel}</span>
+        {/* 36 px: its plate (59.5 of the badge's 64 units, rim and all)
+            comes to 33.5 px, a touch over the bar's 32 px controls. */}
+        <BrandMark variant="full" size={36} glitchKey={markGlitch} />
+        {resizeBands && (
+          // What takes the pointer for the button, inside the resize bands.
+          <span data-orb-hit aria-hidden="true" className="absolute pointer-events-auto" style={{ top: 8, left: 5, right: 0, bottom: 0 }} />
+        )}
+        {devBuild && (
+          <span className="absolute left-[3px] bottom-[3px] px-[2px] rounded-[2px] bg-amber-400 text-black text-[7px] leading-[9px] font-bold tracking-[0.04em] pointer-events-none select-none" aria-hidden="true">
+            DEV
+          </span>
+        )}
       </button>
-      {/* Update status badge — mirrors the downloads button. Spinner while
+      {/* Update status badge — mirrors the downloads button, inside the orb's
+          top-right corner (above it is the window's edge). Spinner while
           checking, a down-arrow when a new version is available (green once
           downloaded and ready to install). Nothing in the default/idle case. */}
       {updateChecking ? (
         <span
-          className="absolute -top-0.5 -right-0.5 w-[14px] h-[14px] rounded-full bg-primary text-primary-foreground flex items-center justify-center pointer-events-none"
+          className="absolute top-[2px] right-[2px] w-[14px] h-[14px] rounded-full bg-primary text-primary-foreground flex items-center justify-center pointer-events-none"
           aria-label="Checking for updates"
         >
           <RefreshCw size={9} strokeWidth={3} className="animate-spin" />
         </span>
       ) : updateAvailable ? (
         <span
-          className={`absolute -top-0.5 -right-0.5 w-[14px] h-[14px] rounded-full flex items-center justify-center pointer-events-none ${
+          className={`absolute top-[2px] right-[2px] w-[14px] h-[14px] rounded-full flex items-center justify-center pointer-events-none ${
             updateReady ? 'bg-green-500 text-white' : 'bg-primary text-primary-foreground'
           }`}
           aria-label={updateReady ? 'Update ready to install' : 'New version available'}
@@ -899,6 +1011,22 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
   const [certInfo, setCertInfo] = useState('')
   const certErrorTabs = useRef(new Set<string>())
 
+  // Vim's oi (App.tsx sends the event): the padlock's popup, as a click on
+  // it opens it — for a page that has a padlock.
+  const securityRef = useRef(security)
+  securityRef.current = security
+  useEffect(() => {
+    const onOpen = (): void => {
+      if (securityRef.current === 'internal') {
+        log.info('site-info: this page has no site info')
+        return
+      }
+      setCertPopupOpen(true)
+    }
+    window.addEventListener('vimperium-open-site-info', onOpen)
+    return () => window.removeEventListener('vimperium-open-site-info', onOpen)
+  }, [])
+
   // Listen for the renderer-wide "new workspace" shortcut dispatched from
   // App.tsx so the keyboard shortcut (CmdOrCtrl+Shift+N) reuses the same
   // input dialog as the toolbar's New Workspace button. State setters are
@@ -911,8 +1039,22 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
       setDialogAction('workspace')
       setDialogOpen(true)
     }
-    window.addEventListener('newbro-open-new-workspace-dialog', handler)
-    return () => window.removeEventListener('newbro-open-new-workspace-dialog', handler)
+    window.addEventListener('vimperium-open-new-workspace-dialog', handler)
+    return () => window.removeEventListener('vimperium-open-new-workspace-dialog', handler)
+  }, [])
+
+  // The same for New Profile (Vim's np, App.tsx): the profile dropdown's
+  // dialog, and on confirm its window.
+  useEffect(() => {
+    const handler = () => {
+      setDialogTitle('New Profile')
+      setDialogPlaceholder('Profile name (e.g. Work, Fun)')
+      setDialogDefault('')
+      setDialogAction('profile')
+      setDialogOpen(true)
+    }
+    window.addEventListener('vimperium-open-new-profile-dialog', handler)
+    return () => window.removeEventListener('vimperium-open-new-profile-dialog', handler)
   }, [])
 
   // The padlock follows the active tab's URL. (The address bar's own text is
@@ -1239,7 +1381,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
     const sanitise = (s: string): string => s.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'Workspace'
     const suggestedName = selected.length === 1
       ? `${sanitise(selected[0].name)}.html`
-      : `${sanitise(activeProfile?.name || 'Newbro')} Workspaces.html`
+      : `${sanitise(activeProfile?.name || 'Vimperium')} Workspaces.html`
     const saved = await window.electronAPI.saveBookmarkFile(html, suggestedName)
     log.action('exportWorkspaces', {
       profileId: activeProfileId,
@@ -1298,19 +1440,19 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
       const ws = p.workspaces.find((w) => w.id === wsId)
       if (ws) handleDeleteWorkspaceRef.current(ws.id, ws.name)
     }
-    window.addEventListener('newbro-open-import-workspaces', onImport)
-    window.addEventListener('newbro-open-export-workspaces', onExport)
-    window.addEventListener('newbro-rename-active-profile', onRenameProfile)
-    window.addEventListener('newbro-delete-active-profile', onDeleteProfile)
-    window.addEventListener('newbro-rename-active-workspace', onRenameWorkspace)
-    window.addEventListener('newbro-delete-active-workspace', onDeleteWorkspace)
+    window.addEventListener('vimperium-open-import-workspaces', onImport)
+    window.addEventListener('vimperium-open-export-workspaces', onExport)
+    window.addEventListener('vimperium-rename-active-profile', onRenameProfile)
+    window.addEventListener('vimperium-delete-active-profile', onDeleteProfile)
+    window.addEventListener('vimperium-rename-active-workspace', onRenameWorkspace)
+    window.addEventListener('vimperium-delete-active-workspace', onDeleteWorkspace)
     return () => {
-      window.removeEventListener('newbro-open-import-workspaces', onImport)
-      window.removeEventListener('newbro-open-export-workspaces', onExport)
-      window.removeEventListener('newbro-rename-active-profile', onRenameProfile)
-      window.removeEventListener('newbro-delete-active-profile', onDeleteProfile)
-      window.removeEventListener('newbro-rename-active-workspace', onRenameWorkspace)
-      window.removeEventListener('newbro-delete-active-workspace', onDeleteWorkspace)
+      window.removeEventListener('vimperium-open-import-workspaces', onImport)
+      window.removeEventListener('vimperium-open-export-workspaces', onExport)
+      window.removeEventListener('vimperium-rename-active-profile', onRenameProfile)
+      window.removeEventListener('vimperium-delete-active-profile', onDeleteProfile)
+      window.removeEventListener('vimperium-rename-active-workspace', onRenameWorkspace)
+      window.removeEventListener('vimperium-delete-active-workspace', onDeleteWorkspace)
     }
   }, [])
 
@@ -1320,15 +1462,18 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
         data-cinema={pageFullscreen ? '' : undefined}
         className="flex items-center gap-2 h-12 border-b border-border bg-toolbar shrink-0"
         style={{
-          paddingLeft: isMac ? 80 : 8,
+          // The Menu orb comes first: on macOS after the window's buttons,
+          // its plate where the Menu button always began (80 px); on Windows
+          // flush in the corner, as the Start orb was. No padding above or
+          // below — the orb is the bar's full height, square, its mark
+          // centred in it; the 32 px controls stay centred where they were.
+          paddingLeft: isMac ? 74 : 0,
           paddingRight: pageFullscreen ? 8 : isMac ? 8 : 142,
-          paddingTop: 10,
-          paddingBottom: 10,
           WebkitAppRegion: 'drag',
         } as React.CSSProperties}
       >
-        {/* App menu */}
-        <AppMenu sidebarVisible={sidebarVisible} vimMode={vimMode ?? null} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} onOpenDownloads={openDownloadsPage} />
+        {/* App menu: the Vimperium orb */}
+        <AppMenu sidebarVisible={sidebarVisible} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} onOpenDownloads={openDownloadsPage} />
 
         {/* Profile selector */}
         <Dropdown
@@ -1342,6 +1487,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           label="Profile"
           onNew={openProfileDialog}
           newLabel="New Profile"
+          openEvent="vimperium-open-profile-menu"
         />
 
         {/* Workspace selector */}
@@ -1357,6 +1503,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           label="Workspace"
           onNew={openWorkspaceDialog}
           newLabel="New Workspace"
+          openEvent="vimperium-open-workspace-menu"
           actions={[
             { id: 'import-workspace', label: 'Import Workspace', iconName: 'Import', onClick: handleImportWorkspace },
             { id: 'export-workspace', label: 'Export Workspaces', iconName: 'Upload', onClick: handleExportWorkspace, disabled: (activeProfile?.workspaces.length || 0) === 0 },
@@ -1365,7 +1512,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
 
         <div className="w-px h-5 bg-border shrink-0" />
 
-        {/* Downloads — opens the Downloads page (newbro://downloads) in a tab,
+        {/* Downloads — opens the Downloads page (vimperium://downloads) in a tab,
             or switches to it. The badge has three resting states: a blue
             count while downloads are in flight, a green ✓ once they finish
             (so a completed download is visible without opening the page),

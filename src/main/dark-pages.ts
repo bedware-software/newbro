@@ -1,4 +1,4 @@
-// Dark pages — Newbro's own dark mode for web pages, in place of a dark-mode
+// Dark pages — Vimperium's own dark mode for web pages, in place of a dark-mode
 // extension. Which pages are dark, and how, is decided in
 // src/shared/dark-pages.ts; this module makes it so.
 //
@@ -76,7 +76,7 @@ interface Page {
    *  their window's. */
   setBackground: (color: string | null) => void
   /** A popup window paints white where the page paints nothing; a tab's
-   *  view is see-through, onto Newbro's own background. */
+   *  view is see-through, onto Vimperium's own background. */
   opaque: boolean
   held: boolean
   /** The look the session was last given, null when it hasn't been. */
@@ -99,7 +99,7 @@ interface Page {
 }
 
 const store = new Store<{ config: DarkPagesConfig }>({
-  name: 'newbro-dark-pages',
+  name: 'vimperium-dark-pages',
   defaults: { config: DEFAULT_DARK_PAGES },
 })
 
@@ -211,7 +211,7 @@ function paint(page: Page): void {
   const look = page.held ? page.applied : null
   const color = page.opaque
     ? look?.repaint ? DARK_CANVAS : LIGHT_CANVAS
-    // A tab shows Newbro's background through: dark already when Newbro is.
+    // A tab shows Vimperium's background through: dark already when Vimperium is.
     : look?.repaint && !appDark ? DARK_CANVAS : null
   if (color === page.background) return
   page.background = color
@@ -222,7 +222,7 @@ function pushComfort(page: Page): void {
   const css = darkPageCss(config, page.held && page.applied ? page.applied : NEUTRAL)
   if (css === page.css || page.wc.isDestroyed()) return
   page.css = css
-  try { page.wc.send('newbro-dark-pages-css', css) } catch { /* page gone */ }
+  try { page.wc.send('vimperium-dark-pages-css', css) } catch { /* page gone */ }
 }
 
 /** Bring a page in line with the config and its address. */
@@ -372,7 +372,7 @@ export function patchExtensionDebuggerCommand(wc: WebContents, method: string, p
   return { ...params, features }
 }
 
-/** Newbro's theme changed (Settings, or the OS under 'System'). */
+/** Vimperium's theme changed (Settings, or the OS under 'System'). */
 export function refreshDarkPagesTheme(): void {
   const next = computeAppDark()
   if (next === appDark) return

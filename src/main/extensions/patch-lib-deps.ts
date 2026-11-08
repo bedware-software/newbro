@@ -32,8 +32,9 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { log } from '../log'
+import { LEGACY_LIB_PATCH_MARKER } from './legacy-names'
 
-const LIB_PATCH_MARKER = '// __NEWBRO_LIB_PATCH_V1__'
+const LIB_PATCH_MARKER = '// __VIMPERIUM_LIB_PATCH_V1__'
 
 function locateLibIndex(): string | null {
   const candidates: string[] = []
@@ -76,15 +77,26 @@ function patchPermissionsAPI(): void {
     return
   }
   if (source.startsWith(LIB_PATCH_MARKER)) return
+  // Newbro patched this file already (its throw sites are gone): re-mark
+  // it as ours instead of reporting the library as drifted.
+  if (source.startsWith(LEGACY_LIB_PATCH_MARKER + '\n')) {
+    try {
+      writeFileSync(libPath, LIB_PATCH_MARKER + source.slice(LEGACY_LIB_PATCH_MARKER.length))
+      log.info('extensions: lib-patch re-marked (Newbro had applied it)', { path: libPath })
+    } catch (err) {
+      log.warn('extensions: lib-patch cannot re-mark index.js', { path: libPath, err: String(err) })
+    }
+    return
+  }
 
   const before = source
   source = source.replace(
     'throw new Error("Permissions request includes undeclared permission");',
-    '/* permission allow-list disabled by Newbro */',
+    '/* permission allow-list disabled by Vimperium */',
   )
   source = source.replace(
     'throw new Error("Permissions request includes undeclared origin");',
-    '/* origin allow-list disabled by Newbro */',
+    '/* origin allow-list disabled by Vimperium */',
   )
   if (source === before) {
     log.warn('extensions: lib-patch — neither throw site found', { path: libPath })

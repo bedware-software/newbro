@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Globe, Download, CircleAlert, Zap, type LucideIcon } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
-import { INTERNAL_ICON_PREFIX } from '../lib/internal-pages'
+import { internalIconName } from '../lib/internal-pages'
 
-// Icons for internal pages (newbro://…), keyed by the name after the
+// Icons for internal pages (vimperium://…), keyed by the name after the
 // favicon marker — see lib/internal-pages.ts.
 const INTERNAL_ICONS: Record<string, LucideIcon> = {
   download: Download,
@@ -37,8 +37,11 @@ export function TabFavicon({
   const certBypassedOrigins = useAppStore((s) => s.certBypassedOrigins)
   useEffect(() => { setBroken(false) }, [favicon, certBypassedOrigins])
 
-  if (favicon?.startsWith(INTERNAL_ICON_PREFIX)) {
-    const Icon = INTERNAL_ICONS[favicon.slice(INTERNAL_ICON_PREFIX.length)] ?? Globe
+  // Both the vimperium-icon: marker and the newbro-icon: one tabs saved
+  // before the rename still carry.
+  const iconName = internalIconName(favicon)
+  if (iconName !== null) {
+    const Icon = INTERNAL_ICONS[iconName] ?? Globe
     return <Icon size={globeSize} className="shrink-0 text-muted-foreground" />
   }
   if (!favicon || broken) {

@@ -1,7 +1,10 @@
-// Bangs page (newbro://bangs) — the bang table behind `!w vim` in the address
+// Bangs page (vimperium://bangs) — the bang table behind `!w vim` in the address
 // bar (src/shared/bangs.ts), and the search engine plain queries go to. An
 // internal page like Downloads (lib/internal-pages.ts): WebviewPanel draws it
-// over the page area, and it takes the same keys — see KEY_HELP (`?`).
+// over the page area, and it takes the same keys — see KEY_HELP (`?`). In
+// Vim mode it's COMMAND's and the window's keymap runs on it
+// (lib/internal-page-keys.ts): j/k move, dd deletes, u undoes, and every key
+// the page has no use for — od, Tab, Ctrl+J/K, ; — is the window's.
 //
 // The table lives in main (src/main/bangs-store.ts); we mirror its
 // broadcasts and save the whole table on every change. The engine and the
@@ -18,6 +21,10 @@ import {
 } from '../../../shared/bangs'
 import { SEARCH_ENGINES, searchEngineProblem } from '../../../shared/search-engines'
 import { keepsChromeKeyboard } from '../lib/vim-mode'
+import {
+  CONTEXT_MENU_KEYS, LIST_MOVES, cmd, helpKeys, titleWithKey, useInternalPageKeys, windowKeysNote,
+  type ListMove, type PageKeyRunner, type PageKeyTable,
+} from '../lib/internal-page-keys'
 import { log } from '../lib/log'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 import { Hint, HintBar, KeyCap } from './KeyHints'
@@ -31,34 +38,63 @@ interface SortState {
 
 const SORT_KEYS: SortKey[] = ['category', 'trigger', 'name']
 const SORT_LABELS: Record<SortKey, string> = { category: 'Category', trigger: 'Trigger', name: 'Name' }
-const SORT_STORAGE_KEY = 'newbro-bangs-sort'
+const SORT_STORAGE_KEY = 'vimperium-bangs-sort'
 
-// How long the second `g` of `gg` may trail the first (same as Vim mode's).
-const GG_TIMEOUT_MS = 1000
 // How long the first R of "R R" (reset to defaults) waits for the second.
 const RESET_ARM_MS = 3000
 
 /** Events other parts of the app send the page: App routes find-in-page and
  *  reload here while the Bangs tab is active. */
-export const BANGS_FIND_EVENT = 'newbro-bangs-find'
-export const BANGS_RELOAD_EVENT = 'newbro-bangs-reload'
+export const BANGS_FIND_EVENT = 'vimperium-bangs-find'
+export const BANGS_RELOAD_EVENT = 'vimperium-bangs-reload'
 
-const KEY_HELP: Array<[string, string]> = [
-  ['j / k, ↓ / ↑', 'Move through the list'],
-  ['gg / G, Home / End', 'First / last bang'],
-  ['Enter, e', 'Edit the bang'],
-  ['a, o', 'Add a bang'],
-  ['Space', 'Turn the bang on or off'],
-  ['x, Delete', 'Delete the bang'],
-  ['u', 'Undo the last delete'],
-  ['y, c', 'Copy the bang (!w)'],
-  ['s / S', 'Next sort / reverse order'],
-  ['/', 'Search bangs'],
-  ['E', 'Next search engine'],
-  ['B', 'Turn all bangs on or off'],
-  ['R R', 'Reset to the default bangs'],
-  ['m', 'All actions for the selected bang'],
-  ['?', 'Show or hide this help'],
+type BangsAction = ListMove
+  | 'edit' | 'add' | 'toggle' | 'remove' | 'undo' | 'copy' | 'sort' | 'reverse' | 'search'
+  | 'engine' | 'bangs' | 'reset' | 'menu' | 'help' | 'escape'
+
+// The page's keys (lib/internal-page-keys.ts). The window's commands it has
+// a meaning for — dd deletes, u undoes, y copies, i and / go to the search
+// box, e (the address editor's key) edits the bang, never the address — and
+// keys of its own, each one taken only while the window's keymap leaves it
+// free: by default o opens, so adding is a.
+export const BANGS_KEYS: PageKeyTable<BangsAction> = {
+  ...LIST_MOVES,
+  edit: ['<CR>', cmd('edit-url')],
+  add: ['a', 'o'],
+  toggle: ['<Space>'],
+  remove: [cmd('close-tab'), '<Del>', '<BS>'],
+  undo: [cmd('reopen-closed-tab'), 'u'],
+  copy: [cmd('copy-url'), 'c'],
+  sort: ['s'],
+  reverse: ['S', 'O'],
+  search: [cmd('find-in-page'), cmd('insert-mode'), cmd('focus-input'), '/'],
+  engine: ['E'],
+  bangs: ['B'],
+  reset: ['R'],
+  menu: ['m', cmd('row-menu'), ...CONTEXT_MENU_KEYS],
+  help: [cmd('help'), '?'],
+  escape: ['<Esc>'],
+}
+
+const KEY_HELP: Array<[BangsAction[], string]> = [
+  [['down', 'up'], 'Move through the list'],
+  [['halfDown', 'halfUp'], 'Half a page down / up'],
+  [['pageDown', 'pageUp'], 'A page down / up'],
+  [['first', 'last'], 'First / last bang'],
+  [['edit'], 'Edit the bang'],
+  [['add'], 'Add a bang'],
+  [['toggle'], 'Turn the bang on or off'],
+  [['remove'], 'Delete the bang'],
+  [['undo'], 'Undo the last delete'],
+  [['copy'], 'Copy the bang (!w)'],
+  [['sort'], 'Next sort'],
+  [['reverse'], 'Reverse the order'],
+  [['search'], 'Search bangs'],
+  [['engine'], 'Next search engine'],
+  [['bangs'], 'Turn all bangs on or off'],
+  [['reset'], 'Reset to the default bangs (twice)'],
+  [['menu'], 'All actions for the selected bang'],
+  [['help'], 'Show or hide this help'],
 ]
 
 const ENGINE_NAMES = Object.keys(SEARCH_ENGINES)
@@ -149,7 +185,6 @@ export function BangsPage() {
   const listRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const customRef = useRef<HTMLInputElement>(null)
-  const pendingGRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const api = window.electronAPI
 
   useEffect(() => { saveSort(sort) }, [sort])
@@ -309,11 +344,15 @@ export function BangsPage() {
     const next = visible[at + 1] ?? visible[at - 1]
     setSelectedId(next?.id ?? null)
     setUndo((u) => [...u.slice(-19), { bang: b, index }])
-    commit(bangs.filter((x) => x.id !== b.id), `!${b.trigger} deleted — u to undo`)
+    const undoKey = pageKeys.key('undo')
+    commit(bangs.filter((x) => x.id !== b.id), undoKey ? `!${b.trigger} deleted — ${undoKey} to undo` : `!${b.trigger} deleted`)
   }
   const undoRemove = (): void => {
     const last = undo[undo.length - 1]
-    if (!last) return
+    if (!last) {
+      showFlash('Nothing to undo')
+      return
+    }
     setUndo((u) => u.slice(0, -1))
     if (bangs.some((x) => x.trigger === last.bang.trigger)) {
       showFlash(`!${last.bang.trigger} is taken now`)
@@ -332,7 +371,8 @@ export function BangsPage() {
     const now = Date.now()
     if (now - resetArmedRef.current > RESET_ARM_MS) {
       resetArmedRef.current = now
-      showFlash(`Reset to the ${DEFAULT_BANGS.length} default bangs? Press R again`)
+      const resetKey = pageKeys.key('reset')
+      showFlash(`Reset to the ${DEFAULT_BANGS.length} default bangs? ${resetKey ? `Press ${resetKey} again` : 'Click Reset again'}`)
       return
     }
     resetArmedRef.current = 0
@@ -398,12 +438,18 @@ export function BangsPage() {
   }
 
   const openMenu = async (b: Bang, at: { x: number; y: number }, keyboard: boolean): Promise<void> => {
+    // Each item shows the page's key for it, if it has one.
+    const shortcut = (action: BangsAction): string[] | undefined => {
+      const key = pageKeys.key(action)
+      return key ? [key] : undefined
+    }
     const actions: DropdownAction[] = [
-      { id: 'edit', label: 'Edit…', iconName: 'Pencil', shortcut: ['Enter'] },
-      { id: 'toggle', label: b.enabled ? 'Turn Off' : 'Turn On', iconName: b.enabled ? 'EyeOff' : 'Zap', shortcut: ['Space'] },
-      { id: 'copy', label: `Copy !${b.trigger}`, iconName: 'Link', shortcut: ['y'] },
-      { id: 'delete', label: 'Delete', iconName: 'Trash2', shortcut: ['x'], destructive: true, divider: 'before' },
-      { id: 'add', label: 'Add a Bang…', iconName: 'Plus', shortcut: ['a'], divider: 'before' },
+      { id: 'edit', label: 'Edit…', iconName: 'Pencil', shortcut: shortcut('edit') },
+      { id: 'toggle', label: b.enabled ? 'Turn Off' : 'Turn On', iconName: b.enabled ? 'EyeOff' : 'Zap', shortcut: shortcut('toggle') },
+      { id: 'copy', label: `Copy !${b.trigger}`, iconName: 'Link', shortcut: shortcut('copy') },
+      // d in the menu, as dd deletes.
+      { id: 'delete', label: 'Delete', iconName: 'Trash2', key: 'd', shortcut: shortcut('remove'), destructive: true, divider: 'before' },
+      { id: 'add', label: 'Add a Bang…', iconName: 'Plus', shortcut: shortcut('add'), divider: 'before' },
     ]
     const result = await openDropdownAsync({
       kind: 'menu',
@@ -435,99 +481,86 @@ export function BangsPage() {
   }
 
   // ── keyboard ──
-  // Registered once; the ref always points at this render's handler.
-  const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {})
-  onKeyRef.current = (e: KeyboardEvent): void => {
-    if (e.defaultPrevented || e.isComposing) return
-    const root = rootRef.current
-    if (!root || editor) return
-    const target = e.target
-    const onPage = target === document.body || target === document.documentElement ||
-      (target instanceof Node && root.contains(target))
-    if (!onPage || isEditable(target)) return
-    if (e.metaKey || e.ctrlKey || e.altKey) return
-    if ((e.key === 'Enter' || e.key === ' ') && target instanceof HTMLElement && target.closest('button, a, [role="radio"]')) return
-
-    if (e.key === 'Escape' && helpOpen) {
-      e.preventDefault()
-      e.stopPropagation()
-      setHelpOpen(false)
-      return
-    }
-    if (e.key !== 'R') resetArmedRef.current = 0
-
-    let handled = true
-    if (e.key === 'g' && !e.shiftKey) {
-      if (pendingGRef.current) {
-        clearTimeout(pendingGRef.current)
-        pendingGRef.current = null
-        moveTo(0)
-      } else {
-        pendingGRef.current = setTimeout(() => { pendingGRef.current = null }, GG_TIMEOUT_MS)
-      }
-      e.preventDefault()
-      return
-    }
-    if (pendingGRef.current) {
-      clearTimeout(pendingGRef.current)
-      pendingGRef.current = null
-    }
-    switch (e.key) {
-      case 'j':
-      case 'ArrowDown': moveBy(1); break
-      case 'k':
-      case 'ArrowUp': moveBy(-1); break
-      case 'Home': moveTo(0); break
-      case 'G':
-      case 'End': moveTo(-1); break
-      case 'PageDown': moveBy(pageSize()); break
-      case 'PageUp': moveBy(-pageSize()); break
-      case '/': focusSearch(); break
-      case 's': cycleSort(); break
-      case 'S': reverseSort(); break
-      case '?': setHelpOpen((v) => !v); break
-      case 'a':
-      case 'o': openEditor('add'); break
-      case 'u': undoRemove(); break
-      case 'E': cycleEngine(); break
-      case 'B': toggleBangs(); break
-      case 'R': reset(); break
-      case 'ContextMenu': openMenuForSelected(); break
-      case 'F10':
-        if (e.shiftKey) openMenuForSelected()
-        else handled = false
-        break
-      default:
-        handled = false
-    }
-    if (!handled && selected) {
-      handled = true
-      switch (e.key) {
-        case 'Enter':
-        case 'e':
-        case 'i': openEditor('edit', selected); break
-        case ' ': toggle(selected); break
-        case 'c':
-        case 'y': copy(selected); break
-        case 'x':
-        case 'Delete':
-        case 'Backspace': remove(selected); break
-        case 'm': openMenuForSelected(); break
-        default: handled = false
-      }
-    }
-    if (!handled) return
-    e.preventDefault()
-    e.stopPropagation()
+  // BANGS_KEYS through lib/internal-page-keys.ts: in Vim mode the window's
+  // keymap brings them, and a key or command this declines goes on to the
+  // window.
+  /** Back into the bang form, from keys outside it (Ctrl+[ left it). */
+  const focusEditor = (): void => {
+    rootRef.current?.querySelector<HTMLInputElement>('[role="dialog"] input')?.focus()
   }
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => onKeyRef.current(e)
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      if (pendingGRef.current) clearTimeout(pendingGRef.current)
+  const runKey: PageKeyRunner<BangsAction> = (action) => {
+    if (action !== 'reset') resetArmedRef.current = 0
+    if (editor) {
+      // The form is up without the keys: Esc closes it, Enter or i goes
+      // back into it, and the rest wait for it — dd mustn't close the tab
+      // under it.
+      if (action === 'escape') {
+        setEditor(null)
+        focusList()
+      } else if (action === 'edit' || action === 'search') {
+        focusEditor()
+      }
+      return true
     }
-  }, [])
+    switch (action) {
+      case 'escape':
+        if (!helpOpen) return false
+        setHelpOpen(false)
+        return true
+      case 'help': setHelpOpen((v) => !v); return true
+      case 'down': moveBy(1); return true
+      case 'up': moveBy(-1); return true
+      case 'halfDown': moveBy(Math.max(1, Math.floor(pageSize() / 2))); return true
+      case 'halfUp': moveBy(-Math.max(1, Math.floor(pageSize() / 2))); return true
+      case 'pageDown': moveBy(pageSize()); return true
+      case 'pageUp': moveBy(-pageSize()); return true
+      case 'first': moveTo(0); return true
+      case 'last': moveTo(-1); return true
+      case 'search': focusSearch(); return true
+      case 'sort': cycleSort(); return true
+      case 'reverse': reverseSort(); return true
+      case 'add': openEditor('add'); return true
+      case 'undo': undoRemove(); return true
+      case 'engine': cycleEngine(); return true
+      case 'bangs': toggleBangs(); return true
+      case 'reset': reset(); return true
+      case 'menu': openMenuForSelected(); return true
+    }
+    if (!selected) {
+      // dd with nothing to delete does nothing — it never closes the tab
+      // here. The rest go on to the window (y copies the page's address).
+      return action === 'remove'
+    }
+    switch (action) {
+      case 'edit': openEditor('edit', selected); return true
+      case 'toggle': toggle(selected); return true
+      case 'copy': copy(selected); return true
+      case 'remove': remove(selected); return true
+    }
+    return false
+  }
+  const pageKeys = useInternalPageKeys({
+    table: BANGS_KEYS,
+    run: runKey,
+    // Without Vim mode, the keys are the page's while it has the focus — on
+    // it, or on nothing at all — and no form or field has them. A focused
+    // control (Tab onto a header button) keeps its own Enter / Space.
+    ownsKeyboard: (e) => {
+      const root = rootRef.current
+      const target = e.target
+      if (!root || editor || isEditable(target)) return false
+      const onPage = target === document.body || target === document.documentElement ||
+        (target instanceof Node && root.contains(target))
+      if (!onPage) return false
+      return !((e.key === 'Enter' || e.key === ' ') && target instanceof HTMLElement && target.closest('button, a, [role="radio"]'))
+    },
+  })
+  const keyOf = pageKeys.key
+  /** An action's key for the hint bar; none when the keymap took them all. */
+  const hintKeys = (action: BangsAction): string[] => {
+    const key = keyOf(action)
+    return key ? [key] : []
+  }
 
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === 'ArrowDown' || e.key === 'Enter') {
@@ -572,13 +605,15 @@ export function BangsPage() {
   const currentEngine = search ? engineName(search.searchEngine) : null
   const customActive = customDraft !== null || (!!search && !currentEngine)
   const bangsOn = search?.bangsEnabled !== false
+  const helpNote = pageKeys.keymap ? windowKeysNote(pageKeys.keymap) : null
 
   return (
     <div
       ref={rootRef}
       tabIndex={-1}
-      // To Vim mode this is a page: keys here are INSERT, its own j/k & co.
-      data-vim-page=""
+      // In Vim mode it's COMMAND's (not data-vim-page, which is INSERT): the
+      // window's keymap reaches it through lib/internal-page-keys.ts. The
+      // bang form is data-vim-page: a form keeps its own keys.
       className="absolute inset-0 z-50 flex flex-col bg-background text-foreground outline-none"
       role="region"
       aria-label="Bangs"
@@ -593,27 +628,29 @@ export function BangsPage() {
             <button
               onClick={() => openEditor('add')}
               className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
-              title="Add a bang (a)"
+              title={titleWithKey('Add a bang', keyOf('add'))}
             >
               <Plus size={14} />
               Add
-              <KeyCap>a</KeyCap>
+              {keyOf('add') && <KeyCap>{keyOf('add')}</KeyCap>}
             </button>
             <button
               onClick={reset}
               className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
-              title="Put the default bangs back, dropping your changes (R twice, or click twice)"
+              title={`Put the default bangs back, dropping your changes (${keyOf('reset') ? `${keyOf('reset')} twice, or click twice` : 'click twice'})`}
             >
               <RotateCcw size={14} />
               Reset
-              <KeyCap>R</KeyCap>
+              {keyOf('reset') && <KeyCap>{keyOf('reset')}</KeyCap>}
             </button>
           </div>
         </div>
 
         {/* Where plain queries go, and whether !words fire. */}
         <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-x-3 gap-y-2 px-6 pb-3">
-          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">Search engine <KeyCap>E</KeyCap></span>
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            Search engine {keyOf('engine') && <KeyCap>{keyOf('engine')}</KeyCap>}
+          </span>
           <div className="flex h-9 items-center rounded-md bg-secondary p-0.5" role="radiogroup" aria-label="Search engine">
             {ENGINE_NAMES.map((name) => {
               const active = !customActive && currentEngine === name
@@ -651,11 +688,11 @@ export function BangsPage() {
             className={`ml-auto flex h-9 items-center gap-2 rounded-md px-2.5 text-xs font-medium transition-colors ${
               bangsOn ? 'bg-primary/15 text-primary hover:bg-primary/20' : 'bg-secondary text-muted-foreground hover:text-foreground'
             }`}
-            title="Bangs on: !w vim goes straight to Wikipedia. Off: it goes to the search engine as typed (B)"
+            title={titleWithKey('Bangs on: !w vim goes straight to Wikipedia. Off: it goes to the search engine as typed', keyOf('bangs'))}
           >
             {bangsOn ? <Power size={14} /> : <PowerOff size={14} />}
             {bangsOn ? 'Bangs on' : 'Bangs off'}
-            <KeyCap>B</KeyCap>
+            {keyOf('bangs') && <KeyCap>{keyOf('bangs')}</KeyCap>}
           </button>
         </div>
         {customActive && (
@@ -704,13 +741,17 @@ export function BangsPage() {
                 <X size={13} />
               </button>
             ) : (
-              <span className="pointer-events-none absolute right-2.5 top-1/2 flex -translate-y-1/2">
-                <KeyCap onField>/</KeyCap>
-              </span>
+              keyOf('search') && (
+                <span className="pointer-events-none absolute right-2.5 top-1/2 flex -translate-y-1/2">
+                  <KeyCap onField>{keyOf('search')}</KeyCap>
+                </span>
+              )
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">Sort by <KeyCap>s</KeyCap></span>
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Sort by {keyOf('sort') && <KeyCap>{keyOf('sort')}</KeyCap>}
+            </span>
             <div className="flex h-9 items-center rounded-md bg-secondary p-0.5" role="radiogroup" aria-label="Sort bangs">
               {SORT_KEYS.map((key) => {
                 const active = sort.key === key
@@ -723,7 +764,9 @@ export function BangsPage() {
                     className={`flex h-8 items-center gap-1 rounded px-2.5 text-xs font-medium transition-colors ${
                       active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
                     }`}
-                    title={active ? 'Reverse the order (Shift+S)' : `Sort by ${SORT_LABELS[key].toLowerCase()} (s cycles)`}
+                    title={active
+                      ? titleWithKey('Reverse the order', keyOf('reverse'))
+                      : `Sort by ${SORT_LABELS[key].toLowerCase()}${keyOf('sort') ? ` (${keyOf('sort')} cycles)` : ''}`}
                   >
                     {SORT_LABELS[key]}
                     {active && (sort.dir === 'desc'
@@ -749,7 +792,12 @@ export function BangsPage() {
             <div className="flex flex-col items-center justify-center py-24 text-center text-muted-foreground">
               <Zap size={30} className="mb-3 opacity-50" />
               <p className="text-sm font-medium text-foreground">No bangs</p>
-              <p className="mt-1 text-xs">Add one with <KeyCap>a</KeyCap>, or bring the defaults back with <KeyCap>R</KeyCap> twice.</p>
+              <p className="mt-1 text-xs">
+                {keyOf('add') ? <>Add one with <KeyCap>{keyOf('add')}</KeyCap></> : 'Add one'}
+                {keyOf('reset')
+                  ? <>, or bring the defaults back with <KeyCap>{keyOf('reset')}</KeyCap> twice.</>
+                  : ', or bring the defaults back with Reset.'}
+              </p>
             </div>
           )}
           {bangs.length > 0 && visible.length === 0 && (
@@ -771,6 +819,7 @@ export function BangsPage() {
                 bang={row.bang}
                 selected={row.bang.id === selected?.id}
                 showCategory={sort.key !== 'category'}
+                keyOf={keyOf}
                 onSelect={() => { setSelectedId(row.bang.id); focusList() }}
                 onEdit={() => openEditor('edit', row.bang)}
                 onToggle={() => toggle(row.bang)}
@@ -788,25 +837,25 @@ export function BangsPage() {
           <span className="text-foreground">{flash}</span>
         ) : (
           <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
-            <Hint label="Navigate" keys={['j', 'k']} />
-            <Hint label="Edit" keys={['Enter']} />
-            <Hint label="Add" keys={['a']} />
-            <Hint label="On/off" keys={['Space']} />
-            <Hint label="Delete" keys={['x']} />
-            <Hint label="Undo" keys={['u']} />
-            <Hint label="Search" keys={['/']} />
-            <Hint label="Engine" keys={['E']} />
-            <Hint label="Actions" keys={['m']} />
+            <Hint label="Navigate" keys={[keyOf('down'), keyOf('up')].filter((k): k is string => !!k)} />
+            <Hint label="Edit" keys={hintKeys('edit')} />
+            <Hint label="Add" keys={hintKeys('add')} />
+            <Hint label="On/off" keys={hintKeys('toggle')} />
+            <Hint label="Delete" keys={hintKeys('remove')} />
+            <Hint label="Undo" keys={hintKeys('undo')} />
+            <Hint label="Search" keys={hintKeys('search')} />
+            <Hint label="Engine" keys={hintKeys('engine')} />
+            <Hint label="Actions" keys={hintKeys('menu')} />
           </div>
         )}
         <button
           onClick={() => setHelpOpen((v) => !v)}
           className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-secondary hover:text-foreground"
-          title="Keyboard shortcuts (?)"
+          title={titleWithKey('Keyboard shortcuts', keyOf('help'))}
           tabIndex={-1}
         >
           <Keyboard size={13} />
-          <kbd>?</kbd>
+          {keyOf('help') && <kbd>{keyOf('help')}</kbd>}
         </button>
       </HintBar>
 
@@ -830,13 +879,20 @@ export function BangsPage() {
               </button>
             </div>
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
-              {KEY_HELP.map(([keys, what]) => (
-                <div key={keys} className="contents">
-                  <dt className="font-mono text-foreground">{keys}</dt>
-                  <dd className="text-muted-foreground">{what}</dd>
-                </div>
-              ))}
+              {KEY_HELP.map(([actions, what]) => {
+                const keys = helpKeys(pageKeys.caps, actions)
+                // A key the keymap took for something else: the menu (or ;)
+                // still reaches the action.
+                if (!keys) return null
+                return (
+                  <div key={what} className="contents">
+                    <dt className="font-mono text-foreground">{keys}</dt>
+                    <dd className="text-muted-foreground">{what}</dd>
+                  </div>
+                )
+              })}
             </dl>
+            {helpNote && <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{helpNote}</p>}
             <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
               In the address bar a <span className="font-mono">!trigger</span> anywhere in what you type fires its bang:
               <span className="font-mono"> !w vim</span> and <span className="font-mono">vim !w</span> both open Wikipedia's search for “vim”;
@@ -917,6 +973,9 @@ function BangEditor({
 
   return (
     <div
+      // To Vim mode a form keeps its own keys (INSERT): Tab moves on
+      // through it, Enter saves, Esc cancels, Space flips the switch.
+      data-vim-page=""
       className="absolute inset-0 z-20 flex items-center justify-center bg-background/70 backdrop-blur-[1px]"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel() }}
     >
@@ -1004,11 +1063,11 @@ function BangEditor({
           <input
             value={draft.category}
             onChange={(e) => setDraft({ ...draft, category: e.target.value })}
-            list="newbro-bang-categories"
+            list="vimperium-bang-categories"
             placeholder="Other"
             className={field}
           />
-          <datalist id="newbro-bang-categories">
+          <datalist id="vimperium-bang-categories">
             {categories.map((c) => <option key={c} value={c} />)}
           </datalist>
         </label>
@@ -1043,11 +1102,13 @@ function BangEditor({
 }
 
 function BangRow({
-  bang, selected, showCategory, onSelect, onEdit, onToggle, onCopy, onRemove, onContextMenu,
+  bang, selected, showCategory, keyOf, onSelect, onEdit, onToggle, onCopy, onRemove, onContextMenu,
 }: {
   bang: Bang
   selected: boolean
   showCategory: boolean
+  /** The page's key for an action, for the buttons' tooltips. */
+  keyOf: (action: BangsAction) => string | undefined
   onSelect: () => void
   onEdit: () => void
   onToggle: () => void
@@ -1095,20 +1156,20 @@ function BangRow({
       <div className={`flex w-[124px] shrink-0 items-center justify-end gap-0.5 ${
         selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
       }`}>
-        <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onToggle() }} className={iconButton} title={bang.enabled ? 'Turn off (Space)' : 'Turn on (Space)'}>
+        <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onToggle() }} className={iconButton} title={titleWithKey(bang.enabled ? 'Turn off' : 'Turn on', keyOf('toggle'))}>
           {bang.enabled ? <Power size={14} /> : <PowerOff size={14} />}
         </button>
-        <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onCopy() }} className={iconButton} title={`Copy !${bang.trigger} (Y)`}>
+        <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onCopy() }} className={iconButton} title={titleWithKey(`Copy !${bang.trigger}`, keyOf('copy'))}>
           <Copy size={14} />
         </button>
-        <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onEdit() }} className={iconButton} title="Edit (Enter)">
+        <button tabIndex={-1} onClick={(e) => { e.stopPropagation(); onEdit() }} className={iconButton} title={titleWithKey('Edit', keyOf('edit'))}>
           <Pencil size={14} />
         </button>
         <button
           tabIndex={-1}
           onClick={(e) => { e.stopPropagation(); onRemove() }}
           className={`${iconButton} hover:text-destructive`}
-          title="Delete (X)"
+          title={titleWithKey('Delete', keyOf('remove'))}
         >
           <Trash2 size={14} />
         </button>

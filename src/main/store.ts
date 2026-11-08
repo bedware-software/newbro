@@ -14,7 +14,7 @@ export interface WorkspaceBounds {
 }
 
 const store = new Store({
-  name: 'newbro-state',
+  name: 'vimperium-state',
   defaults: {
     state: null,
     openWorkspaceIds: [] as string[],

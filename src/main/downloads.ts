@@ -16,7 +16,7 @@
 // instance as the rest of the app — separate key so it doesn't entangle
 // with the renderer-managed workspace state.
 //
-// The renderer side is the Downloads page (newbro://downloads, see
+// The renderer side is the Downloads page (vimperium://downloads, see
 // src/renderer/src/components/DownloadsPage.tsx).
 
 import { ipcMain, session as electronSession, BrowserWindow, shell, app } from 'electron'
@@ -100,7 +100,7 @@ function uniqueSavePath(dir: string, filename: string): string {
 }
 
 const store = new Store({
-  name: 'newbro-downloads',
+  name: 'vimperium-downloads',
   defaults: {
     history: [] as DownloadEntry[],
   },
@@ -162,9 +162,9 @@ export function attachDownloadHandler(ses: Electron.Session, partition: string):
   // Sessions may be configured multiple times (re-entry through
   // configureSession during partition recreation); guard against
   // attaching the same listener twice.
-  const flag = ses as unknown as { __newbroDownloadsAttached?: boolean }
-  if (flag.__newbroDownloadsAttached) return
-  flag.__newbroDownloadsAttached = true
+  const flag = ses as unknown as { __vimperiumDownloadsAttached?: boolean }
+  if (flag.__vimperiumDownloadsAttached) return
+  flag.__vimperiumDownloadsAttached = true
 
   ses.on('will-download', (_e, item, webContents) => {
     const id = randomUUID()

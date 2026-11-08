@@ -1,11 +1,12 @@
-# Newbro Browser
+# Vimperium
 
-A workspace-based desktop browser built with Electron, React and TypeScript. Organize your tabs into colorful groups across multiple isolated workspaces and profiles.
+A keyboard-first desktop browser that runs on Vim keys and nothing else, built with Electron, React and TypeScript. Organize your tabs into colorful groups across multiple isolated workspaces and profiles, and do all of it without the mouse.
 
-![Newbro Browser](docs/screenshot.png)
+![Vimperium](docs/screenshot.png)
 
 ## Features
 
+- **Vim-style keys** — Vim's COMMAND and INSERT modes are all there is (no regular-shortcuts mode to switch to), and every action has a key: `j`/`k` scroll, `Ctrl+d`/`Ctrl+u` move half a page, and a prefix is a verb (`n` new, `d` close, `o` open, `t` toggle; `u` brings back a closed tab). `?` lists them all, and Settings → Keyboard Shortcuts rebinds them
 - **Profiles** — separate session partitions keep cookies and logins isolated
 - **Workspaces** — switch between independent workspaces (work, personal, projects)
 - **Tab groups** — color-coded, collapsible groups with drag-and-drop reordering
@@ -20,17 +21,17 @@ A workspace-based desktop browser built with Electron, React and TypeScript. Org
 
 **Command Palette**
 
-![Newbro Browser - Light mode](docs/screenshot-command-palette.png)
+![Vimperium - Command Palette](docs/screenshot-command-palette.png)
 
 **Settings dialog**
 
-![Newbro Browser - Settings](docs/screenshot-settings.png)
+![Vimperium - Settings](docs/screenshot-settings.png)
 
 </details>
 
 ## Tech stack
 
-Electron 34 · React 19 · TypeScript · Vite · Tailwind CSS · Zustand · dnd-kit · Fuse.js
+Electron 41 · React 19 · TypeScript · Vite · Tailwind CSS · Zustand · dnd-kit
 
 ## Getting started
 

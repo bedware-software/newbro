@@ -1,6 +1,6 @@
 // Matching and ranking behind the address bar's history suggestions — the
 // rules of Chromium's HistoryURLProvider (inline autocomplete) and
-// HistoryQuickProvider (the dropdown), reduced to what Newbro needs. Pure
+// HistoryQuickProvider (the dropdown), reduced to what Vimperium needs. Pure
 // functions over plain records: storage lives in history.ts.
 
 export const DAY_MS = 24 * 60 * 60 * 1000
@@ -348,7 +348,7 @@ export function makeSearchUrlMatcher(template: string): {
 } {
   let base: { host: string; path: string; param: string } | null = null
   try {
-    const marker = 'newbroquerymarker'
+    const marker = 'vimperiumquerymarker'
     const u = new URL(template.replace('%s', marker))
     for (const [key, value] of u.searchParams) {
       if (value === marker) {

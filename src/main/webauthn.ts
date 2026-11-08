@@ -1,9 +1,9 @@
-// Passkeys (WebAuthn) for tab pages on macOS: Newbro's own Touch ID platform
+// Passkeys (WebAuthn) for tab pages on macOS: Vimperium's own Touch ID platform
 // authenticator.
 //
 // Electron services navigator.credentials on macOS only through Chromium's
 // Touch ID authenticator, which needs a keychain entitlement an ad-hoc signed
-// Newbro can't carry (passkey-store.ts). Without it a ceremony finds no
+// Vimperium can't carry (passkey-store.ts). Without it a ceremony finds no
 // authenticator and the page waits until it times out, so a site's passkey
 // check never completes. Instead the tab preload (webauthn-bridge.ts) routes
 // the page's publicKey requests here, and this module plays both parts:
@@ -16,9 +16,9 @@
 //
 // Passkeys in iCloud Keychain (Safari, the Passwords app) can't be read here —
 // macOS gives those only to browsers Apple entitles. An iPhone serves them to
-// any browser that speaks the hybrid protocol, though, so a sign-in Newbro
+// any browser that speaks the hybrid protocol, though, so a sign-in Vimperium
 // holds no passkey for goes to the phone: a QR code to scan (hybrid.ts). A
-// sign-in that takes any passkey offers the phone next to Newbro's own.
+// sign-in that takes any passkey offers the phone next to Vimperium's own.
 
 import { BrowserWindow, dialog, ipcMain, systemPreferences } from 'electron'
 import type { MessageBoxOptions, Session, WebContents } from 'electron'
@@ -204,7 +204,7 @@ async function confirmUser(
   if (signal.aborted) throw new CeremonyError('AbortError', 'The operation was aborted.')
   if (systemPreferences.canPromptTouchID()) {
     try {
-      // macOS renders this as "Newbro is trying to <reason>."
+      // macOS renders this as "Vimperium is trying to <reason>."
       await systemPreferences.promptTouchID(reason)
     } catch (err) {
       log.info('webauthn: Touch ID declined', String(err))
@@ -258,7 +258,7 @@ async function makeCredential(ctx: Context, req: CreateRequest, signal: AbortSig
   const params = Array.isArray(req.pubKeyCredParams) ? req.pubKeyCredParams : []
   const es256 = params.some((p) => (p as { type?: unknown })?.type === 'public-key' && (p as { alg?: unknown }).alg === COSE_ES256)
   if (params.length > 0 && !es256) {
-    throw new CeremonyError('NotSupportedError', 'None of the requested algorithms is supported (Newbro passkeys use ES256).')
+    throw new CeremonyError('NotSupportedError', 'None of the requested algorithms is supported (Vimperium passkeys use ES256).')
   }
   const userName = text(req.user?.name)
   const userDisplayName = text(req.user?.displayName)
@@ -268,7 +268,7 @@ async function makeCredential(ctx: Context, req: CreateRequest, signal: AbortSig
   if (passkeysForRp(ctx.partition, rpId).some((p) => excluded.has(p.id))) {
     await ask(ctx, {
       type: 'info',
-      message: `You already have a passkey for ${rpId} in Newbro`,
+      message: `You already have a passkey for ${rpId} in Vimperium`,
       detail: 'Use it to sign in.',
       buttons: ['OK'],
     }, signal)
@@ -278,7 +278,7 @@ async function makeCredential(ctx: Context, req: CreateRequest, signal: AbortSig
   const verified = await confirmUser(ctx, rpId, `save a passkey for ${label} on ${rpId}`, req.userVerification, {
     type: 'question',
     message: `Save a passkey for ${label} on ${rpId}?`,
-    detail: 'Touch ID isn\'t available, so Newbro asks for this confirmation instead.',
+    detail: 'Touch ID isn\'t available, so Vimperium asks for this confirmation instead.',
     buttons: ['Save Passkey', 'Cancel'],
     defaultId: 0,
     cancelId: 1,
@@ -333,10 +333,10 @@ async function getAssertion(ctx: Context, req: GetRequest, signal: AbortSignal) 
     return getAssertionWithPhone(ctx, rpId, challenge, allowed, req.userVerification, signal)
   }
 
-  // A site that names Newbro's passkey knows it. One that takes any passkey
-  // (no allow list) may not: it can have dropped the one Newbro holds — for
+  // A site that names Vimperium's passkey knows it. One that takes any passkey
+  // (no allow list) may not: it can have dropped the one Vimperium holds — for
   // one saved in iCloud Keychain, say — and would turn it down. So the iPhone
-  // stays a choice next to Newbro's passkeys.
+  // stays a choice next to Vimperium's passkeys.
   const offerPhone = allowed.length === 0
   let chosen = candidates[0]
   if (candidates.length > 1 || offerPhone) {
@@ -346,8 +346,8 @@ async function getAssertion(ctx: Context, req: GetRequest, signal: AbortSignal) 
       type: 'question',
       message: `Sign in to ${rpId}`,
       detail: offerPhone
-        ? 'Choose a passkey saved in Newbro, or use your iPhone for one saved in iCloud Keychain (Safari, the Passwords app).'
-        : 'Choose a passkey saved in Newbro.',
+        ? 'Choose a passkey saved in Vimperium, or use your iPhone for one saved in iCloud Keychain (Safari, the Passwords app).'
+        : 'Choose a passkey saved in Vimperium.',
       buttons,
       defaultId: 0,
       cancelId: buttons.length - 1,
@@ -363,7 +363,7 @@ async function getAssertion(ctx: Context, req: GetRequest, signal: AbortSignal) 
   const verified = await confirmUser(ctx, rpId, `sign in to ${rpId} as ${label}`, req.userVerification, {
     type: 'question',
     message: `Sign in to ${rpId} as ${label}?`,
-    detail: 'Touch ID isn\'t available, so Newbro asks for this confirmation instead.',
+    detail: 'Touch ID isn\'t available, so Vimperium asks for this confirmation instead.',
     buttons: ['Sign In', 'Cancel'],
     defaultId: 0,
     cancelId: 1,
@@ -384,7 +384,7 @@ async function getAssertion(ctx: Context, req: GetRequest, signal: AbortSignal) 
   }
 }
 
-/** Newbro holds no passkey the site accepts, or the user picked the iPhone:
+/** Vimperium holds no passkey the site accepts, or the user picked the iPhone:
  *  ask a phone, through a QR code (hybrid.ts). An iPhone answers with the
  *  passkeys in iCloud Keychain. */
 async function getAssertionWithPhone(

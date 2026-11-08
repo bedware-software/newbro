@@ -10,6 +10,7 @@ import Store from 'electron-store'
 import { safeStorage } from 'electron'
 import { randomUUID } from 'crypto'
 import { log } from './log'
+import { vaultKeyMissingReason } from './rename-migration'
 
 interface StoredPasswordEntry {
   id: string
@@ -48,7 +49,7 @@ export interface PasswordImportResult {
 }
 
 const store = new Store<{ entries: Record<string, StoredPasswordEntry> }>({
-  name: 'newbro-passwords',
+  name: 'vimperium-passwords',
   defaults: { entries: {} },
 })
 
@@ -67,7 +68,7 @@ const asyncSafeStorage = safeStorage as typeof safeStorage & {
 export function normalizePartition(partition: string): string {
   const value = String(partition || '').trim()
   if (!/^persist:profile-[A-Za-z0-9-]+$/.test(value)) {
-    throw new Error('A valid Newbro profile is required.')
+    throw new Error('A valid Vimperium profile is required.')
   }
   return value
 }
@@ -90,6 +91,10 @@ function publicInfo(entry: StoredPasswordEntry): PasswordEntryInfo {
 }
 
 async function encryptionAvailable(): Promise<boolean> {
+  // Checked before safeStorage is touched at all: until the key Newbro saved
+  // these with is brought over from the keychain, safeStorage's first use
+  // would make up a new one, and anything encrypted with it would be lost.
+  if (vaultKeyMissingReason()) return false
   if (process.platform === 'linux' && safeStorage.getSelectedStorageBackend?.() === 'basic_text') {
     return false
   }
@@ -101,7 +106,10 @@ async function encryptionAvailable(): Promise<boolean> {
 
 export async function encryptSecret(value: string): Promise<string> {
   if (!(await encryptionAvailable())) {
-    throw new Error('The operating system password vault is unavailable, so Newbro cannot save passwords safely.')
+    throw new Error(
+      vaultKeyMissingReason()
+        ?? 'The operating system password vault is unavailable, so Vimperium cannot save passwords safely.',
+    )
   }
   const encrypted = typeof asyncSafeStorage.encryptStringAsync === 'function'
     ? await asyncSafeStorage.encryptStringAsync(value)
@@ -110,7 +118,9 @@ export async function encryptSecret(value: string): Promise<string> {
 }
 
 export async function decryptSecret(value: string): Promise<string> {
-  if (!(await encryptionAvailable())) throw new Error('The operating system password vault is unavailable.')
+  if (!(await encryptionAvailable())) {
+    throw new Error(vaultKeyMissingReason() ?? 'The operating system password vault is unavailable.')
+  }
   const encrypted = Buffer.from(value, 'base64')
   if (typeof asyncSafeStorage.decryptStringAsync === 'function') {
     const result = await asyncSafeStorage.decryptStringAsync(encrypted)
@@ -145,6 +155,9 @@ export function listPasswordEntries(partition?: string): PasswordEntryInfo[] {
 export async function lookupPasswords(partition: string, origin: string): Promise<PasswordLookupEntry[]> {
   const normalizedPartition = normalizePartition(partition)
   const normalizedOrigin = normalizePasswordOrigin(origin)
+  // Nothing decrypts until the key is brought over (the startup log and a
+  // dialog say why); no point warning about every entry on every page.
+  if (vaultKeyMissingReason()) return []
   const matches = Object.values(store.get('entries'))
     .filter((entry) => entry.partition === normalizedPartition && entry.origin === normalizedOrigin)
     .sort((a, b) => b.lastUsedAt - a.lastUsedAt || b.updatedAt - a.updatedAt)
@@ -290,6 +303,9 @@ function findHeader(headers: string[], names: string[]): number {
 
 export async function importPasswordsCsv(partition: string, text: string): Promise<PasswordImportResult> {
   const normalizedPartition = normalizePartition(partition)
+  // One clear reason up front, rather than every row counted as invalid.
+  const keyMissing = vaultKeyMissingReason()
+  if (keyMissing) throw new Error(keyMissing)
   const rows = parseCsv(text)
   if (rows.length < 2) throw new Error('The CSV does not contain any password rows.')
   const headers = rows[0]

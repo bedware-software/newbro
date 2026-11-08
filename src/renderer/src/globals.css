@@ -31,6 +31,29 @@
   box-shadow: var(--field-shadow-strong), 0 0 0 0.5px var(--field-edge-strong);
 }
 
+/* A form with Vim's keys (lib/vim-form.ts, Settings). Its cursor: a ring
+ * round the control under it — a row's fainter, and a brighter one round
+ * the row's button it's on. Out of Vim mode the keyboard's focus gets the
+ * same ring, as Tab goes round the form (text fields keep their own look).
+ * More specific than the rule up top, which takes every focus ring away. */
+[data-vim-form] [data-vim-cursor] {
+  outline: 2px solid var(--color-ring) !important;
+  outline-offset: 2px;
+}
+/* Inside the row, as a list that clips what spills past it holds rows. */
+[data-vim-form] [data-vim-cursor][data-vim-kind="row"] {
+  outline: 1px solid color-mix(in oklab, var(--color-ring) 55%, transparent) !important;
+  outline-offset: -1px;
+}
+[data-vim-form] [data-vim-cell-cursor] {
+  outline: 2px solid var(--color-ring) !important;
+  outline-offset: 1px;
+}
+[data-vim-form] :is(button, a[href], [role="switch"], [role="radio"], [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--color-ring) !important;
+  outline-offset: 2px;
+}
+
 /* ── Dark theme — default ── */
 @theme {
   --color-background: oklch(0.21 0 0);
@@ -415,12 +438,9 @@ html[data-page-fullscreen] body {
  * stops it at a stub — its own width or 3rem, whichever is smaller — so a
  * long comment can't squeeze the page title out of sight. Once the title is
  * down to that stub, any remaining overflow comes out of the chip.
- * calc-size() is what lets the floor follow the title's own width.
- * `--title-stub-reserve` extends the floor under whatever overlays the row's
- * right edge (the sidebar's Cmd+N badge), so the stub stays readable beside
- * the overlay instead of vanishing beneath it. */
+ * calc-size() is what lets the floor follow the title's own width. */
 @utility min-w-title-stub {
-  min-width: calc-size(max-content, min(size, 3rem) + var(--title-stub-reserve, 0px));
+  min-width: calc-size(max-content, min(size, 3rem));
 }
 
 /* ── kbd key caps ── */
@@ -640,30 +660,27 @@ kbd.vim-mode[data-indicator="dot"]::before {
   .mode-edge i { animation-play-state: paused !important; }
 }
 
-/* ── The app's mark on the Menu button (BrandMark) ──
- * Two katanas crossed into a V, in Vim's mode's colours: COMMAND's blue and
- * cyan (off's too), INSERT's green and teal. Three copies; a change of mode
- * (data-glitch, half a second) tears it — bands of the front copy jump
- * sideways while the two behind, in the other mode's colours and the mode's
- * third, flash through the gaps. Moves by transform and clip alone. */
+/* ── The app's mark (BrandMark) ──
+ * Two katanas crossed into a V, in the app icon's colours wherever it is,
+ * whatever Vim's mode or the theme. Three copies; a glitch (data-glitch,
+ * half a second — the pointer coming onto it) tears it: bands of the front
+ * copy jump sideways (by --jump of the distances below) while the two
+ * behind, in the second trio (--a1..3) and in the mark's second colour
+ * alone, flash through the gaps. Moves by transform and clip alone.
+ * The small variant — blades with no plate of their own — takes the
+ * theme's shade of the trios, so it reads on a light ground and a dark. */
 .brand-mark {
   --c1: var(--vim-edge-command-1);
   --c2: var(--vim-edge-command-2);
   --c3: var(--vim-edge-command-3);
   --a1: var(--vim-edge-insert-1);
   --a3: var(--vim-edge-insert-3);
+  --jump: 1;
   position: relative;
   display: inline-block;
   flex: none;
   width: 18px;
   height: 18px;
-}
-.brand-mark[data-mode="insert"] {
-  --c1: var(--vim-edge-insert-1);
-  --c2: var(--vim-edge-insert-2);
-  --c3: var(--vim-edge-insert-3);
-  --a1: var(--vim-edge-command-1);
-  --a3: var(--vim-edge-command-3);
 }
 .brand-mark > svg {
   position: absolute;
@@ -675,38 +692,112 @@ kbd.vim-mode[data-indicator="dot"]::before {
 .brand-mark > svg + svg { opacity: 0; }
 .brand-mark > svg:nth-child(2) { --c1: var(--a1); --c3: var(--a3); }
 .brand-mark > svg:nth-child(3) { --c1: var(--c2); --c3: var(--c2); }
+
+/* The full badge, plate and all: the Menu button's orb, Settings → About.
+ * It is the app icon, drawn the same wherever it is: its own deep plate
+ * whatever the theme (a plate of a light theme's pale ground washes the
+ * badge out), COMMAND's trio from the dark theme, drawn for a dark ground,
+ * and the gallery's pink for the slash and the spark — never another shade
+ * for Vim's mode or the theme, the glow round it (--glow, .brand-orb below)
+ * included. Its glitch tears into INSERT's trio and amber (--a1..3, --ahot)
+ * and the violet alone; its bands jump half as far — 14% of a 48 px badge
+ * would be 7 px.
+ * The ground's hue of 0 (not none) is part of the drawing: the badge's mixes
+ * with it lean toward violet, as the icon's do. */
+.brand-mark[data-variant="full"] {
+  --bg: oklch(0.14 0 0);
+  --c1: oklch(0.74 0.14 240);
+  --c2: oklch(0.66 0.19 292);
+  --c3: oklch(0.83 0.12 205);
+  --hot: oklch(0.72 0.22 350);
+  --a1: oklch(0.80 0.18 142);
+  --a2: oklch(0.89 0.16 110);
+  --a3: oklch(0.77 0.13 182);
+  --ahot: oklch(0.78 0.18 60);
+  --glow: oklch(0.74 0.14 240);
+  --jump: 0.5;
+  width: 100%;
+  height: 100%;
+}
+.brand-mark[data-variant="full"] > svg:nth-child(2) { --c2: var(--a2); --hot: var(--ahot); }
+.brand-mark[data-variant="full"] > svg:nth-child(3) { --hot: var(--c2); }
+
 .brand-mark[data-glitch] > svg:nth-child(1) { animation: brand-glitch-front 560ms steps(1) both; }
 .brand-mark[data-glitch] > svg:nth-child(2) { animation: brand-glitch-back 560ms steps(1) both; }
 .brand-mark[data-glitch] > svg:nth-child(3) { animation: brand-glitch-third 560ms steps(1) both; }
 @keyframes brand-glitch-front {
   0% { clip-path: inset(0 0 50% 0); translate: 0 0; }
-  15% { clip-path: inset(0 0 0 0); translate: 6% 0; }
+  15% { clip-path: inset(0 0 0 0); translate: calc(6% * var(--jump)) 0; }
   30% { opacity: 0; }
-  45% { opacity: 1; clip-path: inset(35% 0 0 0); translate: -8% 0; }
+  45% { opacity: 1; clip-path: inset(35% 0 0 0); translate: calc(-8% * var(--jump)) 0; }
   60% { clip-path: inset(0 0 0 0); translate: 0 0; }
-  75% { clip-path: inset(0 0 30% 0); translate: 3% 0; }
+  75% { clip-path: inset(0 0 30% 0); translate: calc(3% * var(--jump)) 0; }
   100% { clip-path: inset(0 0 0 0); translate: 0 0; opacity: 1; }
 }
 @keyframes brand-glitch-back {
-  0% { opacity: 1; clip-path: inset(50% 0 0 0); translate: 10% 0; }
-  15% { opacity: 1; clip-path: inset(20% 0 50% 0); translate: -12% 0; }
+  0% { opacity: 1; clip-path: inset(50% 0 0 0); translate: calc(10% * var(--jump)) 0; }
+  15% { opacity: 1; clip-path: inset(20% 0 50% 0); translate: calc(-12% * var(--jump)) 0; }
   30% { opacity: 1; clip-path: inset(0 0 0 0); translate: 0 0; }
-  45% { opacity: 1; clip-path: inset(0 0 65% 0); translate: 8% 0; }
+  45% { opacity: 1; clip-path: inset(0 0 65% 0); translate: calc(8% * var(--jump)) 0; }
   60% { opacity: 0; }
-  75% { opacity: 1; clip-path: inset(70% 0 0 0); translate: -6% 0; }
+  75% { opacity: 1; clip-path: inset(70% 0 0 0); translate: calc(-6% * var(--jump)) 0; }
   100% { opacity: 0; }
 }
 @keyframes brand-glitch-third {
   0% { opacity: 0; }
-  15% { opacity: 1; clip-path: inset(50% 0 20% 0); translate: 14% 0; }
+  15% { opacity: 1; clip-path: inset(50% 0 20% 0); translate: calc(14% * var(--jump)) 0; }
   30% { opacity: 0; }
-  45% { opacity: 1; clip-path: inset(60% 0 0 0); translate: -14% 0; }
+  45% { opacity: 1; clip-path: inset(60% 0 0 0); translate: calc(-14% * var(--jump)) 0; }
   60% { opacity: 0; }
-  75% { opacity: 1; clip-path: inset(0 0 72% 0); translate: 12% 0; }
+  75% { opacity: 1; clip-path: inset(0 0 72% 0); translate: calc(12% * var(--jump)) 0; }
   100% { opacity: 0; }
 }
+
+/* The Menu button (Toolbar's AppMenu): a square the toolbar's full height
+ * at its very start — the menu drops from its bottom edge — with the full
+ * badge centred in it at 36 px (Toolbar sets the size), its plate a touch
+ * taller than the bar's 32 px controls. A glow in the badge's blue comes up
+ * under the pointer and stays while the menu is open; the button gives a
+ * little when pressed; the keyboard's focus is a bright rim round the plate.
+ * Its bands jump a little further than the badge's elsewhere, as far as
+ * they did when it filled the square (about 3 px). Nothing of it may reach
+ * below the toolbar — the page's view is drawn over anything there, the
+ * Sidebar isn't — so it is cut at the toolbar's bottom edge, glow and
+ * glitch included. */
+.brand-orb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  clip-path: inset(-12px -12px 0 -12px);
+  transition: scale 120ms ease;
+}
+.brand-orb > .brand-mark {
+  --jump: 0.65;
+  transition: filter 160ms ease;
+}
+.brand-orb:hover > .brand-mark,
+.brand-orb[aria-expanded="true"] > .brand-mark {
+  filter: drop-shadow(0 0 4px color-mix(in oklch, var(--glow) 75%, transparent));
+}
+.brand-orb:focus-visible > .brand-mark {
+  filter:
+    drop-shadow(0 0 0.5px var(--glow))
+    drop-shadow(0 0 0.5px var(--glow))
+    drop-shadow(0 0 1px var(--glow))
+    drop-shadow(0 0 4px color-mix(in oklch, var(--glow) 60%, transparent));
+}
+.brand-orb:active {
+  scale: 0.96;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .brand-mark > svg { animation: none !important; }
+  .brand-orb,
+  .brand-orb > .brand-mark { transition: none; }
 }
 
 /* ── Sliders (Dark pages' comfort, components/DarkPagesControls.tsx) ──

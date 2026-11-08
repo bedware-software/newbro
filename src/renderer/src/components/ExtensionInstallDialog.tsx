@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, ChevronDown, ChevronRight, Loader2, Puzzle } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { ExtensionPermissionList } from './ExtensionPermissionList'
+import { Hint } from './KeyHints'
 import { describeExtensionPermissions } from '../lib/extension-permissions'
+import { useYesNoKeys } from '../lib/dialog-keys'
 
 export interface ExtensionInstallPreview {
   id: string
@@ -31,11 +33,16 @@ interface Props {
 export function ExtensionInstallDialog({ preview, installing, error, onConfirm, onCancel }: Props) {
   const [showAll, setShowAll] = useState(false)
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const [popup, setPopup] = useState<Window | null>(null)
 
   useEffect(() => {
     setShowAll(false)
     if (preview) setTimeout(() => confirmRef.current?.focus(), 50)
   }, [preview])
+
+  // A yes-or-no question like a confirmation's: y adds it, n (or Esc)
+  // doesn't; Enter is the focused button's. Not while it's installing.
+  useYesNoKeys(popup, { yes: onConfirm, no: onCancel, enabled: !!preview && !installing })
 
   if (!preview) return null
 
@@ -53,6 +60,7 @@ export function ExtensionInstallDialog({ preview, installing, error, onConfirm, 
       onClose={() => {
         if (!installing) onCancel()
       }}
+      onWindowChange={setPopup}
     >
       <div className="flex h-full flex-col bg-popover text-popover-foreground">
         <div className="flex items-start gap-3 px-5 pt-5 pb-3" data-detached-drag-handle>
@@ -110,8 +118,16 @@ export function ExtensionInstallDialog({ preview, installing, error, onConfirm, 
           )}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
+          {/* The keys, at the bar's start — the hint bars' look. */}
+          {!installing && (
+            <div className="mr-auto flex items-center gap-x-3 text-[11px] font-medium text-muted-foreground whitespace-nowrap">
+              <Hint label="Yes" keys={['y']} />
+              <Hint label="No" keys={['n', 'Esc']} />
+            </div>
+          )}
           <button
+            type="button"
             onClick={onCancel}
             disabled={installing}
             className="h-8 rounded-md px-3 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
@@ -119,6 +135,7 @@ export function ExtensionInstallDialog({ preview, installing, error, onConfirm, 
             Cancel
           </button>
           <button
+            type="button"
             ref={confirmRef}
             onClick={onConfirm}
             disabled={installing}

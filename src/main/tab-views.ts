@@ -102,7 +102,7 @@ interface TabRecord {
    *  restore them when re-activating after hide (width=0 trick). */
   lastBounds: TabBounds
   /** The view's colour where the page paints nothing, outside fullscreen:
-   *  see-through, or dark while Dark pages darkens the page over Newbro's
+   *  see-through, or dark while Dark pages darkens the page over Vimperium's
    *  light theme (main/dark-pages.ts). */
   restingBackground: string
 }
@@ -194,8 +194,8 @@ const windowStateBeforePage = new Map<number, PageFullscreenWindowState>()
 const normalWindowStateByWindow = new Map<number, PageFullscreenWindowState>()
 const fullscreenWindowTimers = new Map<number, ReturnType<typeof setTimeout>[]>()
 /** webContents.id -> tabId. Used by the global ipcMain.on handlers to
- *  route preload-sent events (newbro-nav / newbro-open-in-new-tab /
- *  newbro-context-menu) back to the correct tab without leaking per-tab
+ *  route preload-sent events (vimperium-nav / vimperium-open-in-new-tab /
+ *  vimperium-context-menu) back to the correct tab without leaking per-tab
  *  listeners on a global channel. */
 const wcIdToTabId = new Map<number, string>()
 /** Per-window hook: given a tab's WebContents, install keyboard shortcut
@@ -654,7 +654,7 @@ function wireEvents(rec: TabRecord): void {
   const emitNavState = (): void => {
     if (wc.isDestroyed()) return
     const nav = wc.navigationHistory
-    wc.send('newbro-gesture-bounds', {
+    wc.send('vimperium-gesture-bounds', {
       canGoBack: nav.canGoBack(),
       canGoForward: nav.canGoForward(),
     })
@@ -694,7 +694,7 @@ function wireEvents(rec: TabRecord): void {
     // dashboard.html, …). Same isolated-vs-main-world issue as the popup:
     // chrome.storage lives in MAIN world only, and writes from that world
     // need to reach the SW for cross-context onChanged semantics. The
-    // injected script is idempotent (window.__newbroStorageBridgeInjected
+    // injected script is idempotent (window.__vimperiumStorageBridgeInjected
     // guard) so a tab navigating within the same chrome-extension origin
     // doesn't stack listeners.
     if (url.startsWith('chrome-extension://')) {
@@ -779,7 +779,7 @@ function wireEvents(rec: TabRecord): void {
   // CertWarningOverlay is triggered by did-fail-load with an ERR_CERT_*
   // code, which is already covered by the did-fail-load handler above.
   // dom-ready is the first point the isolated-world preload has registered
-  // its 'newbro-gesture-bounds' listener, so (re)push the current bounds.
+  // its 'vimperium-gesture-bounds' listener, so (re)push the current bounds.
   wc.on('dom-ready', () => { emitNavState(); emit({ type: 'dom-ready', tabId: rec.tabId, url: wc.getURL() }) })
   // A focus within a beat of a mouse press is the user clicking into the
   // page; the press and the focus arrive in either order, hence the wait.
@@ -795,7 +795,7 @@ function wireEvents(rec: TabRecord): void {
     if (input.shift || input.control || input.alt || input.meta) return
     if (vimStateByWindow.get(rec.windowId)?.mode !== 'insert' || !wc.focusedFrame?.parent) return
     event.preventDefault()
-    wc.send('newbro-vim-leave-frame')
+    wc.send('vimperium-vim-leave-frame')
   })
   wc.on('focus', () => {
     const at = Date.now()
@@ -948,8 +948,8 @@ function wireEvents(rec: TabRecord): void {
 // (type + modifiers) — the mouseWheel deltas are never populated on the
 // observed event, so a main-process wheel reader can't measure the swipe.
 // The preload reads the DOM WheelEvent, renders the overlay, and on commit
-// sends 'newbro-nav' here (see installTabPreloadListeners). Main only
-// pushes navigation bounds to the page via 'newbro-gesture-bounds'
+// sends 'vimperium-nav' here (see installTabPreloadListeners). Main only
+// pushes navigation bounds to the page via 'vimperium-gesture-bounds'
 // (see emitNavState in wireEvents).
 
 
@@ -1649,15 +1649,15 @@ const MEASURE_CONTENT = `(() => {
 
 /** Console line the popup page emits when its layout may have changed;
  *  the popup's console-message listener refits on it. */
-const POPUP_LAYOUT_SIGNAL = '__newbro_popup_layout__'
+const POPUP_LAYOUT_SIGNAL = '__vimperium_popup_layout__'
 
 /** Installed in the popup page after load: signal (debounced) on DOM
  *  mutations and on html/body resizes. Preferred-size events only fire when
  *  Chromium's preferred size changes, which misses SPA popups that render
  *  late inside a fixed-height app box (YouTube to NotebookLM). */
 const POPUP_LAYOUT_WATCH = `(() => {
-  if (window.__newbroPopupLayoutWatch) return;
-  window.__newbroPopupLayoutWatch = true;
+  if (window.__vimperiumPopupLayoutWatch) return;
+  window.__vimperiumPopupLayoutWatch = true;
   let timer = 0;
   const signal = () => {
     clearTimeout(timer);
@@ -1668,6 +1668,25 @@ const POPUP_LAYOUT_WATCH = `(() => {
   if (document.body) ro.observe(document.body);
   new MutationObserver(signal).observe(document.documentElement, {
     childList: true, subtree: true, attributes: true, characterData: true,
+  });
+})()`
+
+/** Console line the popup page emits when Esc reached the window without
+ *  the page using it; the popup's console-message listener closes it. */
+const POPUP_ESCAPE_SIGNAL = '__vimperium_popup_escape__'
+
+/** Installed in the popup page on every load: Esc closes the popup, as in
+ *  Chrome — after the page had its turn, so an extension that uses Esc
+ *  itself (closing its own menu, clearing a field) and says so with
+ *  preventDefault keeps its popup open. Last in line, on the window in the
+ *  bubble phase. */
+const POPUP_ESCAPE_WATCH = `(() => {
+  if (window.__vimperiumPopupEscapeWatch) return;
+  window.__vimperiumPopupEscapeWatch = true;
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || e.repeat) return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    console.debug(${JSON.stringify(POPUP_ESCAPE_SIGNAL)});
   });
 })()`
 
@@ -1744,7 +1763,7 @@ async function paintExtensionPopupBackground(windowId: number): Promise<void> {
 
 /** Register chrome.storage.onChanged in a chrome-extension:// frame's
  *  MAIN world and bridge every event to main via the existing
- *  newbro-ext-ipc.test handler.
+ *  vimperium-ext-ipc.test handler.
  *
  *  Why this lives in main (not preload): contextIsolation:true means our
  *  preloads run in the ISOLATED world. Chromium's chrome.storage binding
@@ -1772,8 +1791,8 @@ export async function installFrameStorageBridge(
   if (wc.isDestroyed()) return
   const code = `
     (function () {
-      if (window.__newbroStorageBridgeInjected) return 'already-injected';
-      window.__newbroStorageBridgeInjected = true;
+      if (window.__vimperiumStorageBridgeInjected) return 'already-injected';
+      window.__vimperiumStorageBridgeInjected = true;
       var ready = function () {
         return typeof chrome !== 'undefined'
           && chrome.storage
@@ -1791,7 +1810,7 @@ export async function installFrameStorageBridge(
         // bridged listener gets called with the original area string.
         chrome.storage.onChanged.addListener(function (changes, areaName) {
           try {
-            fetch('https://newbro-ext-ipc.test/storage-bridge', {
+            fetch('https://vimperium-ext-ipc.test/storage-bridge', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ extId: extId, areaName: areaName, changes: changes }),
@@ -1799,7 +1818,7 @@ export async function installFrameStorageBridge(
           } catch (e) { /* ignore */ }
         });
         try {
-          fetch('https://newbro-ext-ipc.test/storage-bridge-mainworld-installed', {
+          fetch('https://vimperium-ext-ipc.test/storage-bridge-mainworld-installed', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1825,7 +1844,7 @@ export async function installFrameStorageBridge(
         if (ready()) { install(); return; }
         if (attempts >= 60) {
           try {
-            fetch('https://newbro-ext-ipc.test/storage-bridge-mainworld-gaveup', {
+            fetch('https://vimperium-ext-ipc.test/storage-bridge-mainworld-gaveup', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -2199,14 +2218,14 @@ export async function toggleExtensionPopup(
     log.warn('extension popup: loadURL failed', { url, err: String(err) })
   })
 
-  // Auto-open DevTools on the popup when NEWBRO_EXT_DEVTOOLS=1 is set.
+  // Auto-open DevTools on the popup when VIMPERIUM_EXT_DEVTOOLS=1 is set.
   // The popup is a free-standing WebContentsView with no chrome and
   // no right-click "Inspect" — there's otherwise no way to see what
   // its scripts log, so when the popup white-screens (e.g. an
   // exception inside the extension's popup.html) we have no signal
   // beyond an empty rectangle. Gated on env var so the production
   // experience isn't littered with devtools windows.
-  if (process.env['NEWBRO_EXT_DEVTOOLS']) {
+  if (process.env['VIMPERIUM_EXT_DEVTOOLS']) {
     try { view.webContents.openDevTools({ mode: 'detach' }) }
     catch (err) {
       log.warn('extension popup: openDevTools env-gated path threw', {
@@ -2252,6 +2271,14 @@ export async function toggleExtensionPopup(
       }
     }
   })
+  // Esc closes the popup once the page passes on it (POPUP_ESCAPE_WATCH,
+  // answered in the console-message listener below). Every load: a popup
+  // can navigate within itself.
+  view.webContents.on('dom-ready', () => {
+    view.webContents.executeJavaScript(POPUP_ESCAPE_WATCH).catch((err) => {
+      log.warn('extension popup: Esc watch install failed', { extensionId, err: String(err) })
+    })
+  })
   // Also pipe in-popup console messages into the main log
   // unconditionally — even without devtools open, we'll see what
   // the popup page logs / warns / errors. Cheap, narrow signal that's
@@ -2262,6 +2289,16 @@ export async function toggleExtensionPopup(
     const msg = String(detail.message ?? '')
     if (msg === POPUP_LAYOUT_SIGNAL) {
       void refitExtensionPopup(rec)
+      return
+    }
+    if (msg === POPUP_ESCAPE_SIGNAL) {
+      if (extensionPopupByWindow.get(windowId) !== rec) return
+      closeExtensionPopup(windowId)
+      // Back to the page, where the keyboard was before the popup took it.
+      const activeTabId = activeTabByWindow.get(windowId)
+      const activeRec = activeTabId ? tabs.get(activeTabId) : undefined
+      if (activeRec) focusTabPage(activeRec)
+      else if (!ownerWindow.isDestroyed()) ownerWindow.webContents.focus()
       return
     }
     const isError = detail.level === 'warning' || detail.level === 'error'
@@ -2306,7 +2343,7 @@ export async function toggleExtensionPopup(
     // subject to the extension's CSP (`script-src 'self'` blocks
     // inline <script> injection but doesn't apply to Electron's
     // direct script execution). So we just register the listener
-    // here and POST changes to main via newbro-ext-ipc.test, where
+    // here and POST changes to main via vimperium-ext-ipc.test, where
     // the existing 'storage-bridge' webRequest IPC handler queues
     // them per extId for the SW long-poll.
     installFrameStorageBridge(view.webContents, `popup/${extensionId}`).catch((err) => {
@@ -2526,7 +2563,7 @@ export function installTabPreloadListeners(): void {
   if (tabPreloadListenersInstalled) return
   tabPreloadListenersInstalled = true
 
-  ipcMain.on('newbro-nav', (event, direction: unknown) => {
+  ipcMain.on('vimperium-nav', (event, direction: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     if (!tabId) return
     if (direction === 'back') tabGoBack(tabId)
@@ -2545,15 +2582,15 @@ export function installTabPreloadListeners(): void {
     for (const rec of tabs.values()) {
       if (rec.windowId !== win.id) continue
       const wc = rec.view.webContents
-      if (!wc.isDestroyed()) wc.send('newbro-vim-state', state)
+      if (!wc.isDestroyed()) wc.send('vimperium-vim-state', state)
     }
   })
-  ipcMain.handle('newbro-vim-state', (event) => {
+  ipcMain.handle('vimperium-vim-state', (event) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     const rec = tabId ? tabs.get(tabId) : undefined
     return rec ? vimStateByWindow.get(rec.windowId) ?? null : null
   })
-  ipcMain.on('newbro-vim-page', (event, raw: unknown) => {
+  ipcMain.on('vimperium-vim-page', (event, raw: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     const rec = tabId ? tabs.get(tabId) : undefined
     if (!tabId || !rec || typeof raw !== 'object' || raw === null) return
@@ -2572,10 +2609,10 @@ export function installTabPreloadListeners(): void {
     const rec = typeof tabId === 'string' ? tabs.get(tabId) : undefined
     if (!win || !rec || rec.windowId !== win.id || typeof command !== 'string') return
     const wc = rec.view.webContents
-    if (!wc.isDestroyed()) wc.send('newbro-vim-run', command)
+    if (!wc.isDestroyed()) wc.send('vimperium-vim-run', command)
   })
 
-  ipcMain.on('newbro-pseudo-fullscreen', (event, active: unknown) => {
+  ipcMain.on('vimperium-pseudo-fullscreen', (event, active: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     if (!tabId) return
     const rec = tabs.get(tabId)
@@ -2597,7 +2634,7 @@ export function installTabPreloadListeners(): void {
   // currently-focused workspace window. That matches how Chrome routes
   // chrome.tabs.create from a background page when it doesn't carry a
   // tabs.windowId.
-  ipcMain.on('newbro-ext-open-tab', (_event, payload: unknown) => {
+  ipcMain.on('vimperium-ext-open-tab', (_event, payload: unknown) => {
     const p = (typeof payload === 'object' && payload !== null
       ? (payload as Record<string, unknown>)
       : {})
@@ -2619,7 +2656,7 @@ export function installTabPreloadListeners(): void {
   // confirm in the main log that the shim actually ran in the SW and
   // that chrome.tabs.create was missing at the time we patched (i.e.
   // the polyfill is doing useful work, not duplicating Electron's API).
-  ipcMain.on('newbro-ext-shim-loaded', (_event, info: unknown) => {
+  ipcMain.on('vimperium-ext-shim-loaded', (_event, info: unknown) => {
     log.info('extension shim loaded', info)
   })
 
@@ -2627,7 +2664,7 @@ export function installTabPreloadListeners(): void {
   // calls go via the webRequest 'permission-check' action handled in
   // main/index.ts. Both surface here so we can see exactly which APIs
   // an extension is hitting when it decides "no access to this page".
-  ipcMain.on('newbro-ext-shim-trace', (_event, info: unknown) => {
+  ipcMain.on('vimperium-ext-shim-trace', (_event, info: unknown) => {
     log.info('extension shim trace (frame)', info)
   })
 
@@ -2639,7 +2676,7 @@ export function installTabPreloadListeners(): void {
   // page". Electron's chrome.tabs.query returns the popup view itself
   // (URL = chrome-extension://…/action.html) so the match always
   // fails. The frame shim invokes this handler instead.
-  ipcMain.handle('newbro-ext-active-tab-info', (e) => {
+  ipcMain.handle('vimperium-ext-active-tab-info', (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win || win.isDestroyed()) return null
     const activeTabId = activeTabByWindow.get(win.id)
@@ -2670,7 +2707,7 @@ export function installTabPreloadListeners(): void {
     }
   })
 
-  ipcMain.on('newbro-open-in-new-tab', (event, url: unknown) => {
+  ipcMain.on('vimperium-open-in-new-tab', (event, url: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     if (!tabId) return
     if (typeof url !== 'string' || !url) return
@@ -2681,7 +2718,7 @@ export function installTabPreloadListeners(): void {
     sendToWindowRenderer(rec.windowId, 'open-url-as-tab-background', url)
   })
 
-  ipcMain.on('newbro-context-menu', (event, payload: unknown) => {
+  ipcMain.on('vimperium-context-menu', (event, payload: unknown) => {
     const tabId = wcIdToTabId.get(event.sender.id)
     if (!tabId) return
     const rec = tabs.get(tabId)
@@ -2809,6 +2846,26 @@ export function tabToggleDevTools(tabId: string): void {
   }
 }
 
+// Chrome's zoom steps, so + and - land on the sizes its menu offers.
+const ZOOM_FACTORS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5]
+
+/** Vim's + / - / = (zoom-in, zoom-out, zoom-reset): the page's zoom one
+ *  step up or down, or back to its actual size. Chromium keeps it per site,
+ *  as Chrome does, so the site's other tabs follow. Returns the new factor,
+ *  or null with no such tab. */
+export function tabZoom(tabId: string, step: 'in' | 'out' | 'reset'): number | null {
+  const rec = tabs.get(tabId)
+  if (!rec) return null
+  const wc = rec.view.webContents
+  const current = wc.getZoomFactor()
+  let next = 1
+  if (step === 'in') next = ZOOM_FACTORS.find((f) => f > current + 0.001) ?? ZOOM_FACTORS[ZOOM_FACTORS.length - 1]
+  else if (step === 'out') next = [...ZOOM_FACTORS].reverse().find((f) => f < current - 0.001) ?? ZOOM_FACTORS[0]
+  wc.setZoomFactor(next)
+  log.info('tab-views: zoom', { tabId, step, from: current, to: next })
+  return next
+}
+
 function hashStringToInt(s: string): number {
   let h = 0
   for (let i = 0; i < s.length; i++) {
@@ -2888,11 +2945,11 @@ export async function createTabForExtension(
   })
 }
 
-/** Used by the newbro-ipc:// protocol handler in main/index.ts so the
+/** Used by the vimperium-ipc:// protocol handler in main/index.ts so the
  *  SW shim's chrome.tabs.query polyfill can return the workspace's
  *  actual active tab. The popup-side handler that does the same job
  *  lives in this file's installTabPreloadListeners as
- *  'newbro-ext-active-tab-info' ipcMain.handle — same shape, fed by
+ *  'vimperium-ext-active-tab-info' ipcMain.handle — same shape, fed by
  *  the IPC sender's window. The protocol path can't read the sender,
  *  so the caller passes the windowId explicitly. */
 export function getActiveTabInfoForWindow(windowId: number): {

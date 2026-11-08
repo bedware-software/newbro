@@ -1,7 +1,7 @@
 // Saved HTTP-auth credentials for corporate sign-ins (Basic / Digest / NTLM /
 // Negotiate). When Integrated Windows Authentication won't do — the Windows
 // account this PC is logged into isn't the corporate account the server
-// expects — the user can save explicit corp credentials once and have Newbro
+// expects — the user can save explicit corp credentials once and have Vimperium
 // answer future 401/407 challenges for that host automatically, instead of
 // retyping them on every launch.
 //
@@ -16,6 +16,7 @@
 import Store from 'electron-store'
 import { safeStorage } from 'electron'
 import { log } from './log'
+import { vaultKeyMissingReason } from './rename-migration'
 
 /** One saved sign-in, keyed by host. The cleartext password is only ever held
  *  in memory / handed to Chromium's login callback; on disk it lives encrypted
@@ -42,7 +43,7 @@ export interface SavedCredentialInfo {
 }
 
 const store = new Store<{ credentials: Record<string, SavedCredential> }>({
-  name: 'newbro-credentials',
+  name: 'vimperium-credentials',
   defaults: { credentials: {} },
 })
 
@@ -57,6 +58,13 @@ export function getCredential(host: string): { username: string; password: strin
   try {
     const rec = store.get('credentials')[normalizeHost(host)]
     if (!rec) return undefined
+    // Before safeStorage is touched at all: until the key Newbro saved this
+    // with is brought over, its first use would make up a new one.
+    const keyMissing = vaultKeyMissingReason()
+    if (keyMissing) {
+      log.warn('credentials: not answering with the saved sign-in', { host, reason: keyMissing })
+      return undefined
+    }
     if (!safeStorage.isEncryptionAvailable()) return undefined
     const password = safeStorage.decryptString(Buffer.from(rec.passwordEnc, 'base64'))
     return { username: rec.username, password }
@@ -85,6 +93,13 @@ export function saveCredential(input: {
   try {
     const host = normalizeHost(input.host)
     if (!host || !input.username) return false
+    // Not with a made-up key, and not over the saved one this launch can't
+    // read: it stays as it is until the key is brought over.
+    const keyMissing = vaultKeyMissingReason()
+    if (keyMissing) {
+      log.warn('credentials: not saving the sign-in', { host, reason: keyMissing })
+      return false
+    }
     if (!safeStorage.isEncryptionAvailable()) {
       log.warn('credentials: OS encryption unavailable, not saving password', { host })
       return false

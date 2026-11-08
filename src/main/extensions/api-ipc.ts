@@ -1,8 +1,8 @@
 // One registration point for the chrome.* polyfills the extension-shim
 // preload installs (chrome.sidePanel, chrome.identity, ...). Their calls
 // arrive from two kinds of extension context:
-//   - service workers, over the SW bridge's 'newbro-sw' invoke
-//   - pages (side panel, popup, options), over ipcMain 'newbro-ext-frame'
+//   - service workers, over the SW bridge's 'vimperium-sw' invoke
+//   - pages (side panel, popup, options), over ipcMain 'vimperium-ext-frame'
 // Both resolve to { ok: true, data } | { ok: false, error }, and a handler
 // sees the same caller shape either way.
 
@@ -14,7 +14,7 @@ export interface ExtensionApiCaller {
   partition: string
   extensionId: string
   /** The calling page; absent for service workers. Events for page
-   *  callers go to it as 'newbro-ext-frame-event' (channel, payload). */
+   *  callers go to it as 'vimperium-ext-frame-event' (channel, payload). */
   frame?: WebContents
 }
 
@@ -30,7 +30,7 @@ export function registerExtensionApiHandler(channel: string, handler: Handler): 
 }
 
 export function registerExtensionFrameIpc(): void {
-  ipcMain.handle('newbro-ext-frame', async (e, channel: unknown, payload: unknown) => {
+  ipcMain.handle('vimperium-ext-frame', async (e, channel: unknown, payload: unknown) => {
     // The caller is whatever chrome-extension:// page sent this; web
     // pages never get the preload's ipcRenderer, but check anyway.
     let extensionId: string

@@ -26,6 +26,8 @@ const STYLES: { id: DarkPagesStyle; title: string; icon: typeof Sparkles; body: 
   },
 ]
 
+/** A site's rule. Its two choices are its row's first two buttons for Vim's
+ *  form keys (h / l between them, Enter picks). */
 function RulePicker({ rule, onPick, site }: { rule: DarkPagesRule; onPick: (rule: DarkPagesRule) => void; site: string }) {
   return (
     <div className="flex h-7 items-center rounded-md bg-secondary p-0.5" role="radiogroup" aria-label={`Rule for ${site}`}>
@@ -34,6 +36,7 @@ function RulePicker({ rule, onPick, site }: { rule: DarkPagesRule; onPick: (rule
           key={r}
           type="button"
           role="radio"
+          data-vim-cell={r}
           aria-checked={rule === r}
           onClick={() => onPick(r)}
           title={r === 'dark' ? `${site} is always dark` : `${site} is never darkened`}
@@ -73,8 +76,8 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
   const status =
     config.mode === 'off' ? 'Off — pages look as their sites made them, but for the sites below that are always dark.'
       : config.mode === 'on' ? 'On — every page is dark, but for the sites below that are never dark.'
-        : on ? "On now: Newbro's theme is dark."
-          : "Off now: Newbro's theme is light. Pages turn dark with it."
+        : on ? "On now: Vimperium's theme is dark."
+          : "Off now: Vimperium's theme is light. Pages turn dark with it."
 
   const add = (rule: DarkPagesRule): void => {
     const site = normalizeSiteKey(draft)
@@ -104,10 +107,10 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
           <h3 className="text-sm font-semibold text-foreground">Dark pages</h3>
         </div>
         <p className="mb-3 text-[11px] text-muted-foreground">
-          Newbro's own dark mode for web pages — done by Chromium as the page paints, so it's instant on every
+          Vimperium's own dark mode for web pages — done by Chromium as the page paints, so it's instant on every
           page, its frames included, and never slows a page down. Changes apply right away.
         </p>
-        <DarkPagesModeSwitch />
+        <DarkPagesModeSwitch vimItem="dark:mode" />
         <p className="mt-2 text-[11px] text-muted-foreground">{status}</p>
       </div>
 
@@ -115,11 +118,13 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
       <div>
         <h3 className="mb-1 text-sm font-semibold text-foreground">Style</h3>
         <p className="mb-3 text-[11px] text-muted-foreground">How a page turns dark.</p>
-        <div className="grid grid-cols-2 gap-2">
+        <div role="radiogroup" aria-label="Style" data-vim-item="dark:style" className="grid grid-cols-2 gap-2 rounded-lg">
           {STYLES.map(({ id, title, icon: Icon, body }) => (
             <button
               key={id}
               type="button"
+              role="radio"
+              aria-checked={config.style === id}
               onClick={() => darkPagesActions.set({ style: id })}
               className={cn(
                 'flex flex-col items-start gap-1.5 rounded-lg border px-3 py-2.5 text-left transition-colors',
@@ -146,7 +151,7 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
         <div className="flex items-start gap-5">
           <DarkPagePreview className="w-[248px] shrink-0" />
           <div className="min-w-0 flex-1 pt-1">
-            <ComfortSliders />
+            <ComfortSliders vimItems />
           </div>
         </div>
       </div>
@@ -158,6 +163,8 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
           {sites.length > 0 && (
             <button
               type="button"
+              data-vim-item="dark:clear-sites"
+              data-vim-danger
               onClick={() => darkPagesActions.resetSites()}
               className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-destructive"
             >
@@ -172,6 +179,7 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
         </p>
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <input
+            data-vim-item="dark:site-input"
             type="text"
             value={draft}
             onChange={(e) => { setDraft(e.target.value); setError(null) }}
@@ -182,6 +190,7 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
           />
           <button
             type="button"
+            data-vim-item="dark:add-dark"
             onClick={() => add('dark')}
             className="inline-flex h-9 items-center gap-1 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
@@ -189,6 +198,7 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
           </button>
           <button
             type="button"
+            data-vim-item="dark:add-light"
             onClick={() => add('light')}
             className="inline-flex h-9 items-center gap-1 rounded-md bg-secondary px-3 text-sm font-medium text-secondary-foreground hover:bg-muted"
           >
@@ -203,11 +213,12 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
         ) : (
           <div className="divide-y divide-border rounded-lg border border-border">
             {sites.map(([site, rule]) => (
-              <div key={site} className="flex items-center gap-3 px-3 py-2">
+              <div key={site} data-vim-item={`dark-site:${site}`} data-vim-kind="row" className="flex items-center gap-3 px-3 py-2">
                 <span className="min-w-0 flex-1 truncate text-sm text-foreground">{site}</span>
                 <RulePicker site={site} rule={rule} onPick={(r) => darkPagesActions.setSite(site, r)} />
                 <button
                   type="button"
+                  data-vim-cell="remove"
                   onClick={() => darkPagesActions.setSite(site, null)}
                   className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                   title={`Drop the rule: ${site} follows the switch`}
@@ -229,7 +240,7 @@ export function DarkPagesSettings({ hintSettings }: { hintSettings: HintSettings
           <span className="flex items-center gap-2">This site <Caps keys={keysFor('dark-pages-site', 'Alt+Shift+A')} /></span>
         </div>
         <p className="mt-2 text-[11px] text-muted-foreground">
-          Rebind them under Keyboard Shortcuts{hintSettings.vimMode ? ' — in Vim mode, in the keymap there' : ''}.
+          Rebind them in the Vim keymap, under Keyboard Shortcuts.
         </p>
       </div>
     </div>

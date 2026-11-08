@@ -1,4 +1,4 @@
-const PREFIX = '[newbro]'
+const PREFIX = '[vimperium]'
 
 function ts(): string {
   return new Date().toISOString().replace('T', ' ').slice(0, 23)

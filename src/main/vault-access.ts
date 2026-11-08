@@ -30,7 +30,7 @@ export function ensureVaultAccess(): Promise<boolean> {
   pending = (async () => {
     if (process.platform === 'darwin' && systemPreferences.canPromptTouchID()) {
       try {
-        // macOS renders this as "Newbro is trying to show saved passwords."
+        // macOS renders this as "Vimperium is trying to show saved passwords."
         await systemPreferences.promptTouchID('show saved passwords')
       } catch (err) {
         log.info('vault-access: device check declined', String(err))

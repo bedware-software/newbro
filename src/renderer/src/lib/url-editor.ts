@@ -3,13 +3,16 @@
 
 import { create } from 'zustand'
 import { useAppStore } from '../store/app-store'
+import { isInternalUrl } from './internal-pages'
 
 export const useUrlEditorStore = create<{ open: boolean }>(() => ({ open: false }))
 
-/** Opens it on the active tab's address. False with no tab to edit (parked
- *  on a group). */
+/** Opens it on the active tab's address. False with no address to edit:
+ *  parked on a group, or on a page of the browser's own (Downloads, Bangs),
+ *  where e is the page's or nothing — never the address editor over it. */
 export function openUrlEditor(): boolean {
-  if (!useAppStore.getState().getActiveTab()) return false
+  const tab = useAppStore.getState().getActiveTab()
+  if (!tab || isInternalUrl(tab.url)) return false
   useUrlEditorStore.setState({ open: true })
   return true
 }

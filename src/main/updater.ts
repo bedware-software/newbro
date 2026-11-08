@@ -238,33 +238,39 @@ export function installUpdateNow(): void {
   autoUpdater.quitAndInstall(false, true)
 }
 
-// macOS install: bypass Squirrel.Mac (which validates code signatures and
-// rejects our ad-hoc-signed builds). Spawn a detached bash script that
-// waits for us to exit, swaps the .app bundle for the freshly downloaded
-// one, and relaunches.
-function runMacInstall(zipPath: string): void {
-  // app.getPath('exe') -> /…/Newbro.app/Contents/MacOS/Newbro
-  // dirname x3 walks up to the .app bundle.
-  const exePath = app.getPath('exe')
-  const appBundlePath = dirname(dirname(dirname(exePath)))
-  const appName = app.getName()
-
-  const scriptDir = mkdtempSync(join(tmpdir(), 'newbro-update-'))
-  const scriptPath = join(scriptDir, 'install.sh')
-  const logPath = join(app.getPath('logs'), `mac-update-${Date.now()}.log`)
-
-  const script = `#!/bin/bash
+// The swap script runMacInstall hands to bash: install.sh OLD_APP NEW_ZIP LOG.
+//
+// It takes whichever single .app the zip holds and installs it next to the
+// running bundle under its own name. The two names differ when this build
+// runs from a bundle called something else, such as Newbro.app from before
+// the rename, or a bundle the user renamed. The new bundle then lands at
+// Vimperium.app, and the old one goes to the Trash so its path doesn't stick.
+// The Trash, not rm, so it can still be put back.
+//
+// Every failure after the app has quit reopens the old app, so a failed
+// update never leaves the user without a browser. This is a JS template
+// literal: a bash `${…}` in it must be written `\${…}`.
+const MAC_INSTALL_SCRIPT = `#!/bin/bash
 set -u
 OLD_APP="$1"
 NEW_ZIP="$2"
-APP_NAME="$3"
-LOG="$4"
+LOG="$3"
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 mkdir -p "$(dirname "$LOG")"
 exec >>"$LOG" 2>&1
 echo "[$(date)] mac-updater: starting"
 echo "  OLD_APP=$OLD_APP"
 echo "  NEW_ZIP=$NEW_ZIP"
+
+fail() {
+  echo "  $1"
+  if [ -d "$OLD_APP" ]; then
+    /usr/bin/open "$OLD_APP"
+  fi
+  echo "[$(date)] mac-updater: failed"
+  exit 1
+}
 
 # Wait for the current app to exit. Poll the bundle's main executable;
 # pgrep -f matches anything still running from inside it.
@@ -278,49 +284,96 @@ done
 # Extra grace period in case fs handles are still being released.
 sleep 1
 
-WORK_DIR="$(mktemp -d -t newbro-update)"
+WORK_DIR="$(mktemp -d -t vimperium-update)"
 echo "  WORK_DIR=$WORK_DIR"
 
 if ! /usr/bin/ditto -x -k "$NEW_ZIP" "$WORK_DIR"; then
-  echo "  ditto extract failed"
-  exit 1
+  fail "ditto extract failed"
 fi
 
-NEW_APP="$WORK_DIR/$APP_NAME.app"
-if [ ! -d "$NEW_APP" ]; then
-  echo "  expected $NEW_APP not found, contents:"
+NEW_APP=""
+for candidate in "$WORK_DIR"/*.app; do
+  [ -d "$candidate" ] || continue
+  if [ -n "$NEW_APP" ]; then
+    ls -la "$WORK_DIR"
+    fail "more than one .app in the update zip"
+  fi
+  NEW_APP="$candidate"
+done
+if [ -z "$NEW_APP" ]; then
   ls -la "$WORK_DIR"
-  exit 1
+  fail "no .app in the update zip"
 fi
 
-BACKUP="$OLD_APP.bak.$$"
-if ! mv "$OLD_APP" "$BACKUP"; then
-  echo "  backup move failed (permissions?)"
-  exit 1
+DEST="$(dirname "$OLD_APP")/$(basename "$NEW_APP")"
+echo "  NEW_APP=$NEW_APP"
+echo "  DEST=$DEST"
+
+# Whatever sits at DEST (the running bundle itself, or a stale copy next to
+# it) is parked, not deleted, until the new bundle is in place.
+BACKUP=""
+if [ -e "$DEST" ]; then
+  BACKUP="$DEST.bak.$$"
+  if ! mv "$DEST" "$BACKUP"; then
+    fail "backup move failed (permissions?)"
+  fi
 fi
 
-if ! mv "$NEW_APP" "$OLD_APP"; then
-  echo "  swap failed, restoring"
-  mv "$BACKUP" "$OLD_APP"
-  exit 1
+if ! mv "$NEW_APP" "$DEST"; then
+  if [ -n "$BACKUP" ]; then
+    mv "$BACKUP" "$DEST"
+  fi
+  fail "swap failed, previous bundle restored"
 fi
 
 # Clear quarantine so Gatekeeper doesn't re-prompt on first launch.
-/usr/bin/xattr -dr com.apple.quarantine "$OLD_APP" 2>/dev/null || true
+/usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 
 # Relaunch via 'open' so launchd owns the new process, not this script.
-/usr/bin/open "$OLD_APP"
+/usr/bin/open "$DEST"
+
+# A differently-named old bundle goes to the Trash, after the relaunch so a
+# slow Trash can't delay it. /usr/bin/trash (macOS 15 and later) needs no
+# permission. Finder asks for Automation permission the first time, and
+# nobody may be at the screen to answer, so it is only the fallback.
+if [ "$DEST" != "$OLD_APP" ] && [ -d "$OLD_APP" ]; then
+  "$LSREGISTER" -u "$OLD_APP" || echo "  lsregister -u $OLD_APP failed"
+  if [ -x /usr/bin/trash ] && /usr/bin/trash "$OLD_APP"; then
+    echo "  moved $OLD_APP to the Trash"
+  elif /usr/bin/osascript -e 'on run argv' -e 'set target to POSIX file (item 1 of argv) as alias' -e 'tell application "Finder" to delete target' -e 'end run' "$OLD_APP" >/dev/null; then
+    echo "  moved $OLD_APP to the Trash (Finder)"
+  else
+    echo "  could not move $OLD_APP to the Trash, left it in place"
+  fi
+fi
 
 # Cleanup. Failure here is harmless.
-rm -rf "$BACKUP" "$WORK_DIR"
+if [ -n "$BACKUP" ]; then
+  rm -rf "$BACKUP"
+fi
+rm -rf "$WORK_DIR"
 echo "[$(date)] mac-updater: done"
 `
 
-  writeFileSync(scriptPath, script, 'utf8')
+// macOS install: bypass Squirrel.Mac (which validates code signatures and
+// rejects our ad-hoc-signed builds). Spawn a detached bash script that
+// waits for us to exit, swaps the .app bundle for the freshly downloaded
+// one, and relaunches.
+function runMacInstall(zipPath: string): void {
+  // app.getPath('exe') -> /…/Vimperium.app/Contents/MacOS/Vimperium
+  // dirname x3 walks up to the .app bundle.
+  const exePath = app.getPath('exe')
+  const appBundlePath = dirname(dirname(dirname(exePath)))
+
+  const scriptDir = mkdtempSync(join(tmpdir(), 'vimperium-update-'))
+  const scriptPath = join(scriptDir, 'install.sh')
+  const logPath = join(app.getPath('logs'), `mac-update-${Date.now()}.log`)
+
+  writeFileSync(scriptPath, MAC_INSTALL_SCRIPT, 'utf8')
   chmodSync(scriptPath, 0o755)
 
   log.info('updater: spawning mac install script', scriptPath, 'log:', logPath)
-  const child = spawn('/bin/bash', [scriptPath, appBundlePath, zipPath, appName, logPath], {
+  const child = spawn('/bin/bash', [scriptPath, appBundlePath, zipPath, logPath], {
     detached: true,
     stdio: 'ignore',
   })

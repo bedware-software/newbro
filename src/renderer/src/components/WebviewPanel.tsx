@@ -3,7 +3,8 @@ import { useAppStore, consumeNewTabUrlFocus, consumeEagerLoad } from '../store/a
 import type { TabGroup } from '../store/types'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
-import { keepsChromeKeyboard, type VimMode } from '../lib/vim-mode'
+import { keepsChromeKeyboard, usePageKeys, type VimMode } from '../lib/vim-mode'
+import { KeyCap, vimKeyCaps } from './KeyHints'
 import { internalPageOf, isInternalUrl } from '../lib/internal-pages'
 import { WifiOff, SearchX, Unplug, CloudOff, RotateCw, ShieldAlert, CircleAlert, type LucideIcon } from 'lucide-react'
 import type { PermissionKind } from '../lib/permissions'
@@ -99,10 +100,10 @@ function applyScrollbarStyle(tabId: string): void {
   return
   // const css = buildScrollbarCss()
   // const js = `(() => {
-  //   let s = document.getElementById('__newbro_scrollbar_style__');
+  //   let s = document.getElementById('__vimperium_scrollbar_style__');
   //   if (!s) {
   //     s = document.createElement('style');
-  //     s.id = '__newbro_scrollbar_style__';
+  //     s.id = '__vimperium_scrollbar_style__';
   //     (document.head || document.documentElement).appendChild(s);
   //   }
   //   s.textContent = ${JSON.stringify(css)};
@@ -128,7 +129,7 @@ function describeLoadError(
       return {
         Icon: WifiOff,
         title: "You're offline",
-        message: <>Newbro can&apos;t load this page because your device isn&apos;t connected to the internet.</>,
+        message: <>Vimperium can&apos;t load this page because your device isn&apos;t connected to the internet.</>,
       }
     case -105: // ERR_NAME_NOT_RESOLVED
     case -137: // ERR_NAME_RESOLUTION_FAILED
@@ -205,7 +206,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
   const parkedGroup = useAppStore((s) => (s.activeTabId === null
     ? s.getActiveWorkspace()?.tabGroups.find((g) => g.id === s.activeTabGroupId)
     : undefined))
-  // An internal page (newbro://…) takes the page's place, drawn right here.
+  // An internal page (vimperium://…) takes the page's place, drawn right here.
   const activeInternalUrl = useAppStore((s) => {
     const url = s.getActiveTab()?.url
     return url && isInternalUrl(url) ? url : null
@@ -259,7 +260,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
     const direction = split.direction
     let latest = split.ratio
     // The views go off screen so the mouse stays with us over them.
-    window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+    window.dispatchEvent(new CustomEvent('vimperium-tab-hide'))
     setDragRatio(latest)
     document.body.style.cursor = direction === 'right' ? 'col-resize' : 'row-resize'
     const move = (ev: MouseEvent): void => {
@@ -273,7 +274,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
       document.body.style.cursor = ''
       setSplitRatio(latest)
       setDragRatio(null)
-      window.dispatchEvent(new CustomEvent('newbro-tab-show'))
+      window.dispatchEvent(new CustomEvent('vimperium-tab-show'))
     }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
@@ -390,7 +391,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
   // on window resize, and any time the container's ClientRect changes
   // (sidebar toggle, detached popups, zoom level changes, etc.).
   //
-  // Also listens for 'newbro-tab-hide' / 'newbro-tab-show' CustomEvents
+  // Also listens for 'vimperium-tab-hide' / 'vimperium-tab-show' CustomEvents
   // dispatched by the Sidebar during drag/resize — with tabs hosted as
   // WebContentsViews (which compose *on top of* the renderer DOM), the
   // sidebar's pointermove handler can't run while the cursor is over a
@@ -434,13 +435,13 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
     const ro = new ResizeObserver(() => report())
     ro.observe(el)
     window.addEventListener('resize', onWindowResize)
-    window.addEventListener('newbro-tab-hide', hide)
-    window.addEventListener('newbro-tab-show', show)
+    window.addEventListener('vimperium-tab-hide', hide)
+    window.addEventListener('vimperium-tab-show', show)
     return () => {
       ro.disconnect()
       window.removeEventListener('resize', onWindowResize)
-      window.removeEventListener('newbro-tab-hide', hide)
-      window.removeEventListener('newbro-tab-show', show)
+      window.removeEventListener('vimperium-tab-hide', hide)
+      window.removeEventListener('vimperium-tab-show', show)
       if (frame) cancelAnimationFrame(frame)
     }
   }, [])
@@ -595,9 +596,9 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
   // error overlay is visible.
   useEffect(() => {
     if (showError || showCertError) {
-      window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+      window.dispatchEvent(new CustomEvent('vimperium-tab-hide'))
       window.electronAPI.focusWindowRenderer?.()
-      return () => { window.dispatchEvent(new CustomEvent('newbro-tab-show')) }
+      return () => { window.dispatchEvent(new CustomEvent('vimperium-tab-show')) }
     }
     return
   }, [showError, showCertError])
@@ -684,6 +685,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
 
       {showError && activeError && errorInfo && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">
+          <OverlayKeys onEnter={handleRetry} onReload={handleRetry} />
           {/* Nudged above dead-centre so the block sits a touch higher than
               the middle of the panel — reads better than perfect centring. */}
           <div className="w-full max-w-[440px] -translate-y-[8vh] px-8">
@@ -693,11 +695,13 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
             </p>
             <p className="mb-7 text-sm leading-relaxed text-muted-foreground">{errorInfo.message}</p>
             <button
+              type="button"
               onClick={handleRetry}
               className="flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
             >
               <RotateCw size={15} />
               Reload
+              {vimKeyCaps(vimKeymap, 'reload')[0] && <KeyCap onPrimary>{vimKeyCaps(vimKeymap, 'reload')[0]}</KeyCap>}
             </button>
           </div>
         </div>
@@ -707,6 +711,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
         <CertWarningOverlay
           url={activeCertError.url}
           code={activeCertError.description || `Error ${activeCertError.code}`}
+          backKey={vimKeyCaps(vimKeymap, 'back')[0]}
           onBack={() => handleCertBack(activeCertError)}
           onContinue={() => handleCertContinue(activeCertError)}
         />
@@ -715,7 +720,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
   )
 }
 
-/** A newbro:// address that isn't one of our pages. */
+/** A vimperium:// address that isn't one of our pages. */
 function UnknownInternalPage({ url }: { url: string }) {
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">
@@ -723,21 +728,52 @@ function UnknownInternalPage({ url }: { url: string }) {
         <CircleAlert size={26} strokeWidth={1.75} className="mb-4 text-muted-foreground" />
         <h2 className="mb-2 text-2xl font-semibold tracking-tight">This page doesn&apos;t exist</h2>
         <p className="text-sm leading-relaxed text-muted-foreground">
-          <span className="font-mono text-foreground">{url}</span> isn&apos;t a Newbro page.
+          <span className="font-mono text-foreground">{url}</span> isn&apos;t a Vimperium page.
         </p>
       </div>
     </div>
   )
 }
 
+/**
+ * Vim's COMMAND keys over an error drawn in the page's place, while the page
+ * itself is hidden under it: the window's reload key (r) tries the page
+ * again, its back key (h) gets away from it, Enter presses the main button.
+ * The rest — continuing past a bad certificate — only the chrome hints (;)
+ * reach, never a single key.
+ */
+function OverlayKeys({ onEnter, onReload, onBack }: {
+  onEnter: () => void
+  onReload?: () => void
+  onBack?: () => void
+}) {
+  usePageKeys({
+    intercept: (e) => {
+      if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return false
+      onEnter()
+      return true
+    },
+    command: (command) => {
+      if (command === 'reload' && onReload) onReload()
+      else if (command === 'back' && onBack) onBack()
+      else return false
+      return true
+    },
+  })
+  return null
+}
+
 function CertWarningOverlay({
   url,
   code,
+  backKey,
   onBack,
   onContinue,
 }: {
   url: string
   code: string
+  /** Vim's back key, which goes back to safety too; none with Vim off. */
+  backKey?: string
   onBack: () => void
   onContinue: () => void
 }) {
@@ -751,6 +787,7 @@ function CertWarningOverlay({
   }
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">
+      <OverlayKeys onEnter={onBack} onBack={onBack} />
       <div className="w-full max-w-[440px] px-8">
         <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-destructive/15 text-destructive">
           <ShieldAlert size={26} strokeWidth={1.75} />
@@ -763,12 +800,15 @@ function CertWarningOverlay({
         <p className="mb-7 font-mono text-xs text-muted-foreground">{code}</p>
         <div className="flex items-center gap-4">
           <button
+            type="button"
             onClick={onBack}
-            className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+            className="flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             Back to safety
+            {backKey && <KeyCap onPrimary>{backKey}</KeyCap>}
           </button>
           <button
+            type="button"
             onClick={onContinue}
             className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
           >

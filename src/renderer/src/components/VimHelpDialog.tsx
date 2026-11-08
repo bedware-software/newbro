@@ -4,9 +4,11 @@ import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
 import { VimModeBadge } from './VimModeBadge'
 import { usePopupVimMode, type VimMode } from '../lib/vim-mode'
-import { vimKeyCaps } from './KeyHints'
+import { LEAVE_INSERT_CAP, vimKeyCaps } from './KeyHints'
 import { fuzzyFilter } from '../lib/fuzzy'
-import { keysFor, vimCommandLabel, vimCommandsInOrder, type ParsedVimKeymap, type VimContext, type VimKeymap } from '../lib/vim-keymap'
+import { isBlockKey } from '../lib/url-blocks'
+import { keysFor, settingsCommandLabel, settingsCommandsInOrder, settingsKeymap, vimCommandLabel, vimCommandsInOrder, type ParsedVimKeymap, type VimContext, type VimKeymap } from '../lib/vim-keymap'
+import { SEQUENCE_JOIN } from '../../../shared/vim-keys'
 
 interface Props {
   open: boolean
@@ -19,12 +21,70 @@ interface Props {
   onClose: () => void
 }
 
-const SECTIONS: Array<{ context: VimContext; title: string; mode: VimMode | null; note: string }> = [
-  { context: 'command', title: 'COMMAND', mode: 'command', note: 'The page and the browser. In the page, keys not listed here reach it.' },
-  { context: 'search', title: 'Search Everything · Command Palette', mode: null, note: 'Their COMMAND mode, out of the box (Esc); i types again.' },
-  { context: 'find', title: 'Find in Page', mode: null, note: 'Its COMMAND mode, out of typing (Enter or Esc); i types again.' },
-  { context: 'url', title: 'Address editor', mode: null, note: 'E in COMMAND. Blocks: h protocol, d domain, n port, 1–9 path levels, p parameters, f fragment. The intent\'s key again (yy, cc, rr): the whole address.' },
+// Settings isn't a context of the keymap's own: its keys come from the
+// main window's (settingsKeymap), and are listed here with the rest.
+type HelpContext = VimContext | 'settings'
+
+const SECTIONS: Array<{ context: HelpContext; title: string; mode: VimMode | null }> = [
+  { context: 'command', title: 'COMMAND', mode: 'command' },
+  { context: 'search', title: 'Search Everything · Command Palette', mode: null },
+  { context: 'find', title: 'Find in Page', mode: null },
+  { context: 'url', title: 'Address editor', mode: null },
+  { context: 'settings', title: 'Settings', mode: null },
 ]
+
+/** The keys `map` binds to `command` on their own, not as a sequence. */
+function singleKeys(map: VimKeymap, command: string): string[] {
+  const out: string[] = []
+  for (const [seq, bound] of map) if (bound === command && !seq.includes(SEQUENCE_JOIN)) out.push(seq)
+  return out
+}
+
+/** "a", "a and b", "a, b and c". */
+function listed(items: string[]): string {
+  return items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+}
+
+/** What a section says above its keys, naming them as the keymap has them
+ *  (the user's own included). */
+function sectionNote(context: HelpContext, keymap: ParsedVimKeymap): string {
+  const typesAgain = (map: VimKeymap): string => {
+    const key = keysFor(map, 'insert-mode')[0]
+    return key ? `; ${key} types again.` : '.'
+  }
+  switch (context) {
+    case 'command':
+      return 'The page and the browser. In the page, keys not listed here reach it.'
+    case 'search':
+      return `Their COMMAND mode, out of the box (${LEAVE_INSERT_CAP}); Esc closes from either${typesAgain(keymap.search)}`
+    case 'find':
+      return `Its COMMAND mode, out of typing (Enter or ${LEAVE_INSERT_CAP}); Esc closes from either${typesAgain(keymap.find)}`
+    case 'url': {
+      const opens = keysFor(keymap.main, 'edit-url')[0]
+      // An intent's key pressed again is the whole address, unless it's a
+      // block's key too (d: dd is the domain) — UrlEditor's intercept.
+      const twice = ['url-copy', 'url-change']
+        .map((command) => singleKeys(keymap.url, command).find((key) => !isBlockKey(key)))
+        .filter((key): key is string => key !== undefined)
+        .map((key) => key + key)
+      const removeAll = keysFor(keymap.url, 'url-remove-all')[0]
+      const pasteAll = keysFor(keymap.url, 'url-paste-all')[0]
+      const whole = [
+        twice.length > 0 ? `${listed(twice)} act${twice.length === 1 ? 's' : ''} on the whole address` : '',
+        removeAll ? `${removeAll} removes all of it` : '',
+        pasteAll ? `${pasteAll} pastes over all of it` : '',
+      ].filter(Boolean)
+      return [
+        opens ? `Opens with ${opens} in COMMAND.` : 'Opens from the Command Palette (Edit Address).',
+        `${LEAVE_INSERT_CAP} leaves typing; Esc closes.`,
+        'Blocks: h protocol, d domain, n port, 1–9 path levels, p parameters, f fragment.',
+        whole.length > 0 ? `${listed(whole)}.` : '',
+      ].filter(Boolean).join(' ')
+    }
+    case 'settings':
+      return `Its COMMAND mode, which it opens in. Every setting wears a two-letter label too; typing it goes there. ${LEAVE_INSERT_CAP} leaves a field; Esc steps back out — a list, the filter — then closes.`
+  }
+}
 
 interface Row {
   command: string
@@ -39,10 +99,12 @@ const LINE_PX = 48
  *  over what each key does, the keys themselves and the command ids.
  *
  *  In Vim mode it has its own COMMAND / INSERT pair, as Search Everything
- *  does: it opens in COMMAND, where j / k (and d / u, gg / G) scroll the keys,
- *  i types in the filter and ? or Esc closes; Esc in the filter goes back to
- *  COMMAND, keeping what was typed. Out of Vim mode the filter has the
- *  keyboard: Esc clears it, then closes; ? closes while it's empty. */
+ *  does: it opens in COMMAND, where j / k (and Ctrl+D / Ctrl+U, gg / G)
+ *  scroll the keys, i types in the filter and ? or Esc closes; Ctrl+C in
+ *  the filter goes back to COMMAND, keeping what was typed, and Esc there
+ *  closes too. Out of Vim mode the
+ *  filter has the keyboard: Esc clears it, then closes; ? closes while it's
+ *  empty. */
 export function VimHelpDialog({ open, keymap, vimKeymap, fromMode, onClose }: Props) {
   const [popup, setPopup] = useState<Window | null>(null)
   const [query, setQuery] = useState('')
@@ -116,15 +178,11 @@ export function VimHelpDialog({ open, keymap, vimKeymap, fromMode, onClose }: Pr
     return () => popup.removeEventListener('keydown', onKeyDown)
   }, [popup, vimKeymap, query, onClose])
 
-  // INSERT in Vim mode: Esc goes back to COMMAND, keeping the filter; ? on
-  // an empty filter still closes.
+  // INSERT in Vim mode: ? on an empty filter still closes. Ctrl+C (back to
+  // COMMAND, keeping the filter) and Esc (closing) are usePopupVimMode's.
   const onFilterKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
     if (!vim.modeRef.current) return
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      e.stopPropagation()
-      inputRef.current?.blur()
-    } else if (e.key === '?' && !query) {
+    if (e.key === '?' && !query) {
       e.preventDefault()
       onClose()
     }
@@ -135,15 +193,19 @@ export function VimHelpDialog({ open, keymap, vimKeymap, fromMode, onClose }: Pr
   const insertKey = vimKeyCaps(vimKeymap, 'insert-mode')[0]
   const scrollKeys = vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')
 
-  const maps: Record<VimContext, ParsedVimKeymap['main']> = { command: keymap.main, search: keymap.search, find: keymap.find, url: keymap.url }
+  const maps: Record<HelpContext, ParsedVimKeymap['main']> = {
+    command: keymap.main, search: keymap.search, find: keymap.find, url: keymap.url, settings: settingsKeymap(keymap),
+  }
   const commands = vimCommandsInOrder()
+  const settingsCommands = settingsCommandsInOrder()
   const ordered = [...SECTIONS].sort((a, b) => Number(b.mode === fromMode) - Number(a.mode === fromMode))
   const sections = ordered.map((section) => {
     const map = maps[section.context]
     // Each map holds its own context's commands (Search also borrows the
     // cursor keys); list the bound ones in the config's order, or by match.
-    const rows: Row[] = commands
-      .map((command) => ({ command, label: vimCommandLabel(command), keys: keysFor(map, command) }))
+    const settings = section.context === 'settings'
+    const rows: Row[] = (settings ? settingsCommands : commands)
+      .map((command) => ({ command, label: settings ? settingsCommandLabel(command) : vimCommandLabel(command), keys: keysFor(map, command) }))
       .filter((row) => row.keys.length > 0)
     const matching = fuzzyFilter(query, rows, (row) => [
       { value: row.label, weight: 1 },
@@ -157,7 +219,7 @@ export function VimHelpDialog({ open, keymap, vimKeymap, fromMode, onClose }: Pr
   return (
     <DetachedWindow
       open={open}
-      title="Vim Keys - Newbro"
+      title="Vim Keys - Vimperium"
       width={760}
       height={640}
       closeOnBlur
@@ -193,7 +255,7 @@ export function VimHelpDialog({ open, keymap, vimKeymap, fromMode, onClose }: Pr
             <section key={section.context}>
               <div className="flex items-center gap-2 mb-2">
                 {section.mode ? <VimModeBadge mode={section.mode} /> : <span className="text-xs font-semibold uppercase tracking-wider">{section.title}</span>}
-                <span className="text-[11px] text-muted-foreground">{section.note}</span>
+                <span className="text-[11px] text-muted-foreground">{sectionNote(section.context, keymap)}</span>
               </div>
               <div className="grid grid-cols-2 gap-x-6 gap-y-1">
                 {rows.map(({ command, label, keys }) => (
@@ -212,7 +274,7 @@ export function VimHelpDialog({ open, keymap, vimKeymap, fromMode, onClose }: Pr
           data-detached-drag-handle
           className="h-10 px-4 flex items-center justify-between border-t border-border bg-toolbar text-[11px] font-medium text-muted-foreground shrink-0"
         >
-          <span>Esc or Ctrl+[ leaves INSERT · edit in Settings → Keyboard Shortcuts</span>
+          <span>Esc or Ctrl+[ leaves INSERT; in a popup {LEAVE_INSERT_CAP} does, and Esc closes it · edit in Settings → Keyboard Shortcuts</span>
           {vim.mode === 'command' ? (
             <span className="flex items-center gap-1 shrink-0">
               {scrollKeys.length > 0 && <>Scroll {scrollKeys.map((k) => <kbd key={k}>{k}</kbd>)} · </>}
@@ -220,7 +282,7 @@ export function VimHelpDialog({ open, keymap, vimKeymap, fromMode, onClose }: Pr
               Close <kbd>Esc</kbd>
             </span>
           ) : vim.mode === 'insert' ? (
-            <span className="flex items-center gap-1 shrink-0">Keys <kbd>Esc</kbd></span>
+            <span className="flex items-center gap-1 shrink-0">Keys <kbd>{LEAVE_INSERT_CAP}</kbd> · Close <kbd>Esc</kbd></span>
           ) : (
             <span className="flex items-center gap-1 shrink-0">{query ? 'Clear' : 'Close'} <kbd>Esc</kbd></span>
           )}

@@ -1,11 +1,23 @@
+// The pickers' shared window — Move Tab / Group / Reading, Open Link: a
+// filter box over a list of destinations, Search Everything's look. In Vim
+// mode it has Search Everything's two modes too: it opens typing in the box
+// (INSERT); Ctrl+C goes to COMMAND, where the scroll keys move through the
+// rows, each row wears a two-letter label that picks it, and i types again;
+// Esc cancels from either.
+// Enter (Shift+Enter, Ctrl/⌘+Enter) works the same in both.
+
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, ArrowUpDown, CornerDownLeft } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
-import { Hint, HintBar } from './KeyHints'
+import { Hint, HintBar, LEAVE_INSERT_CAP, RowHint, vimKeyCaps } from './KeyHints'
 import { GroupPill } from './GroupPill'
 import { ScopeSwitch } from './ScopeSwitch'
 import { fuzzyFilter } from '../lib/fuzzy'
+import { hintIndex, usePopupHints } from '../lib/hint-labels'
+import { usePopupVimMode } from '../lib/vim-mode'
+import { paletteKeymap } from '../lib/vim-keymap'
+import { useWindowVimKeymap } from '../lib/window-vim-keymap'
 
 /** One crumb of a row's location path. `pill` marks the segment that names a
  *  tab group, which is rendered as a colored pill like the sidebar's group
@@ -130,6 +142,11 @@ export function PickerDialog({
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const [popupWindow, setPopupWindow] = useState<Window | null>(null)
+  // COMMAND's keys: the Command Palette's (the scroll keys through the rows,
+  // i to type, Enter); null while Vim mode is off.
+  const parsedKeymap = useWindowVimKeymap()
+  const vimKeymap = useMemo(() => (parsedKeymap ? paletteKeymap(parsedKeymap.search) : null), [parsedKeymap])
 
   // Reset transient state every time the dialog re-opens. Without this,
   // closing and re-opening the picker would carry stale search text and
@@ -143,7 +160,7 @@ export function PickerDialog({
     }, 50)
   }, [open, resetKey])
 
-  const filtered = useMemo(() => {
+  const matching = useMemo(() => {
     if (!query.trim()) return items
     return fuzzyFilter(query, items, (item) => [
       { value: item.label, weight: 1 },
@@ -155,6 +172,29 @@ export function PickerDialog({
       { value: item.trailingNote, weight: 0.3 },
     ])
   }, [query, items])
+
+  // Group items by section while preserving the input order. Groups appear
+  // in the order their first member appears in the matching list.
+  const sections = useMemo(() => {
+    const out: { name: string | null; items: PickerItem[] }[] = []
+    const byName = new Map<string | null, PickerItem[]>()
+    for (const item of matching) {
+      const key = item.section ?? null
+      let bucket = byName.get(key)
+      if (!bucket) {
+        bucket = []
+        byName.set(key, bucket)
+        out.push({ name: key, items: bucket })
+      }
+      bucket.push(item)
+    }
+    return out
+  }, [matching])
+
+  // The rows in the order they're drawn — the selection, Enter and the
+  // labels all count in it, so they agree with what's on screen even when a
+  // search interleaves the sections.
+  const filtered = useMemo(() => sections.flatMap((s) => s.items), [sections])
 
   // Keep selection within bounds and reset whenever the result set changes
   // (search, scope toggle). If the caller supplied an `initialItemId` that's
@@ -176,27 +216,90 @@ export function PickerDialog({
     el?.scrollIntoView({ block: 'nearest' })
   }, [selectedIndex])
 
-  // Group items by section while preserving the input order. Groups appear
-  // in the order their first member appears in the filtered list.
-  const sections = useMemo(() => {
-    const out: { name: string | null; items: PickerItem[] }[] = []
-    const byName = new Map<string | null, PickerItem[]>()
-    for (const item of filtered) {
-      const key = item.section ?? null
-      let bucket = byName.get(key)
-      if (!bucket) {
-        bucket = []
-        byName.set(key, bucket)
-        out.push({ name: key, items: bucket })
-      }
-      bucket.push(item)
-    }
-    return out
-  }, [filtered])
-
   const scopeSwitch = scope && onScopeChange && scopeLabels
     ? { scope, onScopeChange, scopeLabels }
     : null
+
+  const flipScope = (): void => {
+    if (scopeSwitch) scopeSwitch.onScopeChange(scopeSwitch.scope === 'current' ? 'all' : 'current')
+  }
+
+  /** Enter on the selected row; Shift for its background variant, Ctrl
+   *  (or ⌘ on the Mac) for the second action. */
+  const confirmByEnter = (e: KeyboardEvent | React.KeyboardEvent): void => {
+    if (altAction && (e.ctrlKey || (isMac && e.metaKey))) {
+      altAction.run()
+      return
+    }
+    const picked = filtered[selectedIndex]
+    if (picked) onConfirm(picked.id, { background: e.shiftKey })
+  }
+
+  // ── Vim COMMAND mode ──
+  // Two-letter row labels (lib/hint-labels.ts), in flat (on-screen) order.
+  const hints = usePopupHints(vimKeymap, filtered.length)
+  const vim = usePopupVimMode({
+    keymap: hints.keymap,
+    popup: popupWindow,
+    box: inputRef,
+    initial: 'insert',
+    open,
+    onCommand: (command) => {
+      const hinted = hintIndex(command)
+      if (hinted !== null) {
+        const item = filtered[hinted]
+        if (item) onConfirm(item.id, { background: false })
+        return
+      }
+      const numbered = /^search-row-(\d)$/.exec(command)
+      if (numbered) {
+        const item = filtered[Number(numbered[1]) - 1]
+        if (item) onConfirm(item.id, { background: false })
+        return
+      }
+      switch (command) {
+        case 'insert-mode': inputRef.current?.focus(); break
+        case 'cursor-down': setSelectedIndex((i) => Math.min(i + 1, Math.max(0, filtered.length - 1))); break
+        case 'cursor-up': setSelectedIndex((i) => Math.max(i - 1, 0)); break
+        case 'cursor-first': setSelectedIndex(0); break
+        case 'cursor-last': setSelectedIndex(Math.max(filtered.length - 1, 0)); break
+        case 'row-open': {
+          const picked = filtered[selectedIndex]
+          if (picked) onConfirm(picked.id, { background: false })
+          break
+        }
+      }
+    },
+    onEscape: onCancel,
+    // Enter keeps its modifiers here (the keymap's <CR> can't tell Shift),
+    // and Tab flips the scope, as they do in the box.
+    intercept: (e) => {
+      if (e.key === 'Enter') {
+        confirmByEnter(e)
+        return true
+      }
+      if (scopeSwitch && e.key === 'Tab' && !e.ctrlKey) {
+        flipScope()
+        return true
+      }
+      return false
+    },
+  })
+
+  // ⌘↵ in COMMAND: the popup's COMMAND keys leave ⌘ chords alone.
+  const altActionRef = useRef(altAction)
+  altActionRef.current = altAction
+  useEffect(() => {
+    if (!popupWindow || !isMac) return
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (!e.metaKey || e.key !== 'Enter' || e.target === inputRef.current || !altActionRef.current) return
+      e.preventDefault()
+      e.stopPropagation()
+      altActionRef.current.run()
+    }
+    popupWindow.addEventListener('keydown', onKeyDown, true)
+    return () => popupWindow.removeEventListener('keydown', onKeyDown, true)
+  }, [popupWindow])
 
   const handleKeyDown = (e: React.KeyboardEvent): void => {
     // Tab flips the scope switch (and Shift+Tab does the same — there are
@@ -204,7 +307,7 @@ export function PickerDialog({
     // rather than tabbing out to the switch.
     if (scopeSwitch && e.key === 'Tab' && !e.altKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault()
-      scopeSwitch.onScopeChange(scopeSwitch.scope === 'current' ? 'all' : 'current')
+      flipScope()
       return
     }
 
@@ -217,23 +320,22 @@ export function PickerDialog({
     } else if (e.key === 'Enter') {
       e.preventDefault()
       // Ctrl+Enter everywhere; on the Mac ⌘↵ as well.
-      if (altAction && (e.ctrlKey || (isMac && e.metaKey))) {
-        altAction.run()
-        return
-      }
-      const picked = filtered[selectedIndex]
-      if (picked) onConfirm(picked.id, { background: e.shiftKey })
+      confirmByEnter(e)
     } else if (e.key === 'Escape') {
       e.preventDefault()
       // The window closes on Esc itself (DetachedWindow) — that would be a
       // second cancel for one press, and the Open Link picker would drop the
       // next link it has queued along with this one.
       e.stopPropagation()
+      // In Vim mode Esc never gets here: the picker's Vim keys cancel it.
       onCancel()
     }
   }
 
   if (!open) return null
+
+  const typeKey = vimKeyCaps(vimKeymap, 'insert-mode')[0]
+  const enterKey = <CornerDownLeft key="go" size={11} strokeWidth={2.5} />
 
   // Pre-compute a flat-index → item-id map so we can highlight the right row
   // as the user arrows through grouped output.
@@ -251,13 +353,14 @@ export function PickerDialog({
       modal={modal}
       matchRunwaPalette
       onClose={onCancel}
+      onWindowChange={setPopupWindow}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
         <div
           data-detached-drag-handle
           className="px-4 py-2.5 border-b border-border shrink-0"
         >
-          <InputField inputRef={inputRef} mode={null} className="h-10">
+          <InputField inputRef={inputRef} mode={vim.mode} pending={vim.pending} className="h-10">
             <Search size={16} className="text-muted-foreground shrink-0" />
             <input
               data-detached-no-drag
@@ -266,7 +369,9 @@ export function PickerDialog({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={placeholder}
+              onFocus={vim.onBoxFocus}
+              onBlur={vim.onBoxBlur}
+              placeholder={vim.mode === 'command' && typeKey ? `${placeholder} (${typeKey} to type)` : placeholder}
               className="flex-1 min-w-0 h-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
             />
           </InputField>
@@ -291,8 +396,9 @@ export function PickerDialog({
                 onToggle={() => {
                   scopeSwitch.onScopeChange(scopeSwitch.scope === 'current' ? 'all' : 'current')
                   // A click moves focus to the switch; hand it back so typing and
-                  // the arrow keys keep driving the list.
-                  inputRef.current?.focus()
+                  // the arrow keys keep driving the list. In Vim's COMMAND mode
+                  // the keys work without it.
+                  if (vim.modeRef.current !== 'command') inputRef.current?.focus()
                 }}
                 title="Toggle scope (Tab)"
                 className="ml-auto shrink-0"
@@ -326,12 +432,13 @@ export function PickerDialog({
                       // and the path's pill are always the same shade.
                       data-group-container={item.color ? '' : undefined}
                       style={item.color ? { ['--gc' as string]: item.color } : undefined}
-                      className={`flex items-center gap-2 px-4 py-1.5 cursor-pointer text-sm ${
+                      className={`relative flex items-center gap-2 px-4 py-1.5 cursor-pointer text-sm ${
                         isSelected ? 'bg-accent text-accent-foreground' : 'text-foreground hover:bg-accent/50'
                       }`}
                       onClick={(e) => onConfirm(item.id, { background: e.shiftKey })}
                       onMouseEnter={() => setSelectedIndex(idx)}
                     >
+                      <RowHint mode={vim.mode} label={hints.labels[idx]} number={idx + 1} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
                       <div className="flex-1 min-w-0">
                         {item.color ? (
                           <GroupPill name={item.label} className="block w-fit max-w-full truncate" />
@@ -355,15 +462,20 @@ export function PickerDialog({
 
         <div data-detached-drag-handle>
           <HintBar>
-            <Hint label="Navigate" keys={[<ArrowUpDown key="nav" size={11} strokeWidth={2.5} />]} />
-            <Hint label={confirmVerb} keys={[<CornerDownLeft key="go" size={11} strokeWidth={2.5} />]} />
+            {vim.mode === 'command'
+              ? <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
+              : <Hint label="Navigate" keys={[<ArrowUpDown key="nav" size={11} strokeWidth={2.5} />]} />}
+            <Hint label={confirmVerb} keys={[enterKey]} />
             {backgroundHint && (
-              <Hint label={backgroundHint} keys={['⇧', <CornerDownLeft key="go" size={11} strokeWidth={2.5} />]} />
+              <Hint label={backgroundHint} keys={['⇧', enterKey]} />
             )}
             {altAction && (
-              <Hint label={altAction.label} keys={[isMac ? '⌘' : 'Ctrl', <CornerDownLeft key="go" size={11} strokeWidth={2.5} />]} />
+              <Hint label={altAction.label} keys={[isMac ? '⌘' : 'Ctrl', enterKey]} />
             )}
+            {vim.mode === 'command' && hints.labels[0] && <Hint label="Row" keys={[`${hints.labels[0]}…`]} />}
             {scopeSwitch && <Hint label="Scope" keys={['⇥']} />}
+            {vim.mode === 'command' && <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />}
+            {vim.mode === 'insert' && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
             <Hint label="Close" keys={['Esc']} />
           </HintBar>
         </div>

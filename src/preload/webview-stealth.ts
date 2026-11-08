@@ -12,15 +12,26 @@
 import { webFrame, ipcRenderer } from 'electron'
 import { KeySequencer, isCtrlToken, keyTokenFromEvent, type VimKeymap } from '../shared/vim-keys'
 import { installWebAuthnBridge } from './webauthn-bridge'
+import {
+  MAIN_WORLD_LOG_PREFIX,
+  PASSWORD_FILLED_ATTR,
+  PASSWORD_UI_ATTR,
+  PSEUDO_FULLSCREEN_EVENT,
+  PSEUDO_FULLSCREEN_INSTALL_KEY,
+  PSEUDO_FULLSCREEN_ROOT_ATTR,
+  PSEUDO_FULLSCREEN_STYLE_ID,
+  PSEUDO_FULLSCREEN_TARGET_ATTR,
+  SWIPE_OVERLAY_ATTR,
+} from '../shared/page-markers'
 
 // Diagnostic marker so we can confirm in the webview's DevTools console that
-// this preload is actually being loaded. If you see "[newbro-stealth] preload
+// this preload is actually being loaded. If you see "[vimperium-stealth] preload
 // loaded" appear in the webview's console, the preload ran. If you also see
-// "[newbro-stealth] main-world injection complete", webFrame.executeJavaScript
+// "[vimperium-stealth] main-world injection complete", webFrame.executeJavaScript
 // successfully reached the page's main world and all the property overrides
 // below are in effect.
 // eslint-disable-next-line no-console
-console.log('[newbro-stealth] preload loaded')
+console.log('[vimperium-stealth] preload loaded')
 
 // True for the kind of pages this preload exists to stealth: real
 // http(s) and file:// content. False for extension UI (popup, options,
@@ -47,7 +58,7 @@ const STEALTH_ENABLED = (() => {
     proto === 'chrome-untrusted:'
   ) {
     // eslint-disable-next-line no-console
-    console.log('[newbro-stealth] skipped for', proto, location.href)
+    console.log('[vimperium-stealth] skipped for', proto, location.href)
     return false
   }
   // about:blank is the initial-document URL for OAuth popups — those
@@ -56,15 +67,15 @@ const STEALTH_ENABLED = (() => {
   return true
 })()
 
-const PSEUDO_FULLSCREEN_EVENT = '__newbro_pseudo_fullscreen__'
-
+// Everything this script names is visible to the page, hence the neutral
+// names from shared/page-markers.ts.
 const PSEUDO_FULLSCREEN_SCRIPT = `
 (() => {
   const EVENT_NAME = ${JSON.stringify(PSEUDO_FULLSCREEN_EVENT)};
-  const INSTALL_KEY = '__newbroPseudoFullscreenInstalled';
-  const ROOT_ATTR = 'data-newbro-pseudo-fullscreen';
-  const TARGET_ATTR = 'data-newbro-pseudo-fullscreen-target';
-  const STYLE_ID = 'newbro-pseudo-fullscreen-style';
+  const INSTALL_KEY = ${JSON.stringify(PSEUDO_FULLSCREEN_INSTALL_KEY)};
+  const ROOT_ATTR = ${JSON.stringify(PSEUDO_FULLSCREEN_ROOT_ATTR)};
+  const TARGET_ATTR = ${JSON.stringify(PSEUDO_FULLSCREEN_TARGET_ATTR)};
+  const STYLE_ID = ${JSON.stringify(PSEUDO_FULLSCREEN_STYLE_ID)};
 
   if (window[INSTALL_KEY]) return;
   Object.defineProperty(window, INSTALL_KEY, { value: true, configurable: false });
@@ -72,7 +83,7 @@ const PSEUDO_FULLSCREEN_SCRIPT = `
   let fullscreenElement = null;
   let fullscreenTarget = null;
 
-  const log = (...a) => { console.log('[newbro-fullscreen]', ...a); };
+  const log = (...a) => { console.log(${JSON.stringify(MAIN_WORLD_LOG_PREFIX)}, 'fullscreen', ...a); };
   const getDescriptor = (owner, prop) => {
     try { return Object.getOwnPropertyDescriptor(owner, prop); }
     catch (_) { return undefined; }
@@ -319,7 +330,7 @@ function installPseudoFullscreen(): void {
       const detail = (event as CustomEvent<{ active?: unknown; phase?: unknown; metrics?: unknown }>).detail
       const next = detail?.active === true
       active = next
-      ipcRenderer.send('newbro-pseudo-fullscreen', {
+      ipcRenderer.send('vimperium-pseudo-fullscreen', {
         active: next,
         phase: typeof detail?.phase === 'string' ? detail.phase : undefined,
         metrics: detail?.metrics,
@@ -328,15 +339,15 @@ function installPseudoFullscreen(): void {
     window.addEventListener('pagehide', () => {
       if (!active) return
       active = false
-      ipcRenderer.send('newbro-pseudo-fullscreen', false)
+      ipcRenderer.send('vimperium-pseudo-fullscreen', false)
     }, true)
     webFrame.executeJavaScript(PSEUDO_FULLSCREEN_SCRIPT, false).catch((err) => {
       // eslint-disable-next-line no-console
-      console.log('[newbro-fullscreen] executeJavaScript rejected:', err)
+      console.log('[vimperium-fullscreen] executeJavaScript rejected:', err)
     })
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.log('[newbro-fullscreen] install threw:', err)
+    console.log('[vimperium-fullscreen] install threw:', err)
   }
 }
 
@@ -345,7 +356,8 @@ const STEALTH_SCRIPT = `
   // No try/catch around console.log — under any normal page state it
   // won't throw, and if it does the failure should surface, not be
   // silenced (we get the page's window.onerror via Electron anyway).
-  const log = (...a) => { console.log('[newbro-stealth]', ...a); };
+  // The page sees this console, so the prefix is a neutral one.
+  const log = (...a) => { console.log(${JSON.stringify(MAIN_WORLD_LOG_PREFIX)}, ...a); };
   log('main-world injection starting');
 
   // 1. navigator.webdriver → undefined. Override on the prototype so the
@@ -548,7 +560,7 @@ const STEALTH_SCRIPT = `
     const isPopup = window.opener != null;
     if (!isPopup) {
       const noopClose = function () {
-        console.log('[newbro-stealth] window.close intercepted (tab, no opener)');
+        log('window.close intercepted (tab, no opener)');
       };
       Object.defineProperty(window, 'close', {
         value: noopClose,
@@ -574,7 +586,7 @@ const STEALTH_SCRIPT = `
     const isPopup = window.opener != null;
     if (!isPopup) {
       const noopFocus = function () {
-        console.log('[newbro-stealth] window.focus intercepted (tab, no opener)');
+        log('window.focus intercepted (tab, no opener)');
       };
       Object.defineProperty(window, 'focus', {
         value: noopFocus,
@@ -597,11 +609,11 @@ if (STEALTH_ENABLED) {
     // the documented way to inject into the page context from a preload.
     webFrame.executeJavaScript(STEALTH_SCRIPT, false).catch((err) => {
       // eslint-disable-next-line no-console
-      console.log('[newbro-stealth] executeJavaScript rejected:', err)
+      console.log('[vimperium-stealth] executeJavaScript rejected:', err)
     })
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.log('[newbro-stealth] executeJavaScript threw:', err)
+    console.log('[vimperium-stealth] executeJavaScript threw:', err)
   }
 }
 
@@ -619,13 +631,13 @@ if ((STEALTH_ENABLED || location.protocol === 'chrome-extension:') && window.top
     installDarkPagesComfort()
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.log('[newbro-dark-pages] comfort filter wiring failed:', err)
+    console.log('[vimperium-dark-pages] comfort filter wiring failed:', err)
   }
 }
 
 function installDarkPagesComfort(): void {
   // The preload can run twice in a page (session preload and the view's own).
-  const flag = '__newbroDarkPagesComfort'
+  const flag = '__vimperiumDarkPagesComfort'
   const scope = globalThis as unknown as Record<string, boolean>
   if (scope[flag]) return
   scope[flag] = true
@@ -643,7 +655,7 @@ function installDarkPagesComfort(): void {
   }
   const initial: unknown = ipcRenderer.sendSync('dark-pages:comfort-css', location.href)
   apply(typeof initial === 'string' ? initial : '')
-  ipcRenderer.on('newbro-dark-pages-css', (_e, css: unknown) => apply(typeof css === 'string' ? css : ''))
+  ipcRenderer.on('vimperium-dark-pages-css', (_e, css: unknown) => apply(typeof css === 'string' ? css : ''))
 }
 
 // ── Mouse side buttons → host navigation ──────────────────────────────────
@@ -667,7 +679,7 @@ if (STEALTH_ENABLED) {
       e.preventDefault()
       e.stopPropagation()
       if (e.type === 'mouseup') {
-        ipcRenderer.send('newbro-nav', e.button === 3 ? 'back' : 'forward')
+        ipcRenderer.send('vimperium-nav', e.button === 3 ? 'back' : 'forward')
       }
     }
     window.addEventListener('mousedown', relay, true)
@@ -675,7 +687,7 @@ if (STEALTH_ENABLED) {
     window.addEventListener('auxclick', relay, true)
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.log('[newbro-stealth] mouse-nav wiring failed:', err)
+    console.log('[vimperium-stealth] mouse-nav wiring failed:', err)
   }
 }
 
@@ -699,14 +711,14 @@ if (STEALTH_ENABLED) {
     installVimPage()
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.log('[newbro-vim] wiring failed:', err)
+    console.log('[vimperium-vim] wiring failed:', err)
   }
 }
 
 function installVimPage(): void {
   // The stealth preload can run twice in a page (session preload and the
   // view's own); one set of listeners is enough.
-  const flag = '__newbroVimPage'
+  const flag = '__vimperiumVimPage'
   const scope = globalThis as unknown as Record<string, boolean>
   if (scope[flag]) return
   scope[flag] = true
@@ -722,6 +734,13 @@ function installVimPage(): void {
   let hints: InputHints | null = null
   // The last thing clicked: scrolling starts from its scrollable ancestor.
   let lastClicked: Element | null = null
+  // When Tab (or Shift+Tab) was last pressed in INSERT. Focus leaving a
+  // field right after is the user moving through a form — on to the next
+  // field, a checkbox, a button — which stays INSERT, so the next Tab moves
+  // on too rather than toggling the Sidebar (COMMAND's Tab); Esc still
+  // leaves. How long after the press a focus move counts as its doing.
+  let tabbedAt = -Infinity
+  const TAB_MOVE_MS = 300
 
   const sequencer = new KeySequencer(
     () => keymap,
@@ -730,14 +749,14 @@ function installVimPage(): void {
     },
     // The keys of an unfinished sequence, for the window's showcmd and its
     // hint labels' typed part.
-    (pending) => ipcRenderer.send('newbro-vim-page', { pending }),
+    (pending) => ipcRenderer.send('vimperium-vim-page', { pending }),
   )
 
   const report = (next: 'command' | 'insert', why: string): void => {
     mode = next
     if (next === 'command') insertFromField = false
     sequencer.reset()
-    ipcRenderer.send('newbro-vim-page', { mode: next, why })
+    ipcRenderer.send('vimperium-vim-page', { mode: next, why })
   }
 
   // Keys go to a field when one has focus: a click or a page script put it
@@ -760,6 +779,9 @@ function installVimPage(): void {
       sequencer.reset()
       hints?.close()
     }
+    // Ctrl+[ (a trip out of INSERT on purpose) is vim's Esc: a prefix pending
+    // in COMMAND goes too — no timeout drops it any more.
+    if (mode === 'command' && leaving) sequencer.reset()
     if (mode === 'command' && leaving && keysBelongToElement(deepActiveElement())) {
       // Out of INSERT on purpose (Ctrl+[): the field lets go of the keys.
       leaveInsert()
@@ -770,16 +792,16 @@ function installVimPage(): void {
       insertFromField = keysBelongToElement(deepActiveElement())
     }
   }
-  ipcRenderer.on('newbro-vim-state', (_e, state: unknown) => {
+  ipcRenderer.on('vimperium-vim-state', (_e, state: unknown) => {
     pushed = true
     applyState(state)
   })
-  ipcRenderer.invoke('newbro-vim-state').then((state: unknown) => {
+  ipcRenderer.invoke('vimperium-vim-state').then((state: unknown) => {
     // A push that beat the answer is newer.
     if (!pushed) applyState(state)
   }).catch((err: unknown) => {
     // eslint-disable-next-line no-console
-    console.log('[newbro-vim] state fetch failed:', err)
+    console.log('[vimperium-vim] state fetch failed:', err)
   })
 
   // Keys whose press Vim took: their release is Vim's too. Pages act on some
@@ -798,8 +820,17 @@ function installVimPage(): void {
     e.stopImmediatePropagation()
   }, true)
   // A release that went elsewhere (the press moved focus out of the page)
-  // must not cost a later one here.
-  window.addEventListener('blur', () => swallowedPresses.clear())
+  // must not cost a later one here. A prefix waits for its next key however
+  // long, but only while the keys stay in the page: losing them (to the
+  // browser's chrome, a popup, a frame, another app) drops it — and reports
+  // that, so the window's showcmd and which-key strip go too.
+  window.addEventListener('blur', () => {
+    swallowedPresses.clear()
+    sequencer.reset()
+  })
+  // So does the page going away mid-sequence (a navigation): no later
+  // report would ever clear it.
+  window.addEventListener('pagehide', () => sequencer.reset())
 
   // Esc out of INSERT: the field (or frame) with the keys lets them go.
   function leaveInsert(): void {
@@ -809,7 +840,7 @@ function installVimPage(): void {
   }
   // Keys typed in a frame (an editor in an iframe — Confluence's comment
   // box) never reach this document; main sees that Esc and passes it here.
-  ipcRenderer.on('newbro-vim-leave-frame', () => {
+  ipcRenderer.on('vimperium-vim-leave-frame', () => {
     if (mode === 'insert') leaveInsert()
   })
 
@@ -819,6 +850,7 @@ function installVimPage(): void {
     if (!e.repeat) swallowedPresses.delete(e.code)
     const modified = e.metaKey || e.ctrlKey || e.altKey
     if (mode === 'insert') {
+      if (e.key === 'Tab' && !modified) tabbedAt = performance.now()
       if (e.key !== 'Escape' || modified || e.shiftKey) return
       consume(e)
       leaveInsert()
@@ -852,6 +884,8 @@ function installVimPage(): void {
   }, true)
   document.addEventListener('focusout', () => {
     if (mode !== 'insert' || !insertFromField) return
+    // Tabbing through a form stays INSERT, wherever the focus lands.
+    if (performance.now() - tabbedAt < TAB_MOVE_MS) return
     setTimeout(() => {
       if (mode === 'insert' && insertFromField && document.hasFocus() && !keysBelongToElement(deepActiveElement())) {
         report('command', 'field left')
@@ -871,12 +905,15 @@ function installVimPage(): void {
   })
   // The page's keys typed while the chrome has the keyboard (the renderer
   // passes them on, to the active page only).
-  ipcRenderer.on('newbro-vim-run', (_e, command: unknown) => {
+  ipcRenderer.on('vimperium-vim-run', (_e, command: unknown) => {
     if (typeof command === 'string' && mode === 'command') runCommand(command)
   })
   window.addEventListener('mousedown', (e) => {
     const target = e.composedPath()[0]
     if (target instanceof Element) lastClicked = target
+    // A click is the hand going elsewhere: a half-typed sequence goes.
+    // Only a real one — pages dispatch their own.
+    if (e.isTrusted) sequencer.reset()
   }, true)
 
   function runCommand(command: string): void {
@@ -887,8 +924,8 @@ function installVimPage(): void {
       case 'half-page-up': glideBy((el) => -el.clientHeight / 2); break
       case 'page-top': jumpTo('top'); break
       case 'page-bottom': jumpTo('bottom'); break
-      case 'back': ipcRenderer.send('newbro-nav', 'back'); break
-      case 'forward': ipcRenderer.send('newbro-nav', 'forward'); break
+      case 'back': ipcRenderer.send('vimperium-nav', 'back'); break
+      case 'forward': ipcRenderer.send('vimperium-nav', 'forward'); break
       case 'insert-mode':
         insertFromField = false
         report('insert', 'i')
@@ -898,7 +935,7 @@ function installVimPage(): void {
         break
       // The browser's own commands (and the Sidebar's): the renderer runs them.
       default:
-        ipcRenderer.send('newbro-vim-page', { command })
+        ipcRenderer.send('vimperium-vim-page', { command })
     }
   }
 
@@ -1263,14 +1300,14 @@ if (STEALTH_ENABLED) {
       e.preventDefault()
       e.stopPropagation()
       if (e.type === 'auxclick') {
-        ipcRenderer.send('newbro-open-in-new-tab', a.href)
+        ipcRenderer.send('vimperium-open-in-new-tab', a.href)
       }
     }
     window.addEventListener('mousedown', middleClickRelay, true)
     window.addEventListener('auxclick', middleClickRelay, true)
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.log('[newbro-stealth] middle-click wiring failed:', err)
+    console.log('[vimperium-stealth] middle-click wiring failed:', err)
   }
 }
 
@@ -1295,9 +1332,9 @@ if (STEALTH_ENABLED) {
 // pointer that can still move (Jira board columns, wide tables, code
 // blocks) wins, like in Chrome: the page keeps that whole gesture.
 //
-// Main pushes the current history bounds via 'newbro-gesture-bounds' so we
+// Main pushes the current history bounds via 'vimperium-gesture-bounds' so we
 // don't engage a direction the tab can't go; on commit we reuse the
-// existing 'newbro-nav' channel (the same one the mouse side-buttons use).
+// existing 'vimperium-nav' channel (the same one the mouse side-buttons use).
 //
 // The overlay div lives in the page document, created here so site CSS
 // resets can't fight it; z-index 2147483647 + pointer-events:none stacks
@@ -1338,7 +1375,7 @@ if (STEALTH_ENABLED) try {
   const ensureOverlay = (): HTMLDivElement => {
     if (overlay && overlay.isConnected) return overlay
     const el = document.createElement('div')
-    el.setAttribute('data-newbro-swipe', '')
+    el.setAttribute(SWIPE_OVERLAY_ATTR, '')
     el.style.cssText = [
       'position:fixed',
       'top:50%',
@@ -1387,7 +1424,7 @@ if (STEALTH_ENABLED) try {
   // History bounds, pushed from main on every navigation (emitNavState).
   let canGoBack = false
   let canGoForward = false
-  ipcRenderer.on('newbro-gesture-bounds', (_e, payload: unknown) => {
+  ipcRenderer.on('vimperium-gesture-bounds', (_e, payload: unknown) => {
     const p = (payload ?? {}) as { canGoBack?: unknown; canGoForward?: unknown }
     canGoBack = p.canGoBack === true
     canGoForward = p.canGoForward === true
@@ -1573,7 +1610,7 @@ if (STEALTH_ENABLED) try {
         engaged = false
         direction = null
         hideOverlay()
-        ipcRenderer.send('newbro-nav', dir)
+        ipcRenderer.send('vimperium-nav', dir)
         return
       }
 
@@ -1583,7 +1620,7 @@ if (STEALTH_ENABLED) try {
   )
 } catch (err) {
   // eslint-disable-next-line no-console
-  console.log('[newbro-stealth] swipe-gesture wiring failed:', err)
+  console.log('[vimperium-stealth] swipe-gesture wiring failed:', err)
 }
 
 // ── Right-click → host context menu ──────────────────────────────────
@@ -1618,15 +1655,15 @@ if (STEALTH_ENABLED) try {
       const a = (target?.closest?.('a') as HTMLAnchorElement | null) ?? null
       if (a?.href) linkUrl = a.href
     } catch (err) {
-      console.error('[newbro-stealth] context-menu link lookup threw:', err)
+      console.error('[vimperium-stealth] context-menu link lookup threw:', err)
     }
     try {
       const img = (target?.closest?.('img') as HTMLImageElement | null) ?? null
       if (img?.currentSrc || img?.src) imgUrl = img.currentSrc || img.src
     } catch (err) {
-      console.error('[newbro-stealth] context-menu img lookup threw:', err)
+      console.error('[vimperium-stealth] context-menu img lookup threw:', err)
     }
-    ipcRenderer.send('newbro-context-menu', {
+    ipcRenderer.send('vimperium-context-menu', {
       selection,
       x: Math.round(e.clientX),
       y: Math.round(e.clientY),
@@ -1636,7 +1673,7 @@ if (STEALTH_ENABLED) try {
   }, false)
 } catch (err) {
   // eslint-disable-next-line no-console
-  console.log('[newbro-stealth] context-menu wiring failed:', err)
+  console.log('[vimperium-stealth] context-menu wiring failed:', err)
 }
 
 // ── Password manager ─────────────────────────────────────────────────
@@ -1646,11 +1683,11 @@ if (STEALTH_ENABLED) try {
 // returns any secret, so a compromised page cannot ask for another site's data.
 // Some Electron versions can run the same preload once from webPreferences and
 // once from the session registration; keep this feature idempotent per frame.
-const passwordManagerGlobal = globalThis as typeof globalThis & { __newbroPasswordManagerInstalled?: boolean }
+const passwordManagerGlobal = globalThis as typeof globalThis & { __vimperiumPasswordManagerInstalled?: boolean }
 const PASSWORD_MANAGER_ENABLED = STEALTH_ENABLED
   && (location.protocol === 'https:' || location.protocol === 'http:')
-  && !passwordManagerGlobal.__newbroPasswordManagerInstalled
-if (PASSWORD_MANAGER_ENABLED) passwordManagerGlobal.__newbroPasswordManagerInstalled = true
+  && !passwordManagerGlobal.__vimperiumPasswordManagerInstalled
+if (PASSWORD_MANAGER_ENABLED) passwordManagerGlobal.__vimperiumPasswordManagerInstalled = true
 if (PASSWORD_MANAGER_ENABLED) try {
   interface PagePasswordEntry {
     id: string
@@ -1718,7 +1755,7 @@ if (PASSWORD_MANAGER_ENABLED) try {
       setInputValue(usernameInput, entry.username)
     }
     setInputValue(passwordInput, entry.password)
-    passwordInput.setAttribute('data-newbro-password-filled', 'true')
+    passwordInput.setAttribute(PASSWORD_FILLED_ATTR, 'true')
     autoFilled.add(passwordInput)
     chooserHost?.remove()
     chooserHost = null
@@ -1735,7 +1772,7 @@ if (PASSWORD_MANAGER_ENABLED) try {
     if (entries.length === 0 || !passwordInput.isConnected) return
     const rect = passwordInput.getBoundingClientRect()
     const host = document.createElement('div')
-    host.setAttribute('data-newbro-password-ui', 'chooser')
+    host.setAttribute(PASSWORD_UI_ATTR, 'chooser')
     host.style.cssText = `position:fixed;left:${Math.max(8, Math.min(rect.left, window.innerWidth - 328))}px;top:${Math.min(window.innerHeight - 80, rect.bottom + 6)}px;width:320px;z-index:2147483647;`
     const shadow = host.attachShadow({ mode: 'closed' })
     const style = document.createElement('style')
@@ -1795,7 +1832,7 @@ if (PASSWORD_MANAGER_ENABLED) try {
   const showSavePrompt = (offer: PendingPasswordOffer): void => {
     savePromptHost?.remove()
     const host = document.createElement('div')
-    host.setAttribute('data-newbro-password-ui', 'save-prompt')
+    host.setAttribute(PASSWORD_UI_ATTR, 'save-prompt')
     host.style.cssText = 'position:fixed;right:16px;top:16px;width:330px;z-index:2147483647;'
     const shadow = host.attachShadow({ mode: 'closed' })
     const style = document.createElement('style')
@@ -1964,5 +2001,5 @@ if (PASSWORD_MANAGER_ENABLED) try {
   }
 } catch (err) {
   // eslint-disable-next-line no-console
-  console.log('[newbro-passwords] preload wiring failed:', err)
+  console.log('[vimperium-passwords] preload wiring failed:', err)
 }

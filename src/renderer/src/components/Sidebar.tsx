@@ -9,9 +9,8 @@ import { ChevronRight, ChevronDown, Plus, X } from 'lucide-react'
 import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dropdown-protocol'
 import { useVimSidebar } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
-import { displayKeySequence, keysFor, type SidebarCommand, type VimKeymap } from '../lib/vim-keymap'
-import { RowHint, SidebarHintBar } from './KeyHints'
-import { useHintLabels, useHintTargets } from '../lib/hint-labels'
+import { type SidebarCommand, type VimKeymap } from '../lib/vim-keymap'
+import { SidebarHintBar } from './KeyHints'
 import { SplitGlyph } from './SplitPanes'
 import { isSplitShown, useSplitStore } from '../lib/split-view'
 
@@ -86,7 +85,7 @@ function describeSelection(groupCount: number, tabCount: number): string {
 
 const MIN_WIDTH = 180
 const DEFAULT_WIDTH = 256
-const SIDEBAR_WIDTH_KEY = 'newbro-sidebar-width'
+const SIDEBAR_WIDTH_KEY = 'vimperium-sidebar-width'
 
 // Pill text colour, the guide-line geometry, and the per-theme group
 // colour resolution are all owned by globals.css now (see the
@@ -109,26 +108,14 @@ function loadWidth(): number {
 
 interface Props {
   visible: boolean
-  /** When true, the first 9 visible tabs show a small "N" badge advertising
-   *  the CmdOrCtrl+N quick-jump. Visible state is owned by App.tsx because
-   *  it lives in the settings store. */
-  showTabNumbers: boolean
   /** Vim's Sidebar keys are live (one was just used in COMMAND): they act
    *  on the active row. */
   vimActive: boolean
   /** Vim mode's COMMAND keys, for the hint bar; null while Vim mode is off. */
   vimKeymap: VimKeymap | null
-  /** Its rows wear two-letter labels that pick them (lib/hint-labels.ts):
-   *  Vim's COMMAND with the Sidebar open of itself, not shown by Ctrl. */
-  hintsOn: boolean
-  /** Keys typed so far of an unfinished COMMAND sequence. */
-  vimPending: string
 }
 
-// Its rows' ids among the window's hint targets (the group page has its own).
-const hintId = (rowId: string): string => `sidebar:${rowId}`
-
-export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn, vimPending }: Props) {
+export function Sidebar({ visible, vimActive, vimKeymap }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTabGroupId = useAppStore((s) => s.activeTabGroupId)
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
@@ -204,7 +191,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
     // Tabs are now WebContentsViews layered on top of the renderer; with
     // them visible, pointermove would be eaten by the guest. Tell the
     // WebviewPanel to zero out tab bounds for the duration of the drag.
-    window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+    window.dispatchEvent(new CustomEvent('vimperium-tab-hide'))
   }, [])
 
   useEffect(() => {
@@ -221,7 +208,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       localStorage.setItem(SIDEBAR_WIDTH_KEY, String(currentW.current))
-      window.dispatchEvent(new CustomEvent('newbro-tab-show'))
+      window.dispatchEvent(new CustomEvent('vimperium-tab-show'))
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -269,7 +256,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       if (!dragActivated.current && Math.abs(dx) + Math.abs(dy) < 6) return
       dragActivated.current = true
       setDragging({ type, id, ids })
-      window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+      window.dispatchEvent(new CustomEvent('vimperium-tab-hide'))
       // Determine drop target from pointer position
       updateDropTarget(me.clientY, type)
     }
@@ -392,7 +379,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
     // Clean up immediately
     setDragging(null)
     setDropTarget(null)
-    window.dispatchEvent(new CustomEvent('newbro-tab-show'))
+    window.dispatchEvent(new CustomEvent('vimperium-tab-show'))
 
     if (!d || !dt) return
 
@@ -423,7 +410,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       if (!dragActivated.current) {
         dragActivated.current = true
         setDragging({ type, id, ids })
-        window.dispatchEvent(new CustomEvent('newbro-tab-hide'))
+        window.dispatchEvent(new CustomEvent('vimperium-tab-hide'))
       }
     }
 
@@ -493,51 +480,16 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
   const vimCursorId = vimCursorOverride !== null && visibleRowIds.includes(vimCursorOverride)
     ? vimCursorOverride
     : activeRowId
-  // COMMAND's labels on every row showing, after the group page's.
-  useHintTargets('sidebar', 1, hintsOn
-    ? visibleRowIds.map((id) => ({
-      id: hintId(id),
-      activate: () => {
-        const ws = useAppStore.getState().getActiveWorkspace()
-        if (ws?.tabGroups.some((g) => g.id === id)) setActiveGroup(id)
-        else setActiveTab(id)
-      },
-    }))
-    : null)
-  const hintLabels = useHintLabels()
-
-  // Listening whenever it's showing: the first Ctrl+J arrives before
-  // vimActive does.
-  const { runMenu } = useVimSidebar(visible, (cmd) => handleVimCommand(cmd))
+  // Listening whenever Vim mode is on, hidden too: Ctrl+J/K still step
+  // through the rows, showing each, and Ctrl+H/L fold the active tab's
+  // group. The first Ctrl+J arrives before vimActive does.
+  const { runMenu } = useVimSidebar(vimKeymap !== null, (cmd) => handleVimCommand(cmd))
   const findVimRow = (id: string): Element | null =>
     sidebarRef.current?.querySelector(`[data-vim-row="${CSS.escape(id)}"]`) ?? null
   useEffect(() => {
     if (!visible || !vimActive || !vimCursorId) return
     findVimRow(vimCursorId)?.scrollIntoView({ block: 'nearest' })
   }, [visible, vimActive, vimCursorId])
-
-  // Visible-order positions (1..9) for the quick-jump badges. Mirrors
-  // App.tsx's CmdOrCtrl+N handler: ungrouped tabs and the children of
-  // expanded groups, in sidebar order, skipping collapsed groups. Beyond
-  // the 9th visible tab no badge is shown — the shortcut only covers 1-9.
-  const tabNumberById = useMemo(() => {
-    const m = new Map<string, number>()
-    if (!showTabNumbers) return m
-    let count = 0
-    for (const item of sidebarItems) {
-      if (item.type === 'tab') {
-        if (++count > 9) break
-        m.set(item.id, count)
-      } else if (!item.group.isCollapsed) {
-        for (const t of item.group.tabs) {
-          if (++count > 9) break
-          m.set(t.id, count)
-        }
-        if (count > 9) break
-      }
-    }
-    return m
-  }, [sidebarItems, showTabNumbers])
 
   /** Cmd/Ctrl+Click toggles a row (tab or group header) in the selection;
    *  Shift+Click selects every visible row between the anchor and this one.
@@ -772,7 +724,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       // but context menu lets the user act on any tab or the whole
       // multi-selection.
       window.dispatchEvent(
-        new CustomEvent('newbro:open-move-tab', { detail: { tabIds: actionTargets } }),
+        new CustomEvent('vimperium:open-move-tab', { detail: { tabIds: actionTargets } }),
       )
       if (useSelection) setSelectedIds(new Set())
     }
@@ -832,7 +784,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
     // The copy lands right below the original and nothing else changes.
     else if (action === 'duplicate-group') duplicateItems([groupId])
     else if (action === 'move-group') {
-      window.dispatchEvent(new CustomEvent('newbro:open-move-group', { detail: { groupId } }))
+      window.dispatchEvent(new CustomEvent('vimperium:open-move-group', { detail: { groupId } }))
     }
   }
 
@@ -974,12 +926,6 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
     const active = tab.id === activeTabId
     const splitPane = split ? (tab.id === split.first ? 'first' : tab.id === split.second ? 'second' : null) : null
     const splitVisible = !active && splitPane !== null && splitOnScreen
-    const tabNumber = tabNumberById.get(tab.id)
-    // What switches to it: Cmd+N, or in Vim mode whatever tab-N is bound to.
-    const vimTabKeys = tabNumber !== undefined && vimKeymap ? keysFor(vimKeymap, `tab-${tabNumber}`)[0] : undefined
-    const tabNumberKeys = vimKeymap
-      ? vimTabKeys && displayKeySequence(vimTabKeys)
-      : `${isMacOS ? '⌘' : 'Ctrl+'}${tabNumber}`
     const showBefore = containerId === null
       ? isSidebarDropBefore(index)
       : isGroupedTabDropBefore(containerId, index)
@@ -989,6 +935,8 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       <div
         key={tab.id}
         data-sidebar-row=""
+        // Vim's ; (chrome-hints) labels it: typing the label clicks the row.
+        data-chrome-hint=""
         data-vim-row={tab.id}
         data-drop-tab-id={tab.id}
         data-drop-container={containerAttr}
@@ -1037,32 +985,13 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
           </span>
         )}
         {tab.comment && <CommentChip comment={tab.comment} />}
-        {/* A numbered row keeps its stub clear of the 24×24 slot below. */}
-        <span
-          className="min-w-title-stub flex-1 truncate text-xs"
-          style={tabNumber !== undefined || hintLabels.has(hintId(tab.id)) ? { ['--title-stub-reserve' as string]: '1.5rem' } : undefined}
-          title={tab.title}
-        >
+        <span className="min-w-title-stub flex-1 truncate text-xs" title={tab.title}>
           {tab.title}
         </span>
-        {/* Right-edge slot: the always-visible Cmd+N badge (when this tab
-            is among the first 9 visible) and the hover-only close X share
-            a single 24×24 cell. The Cmd+N badge is sized to match the
-            group counter on the left (w-4 h-4) and centred inside the
-            cell; the close X keeps the full 24×24 click target so it
-            stays easy to hit. */}
+        {/* Right-edge slot: the hover-only close X, keeping the full 24×24
+            click target so it stays easy to hit. */}
         <div className="absolute right-1 top-0 bottom-0 flex items-center">
           <div className="relative h-6 w-6 flex items-center justify-center">
-            {hintLabels.has(hintId(tab.id)) ? (
-              <RowHint mode="command" label={hintLabels.get(hintId(tab.id))} number={0} pending={vimPending} className="group-hover/tab:opacity-0" />
-            ) : tabNumber !== undefined && (
-              <span
-                className="w-4 h-4 inline-flex items-center justify-center rounded bg-card/85 backdrop-blur-sm text-[10px] font-medium tabular-nums text-muted-foreground group-hover/tab:opacity-0 transition-opacity pointer-events-none"
-                title={tabNumberKeys ? `Switch to this tab — ${tabNumberKeys}` : undefined}
-              >
-                {tabNumber}
-              </span>
-            )}
             <button
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
@@ -1107,6 +1036,7 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
       <div
         data-sidebar-row=""
         data-sidebar-group-row=""
+        data-chrome-hint=""
         data-vim-row={group.id}
         data-drop-group-header={group.id}
         data-sidebar-index={sidebarIdx}
@@ -1202,11 +1132,6 @@ export function Sidebar({ visible, showTabNumbers, vimActive, vimKeymap, hintsOn
             <span className="flex-1 min-w-0 truncate">{group.name}</span>
           )}
         </span>
-        {hintLabels.has(hintId(group.id)) && (
-          <div className="absolute right-2 top-0 bottom-0 flex items-center group-hover:opacity-0 pointer-events-none">
-            <RowHint mode="command" label={hintLabels.get(hintId(group.id))} number={0} pending={vimPending} />
-          </div>
-        )}
         {/* Action overlay — absolute right, sits ON TOP of the pill on
             hover so the pill underneath isn't squeezed by reserved button
             space. Each button has a card-tone background so the icons

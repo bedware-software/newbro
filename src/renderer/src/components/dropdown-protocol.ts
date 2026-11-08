@@ -133,11 +133,13 @@ export interface DropdownSpec {
   // Both kinds (list = bottom actions; menu = the entire body):
   actions?: DropdownAction[]
 
-  // Menu kind: opened from the keyboard (a panel's vim mode, or m on the
-  // Downloads page). The first action starts highlighted; j/k (or the arrow
-  // keys) move through the actions, h/l across the colour swatches, Enter
-  // picks the highlighted one — and each action's own key (DropdownAction's
-  // key) picks it at once.
+  // Opened from the keyboard (a panel's vim mode, m on the Downloads page,
+  // Vim's om / oP / oW / oe). A menu starts on its first action, a list on
+  // its current row; j/k (or the arrow keys) move through the rows, the
+  // New… row and the actions, h/l across the colour swatches, Enter picks
+  // the highlighted one — and each action's own key (DropdownAction's key)
+  // picks it at once. On a list's row r renames it, d deletes it, Shift+J/K
+  // move it (with `reorder`); n is New…, 1–9 pick a row at once.
   keyboard?: boolean
 }
 

@@ -15,7 +15,7 @@
 // stealth preload.
 //
 // License: GPL-3.0 by default. Switch to 'Patron-License-2020-11-19'
-// (paid via the maintainer's GitHub Sponsors) if Newbro ships closed-source.
+// (paid via the maintainer's GitHub Sponsors) if Vimperium ships closed-source.
 
 import { BrowserWindow, type Session, type WebContents, type BaseWindow } from 'electron'
 import { ElectronChromeExtensions } from 'electron-chrome-extensions'
@@ -74,7 +74,7 @@ export function getOrCreateExtensions(
     selectTab: callbacks.selectTab,
     removeTab: callbacks.removeTab,
     createWindow: async () => {
-      // Newbro's "windows" don't map cleanly onto Chrome's windows.create
+      // Vimperium's "windows" don't map cleanly onto Chrome's windows.create
       // (we have a single workspace window per profile, not arbitrary
       // popouts). Return the most-recently-focused workspace window so
       // the call doesn't reject; downstream chrome.tabs.create lands a
@@ -109,7 +109,7 @@ export function getOrCreateExtensions(
   log.info('extensions: ElectronChromeExtensions ready', { partition: '(by-session)' })
   // Listen for popups created via chrome.action.openPopup or via the
   // library's <browser-action-list>. We don't use either path
-  // (Newbro has its own toolbar icons that drive popups via IPC), but
+  // (Vimperium has its own toolbar icons that drive popups via IPC), but
   // the listener gives us a place to add diagnostics if the library
   // ever decides to open a popup on its own.
   ext.on('browser-action-popup-created', (popup) => {
@@ -170,7 +170,7 @@ function patchLibraryHandlers(ext: ElectronChromeExtensions): void {
     const p = props as { url?: unknown }
     return isNewTabUrl(p.url) ? { ...p, url: blank } : props
   }
-  // No url → Newbro's own new tab.
+  // No url → Vimperium's own new tab.
   wrap('tabs.create', (_e, [details, ...rest]) => [withoutNewTab(details, undefined), ...rest])
   wrap('tabs.update', (_e, args) => args.map((a) => withoutNewTab(a, 'about:blank')))
   wrap('windows.create', (_e, [details, ...rest]) => {
@@ -191,7 +191,7 @@ function patchLibraryHandlers(ext: ElectronChromeExtensions): void {
     ),
   )
   // The library reports every command unbound; answer with the bindings
-  // Newbro actually applies (Settings → Extensions).
+  // Vimperium actually applies (Settings → Extensions).
   const getAll = handlers.get('commands.getAll')
   if (getAll) {
     getAll.callback = (event) => (event.extension ? chromeCommandsFor(event.extension.id) : [])

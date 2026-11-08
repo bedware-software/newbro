@@ -3,7 +3,7 @@
 // search for the rest of the text, with no round trip through a search
 // engine. The table lives in main (src/main/bangs-store.ts), seeded with
 // DEFAULT_BANGS; the renderer resolves against its copy (lib/bangs.ts), and
-// the newbro://bangs page edits it (components/BangsPage.tsx).
+// the vimperium://bangs page edits it (components/BangsPage.tsx).
 
 export interface Bang {
   /** Stable id. Seeded bangs keep `builtin:<trigger>` even when edited, so

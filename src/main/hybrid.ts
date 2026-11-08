@@ -4,14 +4,14 @@
 // macOS hands iCloud Keychain passkeys only to browsers Apple entitles, but an
 // iPhone serves those same passkeys to any client that speaks this protocol:
 //
-//   1. Newbro shows a QR code — FIDO:/ plus digits encoding CBOR with a fresh
+//   1. Vimperium shows a QR code — FIDO:/ plus digits encoding CBOR with a fresh
 //      identity public key and secret. The iPhone's Camera scans it.
 //   2. The phone connects to its tunnel server (Apple's is cable.auth.com) and
 //      broadcasts a Bluetooth LE advert, encrypted with a key derived from the
 //      QR secret, that names the tunnel. Bluetooth is the proximity check: a
 //      remote attacker who sees the QR code can't receive the advert. Node has
-//      no Bluetooth, so the newbro-hybrid helper (native/) scans for it.
-//   3. Newbro joins the tunnel over WebSocket, runs a Noise KNpsk0 handshake
+//      no Bluetooth, so the vimperium-hybrid helper (native/) scans for it.
+//   3. Vimperium joins the tunnel over WebSocket, runs a Noise KNpsk0 handshake
 //      keyed by the QR identity and a PSK derived from the advert, and sends a
 //      CTAP2 getAssertion. The phone asks for Face ID and returns the assertion.
 
@@ -366,7 +366,7 @@ function decodePostHandshake(data: Buffer): { payload: CborValue; revision: numb
 
 function helperPath(): string {
   // Packed builds run it from app.asar.unpacked (build.asarUnpack).
-  return join(__dirname, '../native/newbro-hybrid').replace(`${sep}app.asar${sep}`, `${sep}app.asar.unpacked${sep}`)
+  return join(__dirname, '../native/vimperium-hybrid').replace(`${sep}app.asar${sep}`, `${sep}app.asar.unpacked${sep}`)
 }
 
 function renderQr(text: string): Promise<string> {
@@ -627,7 +627,7 @@ export async function getAssertionFromPhone(options: {
     const eid = await scanForAdvert(eidKey, (state) => {
       if (state === 'off') window.status('Turn on Bluetooth: your iPhone talks to this Mac over Bluetooth.', true)
       else if (state === 'unauthorized') {
-        window.status('Allow Newbro to use Bluetooth in System Settings → Privacy & Security → Bluetooth.', true)
+        window.status('Allow Vimperium to use Bluetooth in System Settings → Privacy & Security → Bluetooth.', true)
       } else if (state === 'unsupported') window.status('This Mac has no Bluetooth LE.', true)
       else if (state === 'on') window.status('Waiting for your iPhone…')
     }, cancel.signal)

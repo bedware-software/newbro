@@ -2,6 +2,26 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, Folder, Import, Layers } from 'lucide-react'
 import type { WorkspaceCandidate } from '../store/types'
 import { DetachedWindow } from './DetachedWindow'
+import { Hint, HintBar, vimKeyCaps } from './KeyHints'
+import { useChecklistKeys } from '../lib/dialog-keys'
+import { useWindowVimKeymap } from '../lib/window-vim-keymap'
+
+/** The keys of Import's and Export's lists (lib/dialog-keys.ts
+ *  useChecklistKeys), along the bottom: Vim mode's when it's on. */
+export function ChecklistHints({ vim, confirmLabel }: { vim: boolean; confirmLabel: string }) {
+  const parsed = useWindowVimKeymap()
+  const move = vim && parsed ? vimKeyCaps(parsed.main, 'scroll-down', 'scroll-up') : []
+  const fold = vim && parsed ? vimKeyCaps(parsed.main, 'forward', 'back') : []
+  return (
+    <HintBar>
+      <Hint label="Move" keys={move.length ? move : ['↓', '↑']} />
+      <Hint label="Tick" keys={['Space']} />
+      <Hint label="Preview" keys={fold.length ? fold : ['→', '←']} />
+      <Hint label={confirmLabel} keys={['Enter']} />
+      <Hint label="Close" keys={['Esc']} />
+    </HintBar>
+  )
+}
 
 interface Props {
   open: boolean
@@ -67,15 +87,35 @@ export function ImportWorkspaceDialog({ open, candidates, onConfirm, onCancel }:
     onConfirm(picked)
   }
 
+  // The keyboard: a cursor through the workspaces (lib/dialog-keys.ts).
+  const [popup, setPopup] = useState<Window | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const keys = useChecklistKeys({
+    popup,
+    open,
+    count: candidates.length,
+    onToggle: (i) => { if (candidates[i]) toggleSelect(candidates[i].id) },
+    onFold: (i, unfold) => {
+      const c = candidates[i]
+      if (c && expanded.has(c.id) !== unfold) toggleExpand(c.id)
+    },
+    onConfirm: handleImport,
+    defaultButton: confirmRef,
+  })
+  useEffect(() => {
+    listRef.current?.querySelector(`[data-row-index="${keys.cursor}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [keys.cursor])
+
   if (!open) return null
 
   return (
     <DetachedWindow
       open={open}
-      title="Import Workspaces - Newbro"
+      title="Import Workspaces - Vimperium"
       width={560}
       height={560}
       onClose={onCancel}
+      onWindowChange={setPopup}
     >
       <div className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col">
         <div
@@ -88,7 +128,7 @@ export function ImportWorkspaceDialog({ open, candidates, onConfirm, onCancel }:
             <div className="text-[11px] text-muted-foreground truncate">
               {candidates.length === 0
                 ? 'No valid workspaces found in this file.'
-                : `${candidates.length} workspace${candidates.length === 1 ? '' : 's'} found — click to preview`}
+                : `${candidates.length} workspace${candidates.length === 1 ? '' : 's'} found — open one to preview it`}
             </div>
           </div>
           {candidates.length > 0 && (
@@ -102,23 +142,25 @@ export function ImportWorkspaceDialog({ open, candidates, onConfirm, onCancel }:
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto py-1">
+        <div ref={listRef} className="flex-1 overflow-y-auto py-1">
           {candidates.length === 0 && (
             <div className="px-4 py-10 text-center text-xs text-muted-foreground">
               This file does not contain any folders that match a workspace
               shape (tabs and at most one level of tab-group folders).
             </div>
           )}
-          {candidates.map((c) => {
+          {candidates.map((c, index) => {
             const isSelected = selected.has(c.id)
             const isExpanded = expanded.has(c.id)
             const tabCount = c.tabs.length + c.tabGroups.reduce((n, g) => n + g.tabs.length, 0)
             return (
               <div key={c.id} className="px-2">
                 <div
+                  data-row-index={index}
                   className={`flex items-center gap-2 px-2 py-2 rounded-md cursor-pointer ${
                     isSelected ? 'bg-accent/40' : 'hover:bg-accent/30'
-                  }`}
+                  } ${keys.shown && keys.cursor === index ? 'ring-1 ring-inset ring-primary' : ''}`}
+                  onMouseDown={() => keys.setCursor(index)}
                   onClick={() => toggleExpand(c.id)}
                 >
                   <input
@@ -219,15 +261,13 @@ export function ImportWorkspaceDialog({ open, candidates, onConfirm, onCancel }:
               ref={confirmRef}
               onClick={handleImport}
               disabled={noneSelected}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') onCancel()
-              }}
               className="h-8 px-3 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Import {noneSelected ? '' : `(${selected.size})`}
             </button>
           </div>
         </div>
+        <ChecklistHints vim={keys.vim} confirmLabel="Import" />
       </div>
     </DetachedWindow>
   )

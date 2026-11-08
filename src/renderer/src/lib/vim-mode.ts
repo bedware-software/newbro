@@ -14,12 +14,13 @@ import { log } from './log'
 //   INSERT  — keys go where you type: a page field, the page itself (i),
 //             the URL bar, a rename box.
 // Clicking a text field is INSERT, anywhere else COMMAND; Esc (or Ctrl+[)
-// leaves INSERT. A Sidebar key in COMMAND (the arrows: ↓/↑ step through the
-// rows, ←/→ fold and unfold) is the Sidebar's turn: a cursor on the active
-// row (and a hidden Sidebar shown) — with the keyboard kept in the chrome,
-// so a page's text field can't take it on the way — until a pause, or Ctrl
-// let go after a Ctrl chord one (Ctrl+M, Ctrl+Shift+J/K), hands it to the
-// page shown. Ctrl alone does nothing, so its other chords never flash it.
+// leaves INSERT — in a popup's field Ctrl+C (or Ctrl+[) does, and Esc closes
+// the popup (usePopupVimMode). A Sidebar key in COMMAND (Ctrl+J/K step through the rows,
+// Ctrl+H/L fold and unfold) is the Sidebar's turn: a cursor on the active
+// row — with the keyboard kept in the chrome, so a page's text field can't
+// take it on the way — until Ctrl is let go, which hands it to the page
+// shown (one rebound to a plain key ends after a pause instead). Ctrl alone
+// does nothing, so its other chords never flash the cursor.
 // This module holds the window's mode and tells main, which passes it on to
 // the pages.
 
@@ -34,14 +35,16 @@ export function keepsChromeKeyboard(): boolean {
   return walkingTabs
 }
 
-// With no Ctrl held (the arrows, or any plain key a Sidebar command is
-// bound to), how long the Sidebar keys stay live after the last one.
+// With no Ctrl held (a plain key a Sidebar command is rebound to), how long
+// the Sidebar keys stay live after the last one.
 const WALK_IDLE_MS = 1000
 // Commands that keep going while their key is held.
 const REPEATABLE = new Set([
   'scroll-down', 'scroll-up', 'half-page-down', 'half-page-up',
   'cursor-down-show', 'cursor-up-show', 'row-move-down', 'row-move-up',
   'cursor-down', 'cursor-up', 'find-next', 'find-prev',
+  // Settings' h / l (H / L): a slider keeps sliding.
+  'value-next', 'value-prev', 'value-next-big', 'value-prev-big',
 ])
 
 function isEditable(target: EventTarget | null): boolean {
@@ -49,16 +52,34 @@ function isEditable(target: EventTarget | null): boolean {
   return target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT'
 }
 
-/** A page this renderer draws itself (marked `data-vim-page`, e.g.
- *  Downloads): it has keys of its own, the way a tab's page does. */
+// Inputs whose keys type text — not a checkbox, a slider or a button.
+const TYPING_INPUT_TYPES = new Set(['', 'text', 'search', 'url', 'tel', 'email', 'password', 'number'])
+
+/** A field keys type into: a text input, a textarea, something editable.
+ *  By its tag rather than instanceof, which fails for a popup's elements —
+ *  a DetachedWindow's content belongs to that window's realm, whose
+ *  HTMLElement isn't this one's. */
+export function isTypingElement(target: unknown): boolean {
+  const el = target as { nodeType?: number; tagName?: string; type?: unknown; isContentEditable?: boolean } | null
+  if (!el || el.nodeType !== 1) return false
+  if (el.isContentEditable) return true
+  if (el.tagName === 'TEXTAREA') return true
+  if (el.tagName !== 'INPUT') return false
+  return TYPING_INPUT_TYPES.has(typeof el.type === 'string' ? el.type.toLowerCase() : '')
+}
+
+/** A part of the page area this renderer draws that keeps its own keys, as
+ *  a text field does (marked `data-vim-page`: the Bangs page's bang form).
+ *  Downloads and Bangs themselves are COMMAND's: the window's keymap runs
+ *  on them (lib/internal-page-keys.ts). */
 function isInternalPage(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && target.closest('[data-vim-page]') !== null
 }
 
 /** The mode keyboard focus on `target` in this renderer stands for: a text
- *  field is INSERT, and so is a page this renderer draws (Downloads, Bangs)
- *  — its own keys (j/k through its rows) are the page's, as a web page's are
- *  in INSERT; the rest COMMAND. */
+ *  field is INSERT, and so is a form this renderer draws in the page area
+ *  (the bang form) — its keys are the form's; the rest COMMAND, the
+ *  browser's own pages (Downloads, Bangs) included. */
 function modeForRendererFocus(target: EventTarget | null): VimMode {
   return isEditable(target) || isInternalPage(target) ? 'insert' : 'command'
 }
@@ -133,7 +154,10 @@ export function useVimSidebar(
 // The group page (a tab group parked on, its tabs in the page area) has no
 // tab view to run COMMAND's keys, so it takes them here: the keymap's
 // commands it knows (j/k move through its tabs, i types in its filter), and
-// a few keys of its own ahead of the keymap (a digit, Enter).
+// a few keys of its own ahead of the keymap (a digit, Enter). So do a page
+// load's error over the page (r tries again), and the Bookshelf while it
+// has the keyboard — ahead of the group page and the error even when they
+// mount after it: the one holding the keyboard always goes first.
 
 export interface PageKeys {
   /** A key ahead of the keymap; true when the page took it. */
@@ -142,29 +166,57 @@ export interface PageKeys {
   command: (command: string) => boolean
 }
 
-let pageKeys: PageKeys | null = null
+export interface PageKeysOptions {
+  /** Holds the keyboard (the Bookshelf): goes ahead of every page mounted
+   *  without it, even one mounted later. */
+  owner?: boolean
+}
+
+interface PageKeysEntry extends PageKeys {
+  owner: boolean
+}
+
+// Walked from the end: the keyboard's holders on top, the one mounted last
+// first, then the pages drawn in the page's place, the one mounted last
+// first. A key or command one doesn't take goes on to the one below.
+const pageKeysStack: PageKeysEntry[] = []
+
+/** Puts a handler in the stack: a holder of the keyboard on top, any other
+ *  under the holders (on top of the other pages). */
+export function addPageKeys(entry: PageKeys, options: PageKeysOptions = {}): () => void {
+  const owned: PageKeysEntry = { intercept: entry.intercept, command: entry.command, owner: options.owner === true }
+  const firstOwner = pageKeysStack.findIndex((e) => e.owner)
+  if (owned.owner || firstOwner === -1) pageKeysStack.push(owned)
+  else pageKeysStack.splice(firstOwner, 0, owned)
+  return () => {
+    const at = pageKeysStack.indexOf(owned)
+    if (at !== -1) pageKeysStack.splice(at, 1)
+  }
+}
 
 /** Runs a COMMAND command on the page drawn in the page's place; false when
  *  there's none or it doesn't take the command. */
 export function dispatchPageCommand(command: string): boolean {
-  return pageKeys?.command(command) ?? false
+  for (let i = pageKeysStack.length - 1; i >= 0; i--) if (pageKeysStack[i].command(command)) return true
+  return false
+}
+
+function interceptPageKey(e: KeyboardEvent): boolean {
+  for (let i = pageKeysStack.length - 1; i >= 0; i--) if (pageKeysStack[i].intercept(e)) return true
+  return false
 }
 
 /** Hooks a page drawn in the page's place up to COMMAND's keys while it's
- *  mounted. */
-export function usePageKeys(keys: PageKeys): void {
+ *  mounted. `owner` for one that holds the keyboard while it's mounted (the
+ *  Bookshelf), so a page mounted after it doesn't take its keys. */
+export function usePageKeys(keys: PageKeys, options: PageKeysOptions = {}): void {
   const keysRef = useRef(keys)
   keysRef.current = keys
-  useEffect(() => {
-    const handler: PageKeys = {
-      intercept: (e) => keysRef.current.intercept(e),
-      command: (command) => keysRef.current.command(command),
-    }
-    pageKeys = handler
-    return () => {
-      if (pageKeys === handler) pageKeys = null
-    }
-  }, [])
+  const owner = options.owner === true
+  useEffect(() => addPageKeys({
+    intercept: (e) => keysRef.current.intercept(e),
+    command: (command) => keysRef.current.command(command),
+  }, { owner }), [owner])
 }
 
 // ── Key sequences ──
@@ -172,7 +224,9 @@ export function usePageKeys(keys: PageKeys): void {
 /**
  * Collects key tokens into sequences and resolves them against a keymap.
  * `feed` returns true when the key belongs to vim (a command ran or a
- * sequence is pending), so the caller can swallow it.
+ * sequence is pending), so the caller can swallow it. A pending sequence
+ * waits for its next key however long; `reset` drops it — the caller's to
+ * call as the keys go elsewhere.
  */
 export function useKeySequence(
   keymap: VimKeymap,
@@ -200,14 +254,84 @@ export function useKeySequence(
   return { pending, feed, reset }
 }
 
+// ── A popup's field ──
+//
+// In a popup's field (INSERT) Ctrl+C goes to the popup's COMMAND keys, as
+// in vim's INSERT, and so does Ctrl+[; Esc closes the popup, from INSERT
+// as from COMMAND. The main window keeps Esc for leaving INSERT.
+
+const isMac = typeof navigator !== 'undefined' && navigator.platform.includes('Mac')
+
+/** Ctrl and the key at `code` (by position, so in any input language),
+ *  nothing else held, no IME at work. */
+function isCtrlChord(e: KeyboardEvent, code: string): boolean {
+  return e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.isComposing && e.code === code
+}
+
+/** Esc itself: not one an IME takes (composing), and not Ctrl+[, which a
+ *  platform may report as Escape too. */
+export function isEscapeKey(e: KeyboardEvent): boolean {
+  return e.key === 'Escape' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.isComposing
+}
+
+/** Text selected in a field — what Ctrl+C copies off the Mac. Never in a
+ *  password field, which doesn't copy. By shape, not instanceof: a popup's
+ *  elements are of its own realm. */
+function hasSelectedText(field: Element): boolean {
+  const el = field as Element & { type?: unknown; selectionStart?: number | null; selectionEnd?: number | null; isContentEditable?: boolean }
+  if (el.tagName === 'INPUT' && typeof el.type === 'string' && el.type.toLowerCase() === 'password') return false
+  if (typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number') return el.selectionEnd > el.selectionStart
+  if (!el.isContentEditable) return false
+  const selection = el.ownerDocument.getSelection()
+  return selection !== null && !selection.isCollapsed
+}
+
+/** Off the Mac, Ctrl+C with text selected in `field` is Copy, as ever —
+ *  for a selection the user made (usePopupVimMode tells): one a popup makes
+ *  as it opens (the address editor's whole address) isn't one to copy. */
+export function isCopyKey(e: KeyboardEvent, field: Element): boolean {
+  return !isMac && isCtrlChord(e, 'KeyC') && hasSelectedText(field)
+}
+
+/** A key that leaves a popup's field for its COMMAND keys: Ctrl+C — unless
+ *  it copies (isCopyKey) — or Ctrl+[, vim's other Esc. */
+export function isLeaveInsertKey(e: KeyboardEvent): boolean {
+  return isCtrlChord(e, 'KeyC') || isCtrlChord(e, 'BracketLeft')
+}
+
+// Keys that only ready a chord: they make no selection.
+const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'CapsLock', 'Fn'])
+
+/** Once copied, the selection goes, the caret at its end: Ctrl+C again
+ *  leaves the field. After the copy event, as the copy reads the selection. */
+function dropSelectionAfterCopy(field: Element): void {
+  const el = field as HTMLInputElement
+  field.addEventListener('copy', () => {
+    setTimeout(() => {
+      if (typeof el.selectionEnd === 'number') el.setSelectionRange(el.selectionEnd, el.selectionEnd)
+      else el.ownerDocument.getSelection()?.collapseToEnd()
+    }, 0)
+  }, { once: true })
+}
+
 /**
  * A popup's own COMMAND / INSERT pair (Search Everything, the Command
- * Palette, Find in Page): INSERT while its box has focus, COMMAND otherwise,
- * where plain keys run `keymap`. Null while Vim mode is off. Wire the box's
- * focus and blur to `onBoxFocus` / `onBoxBlur`; keys typed outside the box
- * arrive on the popup's window, which `popup` names.
+ * Palette, Find in Page, the address editor, the pickers and dialogs):
+ * INSERT while its box has focus, COMMAND otherwise, where plain keys run
+ * `keymap`. Null while Vim mode is off. Wire the box's focus and blur to
+ * `onBoxFocus` / `onBoxBlur`; keys typed outside the box arrive on the
+ * popup's window, which `popup` names.
+ *
+ * Ctrl+C in the box (or Ctrl+[, vim's other Esc) goes to COMMAND, the box
+ * letting go — off the Mac, with text selected, Ctrl+C copies it first
+ * (isCopyKey). Esc closes the popup (`onEscape`) from either mode; in
+ * COMMAND an unfinished sequence, or what `intercept` holds, takes it first.
+ *
+ * A form (Settings) has many fields: with `anyField`, any text field taking
+ * the keyboard is INSERT and leaving it COMMAND, no wiring needed, and the
+ * keys above work in each of them.
  */
-export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, onEscape, intercept }: {
+export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, onEscape, intercept, anyField = false, passThrough }: {
   /** Null while Vim mode is off. */
   keymap: VimKeymap | null
   popup: Window | null
@@ -215,11 +339,17 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
   initial: 'command' | 'insert'
   open: boolean
   onCommand: (command: string) => void
-  /** Esc in COMMAND: usually closes the popup. */
+  /** Esc, in COMMAND or INSERT: usually closes the popup — or first steps
+   *  back out of what's open in it (Settings). */
   onEscape: () => void
   /** Sees each COMMAND-mode key first; true when it took the key (the
    *  address editor's block key after c / r / y / p). */
   intercept?: (e: KeyboardEvent) => boolean
+  /** INSERT whenever any text field in the popup has the keyboard. */
+  anyField?: boolean
+  /** True while the keys are the popup's own, not Vim's (a shortcut being
+   *  recorded): each goes on as it would, COMMAND or not. */
+  passThrough?: () => boolean
 }): {
   mode: VimMode | null
   modeRef: React.RefObject<VimMode | null>
@@ -230,29 +360,148 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
   const [mode, setMode] = useState<VimMode | null>(null)
   const modeRef = useRef<VimMode | null>(null)
   modeRef.current = mode
+  const keymapRef = useRef(keymap)
+  keymapRef.current = keymap
   const { pending, feed, reset } = useKeySequence(keymap ?? NO_KEYMAP, onCommand)
   const onEscapeRef = useRef(onEscape)
   onEscapeRef.current = onEscape
   const interceptRef = useRef(intercept)
   interceptRef.current = intercept
+  const passThroughRef = useRef(passThrough)
+  passThroughRef.current = passThrough
+  // Whether a selection in the field may be the user's: a key pressed or a
+  // click in it since it took the keyboard. Not yet, the text the popup
+  // selected as it opened goes with the first Ctrl+C rather than copying.
+  const userSelectedRef = useRef(false)
+  // Ahead of the render, so a key right after a field took (or let go of)
+  // the keyboard already finds the new mode.
+  const switchMode = useCallback((next: VimMode) => {
+    modeRef.current = next
+    setMode(next)
+  }, [])
 
   useEffect(() => {
     if (!open) return
-    setMode(keymap ? initial : null)
+    const next = keymap ? initial : null
+    modeRef.current = next
+    userSelectedRef.current = false
+    setMode(next)
     // Only on opening: the mode is the user's from then on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
+
+  // A prefix waits for its next key however long — but not past the popup
+  // closing (it stays mounted: the next opening would find it) or its
+  // window losing the keyboard.
+  useEffect(() => {
+    if (!open || !popup) {
+      reset()
+      return
+    }
+    popup.addEventListener('blur', reset)
+    return () => popup.removeEventListener('blur', reset)
+  }, [open, popup, reset])
+
+  // Vim mode turned on or off while the popup is open (Settings saved in
+  // another window, Cloud Sync bringing another device's): its keys come
+  // or go with it — on, in the mode they were in, else the opening one.
+  const hasKeymap = keymap !== null
+  useEffect(() => {
+    if (!open) return
+    const next = hasKeymap ? (modeRef.current ?? initial) : null
+    if (next === modeRef.current) return
+    reset()
+    modeRef.current = next
+    setMode(next)
+    // Only as Vim mode comes or goes; opening is the effect above's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasKeymap])
+
+  // A form's fields: one taking the keyboard is INSERT, one letting go of it
+  // for anything but another field COMMAND.
+  const active = mode !== null
+  useEffect(() => {
+    if (!popup || !anyField || !active) return
+    const doc = popup.document
+    const onFocusIn = (e: FocusEvent): void => {
+      if (!isTypingElement(e.target)) return
+      reset()
+      userSelectedRef.current = false
+      switchMode('insert')
+    }
+    const onFocusOut = (e: FocusEvent): void => {
+      if (!isTypingElement(e.target) || isTypingElement(e.relatedTarget)) return
+      switchMode('command')
+    }
+    // A field that had the keyboard before this was listening.
+    if (isTypingElement(doc.activeElement)) switchMode('insert')
+    doc.addEventListener('focusin', onFocusIn)
+    doc.addEventListener('focusout', onFocusOut)
+    return () => {
+      doc.removeEventListener('focusin', onFocusIn)
+      doc.removeEventListener('focusout', onFocusOut)
+    }
+  }, [popup, anyField, active, reset, switchMode])
 
   // The box isn't focused in COMMAND mode, so keys land on the popup's body
   // — outside React's tree — and are read off its window.
   useEffect(() => {
     if (!popup || !mode) return
     const onKeyDown = (e: KeyboardEvent): void => {
+      if (passThroughRef.current?.()) return
+      // Vim mode just went off, ahead of the effect that lets go: every key
+      // goes on as it would.
+      if (!keymapRef.current) return
+      if (modeRef.current === 'insert') {
+        const focused = popup.document.activeElement
+        const field = focused && isTypingElement(focused) ? (focused as HTMLElement) : null
+        // A form's field went away under the keyboard (a form closing)
+        // without telling: COMMAND, this key and all.
+        if (anyField && !field) switchMode('command')
+        else {
+          // An Esc an IME takes (cancelling what's being composed) is the
+          // IME's: neither this nor the box's own Esc closes the popup.
+          if (e.key === 'Escape' && e.isComposing) {
+            e.stopPropagation()
+            return
+          }
+          const leave = isLeaveInsertKey(e)
+          const close = isEscapeKey(e)
+          // Any other key the user presses here may make a selection.
+          if (!leave && !close && !MODIFIER_KEYS.has(e.key)) userSelectedRef.current = true
+          if (field && userSelectedRef.current && isCopyKey(e, field)) {
+            // Copy, as Windows and Linux have it; the selection goes with
+            // it, so Ctrl+C again leaves the field.
+            dropSelectionAfterCopy(field)
+            return
+          }
+          // Ctrl+C (or Ctrl+[) leaves the field for COMMAND; Esc closes the
+          // popup from here too, the field letting go first — what steps
+          // back out instead of closing (Settings' filter) is left in
+          // COMMAND. Ahead of the box's own keys and the popup's
+          // (DetachedWindow), which never see these.
+          if (close || (field && leave)) {
+            e.preventDefault()
+            e.stopPropagation()
+            field?.blur()
+            if (close) onEscapeRef.current()
+          }
+          return
+        }
+      }
       if (modeRef.current !== 'command' || e.target === box.current) return
+      if (anyField && isTypingElement(e.target)) return
       if (e.metaKey || e.altKey) return
       if (interceptRef.current?.(e)) {
         e.preventDefault()
         e.stopPropagation()
+        return
+      }
+      // Ctrl+[ is vim's Esc: it drops a pending prefix (no timeout does).
+      if (isCtrlChord(e, 'BracketLeft')) {
+        e.preventDefault()
+        e.stopPropagation()
+        reset()
         return
       }
       const token = keyTokenFromEvent(e)
@@ -265,15 +514,22 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
       if (e.ctrlKey) return
       e.preventDefault()
       e.stopPropagation()
-      if (e.key === 'Escape') onEscapeRef.current()
+      if (isEscapeKey(e)) onEscapeRef.current()
     }
+    // A click may select text too.
+    const onMouseDown = (): void => { userSelectedRef.current = true }
     popup.addEventListener('keydown', onKeyDown, true)
-    return () => popup.removeEventListener('keydown', onKeyDown, true)
-  }, [popup, mode, feed, box])
+    popup.addEventListener('mousedown', onMouseDown, true)
+    return () => {
+      popup.removeEventListener('keydown', onKeyDown, true)
+      popup.removeEventListener('mousedown', onMouseDown, true)
+    }
+  }, [popup, mode, feed, reset, box, anyField, switchMode])
 
   const onBoxFocus = useCallback(() => {
     if (!modeRef.current) return
     reset()
+    userSelectedRef.current = false
     setMode('insert')
   }, [reset])
   const onBoxBlur = useCallback(() => {
@@ -304,10 +560,14 @@ interface Options {
 export interface VimModeState {
   /** Null while Vim mode is off. */
   mode: VimMode | null
+  /** INSERT in a chrome field (the address bar, a rename in the Sidebar)
+   *  rather than in a page. */
+  insertInChrome: boolean
   /** Keys typed so far of an unfinished sequence (vim's showcmd). */
   pending: string
-  /** Ctrl held in COMMAND (or a Sidebar command just ran): the Sidebar's
-   *  keys are live — a cursor on the active tab, a hidden Sidebar shown. */
+  /** A Sidebar command just ran in COMMAND, and Ctrl is still held (or,
+   *  rebound to a plain key, a pause hasn't passed): the Sidebar's keys are
+   *  live — a cursor on the active row. */
   sidebarKeys: boolean
   /** COMMAND, in the active tab's page when there is one. */
   enterCommand: (force: boolean) => void
@@ -319,16 +579,18 @@ export interface VimModeState {
   /** A popup closed: in COMMAND the page gets the keyboard back — unless
    *  what the popup did put it in a chrome field. */
   returnToPage: () => void
-  /** The Sidebar keys end now, a Ctrl tap's linger and all — the Sidebar
-   *  pinned open was just let go. */
+  /** The Sidebar keys end now, the walk's idle wait and all. */
   endSidebarKeys: () => void
 }
 
 export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab }: Options): VimModeState {
   const [mode, setModeState] = useState<VimMode | null>(null)
   const modeRef = useRef<VimMode | null>(null)
-  // INSERT in a chrome field (URL bar, rename) rather than in the page.
+  // INSERT in a chrome field (URL bar, rename) rather than in the page. The
+  // state is for the window (Settings' Hide the Sidebar in INSERT leaves a
+  // chrome field's INSERT be), the ref for the handlers here.
   const insertInChromeRef = useRef(false)
+  const [insertInChrome, setInsertInChrome] = useState(false)
   const [sidebarKeys, setSidebarKeys] = useState(false)
   const ctrlDownRef = useRef(false)
   const walkIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -383,9 +645,14 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
 
   const setMode = useCallback((next: VimMode | null, why: string, inChrome = false) => {
     const changed = modeRef.current !== next
-    if (changed) log.event('vim:mode', next ?? 'off', why)
+    if (changed) {
+      log.event('vim:mode', next ?? 'off', why)
+      // A prefix typed in one mode isn't the next one's to finish.
+      reset()
+    }
     modeRef.current = next
     insertInChromeRef.current = next === 'insert' && inChrome
+    setInsertInChrome(insertInChromeRef.current)
     setModeState(next)
     if (changed) pushState()
     if (next !== 'command') {
@@ -394,7 +661,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
       clearCtrlTimers()
       setSidebarKeys(false)
     }
-  }, [clearCtrlTimers, pushState])
+  }, [clearCtrlTimers, pushState, reset])
 
   const enterCommand = useCallback((force: boolean) => {
     if (modeRef.current === null) return
@@ -403,11 +670,14 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     const focused = document.activeElement
     if (focused instanceof HTMLElement && focused !== document.body) focused.blur()
     leaveInsertRef.current++
+    // Ctrl+[ is vim's Esc: it drops a prefix pending in COMMAND too (the
+    // page's goes with the leaveInsert count, applyState in the preload).
+    reset()
     // Set first: the page must learn its mode before it gets the keys.
     setMode('command', 'enter-command')
     pushState()
     if (walkingTabs || !focusPageRef.current('command')) claimRendererFocus(force)
-  }, [setMode, pushState])
+  }, [setMode, pushState, reset])
 
   const enterInsert = useCallback(() => {
     if (modeRef.current === null) return
@@ -433,7 +703,8 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
       log.event('vim:tab walk', 'start')
       claimRendererFocus(true)
     }
-    // A plain key (an arrow): no Ctrl release will end it.
+    // A plain key a Sidebar command was rebound to: no Ctrl release will
+    // end it.
     if (!ctrlDownRef.current) walkIdleTimerRef.current = setTimeout(endSidebarKeys, WALK_IDLE_MS)
   }, [clearCtrlTimers, endSidebarKeys])
 
@@ -477,7 +748,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
       // A page this renderer draws keeps its own plain keys.
       if (isInternalPage(e.target)) return
       // One drawn in the page's place takes some ahead of the keymap.
-      if (!pendingRef.current && pageKeys?.intercept(e)) {
+      if (!pendingRef.current && interceptPageKey(e)) {
         e.preventDefault()
         e.stopPropagation()
         return
@@ -559,16 +830,23 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
     window.addEventListener('focus', onWindowFocus)
     document.addEventListener('focusin', onFocusIn)
     document.addEventListener('focusout', onFocusOut)
+    // A prefix waits for its next key however long, while the keys stay
+    // here: a click, or the window losing them — to the page, a popup,
+    // another app — drops it, and the which-key strip with it.
+    window.addEventListener('blur', reset)
+    document.addEventListener('mousedown', reset, true)
     return () => {
       cleanupTabEvents?.()
       cleanupCtrl?.()
       endSidebarKeys()
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('focus', onWindowFocus)
+      window.removeEventListener('blur', reset)
+      document.removeEventListener('mousedown', reset, true)
       document.removeEventListener('focusin', onFocusIn)
       document.removeEventListener('focusout', onFocusOut)
     }
   }, [enabled, feed, reset, setMode, endSidebarKeys, clearCtrlTimers])
 
-  return { mode, pending, sidebarKeys, enterCommand, enterInsert, startTabWalk, returnToPage, endSidebarKeys }
+  return { mode, insertInChrome, pending, sidebarKeys, enterCommand, enterInsert, startTabWalk, returnToPage, endSidebarKeys }
 }

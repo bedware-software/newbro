@@ -130,7 +130,7 @@ export function MoveTabDialog({ open, tabIds, currentWorkspaceId, onClose }: Pro
     <PickerDialog
       open={open}
       title={`Move ${titleSuffix}`}
-      windowTitle={`Move ${titleSuffix} - Newbro`}
+      windowTitle={`Move ${titleSuffix} - Vimperium`}
       placeholder={isMulti ? 'Move tabs to…' : 'Move tab to…'}
       subtitle={subtitle}
       items={items}

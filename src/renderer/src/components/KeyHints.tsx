@@ -7,6 +7,7 @@
 import type { ReactNode } from 'react'
 import { cn } from '../lib/utils'
 import { displayKeySequence, keysFor, type VimKeymap } from '../lib/vim-keymap'
+import type { WhichKeyEntry } from '../lib/which-key'
 
 export function Hint({ label, keys }: { label: ReactNode; keys: ReactNode[] }) {
   if (keys.length === 0) return null
@@ -59,7 +60,9 @@ export function HintBar({ children, wrap = false, className }: BarProps) {
 }
 
 /** The Sidebar's keys, at the bottom of it — wrapping, since it's narrow.
- *  Faded until one of them is used, which brings them to life. */
+ *  Faded until one of them is used, which brings them to life. Only the
+ *  Sidebar's, a prefix pending (o, d, n…) or not: what can follow one is
+ *  which-key's strip, along the page area (components/WhichKey.tsx). */
 export function SidebarHintBar({ keymap, active }: { keymap: VimKeymap; active: boolean }) {
   const caps = (...commands: string[]): string[] => vimKeyCaps(keymap, ...commands)
   return (
@@ -91,6 +94,10 @@ export function vimKeyCapsAll(map: VimKeymap | null, command: string): string[] 
   return map ? keysFor(map, command).map(displayKeySequence) : []
 }
 
+/** The cap of the key that leaves a popup's field for COMMAND: Ctrl+C (⌃C
+ *  on a Mac). Esc closes the popup. */
+export const LEAVE_INSERT_CAP = displayKeySequence('<C-c>')
+
 /** A list row's key in Vim mode, as a keycap filling the row's left padding
  *  (positioned by the row, so its content never moves; a span, as the
  *  global kbd style's padding would widen it): in COMMAND its two-letter
@@ -120,5 +127,21 @@ export function RowHint({ mode, label, number, pending, className }: {
         ? <><span className="text-primary">{label!.slice(0, typed)}</span>{label!.slice(typed)}</>
         : number}
     </span>
+  )
+}
+
+/** The entries as hint bar items: the prefix typed, lit as the mode's
+ *  showcmd is, then each next key with what it does. */
+export function WhichKeyHints({ pending, entries }: { pending: string; entries: WhichKeyEntry[] }) {
+  return (
+    <>
+      <span className="flex items-center gap-1 whitespace-nowrap text-foreground">
+        <kbd className="font-mono text-primary">{displayKeySequence(pending)}</kbd>
+        <span aria-hidden="true">→</span>
+      </span>
+      {entries.map((entry) => (
+        <Hint key={entry.keys} label={entry.label} keys={[entry.keys]} />
+      ))}
+    </>
   )
 }

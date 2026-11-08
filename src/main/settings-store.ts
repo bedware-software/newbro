@@ -1,5 +1,6 @@
 import Store from 'electron-store'
 import { migrateVimKeymap as migrateVimKeymapText } from '../shared/vim-default-keymap'
+import { log } from './log'
 import { PERMISSION_KINDS, type PermissionKind, type PermissionPolicy } from './permissions-store'
 
 export interface Settings {
@@ -13,19 +14,18 @@ export interface Settings {
   /** Where keyboard focus lands when a new tab is created —
    *  'site' focuses the page (current behavior), 'url' focuses the URL bar. */
   newTabFocus: 'site' | 'url'
-  /** Show a small "N" badge on the first 9 sidebar tabs, signalling the
-   *  CmdOrCtrl+N quick-jump shortcut. Always-visible (not hover-gated)
-   *  because their job is to advertise the shortcut at a glance. */
-  showTabNumbers: boolean
   /** Vim mode: windows switch between COMMAND mode (plain keys run the
    *  commands in {@link vimKeymap} — scrolling the page, tabs, app commands)
    *  and INSERT mode (keys go to the page or the field being typed in) —
-   *  renderer lib/vim-mode.ts. Turns the regular {@link keybindings} off,
-   *  menu accelerators included. */
-  vimMode: boolean
-  /** With Vim mode on: the Sidebar stays hidden and shows while Ctrl is
-   *  held in COMMAND mode (renderer App.tsx). */
-  sidebarAutoHide: boolean
+   *  renderer lib/vim-mode.ts. Vim is Vimperium's only mode: always true —
+   *  load, save and Cloud Sync's apply path all make it so (a synced false
+   *  from a device on an older build too). The field stays for those older
+   *  builds, which read the synced settings and turn Vim off without it. */
+  vimMode: true
+  /** With Vim mode on: going into INSERT in a page hides the Sidebar and
+   *  COMMAND brings it back (renderer App.tsx) — derived from the mode, the
+   *  Sidebar's own shown/hidden toggle stays as it was. */
+  hideSidebarInInsert: boolean
   /** How Vim's mode key cap shows the mode's colour (renderer
    *  lib/vim-indicator.ts): 'rim-label', 'rim', 'label', 'tint', 'base',
    *  'dot' or 'plain'. */
@@ -41,6 +41,11 @@ export interface Settings {
    *  (lib/vim-keymap.ts). Null means the built-in default, so users who never
    *  edited it pick up new default bindings. */
   vimKeymap: string | null
+  /** The keymap version {@link vimKeymap}'s text was written under —
+   *  {@link VIM_KEYMAP_VERSION}, or a later one from a newer build. Present
+   *  only with a keymap text. Newbro never wrote it, so a text without it
+   *  that Cloud Sync brings in is carried over (syncedSettingsForSave). */
+  vimKeymapVersion?: number
   defaultPageUrl: string
   searchEngine: string
   /** Fetch search suggestions from the default engine while typing in the
@@ -110,12 +115,35 @@ function normalizeVimKeymap(raw: unknown): string | null {
   return typeof raw === 'string' ? raw.slice(0, MAX_VIM_KEYMAP_LENGTH) : null
 }
 
+/** The Vim keymap version this build writes: v14, the one
+ *  migrateVimKeymap below moves a saved keymap to. */
+export const VIM_KEYMAP_VERSION = 14
+
+/** Settings with the keymap's version stamp set for what's stored on this
+ *  device: none without a keymap text, else the current version — every
+ *  text here is current, the saved one migrated at load and a synced one
+ *  in syncedSettingsForSave — or a later one a newer build stamped. */
+function withVimKeymapVersion(settings: Settings): Settings {
+  const { vimKeymapVersion: stamped, ...rest } = settings
+  if (rest.vimKeymap === null) return rest
+  const later = typeof stamped === 'number' && Number.isInteger(stamped) && stamped > VIM_KEYMAP_VERSION
+  return { ...rest, vimKeymapVersion: later ? stamped : VIM_KEYMAP_VERSION }
+}
+
 /** Settings keys that are no longer used — dropped on load and save so they
  *  don't linger in the store (and in Cloud Sync) forever. */
 function withoutRetiredKeys<T extends object>(settings: T): T {
   const copy = { ...settings } as Record<string, unknown>
   // Superseded by vimMode: panel-only vim navigation.
   delete copy.vimNavigation
+  // Hide the Sidebar (Vim mode's keys showed it, Esc twice pinned it):
+  // retired with keymap v13, its Ctrl+H/J/K/L working with the Sidebar
+  // hidden; hideSidebarInInsert is what's left of the idea.
+  delete copy.sidebarAutoHide
+  // The Sidebar's 1…9 tab-number badges (Settings → General → Tab Number
+  // Badges): retired, the Sidebar shows no numbers; Cmd/Ctrl+1…9 still
+  // switch to the Nth tab it shows.
+  delete copy.showTabNumbers
   return copy as T
 }
 
@@ -180,7 +208,7 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   // Quick-jump to the Nth visible sidebar tab (counting nested tabs in
   // expanded groups). Collapsed groups are skipped so the numbering matches
   // exactly what the user sees. Edge / Chrome / Firefox all bind these,
-  // but Newbro's sidebar is vertical so the numbering reflects sidebar
+  // but Vimperium's sidebar is vertical so the numbering reflects sidebar
   // order rather than tab-strip order.
   'tab-1': ['CmdOrCtrl+1'],
   'tab-2': ['CmdOrCtrl+2'],
@@ -206,13 +234,53 @@ export const DEFAULT_KEYBINDINGS: Record<string, string[]> = {
   'add-to-bookshelf': [],
   'toggle-bookshelf': ['CmdOrCtrl+Shift+B'],
   // Chrome / Edge's Downloads shortcut. Opens (or switches to) the
-  // newbro://downloads tab. New keys fall back to their default on existing
+  // vimperium://downloads tab. New keys fall back to their default on existing
   // installs through the loadSettings merge, so no seeding migration.
   'open-downloads': ['CmdOrCtrl+J'],
+  // Settings lists it (ACTION_LABELS), so a shortcut recorded for it must
+  // survive the filter too.
+  'open-bangs': [],
   // Dark pages (main/dark-pages.ts) — Dark Reader's keys, so hands that
   // knew the extension still find them: on/off everywhere, and this site.
   'dark-pages': ['Alt+Shift+D'],
   'dark-pages-site': ['Alt+Shift+A'],
+  // The rest of the app's commands — Vim keymap v13's new ones and the
+  // Command Palette's — ship unbound, listed so a shortcut the user records
+  // for one survives normalizeAndFilterKeybindings.
+  'new-group': [],
+  'close-group': [],
+  'add-to-new-group': [],
+  'ungroup-tab': [],
+  'ungroup-all-tabs': [],
+  'expand-all-groups': [],
+  'collapse-all-groups': [],
+  'rename-workspace': [],
+  'close-workspace': [],
+  'delete-workspace': [],
+  'import-workspaces': [],
+  'export-workspaces': [],
+  'workspace-menu': [],
+  'new-profile': [],
+  'rename-profile': [],
+  'delete-profile': [],
+  'profile-menu': [],
+  'app-menu': [],
+  'extensions-menu': [],
+  'manage-extensions': [],
+  'site-info': [],
+  'dark-pages-menu': [],
+  'dark-pages-settings': [],
+  'chrome-hints': [],
+  'zoom-in': [],
+  'zoom-out': [],
+  'zoom-reset': [],
+  'check-updates': [],
+  'install-update': [],
+  about: [],
+  'minimize-window': [],
+  'maximize-window': [],
+  'restore-window': [],
+  quit: [],
 }
 
 function cloneDefaultKeybindings(): Record<string, string[]> {
@@ -229,9 +297,8 @@ export const DEFAULT_SETTINGS: Settings = {
   darkVariant: 'dark-default',
   density: 'normal',
   newTabFocus: 'site',
-  showTabNumbers: true,
-  vimMode: false,
-  sidebarAutoHide: false,
+  vimMode: true,
+  hideSidebarInInsert: false,
   vimIndicator: 'rim-label',
   vimEdge: 'comet-rail',
   vimEdgeEverywhere: false,
@@ -339,7 +406,7 @@ function normalizeAndFilterKeybindings(
 }
 
 const store = new Store<{ settings: Settings }>({
-  name: 'newbro-settings',
+  name: 'vimperium-settings',
   defaults: {
     settings: { ...DEFAULT_SETTINGS },
   },
@@ -413,29 +480,31 @@ function migrateNewKeybindingDefaults(): void {
 }
 
 /**
- * Vim mode's keymap v6 (v3: BROWSE folded into COMMAND, the Sidebar's cursor
+ * Vim mode's keymap v14 (v3: BROWSE folded into COMMAND, the Sidebar's cursor
  * on Ctrl chords; v4: the tab numbers on Ctrl; v5: the address bar on e;
  * v6: the address editor on e, Search Everything's filters on w/t/p, new tab
  * on Enter; v7: V/S split like vim's, row-unfold on <C-l>, gcc comments;
  * v8: the address editor's u / <C-r> / gu / gt / yt / d / D; v9: results
  * picked by two-letter labels, not digits; v10: the Sidebar on the arrows,
  * not Ctrl held, <C-o>/<C-i>/<C-p>/<Space>; v11: od Downloads, ob Bangs;
- * v12: D Dark pages on this site — see
- * src/shared/vim-default-keymap.ts): a keymap saved under v1 to v11 keeps what its owner changed and takes the new defaults for
+ * v12: D Dark pages on this site; v13: vim's grammar — <C-d>/<C-u>, the
+ * Sidebar on <C-h/j/k/l> and <Tab>, n new, d delete, o open, t toggle, u
+ * reopens; v14: nw a new workspace (was nv), nn a new tab beside nt — see
+ * src/shared/vim-default-keymap.ts): a keymap saved under v1 to v13 keeps what its owner changed and takes the new defaults for
  * everything else.
  * Once.
  */
 function migrateVimKeymap(): void {
   const raw = store as unknown as { get(key: string): unknown; set(key: string, value: unknown): void }
-  const marker = 'vim-keymap-v12'
+  const marker = 'vim-keymap-v14'
   const migratedList = raw.get('migratedKeybindingDefaults')
   const migrated = new Set(Array.isArray(migratedList) ? (migratedList as string[]) : [])
   if (migrated.has(marker)) return
 
   const saved = store.get('settings')
   if (saved && typeof saved.vimKeymap === 'string') {
-    const from = migrated.has('vim-keymap-v11') ? 11 : migrated.has('vim-keymap-v10') ? 10 : migrated.has('vim-keymap-v9') ? 9 : migrated.has('vim-keymap-v8') ? 8 : migrated.has('vim-keymap-v7') ? 7 : migrated.has('vim-keymap-v6') ? 6 : migrated.has('vim-keymap-v5') ? 5 : migrated.has('vim-keymap-v4') ? 4 : migrated.has('vim-keymap-v3') ? 3 : migrated.has('vim-keymap-v2') ? 2 : 1
-    store.set('settings', { ...saved, vimKeymap: migrateVimKeymapText(saved.vimKeymap, from) })
+    const from = migrated.has('vim-keymap-v13') ? 13 : migrated.has('vim-keymap-v12') ? 12 : migrated.has('vim-keymap-v11') ? 11 : migrated.has('vim-keymap-v10') ? 10 : migrated.has('vim-keymap-v9') ? 9 : migrated.has('vim-keymap-v8') ? 8 : migrated.has('vim-keymap-v7') ? 7 : migrated.has('vim-keymap-v6') ? 6 : migrated.has('vim-keymap-v5') ? 5 : migrated.has('vim-keymap-v4') ? 4 : migrated.has('vim-keymap-v3') ? 3 : migrated.has('vim-keymap-v2') ? 2 : 1
+    store.set('settings', { ...saved, vimKeymap: migrateVimKeymapText(saved.vimKeymap, from, (note) => log.info(`vim keymap v${from} → v${VIM_KEYMAP_VERSION}: ${note}`)) })
   }
 
   migrated.add('vim-keymap-v2')
@@ -448,6 +517,8 @@ function migrateVimKeymap(): void {
   migrated.add('vim-keymap-v9')
   migrated.add('vim-keymap-v10')
   migrated.add('vim-keymap-v11')
+  migrated.add('vim-keymap-v12')
+  migrated.add('vim-keymap-v13')
   migrated.add(marker)
   raw.set('migratedKeybindingDefaults', [...migrated])
 }
@@ -455,6 +526,81 @@ function migrateVimKeymap(): void {
 migrateChangedKeybindingDefaults()
 migrateNewKeybindingDefaults()
 migrateVimKeymap()
+
+type VimKeymapVersion = Parameters<typeof migrateVimKeymapText>[1] | typeof VIM_KEYMAP_VERSION
+
+/** Commands each keymap version brought in, newest first: what a keymap
+ *  text with no version stamp shows of the defaults it was written under.
+ *  Versions that added no command read as the newest that looks the same:
+ *  v8 to v10 as v10, v3 to v5 as v5, v14 as v13. */
+const VIM_KEYMAP_VERSION_MARKS: ReadonlyArray<readonly [VimKeymapVersion, readonly string[]]> = [
+  [13, [
+    'new-group', 'new-profile', 'close-group', 'app-menu', 'extensions-menu', 'site-info',
+    'dark-pages-menu', 'profile-menu', 'workspace-menu', 'chrome-hints', 'zoom-in', 'zoom-out', 'zoom-reset',
+  ]],
+  [12, ['dark-pages', 'dark-pages-site']],
+  [11, ['open-bangs']],
+  [10, ['url-redo', 'url-remove-all']],
+  [7, ['row-unfold', 'set-comment', 'remove-comment']],
+  [6, ['pick-workspace', 'pick-tab', 'pick-group', 'pick-profile']],
+  [5, ['scroll-down', 'scroll-up', 'half-page-down', 'half-page-up', 'page-top', 'page-bottom', 'focus-input', 'row-fold']],
+  [2, ['browse-mode', 'cursor-down-show', 'cursor-up-show', 'row-show', 'copy-url', 'paste-url', 'split-right', 'edit-url']],
+]
+
+function vimKeymapVersionOf(text: string): VimKeymapVersion {
+  const commands = new Set<string>()
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed === '' || trimmed.startsWith('"') || trimmed.startsWith('#')) continue
+    commands.add(trimmed.split(/\s+/)[0])
+  }
+  for (const [version, marks] of VIM_KEYMAP_VERSION_MARKS) {
+    if (marks.some((command) => commands.has(command))) return version
+  }
+  return 1
+}
+
+/**
+ * Settings Cloud Sync brought from another device, ready for saveSettings:
+ * a Vim keymap written under older defaults — by a device still on Newbro,
+ * which stamps no version — carried over to the current ones, as
+ * migrateVimKeymap does for the saved one at load. A keymap stamped current
+ * or later is taken as it is: carrying a current keymap over again would
+ * undo what its owner changed. One with an older stamp or none reads as the
+ * newest version whose commands it names — v13 at most: v14 brought in no
+ * command, and its step leaves a text already on v14's keys as it is. Says
+ * which version it carried the keymap over from, or null.
+ */
+export function syncedSettingsForSave(incoming: Settings): { settings: Settings; vimKeymapFrom: number | null; vimTurnedOn: boolean } {
+  // Vim is the only mode, whatever the other device had (an older build may
+  // have it off) — and what this returns is what the windows are sent.
+  // vimTurnedOn: it was off there, so what's saved here isn't what came in,
+  // and this device's copy is to be published (SyncAdapter.write returning
+  // true) for that device to take Vim on as well.
+  const vimTurnedOn = !!incoming && typeof incoming === 'object' && incoming.vimMode !== true
+  if (vimTurnedOn) incoming = { ...incoming, vimMode: true }
+  const unchanged = { settings: incoming, vimKeymapFrom: null, vimTurnedOn }
+  if (!incoming || typeof incoming !== 'object' || typeof incoming.vimKeymap !== 'string') return unchanged
+  const stamped = incoming.vimKeymapVersion
+  if (typeof stamped === 'number' && stamped >= VIM_KEYMAP_VERSION) return unchanged
+  // Stamps began with v13, so one from v13 on is the text's real version (a v13
+  // text whose owner deleted every v13-only line would otherwise read as v12).
+  // No stamp, or a lower one, is worked out from the text.
+  const from: VimKeymapVersion =
+    typeof stamped === 'number' && Number.isInteger(stamped) && stamped >= 13
+      ? (stamped as VimKeymapVersion)
+      : vimKeymapVersionOf(incoming.vimKeymap)
+  if (from === VIM_KEYMAP_VERSION) return unchanged
+  return {
+    settings: {
+      ...incoming,
+      vimKeymap: migrateVimKeymapText(incoming.vimKeymap, from, (note) => log.info(`synced vim keymap v${from} → v${VIM_KEYMAP_VERSION}: ${note}`)),
+      vimKeymapVersion: VIM_KEYMAP_VERSION,
+    },
+    vimKeymapFrom: from,
+    vimTurnedOn,
+  }
+}
 
 export function loadSettings(): Settings {
   const saved = store.get('settings')
@@ -471,7 +617,7 @@ export function loadSettings(): Settings {
     return 'system'
   })()
   // Merge with defaults so new keys are always present
-  return {
+  return withVimKeymapVersion({
     ...DEFAULT_SETTINGS,
     ...withoutRetiredKeys(saved ?? DEFAULT_SETTINGS),
     lightVariant: KNOWN_LIGHT_VARIANTS.has(saved?.lightVariant as string)
@@ -486,8 +632,9 @@ export function loadSettings(): Settings {
     newTabFocus: KNOWN_NEW_TAB_FOCUS.has(saved?.newTabFocus as string)
       ? (saved!.newTabFocus as 'site' | 'url')
       : DEFAULT_SETTINGS.newTabFocus,
-    vimMode: saved?.vimMode === true,
-    sidebarAutoHide: saved?.sidebarAutoHide === true,
+    // Vim is the only mode, whatever an older build saved.
+    vimMode: true,
+    hideSidebarInInsert: saved?.hideSidebarInInsert === true,
     vimIndicator: KNOWN_VIM_INDICATORS.has(saved?.vimIndicator as string)
       ? (saved!.vimIndicator as string)
       : DEFAULT_SETTINGS.vimIndicator,
@@ -520,7 +667,7 @@ export function loadSettings(): Settings {
     permissionDefaults: normalizePermissionDefaults(
       saved?.permissionDefaults as Record<string, unknown> | undefined,
     ),
-  }
+  })
 }
 
 export function saveSettings(settings: Settings): void {
@@ -539,8 +686,10 @@ export function saveSettings(settings: Settings): void {
     newTabFocus: KNOWN_NEW_TAB_FOCUS.has(settings.newTabFocus)
       ? settings.newTabFocus
       : DEFAULT_SETTINGS.newTabFocus,
-    vimMode: settings.vimMode === true,
-    sidebarAutoHide: settings.sidebarAutoHide === true,
+    // Written true, too: a device still on an older build reads it from
+    // Cloud Sync, and turns Vim off without it.
+    vimMode: true,
+    hideSidebarInInsert: settings.hideSidebarInInsert === true,
     vimIndicator: KNOWN_VIM_INDICATORS.has(settings.vimIndicator)
       ? settings.vimIndicator
       : DEFAULT_SETTINGS.vimIndicator,
@@ -576,5 +725,5 @@ export function saveSettings(settings: Settings): void {
       settings.permissionDefaults as Record<string, unknown> | undefined,
     ),
   }
-  store.set('settings', normalizedSettings)
+  store.set('settings', withVimKeymapVersion(normalizedSettings))
 }
