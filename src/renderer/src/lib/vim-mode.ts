@@ -107,6 +107,11 @@ let sidebarHandler: ((cmd: SidebarCommand) => void) | null = null
 // Ends the Sidebar keys (useVimMode's), for a row menu that swallowed the
 // Ctrl release.
 let endSidebarKeysHook: (() => void) | null = null
+// A row menu the keys opened (m) is up: its own window has the keys. Ending
+// the walk now — the window losing focus to the menu says Ctrl's let go, and
+// a plain key's walk times out — would hand the page the keyboard, which
+// focuses the window again and blurs the menu shut. Its closing ends it.
+let rowMenuOpen = false
 
 /** Runs a Sidebar command on the row under its cursor; false when no
  *  Sidebar is showing to take it. */
@@ -138,9 +143,11 @@ export function useVimSidebar(
   }, [active])
 
   const runMenu = useCallback(async <T,>(open: () => Promise<T>): Promise<T> => {
+    rowMenuOpen = true
     try {
       return await open()
     } finally {
+      rowMenuOpen = false
       endSidebarKeysHook?.()
     }
   }, [])
@@ -642,6 +649,7 @@ export function useVimMode({ enabled, keymap, onCommand, focusPage, isActiveTab 
    *  Ctrl chord one (or the window lost it). The tab the walk stopped on
    *  gets the keyboard. */
   const endSidebarKeys = useCallback(() => {
+    if (rowMenuOpen) return
     clearCtrlTimers()
     setSidebarKeys(false)
     if (!walkingTabs) return

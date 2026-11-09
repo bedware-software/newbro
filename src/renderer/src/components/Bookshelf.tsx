@@ -723,7 +723,9 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
     wasOpenRef.current = open
     wasFullscreenRef.current = pageFullscreen
     if (open && !was && !wasFullscreen) takeKeyboard()
-    else if (!open && was) releaseKeyboard(!pageFullscreen)
+    // The keys' help opening in its place keeps the keys for its filter:
+    // they don't go to the page.
+    else if (!open && was) releaseKeyboard(!pageFullscreen && !useHelpPanelStore.getState().open)
   }, [open, pageFullscreen, takeKeyboard, releaseKeyboard])
   // Vim mode turned off: nothing has the shelf's keys any more.
   useEffect(() => { if (!parsedKeymap) releaseKeyboard(false) }, [parsedKeymap, releaseKeyboard])

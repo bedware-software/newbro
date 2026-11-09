@@ -50,6 +50,9 @@ interface Props {
   vimMode?: VimMode | null
   /** Unfinished key sequence typed in COMMAND mode. */
   vimPending?: string
+  /** No popup over the window: the buttons may show their keys (while the
+   *  keys' help is open). */
+  hintsOn?: boolean
   onToggleSidebar: () => void
   onOpenSettings: () => void
   onOpenAbout: () => void
@@ -870,7 +873,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   )
 }
 
-export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vimMode, vimPending, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions, onOpenDarkPagesSettings }: Props) {
+export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vimMode, vimPending, hintsOn = true, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions, onOpenDarkPagesSettings }: Props) {
   const isMac = navigator.platform.includes('Mac')
   const urlEditorOpen = useUrlEditorStore((s) => s.open)
   const profiles = useAppStore((s) => s.profiles)
@@ -1436,7 +1439,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
 
   // While the keys' help is open each button shows its key (HeaderHint.tsx).
   const helpOpen = useHelpPanelStore((s) => s.open)
-  const headerHints = useMemo(() => ({ on: helpOpen, pending: vimPending ?? '' }), [helpOpen, vimPending])
+  const headerHints = useMemo(() => ({ on: helpOpen && hintsOn, pending: vimPending ?? '' }), [helpOpen, hintsOn, vimPending])
   const downloadsHint = useHeaderHint('open-downloads', totalDownloads > 0, undefined, headerHints)
   const backHint = useHeaderHint('back', true, undefined, headerHints)
   const forwardHint = useHeaderHint('forward', canGoForward, undefined, headerHints)

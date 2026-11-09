@@ -10,7 +10,8 @@ import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dro
 import { useVimSidebar } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { type SidebarCommand, type VimKeymap } from '../lib/vim-keymap'
-import { RowHint, SidebarHintBar } from './KeyHints'
+import { RowHint } from './KeyHints'
+import { useHelpPanelStore } from '../lib/help-panel'
 import { useHintLabels, useHintTargets } from '../lib/hint-labels'
 import { SplitGlyph } from './SplitPanes'
 import { isSplitShown, useSplitStore } from '../lib/split-view'
@@ -174,6 +175,10 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
     const cleanup = api?.onSettingsUpdated?.((s: HintSettings) => apply(s))
     return () => { cancelled = true; cleanup?.() }
   }, [])
+
+  const helpOpen = useHelpPanelStore((s) => s.open)
+  // A popup over the window: no keys shown under it.
+  const hintsBlocked = !hintsOn
 
   const handleNewTab = useCallback(() => {
     if (activeWorkspaceId) addTabNearActive(activeWorkspaceId)
@@ -1280,14 +1285,13 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
             title={newTabHint ? `New Tab (${newTabHint})` : 'New Tab'}
             className="w-full flex items-center gap-1 px-1 py-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
-            {/* Its key, in the column the rows' labels take. */}
-            {newTabHint && <RowHint mode="command" label={newTabHint} className="shrink-0 -my-px opacity-70" />}
+            {/* Its key, in the column the rows' labels take — while the
+                keys' help is open, as the header's buttons show theirs. */}
+            {newTabHint && helpOpen && !hintsBlocked && <RowHint mode="command" label={newTabHint} className="shrink-0 -my-px opacity-70" />}
             <Plus size={16} className="shrink-0" />
             <span className="flex-1 text-left text-xs truncate">New Tab</span>
           </button>
         </div>
-
-        {vimKeymap && <SidebarHintBar keymap={vimKeymap} active={vimActive} />}
 
         <div
           className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
@@ -1323,6 +1327,8 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
         placeholder="Enter comment..."
         defaultValue={commentDefault}
         confirmLabel="Save"
+        // Cleared and saved, the comment goes.
+        allowEmpty
         onConfirm={(value) => {
           if (commentTabId) setTabComment(commentTabId, value)
           setCommentTabId(null)

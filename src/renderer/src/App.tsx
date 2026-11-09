@@ -699,8 +699,18 @@ export default function App() {
     const focused = document.activeElement as HTMLElement | null
     const typing = !!focused && focused !== document.body &&
       (focused.isContentEditable || focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')
-    if (!typing) vimRef.current?.enterCommand(false)
+    // The Bookshelf opening in its place takes the keys itself.
+    if (!typing && !bookshelfOpen) vimRef.current?.enterCommand(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [helpOpen])
+  // One panel on the right: the keys' help and the Bookshelf take turns —
+  // the one opening puts the other away.
+  useEffect(() => {
+    if (helpOpen) setBookshelfOpen(false)
+  }, [helpOpen])
+  useEffect(() => {
+    if (bookshelfOpen) closeHelpPanel()
+  }, [bookshelfOpen])
   // The Vim mode API for the shortcut handler, which is registered once.
   const vimRef = useRef<ReturnType<typeof useVimMode> | null>(null)
 
@@ -1759,7 +1769,7 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => { setSearchOpenFilter(null); setSearchOpen(true) }} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} onOpenDarkPagesSettings={() => { setSettingsTabRequest({ tab: 'darkPages', v: Date.now() }); setSettingsOpen(true) }} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} hintsOn={!popupOpen} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => { setSearchOpenFilter(null); setSearchOpen(true) }} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} onOpenDarkPagesSettings={() => { setSettingsTabRequest({ tab: 'darkPages', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           visible={sidebarShown}
@@ -1868,6 +1878,8 @@ export default function App() {
         placeholder="Enter comment..."
         defaultValue={commentDefault}
         confirmLabel="Save"
+        // Cleared and saved, the comment goes.
+        allowEmpty
         onConfirm={(value) => {
           const s = useAppStore.getState()
           if (s.activeTabId) s.setTabComment(s.activeTabId, value)

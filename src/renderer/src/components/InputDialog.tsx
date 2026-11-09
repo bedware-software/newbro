@@ -19,11 +19,13 @@ interface Props {
   placeholder?: string
   defaultValue?: string
   confirmLabel?: string
+  /** An empty answer is one too: a tab's comment, cleared, goes. */
+  allowEmpty?: boolean
   onConfirm: (value: string) => void
   onCancel: () => void
 }
 
-export function InputDialog({ open, title, placeholder, defaultValue = '', confirmLabel = 'Create', onConfirm, onCancel }: Props) {
+export function InputDialog({ open, title, placeholder, defaultValue = '', confirmLabel = 'Create', allowEmpty = false, onConfirm, onCancel }: Props) {
   const [value, setValue] = useState(defaultValue)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -38,9 +40,8 @@ export function InputDialog({ open, title, placeholder, defaultValue = '', confi
   }, [open, defaultValue])
 
   const handleSubmit = () => {
-    if (value.trim()) {
-      onConfirm(value.trim())
-    }
+    const v = value.trim()
+    if (v || allowEmpty) onConfirm(v)
   }
 
   // ── Vim mode ──

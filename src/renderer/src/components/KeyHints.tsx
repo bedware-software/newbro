@@ -59,23 +59,6 @@ export function HintBar({ children, wrap = false, className }: BarProps) {
   )
 }
 
-/** The Sidebar's keys, at the bottom of it — wrapping, since it's narrow.
- *  Faded until one of them is used, which brings them to life. Only the
- *  Sidebar's, a prefix pending (o, d, n…) or not: what can follow one is
- *  which-key's strip, along the page area (components/WhichKey.tsx). */
-export function SidebarHintBar({ keymap, active }: { keymap: VimKeymap; active: boolean }) {
-  const caps = (...commands: string[]): string[] => vimKeyCaps(keymap, ...commands)
-  return (
-    <HintBar wrap className={cn('px-2 transition-opacity', !active && 'opacity-50')}>
-      <Hint label="Switch" keys={caps('cursor-down-show', 'cursor-up-show')} />
-      <Hint label="Move" keys={caps('row-move-down', 'row-move-up')} />
-      <Hint label="Fold" keys={caps('row-fold', 'row-unfold')} />
-      <Hint label="Menu" keys={caps('row-menu')} />
-      <Hint label="Close" keys={caps('close-tab')} />
-    </HintBar>
-  )
-}
-
 /** The caps for `commands` as `map` binds them — each command's first key,
  *  written the way a keycap reads (Enter, Ctrl+J). */
 export function vimKeyCaps(map: VimKeymap | null, ...commands: string[]): string[] {
