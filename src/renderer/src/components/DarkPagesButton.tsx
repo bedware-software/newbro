@@ -11,6 +11,7 @@ import { log } from '../lib/log'
 import { Moon, Settings2 } from 'lucide-react'
 import { DetachedWindow, type PopupPlacement } from './DetachedWindow'
 import { Hint, HintBar } from './KeyHints'
+import { useHeaderHint } from './HeaderHint'
 import { ComfortSliders, DarkPagesModeSwitch, ToggleSwitch, acceleratorChord } from './DarkPagesControls'
 import { cn } from '../lib/utils'
 import { darkPagesActions, pageLook, useDarkPages } from '../lib/dark-pages'
@@ -71,6 +72,8 @@ export function DarkPagesButton({ url, onOpenSettings }: { url: string; onOpenSe
     window.addEventListener('vimperium-open-dark-pages-menu', onOpen)
     return () => window.removeEventListener('vimperium-open-dark-pages-menu', onOpen)
   }, [])
+  // Its label in COMMAND opens it as oD does.
+  const hint = useHeaderHint('dark', shown ? () => openByKeysRef.current() : null)
 
   if (!shown) return null
 
@@ -110,6 +113,7 @@ export function DarkPagesButton({ url, onOpenSettings }: { url: string; onOpenSe
           look.dark ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
         )}
       >
+        {hint}
         <Moon
           size={13}
           strokeWidth={look.dark ? 2.2 : 2}

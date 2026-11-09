@@ -330,7 +330,7 @@ function dropSelectionAfterCopy(field: Element): void {
  * the keyboard is INSERT and leaving it COMMAND, no wiring needed, and the
  * keys above work in each of them.
  */
-export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, onEscape, intercept, anyField = false, passThrough }: {
+export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, onEscape, intercept, insertIntercept, anyField = false, passThrough }: {
   /** Null while Vim mode is off. */
   keymap: VimKeymap | null
   popup: Window | null
@@ -344,6 +344,9 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
   /** Sees each COMMAND-mode key first; true when it took the key (the
    *  address editor's block key after c / r / y / p). */
   intercept?: (e: KeyboardEvent) => boolean
+  /** Sees each INSERT-mode key ahead of Esc and Ctrl+C; true when it took
+   *  the key (the address editor's suggestion list taking an Esc). */
+  insertIntercept?: (e: KeyboardEvent) => boolean
   /** INSERT whenever any text field in the popup has the keyboard. */
   anyField?: boolean
   /** True while the keys are the popup's own, not Vim's (a shortcut being
@@ -355,6 +358,9 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
   pending: string
   onBoxFocus: () => void
   onBoxBlur: () => void
+  /** A selection the popup made in the field (an inline completion) isn't
+   *  the user's: Ctrl+C leaves for COMMAND rather than copy it. */
+  clearUserSelection: () => void
 } {
   const [mode, setMode] = useState<VimMode | null>(null)
   const modeRef = useRef<VimMode | null>(null)
@@ -366,6 +372,8 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
   onEscapeRef.current = onEscape
   const interceptRef = useRef(intercept)
   interceptRef.current = intercept
+  const insertInterceptRef = useRef(insertIntercept)
+  insertInterceptRef.current = insertIntercept
   const passThroughRef = useRef(passThrough)
   passThroughRef.current = passThrough
   // Whether a selection in the field may be the user's: a key pressed or a
@@ -464,6 +472,11 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
             e.stopPropagation()
             return
           }
+          if (insertInterceptRef.current?.(e)) {
+            e.preventDefault()
+            e.stopPropagation()
+            return
+          }
           const leave = isLeaveInsertKey(e)
           const close = isEscapeKey(e)
           // Any other key the user presses here may make a selection.
@@ -535,7 +548,9 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
     if (modeRef.current) setMode('command')
   }, [])
 
-  return { mode, modeRef, pending, onBoxFocus, onBoxBlur }
+  const clearUserSelection = useCallback(() => { userSelectedRef.current = false }, [])
+
+  return { mode, modeRef, pending, onBoxFocus, onBoxBlur, clearUserSelection }
 }
 
 const NO_KEYMAP: VimKeymap = new Map()

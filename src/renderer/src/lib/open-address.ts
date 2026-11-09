@@ -6,12 +6,21 @@ import { useAppStore } from '../store/app-store'
 import { normalizeURL } from './url'
 import { isInternalUrl } from './internal-pages'
 import { log } from './log'
+import { resolveBangs } from './bangs'
+import { openBangGroup } from './multi-bang'
 
 /** Opens `text` — a URL, or a search for anything else — in the active tab
  *  or a new one. Only the first line counts. False when there's nothing to
  *  open. */
 export function openAddress(text: string, inNewTab: boolean, why: string): boolean {
-  const url = normalizeURL(text.split(/\r?\n/)[0] ?? '')
+  const line = (text.split(/\r?\n/)[0] ?? '').trim()
+  // Several bangs, or a label of them: a group of searches.
+  const many = line ? resolveBangs(line) : null
+  if (many && many.bangs.length > 1) {
+    openBangGroup(many, null)
+    return true
+  }
+  const url = normalizeURL(line)
   if (!url) return false
   const s = useAppStore.getState()
   const tab = s.getActiveTab()

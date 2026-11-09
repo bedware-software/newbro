@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useAppStore, consumeNewTabUrlFocus, consumeEagerLoad } from '../store/app-store'
+import { useAppStore, consumeNewTabUrlFocus, consumeNewTabEditor, consumeEagerLoad } from '../store/app-store'
 import type { TabGroup } from '../store/types'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
+import { openUrlEditor } from '../lib/url-editor'
 import { keepsChromeKeyboard, usePageKeys, type VimMode } from '../lib/vim-mode'
 import { KeyCap, vimKeyCaps } from './KeyHints'
 import { internalPageOf, isInternalUrl } from '../lib/internal-pages'
@@ -333,12 +334,16 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
     // plus any tab the store has flagged for eager-load — currently
     // user-opened background tabs).
     let focusUrlBarForNewTab = false
+    let editorForNewTab = false
     for (const tab of currentTabs) {
       if (isInternalUrl(tab.url)) {
         // No view to load or focus: drop the one-shot flags so they don't
         // linger for a view created if the tab later turns into a web page.
+        // A new tab (nt) on a page of the browser's own (the default page
+        // set to one) still comes up with the address editor.
         consumeEagerLoad(tab.id)
         consumeNewTabUrlFocus(tab.id)
+        if (consumeNewTabEditor(tab.id) && tab.id === activeTabId) editorForNewTab = true
         continue
       }
       if (!createdTabsRef.current.has(tab.id)) {
@@ -348,11 +353,14 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
         // can (a) tell main to keep OS keyboard focus on the renderer
         // instead of handing it to the page, and (b) focus the URL bar
         // ourselves right after activation below.
-        const wantsUrlFocus = isActiveNow && consumeNewTabUrlFocus(tab.id)
+        // Vim's nt / nn: the address editor, its box empty, the same way.
+        const wantsEditor = isActiveNow && consumeNewTabEditor(tab.id)
+        const wantsUrlFocus = isActiveNow && !wantsEditor && consumeNewTabUrlFocus(tab.id)
+        if (wantsEditor) editorForNewTab = true
         if (wantsUrlFocus) focusUrlBarForNewTab = true
         window.electronAPI.setupSession?.(tab.partition)
         // So does Vim's Ctrl stepping through the tabs (lib/vim-mode.ts).
-        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad, wantsUrlFocus || keepsChromeKeyboard())
+        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad, wantsEditor || wantsUrlFocus || keepsChromeKeyboard())
         createdTabsRef.current.add(tab.id)
         if (isActiveNow) activatedTabsRef.current.add(tab.id)
       }
@@ -364,6 +372,7 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
       // Internal page: take the previous page off screen and keep keyboard
       // focus on the renderer, which draws the page (like a parked group).
       window.electronAPI.tabDeactivate?.()
+      if (editorForNewTab) openUrlEditor('new-tab')
     } else if (activeTabId && createdTabsRef.current.has(activeTabId)) {
       const tab = currentTabs.find((t) => t.id === activeTabId)
       const url = tab?.url || 'about:blank'
@@ -376,9 +385,8 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
       // keep OS focus on the renderer (focusUrlBar passed to tabCreate),
       // the page never steals focus as it settles, so this focus sticks
       // and whatever the user types is never clobbered by the load.
-      if (focusUrlBarForNewTab) {
-        focusAndSelectUrlBar()
-      }
+      if (editorForNewTab) openUrlEditor('new-tab')
+      else if (focusUrlBarForNewTab) focusAndSelectUrlBar()
     } else if (!activeTabId) {
       // No tab to show (parked on a group): main hides the page so the
       // group card shows through, and moves keyboard focus to the renderer

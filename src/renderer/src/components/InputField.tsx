@@ -22,14 +22,19 @@ interface Props {
   mode: VimMode | null
   /** Keys typed so far of an unfinished sequence. */
   pending?: string
+  /** The address's own field (the address editor): the mode's light runs
+   *  round its edge as round the address bar's, by default, not only with
+   *  Settings' "every field". */
+  addressBar?: boolean
   className?: string
 }
 
-export function InputField({ children, inputRef, onPress, mode, pending, className }: Props) {
+export function InputField({ children, inputRef, onPress, mode, pending, addressBar = false, className }: Props) {
   // With the mode's light on its edge too (Settings → Appearance, every
-  // field), it lets what spills past its edge show.
+  // field, or the address's own), it lets what spills past its edge show.
   const edge = useVimEdge()
-  const edgeShown = useVimEdgeEverywhere() && mode !== null && edge !== 'off'
+  const everywhere = useVimEdgeEverywhere()
+  const edgeShown = (addressBar || everywhere) && mode !== null && edge !== 'off'
   return (
     <div
       onMouseDown={(e) => {
@@ -48,7 +53,7 @@ export function InputField({ children, inputRef, onPress, mode, pending, classNa
     >
       {children}
       {mode && <VimModeBadge mode={mode} pending={pending} size="field" />}
-      <ModeEdge mode={mode} />
+      <ModeEdge mode={mode} addressBar={addressBar} />
     </div>
   )
 }

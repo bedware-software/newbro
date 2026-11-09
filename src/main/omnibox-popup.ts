@@ -161,14 +161,31 @@ function findByPopup(senderId: number): PopupRecord | null {
   return null
 }
 
-export function registerOmniboxPopupIpc(): void {
+// The address editor's popups whose leaving closes the list.
+const watchedModals = new WeakSet<BrowserWindow>()
+
+/** `modalPopupOf`: the popup the window waits on (ipc.ts) — the address
+ *  editor, where the address is typed, holding the keyboard while the
+ *  window itself has none. Passed in: ipc.ts imports this module. */
+export function registerOmniboxPopupIpc({ modalPopupOf }: { modalPopupOf: (win: BrowserWindow) => BrowserWindow | null }): void {
   ipcMain.on('omnibox:show', (event, spec: PopupSpec) => {
     const parent = BrowserWindow.fromWebContents(event.sender)
     if (!parent || parent.isDestroyed() || !spec?.anchor || !Array.isArray(spec.rows)) return
-    // Opening while the window isn't focused would float the list over
-    // whatever the user switched to.
-    if (!parent.isFocused()) return
+    // Opening while neither the window nor its address editor is focused
+    // would float the list over whatever the user switched to.
+    const modal = modalPopupOf(parent)
+    const typingInModal = !!modal && !modal.isDestroyed() && modal.isFocused()
+    if (!parent.isFocused() && !typingInModal) return
     show(parent, spec)
+    // The editor going out of use (another app) takes the list along, as
+    // the window's own blur does.
+    if (modal && typingInModal && !watchedModals.has(modal)) {
+      watchedModals.add(modal)
+      modal.on('blur', () => {
+        const record = parent.isDestroyed() ? undefined : popups.get(parent.webContents.id)
+        if (record) hide(record)
+      })
+    }
   })
 
   // Create the window (and load its page) ahead of the first keystroke, so

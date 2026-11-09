@@ -17,7 +17,7 @@ import {
   ArrowDownWideNarrow, ArrowUpNarrowWide,
 } from 'lucide-react'
 import {
-  BANG_CATEGORIES, DEFAULT_BANGS, bangProblem, expandBang, normalizeTrigger, type Bang,
+  BANG_CATEGORIES, DEFAULT_BANGS, bangProblem, expandBang, normalizeLabels, normalizeTrigger, type Bang,
 } from '../../../shared/bangs'
 import { SEARCH_ENGINES, searchEngineProblem } from '../../../shared/search-engines'
 import { keepsChromeKeyboard } from '../lib/vim-mode'
@@ -261,7 +261,8 @@ export function BangsPage() {
           b.trigger.includes(qt) ||
           b.name.toLowerCase().includes(q) ||
           b.url.toLowerCase().includes(q) ||
-          b.category.toLowerCase().includes(q))
+          b.category.toLowerCase().includes(q) ||
+          (b.labels ?? []).some((l) => l.includes(qt)))
       : bangs.slice()
     const sign = sort.dir === 'asc' ? 1 : -1
     matched.sort((a, b) => {
@@ -735,6 +736,7 @@ export function BangsPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onSearchKeyDown}
+              data-vim-search=""
               placeholder="Search bangs"
               spellCheck={false}
               className="h-9 w-full field rounded-xl pl-9 pr-9 text-sm text-foreground outline-none placeholder:text-muted-foreground"
@@ -789,7 +791,7 @@ export function BangsPage() {
       </div>
 
       {/* List */}
-      <div ref={listRef} className={`min-h-0 flex-1 overflow-y-auto ${bangsOn ? '' : 'opacity-60'}`}>
+      <div ref={listRef} data-vim-scroll="" className={`min-h-0 flex-1 overflow-y-auto ${bangsOn ? '' : 'opacity-60'}`}>
         <div
           className="mx-auto max-w-4xl px-4 py-3"
           role="listbox"
@@ -915,6 +917,7 @@ export function BangsPage() {
           state={editor}
           others={bangs}
           categories={[...new Set([...BANG_CATEGORIES, ...bangs.map((b) => b.category)])]}
+          labels={[...new Set(bangs.flatMap((b) => b.labels ?? []))].sort()}
           onCancel={() => { setEditor(null); focusList() }}
           onSave={(draft) => {
             const clean: Bang = {
@@ -924,6 +927,9 @@ export function BangsPage() {
               url: draft.url.trim(),
               category: draft.category.trim() || 'Other',
             }
+            const labels = normalizeLabels(draft.labels ?? [])
+            if (labels.length > 0) clean.labels = labels
+            else delete clean.labels
             const next = editor.mode === 'add'
               ? [...bangs, clean]
               : bangs.map((b) => (b.id === clean.id ? clean : b))
@@ -939,15 +945,22 @@ export function BangsPage() {
 }
 
 function BangEditor({
-  state, others, categories, onCancel, onSave,
+  state, others, categories, labels: knownLabels, onCancel, onSave,
 }: {
   state: EditorState
   others: Bang[]
   categories: string[]
+  /** Every label the table's bangs wear, to pick from. */
+  labels: string[]
   onCancel: () => void
   onSave: (draft: Bang) => void
 }) {
   const [draft, setDraft] = useState<Bang>(state.draft)
+  // The labels as typed: commas and spaces between them.
+  const [labelsText, setLabelsText] = useState((state.draft.labels ?? []).join(', '))
+  const labels = normalizeLabels(labelsText)
+  // A label spelled as a bang's trigger: `!it` is that bang, not the label.
+  const shadowed = labels.filter((l) => others.some((o) => o.trigger === l && o.id !== draft.id))
   const [tried, setTried] = useState(false)
   const firstRef = useRef<HTMLInputElement>(null)
   const problem = bangProblem(draft, others)
@@ -963,7 +976,7 @@ function BangEditor({
 
   const submit = (): void => {
     setTried(true)
-    if (!problem) onSave(draft)
+    if (!problem) onSave({ ...draft, labels })
   }
   const onKeyDown = (e: React.KeyboardEvent): void => {
     if (e.key === 'Escape') {
@@ -1079,6 +1092,37 @@ function BangEditor({
             {categories.map((c) => <option key={c} value={c} />)}
           </datalist>
         </label>
+        <label className="mt-3 block">
+          <span className={label}>Labels</span>
+          <input
+            value={labelsText}
+            onChange={(e) => setLabelsText(e.target.value)}
+            placeholder="it-search, shops"
+            spellCheck={false}
+            className={`${field} font-mono`}
+          />
+          <span className="mt-1 block text-[11px] text-muted-foreground">
+            A label is a bang for every bang wearing it: <span className="font-mono">steam deck !{labels[0] ?? 'it-search'}</span> searches them all, in a group.
+            {knownLabels.length > 0 && <> Labels: {knownLabels.map((l, i) => (
+              <span key={l}>
+                {i > 0 && ', '}
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => { if (!labels.includes(l)) setLabelsText(labels.concat(l).join(', ')) }}
+                  className="font-mono text-primary hover:underline"
+                >
+                  {l}
+                </button>
+              </span>
+            ))}.</>}
+          </span>
+          {shadowed.length > 0 && (
+            <span className="mt-1 block text-[11px] text-amber-500">
+              {shadowed.map((l) => `!${l}`).join(', ')} {shadowed.length === 1 ? 'is a bang' : 'are bangs'} already: the bang wins over the label.
+            </span>
+          )}
+        </label>
         <div className="mt-4 min-h-[2.5rem] rounded-md bg-secondary/60 px-3 py-2 text-[11px]">
           {tried && problem ? (
             <span className="text-destructive">{problem}</span>
@@ -1156,6 +1200,11 @@ function BangRow({
           {showCategory && (
             <span className="shrink-0 text-[11px] text-muted-foreground">{bang.category}</span>
           )}
+          {(bang.labels ?? []).map((l) => (
+            <span key={l} className="shrink-0 rounded bg-secondary px-1.5 py-px font-mono text-[10px] text-muted-foreground" title={`!${l} searches every bang labelled ${l}`}>
+              {l}
+            </span>
+          ))}
         </div>
         <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={bang.url}>
           {bang.url}

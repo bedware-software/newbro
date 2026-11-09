@@ -56,6 +56,19 @@ export function consumeNewTabUrlFocus(tabId: string): boolean {
   return true
 }
 
+// Tabs Vim's nt / nn opened: each comes up with the address editor open on
+// it, its box empty (WebviewPanel opens it once the tab is in front).
+const newTabEditorPending = new Set<string>()
+export function markNewTabForEditor(tabId: string): void {
+  newTabUrlFocusPending.delete(tabId)
+  newTabEditorPending.add(tabId)
+}
+export function consumeNewTabEditor(tabId: string): boolean {
+  if (!newTabEditorPending.has(tabId)) return false
+  newTabEditorPending.delete(tabId)
+  return true
+}
+
 // Tabs added in background (activate=false) that should still start
 // loading immediately — otherwise the page stays at about:blank until
 // the user switches to it, which defeats the point of opening it in

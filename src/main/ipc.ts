@@ -1427,7 +1427,7 @@ function alive(p) {
   registerHistoryIpc()
   registerOmniboxSuggestIpc()
   registerBangsIpc()
-  registerOmniboxPopupIpc()
+  registerOmniboxPopupIpc({ modalPopupOf })
   registerBookshelfIpc()
   registerDarkPagesIpc()
 

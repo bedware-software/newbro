@@ -7,9 +7,16 @@
 // whole address — a block's key wins, so dd is the domain and pp the
 // parameters, while D removes all of it and P pastes over all of it — and
 // yt copies the page's title. gu goes up a level, gt keeps only the site; u undoes and <C-r>
-// redoes, as in vim; i / A / I / C go to typing. Enter goes there. It opens typing over the whole address,
-// selected, as other browsers' address bars do; Ctrl+C goes to COMMAND, and
-// Esc closes from either.
+// redoes, as in vim; i / A / I / C go to typing. Enter goes there.
+// Every edit of the address happens here (lib/url-editor.ts): a click on the
+// address bar opens it, as do e and a new tab, each in the mode Settings
+// gives it — typing (INSERT) over the whole address, selected, for a click
+// and a new tab (whose box starts empty), COMMAND for e. Typing has the
+// address bar's suggestions under it (lib/use-address-suggestions.ts):
+// history, past searches, the engine's, bangs — several of them a group of
+// searches. Ctrl+C goes to COMMAND, and Esc closes from either (first
+// stepping back through the list, while it's up). Its field wears the
+// mode's light round its edge, as the address bar does.
 // It drops down from the toolbar's address bar, edge to edge with it, the
 // way the address bar's suggestions do — a pinned popup (tab pages are
 // native views that paint over the app's DOM), not dragged anywhere — and
@@ -23,9 +30,9 @@ import { DetachedWindow, type PopupPlacement } from './DetachedWindow'
 import { InputField } from './InputField'
 import { Hint, HintBar, LEAVE_INSERT_CAP, vimKeyCaps } from './KeyHints'
 import { closeUrlEditor, useUrlEditorStore } from '../lib/url-editor'
-import { openAddress } from '../lib/open-address'
+import { useAddressSuggestions, type Disposition } from '../lib/use-address-suggestions'
 import { blockByKey, blockKeyLabel, isBlockKey, removeBlock, replaceBlock, siteOnly, startBlock, upOneLevel, urlBlocks, type UrlBlock } from '../lib/url-blocks'
-import { usePopupVimMode } from '../lib/vim-mode'
+import { isEscapeKey, usePopupVimMode } from '../lib/vim-mode'
 import { keyTokenFromEvent, type VimKeymap } from '../lib/vim-keymap'
 
 interface Props {
@@ -75,6 +82,9 @@ interface Mark {
 
 export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   const open = useUrlEditorStore((s) => s.open)
+  // The mode it opened in, and whether the box starts empty (a new tab).
+  const startMode = useUrlEditorStore((s) => s.mode)
+  const blank = useUrlEditorStore((s) => s.blank)
   const activeTabId = useAppStore((s) => s.activeTabId)
   const [popupWindow, setPopupWindow] = useState<Window | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -87,7 +97,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   const [value, setValueState] = useState('')
   const valueRef = useRef('')
   // The tab being edited, and what it was showing.
-  const [target, setTarget] = useState<{ tabId: string; url: string; title: string; favicon: string } | null>(null)
+  // tabId null: parked on a group, what's typed opening a new tab.
+  const [target, setTarget] = useState<{ tabId: string | null; url: string; title: string; favicon: string } | null>(null)
   const [intent, setIntentState] = useState<Intent | null>(null)
   const intentRef = useRef<Intent | null>(null)
   const [flash, setFlash] = useState<string | null>(null)
@@ -138,15 +149,13 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       return
     }
     const tab = useAppStore.getState().getActiveTab()
-    if (!tab) {
-      closeUrlEditor()
-      return
-    }
-    setTarget({ tabId: tab.id, url: tab.url, title: tab.title, favicon: tab.favicon })
+    setTarget(tab
+      ? { tabId: tab.id, url: tab.url, title: tab.title, favicon: tab.favicon }
+      : { tabId: null, url: '', title: 'New tab', favicon: '' })
     historyRef.current = []
     redoRef.current = []
     lastSelRef.current = null
-    setValue(tab.url === 'about:blank' ? '' : tab.url, false)
+    setValue(!tab || useUrlEditorStore.getState().blank || tab.url === 'about:blank' ? '' : tab.url, false)
     setIntentState(null)
     intentRef.current = null
     setFlash(null)
@@ -353,11 +362,18 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     showFlash(`Copied the title: ${target.title}`)
   }
 
-  const go = useCallback((inNewTab: boolean) => {
+  // Set below: the suggestions need the mode, which needs onCommand.
+  const suggRef = useRef<ReturnType<typeof useAddressSuggestions> | null>(null)
+  /** Enter, or COMMAND's go: the selected suggestion, or what's in the box
+   *  — the page's own address as it was closes without reloading. */
+  const go = useCallback((disposition: Disposition, ctrl = false) => {
     const text = valueRef.current.trim()
     const unchanged = target && text === target.url
-    if (text && (!unchanged || inNewTab)) openAddress(text, inNewTab, 'url-editor')
-    closeUrlEditor()
+    if (!text || (unchanged && disposition === 'current')) {
+      closeUrlEditor()
+      return
+    }
+    suggRef.current?.commit(disposition, ctrl)
   }, [target])
 
   const onCommand = (command: string): void => {
@@ -406,7 +422,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
         redoRef.current = redo
         break
       }
-      case 'url-go': go(false); break
+      case 'url-go': go('current'); break
     }
   }
 
@@ -441,20 +457,41 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     keymap: vimKeymap,
     popup: popupWindow,
     box: inputRef,
-    initial: 'insert',
+    initial: startMode,
     open,
     onCommand,
     onEscape: closeUrlEditor,
     intercept,
+    // Esc steps back through the suggestions before it closes the editor.
+    insertIntercept: (e) => isEscapeKey(e) && !!suggRef.current?.escape(),
   })
 
-  // The box has the keys from the start, the whole address selected — typing
-  // replaces it, as in any address bar; Vim's Ctrl+C goes to COMMAND.
+  const sugg = useAddressSuggestions({
+    inputRef,
+    tabId: target?.tabId ?? null,
+    tabUrl: target?.url ?? '',
+    blankTab: blank && !!target?.tabId,
+    // A completion the box selects itself isn't a selection to copy.
+    onSelected: vim.clearUserSelection,
+    // Typing: INSERT (or no Vim at all), the editor up.
+    enabled: open && vim.mode !== 'command',
+    onText: (text) => setValue(text, false),
+    // The list hangs under the whole editor, its width.
+    getAnchor: () => placement && size ? { x: placement.left, y: placement.top, width: size.width, height: HEIGHT } : null,
+    onNavigated: closeUrlEditor,
+  })
+  suggRef.current = sugg
+
+  // Opening in INSERT, the box has the keys from the start, the whole
+  // address selected — typing replaces it, as in any address bar; Vim's
+  // Ctrl+C goes to COMMAND. Opening in COMMAND the popup itself has them,
+  // for the blocks' keys; i types.
   useEffect(() => {
     if (!popupWindow) return
+    if (vimKeymap && useUrlEditorStore.getState().mode === 'command') return
     const t = setTimeout(() => typeAt(0, valueRef.current.length), 0)
     return () => clearTimeout(t)
-  }, [popupWindow, typeAt])
+  }, [popupWindow, typeAt, vimKeymap])
 
   useEffect(() => () => {
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
@@ -464,12 +501,17 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === 'Enter') {
+      if (e.nativeEvent.isComposing) return
       e.preventDefault()
-      go(e.shiftKey)
+      // Shift or Alt: a new tab (Alt as Chrome has it), Cmd one in the
+      // background; Ctrl: www.<word>.com.
+      go(e.shiftKey || e.altKey ? 'foreground-tab' : e.metaKey ? 'background-tab' : 'current', e.ctrlKey && !e.altKey)
     } else if (e.key === 'Escape') {
       e.preventDefault()
-      // In Vim mode Esc never gets here: the editor's Vim keys close it.
-      closeUrlEditor()
+      // In Vim mode Esc never gets here: the editor's Vim keys have it.
+      if (!sugg.escape()) closeUrlEditor()
+    } else {
+      sugg.handleKey(e)
     }
   }
 
@@ -526,15 +568,24 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
               onPress={() => typeAt(valueRef.current.length)}
               mode={vim.mode}
               pending={vim.pending}
+              addressBar
               className="h-12"
             >
               <input
                 ref={bindInput}
                 type="text"
                 value={value}
-                onChange={(e) => setValue(e.target.value, false)}
+                role="combobox"
+                aria-autocomplete="both"
+                aria-expanded={sugg.popupOpen}
+                // onInput, not onChange: see useAddressSuggestions.
+                onInput={sugg.handleInput}
+                onChange={() => {}}
                 onKeyDown={onKeyDown}
-                onFocus={vim.onBoxFocus}
+                onFocus={() => {
+                  vim.onBoxFocus()
+                  window.electronAPI.omniboxPrewarm?.()
+                }}
                 onBlur={(e) => {
                   lastSelRef.current = { start: e.currentTarget.selectionStart ?? 0, end: e.currentTarget.selectionEnd ?? 0 }
                   vim.onBoxBlur()
@@ -620,6 +671,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
           ) : (
             <>
               <Hint label="Go" keys={['Enter']} />
+              {sugg.popupOpen && <Hint label="Pick" keys={['↓', '↑']} />}
               <Hint label="New tab" keys={[shift, 'Enter']} />
               {vim.mode && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
               <Hint label="Close" keys={['Esc']} />

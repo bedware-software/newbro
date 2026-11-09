@@ -50,6 +50,9 @@ interface Settings {
   darkVariant: string
   density: Density
   newTabFocus: 'site' | 'url'
+  urlEditorClickMode?: 'insert' | 'command'
+  urlEditorNewTabMode?: 'insert' | 'command'
+  urlEditorEditMode?: 'insert' | 'command'
   /** Always saved true: Vim is the only mode (older builds read it). */
   vimMode: boolean
   /** INSERT in a page hides the Sidebar; COMMAND brings it back. */
@@ -492,6 +495,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [darkVariant, setDarkVariant] = useState<string>(DARK_VARIANTS[0].id)
   const [density, setDensity] = useState<Density>(DEFAULT_DENSITY)
   const [newTabFocus, setNewTabFocus] = useState<'site' | 'url'>('site')
+  // The mode the address editor opens in, each way it opens.
+  const [urlEditorClickMode, setUrlEditorClickMode] = useState<'insert' | 'command'>('insert')
+  const [urlEditorNewTabMode, setUrlEditorNewTabMode] = useState<'insert' | 'command'>('insert')
+  const [urlEditorEditMode, setUrlEditorEditMode] = useState<'insert' | 'command'>('command')
   const [hideSidebarInInsert, setHideSidebarInInsert] = useState(false)
   const [vimIndicator, setVimIndicator] = useState<VimIndicator>(DEFAULT_VIM_INDICATOR)
   const [vimEdge, setVimEdge] = useState<VimEdge>(DEFAULT_VIM_EDGE)
@@ -882,6 +889,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setDarkVariant(dv)
       setDensity(dens)
       setNewTabFocus(settings.newTabFocus === 'url' ? 'url' : 'site')
+      setUrlEditorClickMode(settings.urlEditorClickMode === 'command' ? 'command' : 'insert')
+      setUrlEditorNewTabMode(settings.urlEditorNewTabMode === 'command' ? 'command' : 'insert')
+      setUrlEditorEditMode(settings.urlEditorEditMode === 'insert' ? 'insert' : 'command')
       setHideSidebarInInsert(settings.hideSidebarInInsert === true)
       setVimIndicator(indicator)
       setVimEdge(edge)
@@ -1319,6 +1329,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       darkVariant,
       density,
       newTabFocus,
+      urlEditorClickMode,
+      urlEditorNewTabMode,
+      urlEditorEditMode,
       // Vim is the only mode; kept for older builds reading synced settings.
       vimMode: true,
       hideSidebarInInsert,
@@ -2608,6 +2621,35 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 />
                 <p className="text-[11px] text-muted-foreground mt-1">
                   Where keyboard focus lands when a new tab is opened.
+                </p>
+              </div>
+
+              {/* The address editor: the mode it opens in, each way. */}
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">Address Editor Opens In</label>
+                <div className="flex flex-col gap-2">
+                  {([
+                    ['Click on the address', 'general:url-editor-click', urlEditorClickMode, setUrlEditorClickMode],
+                    ['New tab (nt / nn)', 'general:url-editor-new-tab', urlEditorNewTabMode, setUrlEditorNewTabMode],
+                    ['Edit the address (e)', 'general:url-editor-edit', urlEditorEditMode, setUrlEditorEditMode],
+                  ] as const).map(([label, item, value, onChange]) => (
+                    <div key={item} className="flex items-center gap-3">
+                      <span className="w-44 shrink-0 text-xs text-muted-foreground">{label}</span>
+                      <Segmented
+                        label={`Address editor: ${label}`}
+                        vimItem={item}
+                        value={value}
+                        onChange={onChange}
+                        options={[
+                          { value: 'insert', label: 'INSERT', title: 'Typing in the box, the address selected (or the box empty, on a new tab).' },
+                          { value: 'command', label: 'COMMAND', title: "The address's blocks and their keys: c, d, y, p and the rest; i types." },
+                        ]}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Every edit of the address happens in the address editor. These pick the mode it starts in.
                 </p>
               </div>
 

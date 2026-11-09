@@ -4,6 +4,12 @@
 // engine. The table lives in main (src/main/bangs-store.ts), seeded with
 // DEFAULT_BANGS; the renderer resolves against its copy (lib/bangs.ts), and
 // the vimperium://bangs page edits it (components/BangsPage.tsx).
+//
+// Several bangs in one query search each site: `steam deck !avito !ozon`
+// opens both searches, together in a tab group named for the query. A bang
+// can wear labels — `it-search` on Avito, Ozon, DNS… — and a label is a bang
+// for all of them: `steam deck !it-search`. A bang's own trigger wins over a
+// label spelled the same.
 
 export interface Bang {
   /** Stable id. Seeded bangs keep `builtin:<trigger>` even when edited, so
@@ -17,6 +23,9 @@ export interface Bang {
   url: string
   category: string
   enabled: boolean
+  /** Labels it wears, lowercase: `!label` searches every enabled bang that
+   *  wears it. */
+  labels?: string[]
 }
 
 /** The query placeholder in a bang's URL — the same as the search engine's. */
@@ -34,6 +43,7 @@ export const BANG_CATEGORIES = [
 const MAX_TRIGGER_LENGTH = 32
 const MAX_NAME_LENGTH = 80
 const MAX_CATEGORY_LENGTH = 40
+const MAX_LABELS = 20
 const MAX_URL_LENGTH = 2048
 export const MAX_BANGS = 2000
 
@@ -140,8 +150,31 @@ export function sanitizeBang(raw: unknown): Bang | null {
     category: str(r.category, MAX_CATEGORY_LENGTH) || 'Other',
     enabled: r.enabled !== false,
   }
+  const labels = normalizeLabels(r.labels)
+  if (labels.length > 0) bang.labels = labels
   if (!bang.id) return null
   return bangProblem(bang, []) ? null : bang
+}
+
+/** A label as stored: `IT Search`, `!it-search` → `it-search`. Null when it
+ *  can't be one (it must read as a trigger does). */
+export function normalizeLabel(raw: string): string | null {
+  const label = normalizeTrigger(raw).replace(/\s+/g, '-')
+  return label && label.length <= MAX_TRIGGER_LENGTH && TRIGGER_RE.test(label) ? label : null
+}
+
+/** Labels from storage or a form (an array, or text split on commas and
+ *  spaces): cleaned, without repeats. */
+export function normalizeLabels(raw: unknown): string[] {
+  const parts = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[,\s]+/) : []
+  const out: string[] = []
+  for (const part of parts) {
+    if (typeof part !== 'string') continue
+    const label = normalizeLabel(part)
+    if (label && !out.includes(label)) out.push(label)
+    if (out.length >= MAX_LABELS) break
+  }
+  return out
 }
 
 /** Where a bang goes for `query`; its site's home page for no query. */
@@ -182,6 +215,62 @@ export function findBang(text: string, lookup: (trigger: string) => Bang | undef
     return { bang, query, url: expandBang(bang, query) }
   }
   return null
+}
+
+export interface MultiBangHit {
+  /** Every bang the query names, by trigger or label, in the order typed,
+   *  each once. */
+  bangs: Bang[]
+  /** The `!words` that named them, as typed. */
+  words: string[]
+  /** The text without them. */
+  query: string
+  /** Labels among the words: `!it-search` → `it-search`. */
+  labels: string[]
+}
+
+/** Every `!word` in `text` that names a bang — or, as no bang's trigger, a
+ *  label — with the rest of the text as the query. Null when none does. */
+export function findBangs(
+  text: string,
+  lookup: (trigger: string) => Bang | undefined,
+  labelLookup: (label: string) => readonly Bang[] | undefined,
+): MultiBangHit | null {
+  const words = text.trim().split(/\s+/)
+  const bangs: Bang[] = []
+  const used: string[] = []
+  const labels: string[] = []
+  const rest: string[] = []
+  for (const word of words) {
+    if (word.length >= 2 && word[0] === '!') {
+      const trigger = word.slice(1).toLowerCase()
+      const bang = lookup(trigger)
+      const labelled = bang ? undefined : labelLookup(trigger)
+      if (bang || (labelled && labelled.length > 0)) {
+        for (const b of bang ? [bang] : labelled!) if (!bangs.some((x) => x.id === b.id)) bangs.push(b)
+        used.push(word)
+        if (!bang) labels.push(trigger)
+        continue
+      }
+    }
+    rest.push(word)
+  }
+  if (bangs.length === 0) return null
+  return { bangs, words: used, query: rest.join(' '), labels }
+}
+
+/** The table's labels, each with the enabled bangs that wear it. */
+export function bangLabelLookup(bangs: readonly Bang[]): Map<string, Bang[]> {
+  const map = new Map<string, Bang[]>()
+  for (const b of bangs) {
+    if (!b.enabled) continue
+    for (const label of b.labels ?? []) {
+      const list = map.get(label)
+      if (list) list.push(b)
+      else map.set(label, [b])
+    }
+  }
+  return map
 }
 
 /** The table as a lookup of its enabled bangs, by trigger. */

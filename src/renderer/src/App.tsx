@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, getVisibleTabOrder, getTabCycleOrder, type NewTabFocus } from './store/app-store'
+import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, markNewTabForEditor, getVisibleTabOrder, getTabCycleOrder, type NewTabFocus } from './store/app-store'
 import { normalizeURL, setSearchEngine } from './lib/url'
 import { setBangs, setBangsEnabled } from './lib/bangs'
 import type { Bang } from '../../shared/bangs'
@@ -17,7 +17,7 @@ import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
 import { FindPopup } from './components/FindPopup'
 import { UrlEditor } from './components/UrlEditor'
-import { openUrlEditor, useUrlEditorStore } from './lib/url-editor'
+import { DEFAULT_URL_EDITOR_MODES, openUrlEditor, setUrlEditorModes, useUrlEditorStore, type UrlEditorMode } from './lib/url-editor'
 import { closeSplit, focusOtherPane, isSplitShown, otherPaneTab, startSplit, useSplitStore } from './lib/split-view'
 import { SearchDialog, type SearchFilter } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
@@ -37,6 +37,7 @@ import { HttpAuthDialog } from './components/HttpAuthDialog'
 import { DOWNLOADS_FIND_EVENT, DOWNLOADS_RELOAD_EVENT } from './components/DownloadsPage'
 import { BANGS_FIND_EVENT, BANGS_RELOAD_EVENT } from './components/BangsPage'
 import { BANGS_URL, DOWNLOADS_URL, internalPageOf, isInternalUrl } from './lib/internal-pages'
+import { runInternalPageCommand } from './lib/internal-page-commands'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import { applyVimIndicator, normalizeVimIndicator, type VimIndicator } from './lib/vim-indicator'
 import { applyVimEdge, normalizeVimEdge, type VimEdge } from './lib/vim-edge'
@@ -55,6 +56,9 @@ interface Settings {
   darkVariant: string
   density: Density
   newTabFocus: NewTabFocus
+  urlEditorClickMode?: UrlEditorMode
+  urlEditorNewTabMode?: UrlEditorMode
+  urlEditorEditMode?: UrlEditorMode
   /** Vim's COMMAND / INSERT modes, see lib/vim-mode.ts. Always true — Vim is
    *  the only mode — and read by nothing here: it stays in the settings for
    *  older builds that read them through Cloud Sync. */
@@ -87,6 +91,16 @@ interface Settings {
   keybindings: Record<string, string[]>
   /** Default policy per gated permission kind (mic, camera, …). */
   permissionDefaults: Record<PermissionKind, PermissionPolicy>
+}
+
+/** Settings' choice of the mode the address editor opens in, each way. */
+function applyUrlEditorModes(s: Pick<Settings, 'urlEditorClickMode' | 'urlEditorNewTabMode' | 'urlEditorEditMode'>): void {
+  const mode = (v: string | undefined, fallback: UrlEditorMode): UrlEditorMode => (v === 'insert' || v === 'command' ? v : fallback)
+  setUrlEditorModes({
+    click: mode(s.urlEditorClickMode, DEFAULT_URL_EDITOR_MODES.click),
+    'new-tab': mode(s.urlEditorNewTabMode, DEFAULT_URL_EDITOR_MODES['new-tab']),
+    edit: mode(s.urlEditorEditMode, DEFAULT_URL_EDITOR_MODES.edit),
+  })
 }
 
 function normalizeNewTabFocus(value: string | undefined): NewTabFocus {
@@ -772,6 +786,7 @@ export default function App() {
       applyVimEdge(normalized.vimEdge, normalized.vimEdgeEverywhere === true)
       setDefaultNewTabUrl(normalized.defaultPageUrl)
       setNewTabFocusPref(normalized.newTabFocus)
+      applyUrlEditorModes(normalized)
       setSearchEngine(normalized.searchEngine)
       setBangsEnabled(normalized.bangsEnabled !== false)
     } catch (err) {
@@ -959,9 +974,12 @@ export default function App() {
         }
       }
       switch (action) {
-        case 'new-tab':
-          if (s.activeWorkspaceId) s.addTabNearActive(s.activeWorkspaceId)
+        case 'new-tab': {
+          // It comes up with the address editor on it (WebviewPanel).
+          const id = s.activeWorkspaceId ? s.addTabNearActive(s.activeWorkspaceId) : null
+          if (id) markNewTabForEditor(id)
           break
+        }
         case 'new-group':
           // Asks for the name first; the group then comes with a new tab in
           // it (the dialog's confirm, below).
@@ -1080,7 +1098,7 @@ export default function App() {
           break
         }
         case 'edit-url':
-          if (!openUrlEditor()) log.info("edit-url: no address to edit here (a group, or a page of the browser's own)")
+          if (!openUrlEditor('edit')) log.info('edit-url: no address to edit here (parked on a group)')
           break
         case 'split-close':
           closeSplit()
@@ -1443,6 +1461,7 @@ export default function App() {
       applyVimEdge(s.vimEdge, s.vimEdgeEverywhere === true)
       setDefaultNewTabUrl(s.defaultPageUrl)
       setNewTabFocusPref(s.newTabFocus)
+      applyUrlEditorModes(s)
       setSearchEngine(s.searchEngine)
       setBangsEnabled(s.bangsEnabled !== false)
     })
@@ -1555,6 +1574,7 @@ export default function App() {
     applyVimEdge(normalized.vimEdge, normalized.vimEdgeEverywhere === true)
     setDefaultNewTabUrl(normalized.defaultPageUrl)
     setNewTabFocusPref(normalized.newTabFocus)
+    applyUrlEditorModes(normalized)
     setSearchEngine(normalized.searchEngine)
     setBangsEnabled(normalized.bangsEnabled !== false)
     await window.electronAPI.saveSettings(normalized)
@@ -1645,9 +1665,14 @@ export default function App() {
     }
     if (isPageCommand(command)) {
       // Typed in the chrome: the page's keys go on to the page — the text
-      // field picker (gi) with the keyboard, which it needs.
+      // field picker (gi) with the keyboard, which it needs. A page this
+      // window draws runs them here, as a web page would.
       const s = useAppStore.getState()
-      if (!s.activeTabId || isInternalUrl(s.getActiveTab()?.url)) return
+      if (!s.activeTabId) return
+      if (isInternalUrl(s.getActiveTab()?.url)) {
+        runInternalPageCommand(command)
+        return
+      }
       if (command === 'focus-input') focusActivePage()
       window.electronAPI.vimRunInPage?.(s.activeTabId, command)
       return
@@ -1721,7 +1746,7 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => { setSearchOpenFilter(null); setSearchOpen(true) }} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} onOpenDarkPagesSettings={() => { setSettingsTabRequest({ tab: 'darkPages', v: Date.now() }); setSettingsOpen(true) }} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} hintsOn={!popupOpen} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => { setSearchOpenFilter(null); setSearchOpen(true) }} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} onOpenDarkPagesSettings={() => { setSettingsTabRequest({ tab: 'darkPages', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           visible={sidebarShown}

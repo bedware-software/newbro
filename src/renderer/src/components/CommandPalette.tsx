@@ -5,7 +5,6 @@ import { InputField } from './InputField'
 import { Hint, HintBar, LEAVE_INSERT_CAP, RowHint, vimKeyCaps } from './KeyHints'
 import { hintIndex, usePopupHints } from '../lib/hint-labels'
 import { useAppStore } from '../store/app-store'
-import { isInternalUrl } from '../lib/internal-pages'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { usePopupVimMode } from '../lib/vim-mode'
 import type { VimKeymap } from '../lib/vim-keymap'
@@ -213,9 +212,8 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
       // A tab in a group (not the group header parked with no active tab).
       if (cmd.id === 'ungroup-tab') return !!activeTab && !!activeTabGroupId
       if (cmd.id === 'split-focus' || cmd.id === 'split-close') return splitShown
-      // An address to edit: not parked on a group, nor on a page of the
-      // browser's own (openUrlEditor refuses those).
-      if (cmd.id === 'edit-url') return !!activeTab && !isInternalUrl(activeTab.url)
+      // An address to edit: not parked on a group.
+      if (cmd.id === 'edit-url') return !!activeTab
       return true
     })
   }, [activeTab, activeTabGroupId, splitShown, vimKeymap])

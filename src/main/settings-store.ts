@@ -14,6 +14,11 @@ export interface Settings {
   /** Where keyboard focus lands when a new tab is created —
    *  'site' focuses the page (current behavior), 'url' focuses the URL bar. */
   newTabFocus: 'site' | 'url'
+  /** The mode the address editor opens in: on a click on the address bar,
+   *  on a new tab (nt / nn), on Vim's e. */
+  urlEditorClickMode: 'insert' | 'command'
+  urlEditorNewTabMode: 'insert' | 'command'
+  urlEditorEditMode: 'insert' | 'command'
   /** Vim mode: windows switch between COMMAND mode (plain keys run the
    *  commands in {@link vimKeymap} — scrolling the page, tabs, app commands)
    *  and INSERT mode (keys go to the page or the field being typed in) —
@@ -105,6 +110,11 @@ const KNOWN_DENSITIES = new Set(['compact', 'normal'])
 const KNOWN_VIM_INDICATORS = new Set(['rim-label', 'rim', 'label', 'tint', 'base', 'dot', 'plain'])
 const KNOWN_VIM_EDGES = new Set(['comet-rail', 'comet', 'aurora', 'living', 'glint', 'off'])
 const KNOWN_NEW_TAB_FOCUS = new Set(['site', 'url'])
+const KNOWN_URL_EDITOR_MODES = new Set(['insert', 'command'])
+type UrlEditorModeKey = 'urlEditorClickMode' | 'urlEditorNewTabMode' | 'urlEditorEditMode'
+function urlEditorMode(value: unknown, key: UrlEditorModeKey): 'insert' | 'command' {
+  return KNOWN_URL_EDITOR_MODES.has(value as string) ? (value as 'insert' | 'command') : DEFAULT_SETTINGS[key]
+}
 const KNOWN_DOH_MODES = new Set(['off', 'automatic', 'secure'])
 const KNOWN_PASSWORD_AUTOFILL = new Set(['automatic', 'on-focus', 'off'])
 const KNOWN_PERMISSION_POLICIES = new Set<PermissionPolicy>(['ask', 'allow', 'block'])
@@ -297,6 +307,9 @@ export const DEFAULT_SETTINGS: Settings = {
   darkVariant: 'dark-default',
   density: 'normal',
   newTabFocus: 'site',
+  urlEditorClickMode: 'insert',
+  urlEditorNewTabMode: 'insert',
+  urlEditorEditMode: 'command',
   vimMode: true,
   hideSidebarInInsert: false,
   vimIndicator: 'rim-label',
@@ -641,6 +654,9 @@ export function loadSettings(): Settings {
     newTabFocus: KNOWN_NEW_TAB_FOCUS.has(saved?.newTabFocus as string)
       ? (saved!.newTabFocus as 'site' | 'url')
       : DEFAULT_SETTINGS.newTabFocus,
+    urlEditorClickMode: urlEditorMode(saved?.urlEditorClickMode, 'urlEditorClickMode'),
+    urlEditorNewTabMode: urlEditorMode(saved?.urlEditorNewTabMode, 'urlEditorNewTabMode'),
+    urlEditorEditMode: urlEditorMode(saved?.urlEditorEditMode, 'urlEditorEditMode'),
     // Vim is the only mode, whatever an older build saved.
     vimMode: true,
     hideSidebarInInsert: saved?.hideSidebarInInsert === true,
@@ -695,6 +711,9 @@ export function saveSettings(settings: Settings): void {
     newTabFocus: KNOWN_NEW_TAB_FOCUS.has(settings.newTabFocus)
       ? settings.newTabFocus
       : DEFAULT_SETTINGS.newTabFocus,
+    urlEditorClickMode: urlEditorMode(settings.urlEditorClickMode, 'urlEditorClickMode'),
+    urlEditorNewTabMode: urlEditorMode(settings.urlEditorNewTabMode, 'urlEditorNewTabMode'),
+    urlEditorEditMode: urlEditorMode(settings.urlEditorEditMode, 'urlEditorEditMode'),
     // Written true, too: a device still on an older build reads it from
     // Cloud Sync, and turns Vim off without it.
     vimMode: true,

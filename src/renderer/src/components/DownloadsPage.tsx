@@ -723,6 +723,7 @@ export function DownloadsPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onSearchKeyDown}
+              data-vim-search=""
               placeholder="Search downloads"
               spellCheck={false}
               className="h-9 w-full field rounded-xl pl-9 pr-9 text-sm text-foreground outline-none placeholder:text-muted-foreground"
@@ -777,7 +778,7 @@ export function DownloadsPage() {
       </div>
 
       {/* List */}
-      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={listRef} data-vim-scroll="" className="min-h-0 flex-1 overflow-y-auto">
         <div
           className="mx-auto max-w-4xl px-4 py-3"
           role="listbox"

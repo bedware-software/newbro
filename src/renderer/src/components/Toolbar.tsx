@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useAppStore, saveStateNow, findWorkspaceCandidates, buildBookmarkHTML } from '../store/app-store'
 import { log } from '../lib/log'
 import { InputDialog } from './InputDialog'
@@ -21,9 +21,9 @@ import type { DownloadEntry } from '../App'
 import type { VimMode } from '../lib/vim-mode'
 import { VimModeBadge } from './VimModeBadge'
 import { ModeEdge } from './ModeEdge'
-import { BrandMark } from './BrandMark'
 import { WorkspaceStats } from './WorkspaceStats'
-import { useUrlEditorStore } from '../lib/url-editor'
+import { HEADER_HINT_BOTTOM_RIGHT, HeaderHintsContext, useHeaderHint, useHeaderHintList, type HeaderSlot } from './HeaderHint'
+import { openUrlEditor, useUrlEditorStore } from '../lib/url-editor'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { BANGS_URL, DOWNLOADS_URL, internalPageOf } from '../lib/internal-pages'
 import { requestExtensionInstall } from '../lib/extension-install'
@@ -38,8 +38,6 @@ function resolveTriggerIcon(name: IconName): typeof User {
   return TRIGGER_ICONS[name] ?? User
 }
 
-const isMacOS = navigator.platform.toLowerCase().includes('mac')
-
 interface Props {
   windowWorkspaceId: string | null
   sidebarVisible: boolean
@@ -51,6 +49,9 @@ interface Props {
   vimMode?: VimMode | null
   /** Unfinished key sequence typed in COMMAND mode. */
   vimPending?: string
+  /** No popup over the window: in COMMAND the buttons wear their labels
+   *  (HeaderHint.tsx). */
+  hintsOn?: boolean
   onToggleSidebar: () => void
   onOpenSettings: () => void
   onOpenAbout: () => void
@@ -122,10 +123,12 @@ interface DropdownTriggerProps {
   /** A window event that opens it with the keyboard on it (Vim's oP / oW,
    *  sent by App.tsx). */
   openEvent?: string
+  /** Its label slot in COMMAND (HeaderHint.tsx). */
+  hintSlot: HeaderSlot
 }
 
 function Dropdown(props: DropdownTriggerProps) {
-  const { iconName, items, value, onChange, onDelete, onEdit, onReorder, label, onNew, newLabel, canDelete, actions, openEvent } = props
+  const { iconName, items, value, onChange, onDelete, onEdit, onReorder, label, onNew, newLabel, canDelete, actions, openEvent, hintSlot } = props
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLDivElement>(null)
@@ -212,9 +215,12 @@ function Dropdown(props: DropdownTriggerProps) {
     window.addEventListener(openEvent, onOpen)
     return () => window.removeEventListener(openEvent, onOpen)
   }, [openEvent])
+  // Its label opens it from the keys, as oP / oW do.
+  const hint = useHeaderHint(hintSlot, () => openListRef.current(true))
 
   return (
     <div ref={triggerRef} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      {hint}
       <button
         onMouseDown={() => { pressedOpenRef.current = open }}
         // A click with no press behind it (detail 0) came from the keys —
@@ -265,10 +271,8 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
   // Reset success/error banner when the user navigates away or to a new listing.
   useEffect(() => { setState('idle') }, [extensionId])
 
-  if (!extensionId) return null
-
   const handleClick = async (): Promise<void> => {
-    if (state === 'installing') return
+    if (!extensionId || state === 'installing') return
     setState('installing')
     try {
       if ((await requestExtensionInstall(extensionId)) === 'cancelled') {
@@ -283,6 +287,9 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
       setTimeout(() => setState('idle'), 6000)
     }
   }
+  const hint = useHeaderHint('store', extensionId && state !== 'installing' ? () => { void handleClick() } : null)
+
+  if (!extensionId) return null
 
   let label = 'Install this extension'
   if (state === 'installing') label = 'Installing…'
@@ -298,7 +305,7 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
       disabled={state === 'installing'}
       title={title}
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-      className={`shrink-0 flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium transition-colors ${
+      className={`relative shrink-0 flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium transition-colors ${
         typeof state === 'object'
           ? 'bg-destructive text-destructive-foreground hover:opacity-90'
           : state === 'ok'
@@ -306,6 +313,7 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
             : 'bg-primary text-primary-foreground hover:bg-primary/80'
       }`}
     >
+      {hint}
       <Puzzle size={13} />
       <span>{label}</span>
     </button>
@@ -536,6 +544,12 @@ function ExtensionActions({
     }
   }
 
+  // In COMMAND each button wears a label, the puzzle first.
+  const extHint = useHeaderHintList([
+    { id: 'manage', activate: onManageExtensions },
+    ...visible.map((ext) => ({ id: ext.id, activate: () => handleClick(ext) })),
+  ])
+
   return (
     <div
       ref={containerRef}
@@ -549,8 +563,9 @@ function ExtensionActions({
         ref={manageRef}
         onClick={onManageExtensions}
         title="Manage extensions"
-        className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground transition-colors"
+        className="relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground transition-colors"
       >
+        {extHint('manage')}
         <Puzzle size={15} />
       </button>
       {visible.map((ext) => {
@@ -581,8 +596,11 @@ function ExtensionActions({
           iconSrc = `crx://extension-icon/${ext.id}/32/2?${params.toString()}`
         }
         return (
+          // The icon's button clips what spills past it: its label sits
+          // beside it, in a box of its own.
+          <span key={ext.id} className="relative shrink-0">
+          {extHint(ext.id)}
           <button
-            key={ext.id}
             ref={(el) => {
               if (el) buttonRefs.current.set(ext.id, el)
               else buttonRefs.current.delete(ext.id)
@@ -623,6 +641,7 @@ function ExtensionActions({
               </span>
             ) : null}
           </button>
+          </span>
         )
       })}
     </div>
@@ -632,9 +651,7 @@ function ExtensionActions({
 function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onOpenDownloads }: { sidebarVisible: boolean; onToggleSidebar: () => void; onOpenSettings: () => void; onOpenAbout: () => void; onOpenSearch: () => void; onOpenDownloads: () => void }) {
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
-  // The mark on the button glitches as the pointer comes onto it.
-  const [markGlitch, setMarkGlitch] = useState(0)
-  // A dev build says so on the orb, which has no label to say it in.
+  // A dev build says so on the button, which has no label to say it in.
   const [devBuild, setDevBuild] = useState(false)
   // Live updater phase, surfaced as a small badge on the Menu button (replacing
   // the old floating toast): 'checking' → spinner, an update in flight
@@ -759,7 +776,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
     ]
   }
 
-  /** Drops the menu from the orb. One opened from the keys takes them: its
+  /** Drops the menu from its button. One opened from the keys takes them: its
    *  first row starts highlighted, j/k walk the rows, Enter or a row's own
    *  letter picks one. */
   const openMenu = (keyboard: boolean): void => {
@@ -805,45 +822,23 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
 
   const hint = actionHint(hintSettings, 'app-menu')
   const hintText = hint?.kind === 'vim' ? hint.keys : ''
-
-  // Windows and Linux: the orb sits flush in the window's corner, where a
-  // restored window has resize bands, about 8 px along its top and 5 px down
-  // its left, that the OS hit-tests ahead of the page. The orb leaves them
-  // to the resize: its square still reaches into the corner, the mark about
-  // 7 px in, but the button takes the pointer only inside the bands, so it never lights up or opens
-  // under a resize cursor. A window that fills its screen (maximized, full
-  // screen) has no bands, so there the whole orb, corner and all, is the
-  // button, as the Start orb was.
-  const [resizeBands, setResizeBands] = useState(false)
-  useEffect(() => {
-    if (isMacOS) return
-    const check = (): void => {
-      // A few px short of the work area (rounding at a fractional scale, an
-      // auto-hidden taskbar) still fills it.
-      const fills = window.outerWidth >= window.screen.availWidth - 4 && window.outerHeight >= window.screen.availHeight - 4
-      setResizeBands(!fills)
-    }
-    check()
-    window.addEventListener('resize', check)
-    return () => window.removeEventListener('resize', check)
-  }, [])
+  // Its label opens it from the keys, as om does.
+  const labelHint = useHeaderHint('menu', () => openMenuRef.current(true))
 
   return (
-    // The button: the toolbar's full height, square — the menu drops from
-    // its bottom edge, and on Windows a window filling its screen has its
-    // corner for the button. The mark in it is smaller, centred (.brand-orb);
-    // -mr-1.5 hands the square's empty 6 px on the right back to the gap, so
-    // Profile sits the bar's usual 8 px from the plate.
-    <div ref={triggerRef} className="relative self-stretch aspect-square shrink-0 -mr-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+    // A plain button like the bar's others: the Vimperium mark lives in
+    // About only.
+    <div ref={triggerRef} className="relative shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      {labelHint}
       <button
         onMouseDown={() => { pressedOpenRef.current = open }}
         // A click with no press behind it (detail 0) came from the keys —
-        // Enter or Space on the focused orb, a hint label — so the menu
+        // Enter or Space on the focused button, a hint label — so the menu
         // comes up keyboard-driven.
         onClick={(e) => handleToggle(e.detail === 0)}
-        onPointerEnter={() => setMarkGlitch((n) => n + 1)}
-        className="brand-orb"
-        style={resizeBands ? { pointerEvents: 'none' } : undefined}
+        className={`relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md text-secondary-foreground transition-colors ${
+          open ? 'bg-muted' : 'bg-secondary hover:bg-muted'
+        }`}
         aria-label="Vimperium menu"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -854,33 +849,26 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
             : hintText ? `Menu (${hintText})` : 'Menu'
         }
       >
-        {/* 36 px: its plate (59.5 of the badge's 64 units, rim and all)
-            comes to 33.5 px, a touch over the bar's 32 px controls. */}
-        <BrandMark variant="full" size={36} glitchKey={markGlitch} />
-        {resizeBands && (
-          // What takes the pointer for the button, inside the resize bands.
-          <span data-orb-hit aria-hidden="true" className="absolute pointer-events-auto" style={{ top: 8, left: 5, right: 0, bottom: 0 }} />
-        )}
+        <Menu size={16} />
         {devBuild && (
-          <span className="absolute left-[3px] bottom-[3px] px-[2px] rounded-[2px] bg-amber-400 text-black text-[7px] leading-[9px] font-bold tracking-[0.04em] pointer-events-none select-none" aria-hidden="true">
+          <span className="absolute left-[1px] bottom-[1px] px-[2px] rounded-[2px] bg-amber-400 text-black text-[7px] leading-[9px] font-bold tracking-[0.04em] pointer-events-none select-none" aria-hidden="true">
             DEV
           </span>
         )}
       </button>
-      {/* Update status badge — mirrors the downloads button, inside the orb's
-          top-right corner (above it is the window's edge). Spinner while
+      {/* Update status badge — mirrors the downloads button. Spinner while
           checking, a down-arrow when a new version is available (green once
           downloaded and ready to install). Nothing in the default/idle case. */}
       {updateChecking ? (
         <span
-          className="absolute top-[2px] right-[2px] w-[14px] h-[14px] rounded-full bg-primary text-primary-foreground flex items-center justify-center pointer-events-none"
+          className="absolute -top-0.5 -right-0.5 w-[14px] h-[14px] rounded-full bg-primary text-primary-foreground flex items-center justify-center pointer-events-none"
           aria-label="Checking for updates"
         >
           <RefreshCw size={9} strokeWidth={3} className="animate-spin" />
         </span>
       ) : updateAvailable ? (
         <span
-          className={`absolute top-[2px] right-[2px] w-[14px] h-[14px] rounded-full flex items-center justify-center pointer-events-none ${
+          className={`absolute -top-0.5 -right-0.5 w-[14px] h-[14px] rounded-full flex items-center justify-center pointer-events-none ${
             updateReady ? 'bg-green-500 text-white' : 'bg-primary text-primary-foreground'
           }`}
           aria-label={updateReady ? 'Update ready to install' : 'New version available'}
@@ -892,7 +880,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   )
 }
 
-export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vimMode, vimPending, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions, onOpenDarkPagesSettings }: Props) {
+export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vimMode, vimPending, hintsOn = false, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions, onOpenDarkPagesSettings }: Props) {
   const isMac = navigator.platform.includes('Mac')
   const urlEditorOpen = useUrlEditorStore((s) => s.open)
   const profiles = useAppStore((s) => s.profiles)
@@ -1456,23 +1444,32 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
     }
   }, [])
 
+  // In COMMAND, with no popup over the window, each button wears a label
+  // (HeaderHint.tsx); typing it presses the button.
+  const headerHints = useMemo(() => ({ on: hintsOn && vimMode === 'command', pending: vimPending ?? '' }), [hintsOn, vimMode, vimPending])
+  const downloadsHint = useHeaderHint('downloads', totalDownloads > 0 ? openDownloadsPage : null, undefined, headerHints)
+  const backHint = useHeaderHint('back', handleBack, undefined, headerHints)
+  const forwardHint = useHeaderHint('forward', canGoForward ? handleForward : null, undefined, headerHints)
+  const reloadHint = useHeaderHint('reload', handleReloadOrStop, undefined, headerHints)
+  // The address: opened as a click on it opens it (the address editor).
+  const urlHint = useHeaderHint('url', urlEditorOpen ? null : () => { openUrlEditor('click') }, undefined, headerHints)
+  const securityHint = useHeaderHint('security', security !== 'internal' ? () => setCertPopupOpen(true) : null, HEADER_HINT_BOTTOM_RIGHT, headerHints)
+
   return (
     <>
+      <HeaderHintsContext.Provider value={headerHints}>
       <div
         data-cinema={pageFullscreen ? '' : undefined}
         className="flex items-center gap-2 h-12 border-b border-border bg-toolbar shrink-0"
         style={{
-          // The Menu orb comes first: on macOS after the window's buttons,
-          // its plate where the Menu button always began (80 px); on Windows
-          // flush in the corner, as the Start orb was. No padding above or
-          // below — the orb is the bar's full height, square, its mark
-          // centred in it; the 32 px controls stay centred where they were.
-          paddingLeft: isMac ? 74 : 0,
+          // The Menu button comes first: on macOS after the window's buttons
+          // (80 px), elsewhere the bar's usual 8 px in.
+          paddingLeft: isMac ? 80 : 8,
           paddingRight: pageFullscreen ? 8 : isMac ? 8 : 142,
           WebkitAppRegion: 'drag',
         } as React.CSSProperties}
       >
-        {/* App menu: the Vimperium orb */}
+        {/* App menu */}
         <AppMenu sidebarVisible={sidebarVisible} onToggleSidebar={onToggleSidebar} onOpenSettings={onOpenSettings} onOpenAbout={onOpenAbout} onOpenSearch={onOpenSearch} onOpenDownloads={openDownloadsPage} />
 
         {/* Profile selector */}
@@ -1488,6 +1485,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           onNew={openProfileDialog}
           newLabel="New Profile"
           openEvent="vimperium-open-profile-menu"
+          hintSlot="profile"
         />
 
         {/* Workspace selector */}
@@ -1504,6 +1502,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           onNew={openWorkspaceDialog}
           newLabel="New Workspace"
           openEvent="vimperium-open-workspace-menu"
+          hintSlot="workspace"
           actions={[
             { id: 'import-workspace', label: 'Import Workspace', iconName: 'Import', onClick: handleImportWorkspace },
             { id: 'export-workspace', label: 'Export Workspaces', iconName: 'Upload', onClick: handleExportWorkspace, disabled: (activeProfile?.workspaces.length || 0) === 0 },
@@ -1533,6 +1532,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
                   : `Downloads (${totalDownloads})`
             }
           >
+            {downloadsHint}
             <DownloadIcon size={15} />
             {activeDownloads > 0 ? (
               <span
@@ -1562,27 +1562,30 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
         {/* Nav buttons */}
         <button
           onClick={handleBack}
-          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+          className="relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          {backHint}
           <ChevronLeft size={16} />
         </button>
         {canGoForward && (
           <button
             onClick={handleForward}
-            className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+            className="relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             title="Forward"
           >
+            {forwardHint}
             <ChevronRight size={16} />
           </button>
         )}
         <button
           onClick={handleReloadOrStop}
-          className="h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
+          className="relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           title={isLoading ? 'Stop loading' : 'Reload page'}
         >
+          {reloadHint}
           {isLoading ? <X size={14} /> : <RotateCw size={14} />}
         </button>
 
@@ -1600,6 +1603,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           className="field relative flex-[5] min-w-0 flex items-center h-8 rounded-lg"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          {urlHint}
           {security !== 'internal' && (<>
             <button
               className={
@@ -1609,6 +1613,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
               }
               onClick={() => setCertPopupOpen((v) => !v)}
             >
+              {securityHint}
               {security === 'secure' && <Lock size={13} className="text-secondary-foreground" />}
               {security === 'insecure' && <Unlock size={13} className="text-muted-foreground" />}
               {security === 'warning' && (
@@ -1631,7 +1636,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           {/* The address editor (E) has the address: the bar shows stats. */}
           {urlEditorOpen
             ? <WorkspaceStats />
-            : <Omnibox tabId={activeTabId} tabUrl={activeTab?.url || ''} anchorRef={urlBarRef} />}
+            : <Omnibox tabUrl={activeTab?.url || ''} />}
           {/* Dark pages: the page dark or not, and its popover. */}
           {!urlEditorOpen && <DarkPagesButton url={activeTab?.url || ''} onOpenSettings={onOpenDarkPagesSettings} />}
           {/* Vim's mode at the bar's end, as in every text field. */}
@@ -1647,6 +1652,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
             right-click for a Chrome-style context menu. */}
         <ExtensionActions activeTabId={activeTabId} onManageExtensions={onManageExtensions} />
       </div>
+      </HeaderHintsContext.Provider>
 
       <InputDialog
         open={dialogOpen}

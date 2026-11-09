@@ -706,7 +706,7 @@ kbd.vim-mode[data-indicator="dot"]::before {
  * whatever the theme (a plate of a light theme's pale ground washes the
  * badge out), COMMAND's trio from the dark theme, drawn for a dark ground,
  * and the gallery's pink for the slash and the spark — never another shade
- * for Vim's mode or the theme, the glow round it (--glow, .brand-orb below)
+ * for Vim's mode or the theme, the glow round it (--glow)
  * included. Its glitch tears into INSERT's trio and amber (--a1..3, --ahot)
  * and the violet alone; its bands jump half as far — 14% of a 48 px badge
  * would be 7 px.
@@ -761,51 +761,8 @@ kbd.vim-mode[data-indicator="dot"]::before {
   100% { opacity: 0; }
 }
 
-/* The Menu button (Toolbar's AppMenu): a square the toolbar's full height
- * at its very start — the menu drops from its bottom edge — with the full
- * badge centred in it at 36 px (Toolbar sets the size), its plate a touch
- * taller than the bar's 32 px controls. A glow in the badge's blue comes up
- * under the pointer and stays while the menu is open; the button gives a
- * little when pressed; the keyboard's focus is a bright rim round the plate.
- * Its bands jump a little further than the badge's elsewhere, as far as
- * they did when it filled the square (about 3 px). Nothing of it may reach
- * below the toolbar — the page's view is drawn over anything there, the
- * Sidebar isn't — so it is cut at the toolbar's bottom edge, glow and
- * glitch included. */
-.brand-orb {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-  padding: 0;
-  clip-path: inset(-12px -12px 0 -12px);
-  transition: scale 120ms ease;
-}
-.brand-orb > .brand-mark {
-  --jump: 0.65;
-  transition: filter 160ms ease;
-}
-.brand-orb:hover > .brand-mark,
-.brand-orb[aria-expanded="true"] > .brand-mark {
-  filter: drop-shadow(0 0 4px color-mix(in oklch, var(--glow) 75%, transparent));
-}
-.brand-orb:focus-visible > .brand-mark {
-  filter:
-    drop-shadow(0 0 0.5px var(--glow))
-    drop-shadow(0 0 0.5px var(--glow))
-    drop-shadow(0 0 1px var(--glow))
-    drop-shadow(0 0 4px color-mix(in oklch, var(--glow) 60%, transparent));
-}
-.brand-orb:active {
-  scale: 0.96;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .brand-mark > svg { animation: none !important; }
-  .brand-orb,
-  .brand-orb > .brand-mark { transition: none; }
 }
 
 /* ── Sliders (Dark pages' comfort, components/DarkPagesControls.tsx) ──

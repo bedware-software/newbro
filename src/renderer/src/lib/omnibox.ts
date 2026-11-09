@@ -8,7 +8,7 @@
 
 import type { OmniboxRowKind } from '../components/omnibox-protocol'
 import { looksLikeSearch, normalizeURL, searchEngineName, searchUrlFor } from './url'
-import { bangCompletions, resolveBang } from './bangs'
+import { bangCompletions, resolveBangs } from './bangs'
 import { expandBang } from '../../../shared/bangs'
 
 /** Main's answer to one input (see HistoryQueryResult in src/main/history.ts). */
@@ -69,19 +69,41 @@ function hostOf(url: string): string {
   try { return new URL(url).host.replace(/^www\./, '') } catch { return url }
 }
 
+/** Where several bangs search, as a row says it: "Avito, Ozon, DNS". */
+export function bangSites(bangs: readonly { name: string }[]): string {
+  return bangs.map((b) => b.name).join(', ')
+}
+
 function searchMatch(query: string, kind: 'search' | 'search-history' | 'suggest', fill = query): OmniboxMatch {
-  const hit = resolveBang(query)
-  if (hit) {
-    // A bang goes straight to its site: "vim – Wikipedia  !w".
+  const hit = resolveBangs(query)
+  if (hit && hit.bangs.length > 1) {
+    // Several bangs (or a label of them): each site's search, in a group —
+    // "steam deck – Avito, Ozon, DNS  !it-search".
     return {
       kind: kind === 'search' ? 'bang' : kind,
-      destination: hit.url,
+      destination: expandBang(hit.bangs[0], hit.query),
       fill,
-      contents: hit.query || hit.bang.name,
-      description: hit.query ? hit.bang.name : hostOf(hit.url),
+      contents: hit.query || hit.words.join(' '),
+      description: `${hit.query ? 'Search' : 'Open'} ${bangSites(hit.bangs)} — in a group`,
       query,
       typed: false,
-      bang: `!${hit.bang.trigger}`,
+      bang: hit.words.join(' '),
+      ...(kind === 'search-history' ? { removeTerm: query } : {}),
+    }
+  }
+  if (hit) {
+    // A bang goes straight to its site: "vim – Wikipedia  !w".
+    const bang = hit.bangs[0]
+    const url = expandBang(bang, hit.query)
+    return {
+      kind: kind === 'search' ? 'bang' : kind,
+      destination: url,
+      fill,
+      contents: hit.query || bang.name,
+      description: hit.query ? bang.name : hostOf(url),
+      query,
+      typed: false,
+      bang: hit.words.join(' '),
       ...(kind === 'search-history' ? { removeTerm: query } : {}),
     }
   }
@@ -171,14 +193,35 @@ export function buildMatches(text: string, history: HistoryQueryResult | null, s
   // One row per bang, even where two land on the same site's home page.
   for (const c of bangCompletions(text, 4)) {
     if (rows.length >= MAX_ROWS) break
+    if (c.label) {
+      // A label: every bang wearing it, in a group.
+      const first = c.label.bangs[0]
+      rows.push({
+        kind: 'bang',
+        destination: expandBang(first, c.query),
+        fill: c.text,
+        contents: c.query || `!${c.label.name}`,
+        description: `${c.query ? 'Search' : 'Open'} ${bangSites(c.label.bangs)} — in a group`,
+        // Enter on it opens the group, as typing the label out would.
+        query: c.text.trim(),
+        typed: false,
+        bang: `!${c.label.name}`,
+      })
+      continue
+    }
+    if (!c.bang) continue
+    // Completed after other bangs, it opens them all, in a group.
+    const all = resolveBangs(c.text)
+    const group = !!all && all.bangs.length > 1
     rows.push({
       kind: 'bang',
       destination: expandBang(c.bang, c.query),
       fill: c.text,
       contents: c.query || c.bang.name,
-      description: c.query ? c.bang.name : hostOf(expandBang(c.bang, '')),
+      description: group ? `${c.query ? 'Search' : 'Open'} ${bangSites(all!.bangs)} — in a group` : c.query ? c.bang.name : hostOf(expandBang(c.bang, '')),
+      ...(group ? { query: c.text.trim() } : {}),
       typed: false,
-      bang: `!${c.bang.trigger}`,
+      bang: group ? all!.words.join(' ') : `!${c.bang.trigger}`,
     })
     seenUrls.add(urlKey(rows[rows.length - 1].destination))
   }
