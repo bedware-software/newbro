@@ -26,6 +26,7 @@ import {
   type ListMove, type PageKeyRunner, type PageKeyTable,
 } from '../lib/internal-page-keys'
 import { log } from '../lib/log'
+import { useHelpPanelStore } from '../lib/help-panel'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 import { Hint, HintBar, KeyCap } from './KeyHints'
 
@@ -177,6 +178,7 @@ export function BangsPage() {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
+  const keysHelpOpen = useHelpPanelStore((st) => st.open)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [flash, setFlash] = useState<string | null>(null)
   const [undo, setUndo] = useState<Array<{ bang: Bang; index: number }>>([])
@@ -842,6 +844,8 @@ export function BangsPage() {
         </div>
       </div>
 
+      {/* Its keys while the keys' help (?) or its own is open; a flash always. */}
+      {(flash || keysHelpOpen || helpOpen) && (
       <HintBar>
         {flash ? (
           <span className="text-foreground">{flash}</span>
@@ -868,6 +872,7 @@ export function BangsPage() {
           {keyOf('help') && <kbd>{keyOf('help')}</kbd>}
         </button>
       </HintBar>
+      )}
 
       {helpOpen && (
         <div

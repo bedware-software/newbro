@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Globe, Search } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
+import { useHelpPanelStore } from '../lib/help-panel'
 import type { TabGroup } from '../store/types'
 import { TabFavicon } from './TabFavicon'
 import { CommentChip } from './CommentChip'
@@ -44,6 +45,7 @@ const hintId = (tabId: string): string => `tab:${tabId}`
 export function GroupPage({ group, vimKeymap, vimMode, vimPending, hintsOn }: Props) {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
+  const helpOpen = useHelpPanelStore((s) => s.open) && hintsOn
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
@@ -227,6 +229,8 @@ export function GroupPage({ group, vimKeymap, vimMode, vimPending, hintsOn }: Pr
           </div>
         </div>
       </div>
+      {/* Its keys, while the keys' help is open (?). */}
+      {helpOpen && (
       <HintBar>
         {vimMode === 'command' ? (
           <>
@@ -243,6 +247,7 @@ export function GroupPage({ group, vimKeymap, vimMode, vimPending, hintsOn }: Pr
           </>
         )}
       </HintBar>
+      )}
     </div>
   )
 }

@@ -958,6 +958,8 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
     return false
   }
 
+  const [showKeys, setShowKeys] = useState(false)
+  useEffect(() => { if (!keys) setShowKeys(false) }, [keys])
   const shelfCommand = (command: string): boolean => {
     if (editing) return false
     switch (command) {
@@ -981,6 +983,9 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
       }
       case 'reopen-closed-tab': undo(); return true
       case 'new-group': newGroup(); return true
+      // ? while the shelf has the keys: its own keys' strip, as a popup's ?
+      // shows its — the keys' help would take the shelf's place.
+      case 'help': setShowKeys((v) => !v); return true
       case 'copy-url':
         // The reading's address, not the page's.
         if (cursorRow?.kind === 'reading') window.electronAPI.clipboardWriteText(cursorRow.reading.url)
@@ -1314,8 +1319,8 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
         )}
       </div>
 
-      {/* Its keys while it has the keyboard, the Sidebar's way: wrapping. */}
-      {keys && (
+      {/* Its keys while it has the keyboard, once ? asks for them. */}
+      {keys && showKeys && (
         <HintBar wrap className="px-2">
           <Hint label="Move" keys={vimKeyCaps(vimKeymap, 'scroll-down', 'scroll-up')} />
           <Hint label="Open" keys={['Enter']} />

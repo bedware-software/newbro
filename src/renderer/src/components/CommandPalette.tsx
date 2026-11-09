@@ -418,7 +418,8 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
 
         {/* The keys, along the bottom as everywhere. */}
         <div data-detached-drag-handle>
-          <HintBar>
+          {vim.showKeys && vim.mode === 'command' && (
+<HintBar>
             {vim.mode === 'command' ? (
               <>
                 <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
@@ -437,6 +438,7 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
             )}
             {appVersion && <span className="text-muted-foreground/60 tabular-nums">v{appVersion}</span>}
           </HintBar>
+)}
         </div>
       </div>
     </DetachedWindow>

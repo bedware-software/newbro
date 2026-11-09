@@ -811,7 +811,8 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
         </div>
         {/* The keys, along the bottom as everywhere. */}
         <div data-detached-drag-handle>
-          <HintBar>
+          {vim.showKeys && vimMode === 'command' && (
+<HintBar>
             {vimMode === 'command' ? (
               <>
                 <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
@@ -843,6 +844,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
               </>
             )}
           </HintBar>
+)}
         </div>
       </div>
     </DetachedWindow>

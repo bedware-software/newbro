@@ -247,7 +247,8 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
             <X size={14} />
           </button>
         </div>
-        <HintBar>
+        {vim.showKeys && vim.mode === 'command' && (
+<HintBar>
           {vim.mode === 'command' ? (
             <>
               <Hint label="Next" keys={vimKeyCapsAll(vimKeymap, 'find-next')} />
@@ -268,6 +269,7 @@ export function FindPopup({ open, focusTick, onClose, anchorRef, vimKeymap }: Pr
             </>
           )}
         </HintBar>
+)}
       </div>
     </DetachedWindow>
   )

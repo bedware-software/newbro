@@ -10,7 +10,7 @@ import { openDropdownAsync, type DropdownAction, type DropdownSpec } from './dro
 import { useVimSidebar } from '../lib/vim-mode'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { type SidebarCommand, type VimKeymap } from '../lib/vim-keymap'
-import { RowHint } from './KeyHints'
+import { RowHint, SidebarHintBar } from './KeyHints'
 import { useHelpPanelStore } from '../lib/help-panel'
 import { useHintLabels, useHintTargets } from '../lib/hint-labels'
 import { SplitGlyph } from './SplitPanes'
@@ -1292,6 +1292,9 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
             <span className="flex-1 text-left text-xs truncate">New Tab</span>
           </button>
         </div>
+
+        {/* Its keys, while the keys' help is open (?) and no popup is up. */}
+        {vimKeymap && helpOpen && !hintsBlocked && <SidebarHintBar keymap={vimKeymap} />}
 
         <div
           className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"

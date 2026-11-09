@@ -232,7 +232,8 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
             )
           })}
         </div>
-        <HintBar>
+        {vim.showKeys && vim.mode === 'command' && (
+<HintBar>
           {vim.mode === 'command' ? (
             <>
               <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
@@ -250,6 +251,7 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
             </>
           )}
         </HintBar>
+)}
       </div>
     </DetachedWindow>
   )

@@ -103,9 +103,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   const [intent, setIntentState] = useState<Intent | null>(null)
   const intentRef = useRef<Intent | null>(null)
   const [flash, setFlash] = useState<string | null>(null)
-  // The keys' strip at the bottom: hidden till ? in COMMAND asks for it —
-  // what an intent waits for, and a flash, show regardless.
-  const [showKeys, setShowKeys] = useState(false)
   const [placeholder, setPlaceholder] = useState(appVersion ? `${PLACEHOLDER} ${appVersion}` : PLACEHOLDER)
   useEffect(() => {
     if (appVersion) return
@@ -173,7 +170,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     setIntentState(null)
     intentRef.current = null
     setFlash(null)
-    setShowKeys(false)
   }, [open, setValue])
 
   // Another tab coming to the front takes the editor's subject away.
@@ -447,11 +443,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   // y, t is the page's title.
   const intercept = (e: KeyboardEvent): boolean => {
     const kind = intentRef.current
-    // ? shows or hides the keys' strip, as ? shows the window's keys.
-    if (!kind && e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      setShowKeys((v) => !v)
-      return true
-    }
     if (!kind) return false
     const token = keyTokenFromEvent(e)
     if (!token) return false
@@ -658,7 +649,9 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
           </div>
         </div>
 
-        {(intent || flash || (showKeys && vim.mode === 'command')) && (
+        {/* The keys' strip, hidden till ? in COMMAND (usePopupVimMode) —
+            what an intent waits for, and a flash, show regardless. */}
+        {(intent || flash || (vim.showKeys && vim.mode === 'command')) && (
         <HintBar wrap className="mt-auto">
           {intent ? (
             <>
@@ -670,7 +663,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
             </>
           ) : flash ? (
             <span className="text-foreground">{flash}</span>
-          ) : vim.mode === 'command' && showKeys ? (
+          ) : vim.mode === 'command' && vim.showKeys ? (
             <>
               <Hint label="Change" keys={caps('url-change')} />
               <Hint label="Remove" keys={caps('url-remove')} />
@@ -691,12 +684,6 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
             </>
           ) : null}
         </HintBar>
-        )}
-        {/* In COMMAND with the strip hidden: how to bring it up. */}
-        {!intent && !flash && !showKeys && vim.mode === 'command' && (
-          <div className="mt-auto flex justify-end px-4 pb-2 text-[11px] text-muted-foreground">
-            <span className="flex items-center gap-1">Keys <kbd>?</kbd></span>
-          </div>
         )}
       </div>
     </DetachedWindow>

@@ -7,10 +7,10 @@
 // Enter (Shift+Enter, Ctrl/⌘+Enter) works the same in both.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Search, ArrowUpDown, CornerDownLeft } from 'lucide-react'
+import { Search, CornerDownLeft } from 'lucide-react'
 import { DetachedWindow } from './DetachedWindow'
 import { InputField } from './InputField'
-import { Hint, HintBar, LEAVE_INSERT_CAP, RowHint, vimKeyCaps } from './KeyHints'
+import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
 import { GroupPill } from './GroupPill'
 import { ScopeSwitch } from './ScopeSwitch'
 import { fuzzyFilter } from '../lib/fuzzy'
@@ -461,10 +461,9 @@ export function PickerDialog({
         </div>
 
         <div data-detached-drag-handle>
-          <HintBar>
-            {vim.mode === 'command'
-              ? <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
-              : <Hint label="Navigate" keys={[<ArrowUpDown key="nav" size={11} strokeWidth={2.5} />]} />}
+          {vim.showKeys && vim.mode === 'command' && (
+<HintBar>
+            <Hint label="Navigate" keys={vimKeyCaps(vimKeymap, 'cursor-down', 'cursor-up')} />
             <Hint label={confirmVerb} keys={[enterKey]} />
             {backgroundHint && (
               <Hint label={backgroundHint} keys={['⇧', enterKey]} />
@@ -472,12 +471,12 @@ export function PickerDialog({
             {altAction && (
               <Hint label={altAction.label} keys={[isMac ? '⌘' : 'Ctrl', enterKey]} />
             )}
-            {vim.mode === 'command' && hints.labels[0] && <Hint label="Row" keys={[`${hints.labels[0]}…`]} />}
+            {hints.labels[0] && <Hint label="Row" keys={[`${hints.labels[0]}…`]} />}
             {scopeSwitch && <Hint label="Scope" keys={['⇥']} />}
-            {vim.mode === 'command' && <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />}
-            {vim.mode === 'insert' && <Hint label="Command mode" keys={[LEAVE_INSERT_CAP]} />}
+            <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
             <Hint label="Close" keys={['Esc']} />
           </HintBar>
+)}
         </div>
       </div>
     </DetachedWindow>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { KeySequencer, isCtrlToken, keyTokenFromEvent, type VimKeymap, type VimKeymapEntries } from '../../../shared/vim-keys'
+import { KeySequencer, SEQUENCE_JOIN, isCtrlToken, keyTokenFromEvent, type VimKeymap, type VimKeymapEntries } from '../../../shared/vim-keys'
 import type { SidebarCommand } from './vim-keymap'
 import { log } from './log'
 
@@ -368,8 +368,12 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
   /** A selection the popup made in the field (an inline completion) isn't
    *  the user's: Ctrl+C leaves for COMMAND rather than copy it. */
   clearUserSelection: () => void
+  /** Whether its keys' strip shows: hidden till ? in COMMAND asks for it
+   *  (again, it goes) — unless its own keymap binds ?. */
+  showKeys: boolean
 } {
   const [mode, setMode] = useState<VimMode | null>(null)
+  const [showKeys, setShowKeys] = useState(false)
   const modeRef = useRef<VimMode | null>(null)
   modeRef.current = mode
   const keymapRef = useRef(keymap)
@@ -396,6 +400,7 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
 
   useEffect(() => {
     if (!open) return
+    setShowKeys(false)
     const next = keymap ? initial : null
     modeRef.current = next
     userSelectedRef.current = false
@@ -516,6 +521,21 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
         e.stopPropagation()
         return
       }
+      // ? shows or hides the keys' strip, as ? shows the window's keys —
+      // where nothing in the popup's own keymap starts with it.
+      if (e.key === '?' && !e.ctrlKey) {
+        const map = keymapRef.current
+        const bound = !!map && [...map.keys()].some((seq) => seq.split(SEQUENCE_JOIN)[0] === '?')
+        if (!bound) {
+          e.preventDefault()
+          e.stopPropagation()
+          // A prefix typed before it goes, as any key that doesn't go on
+          // with it drops it.
+          reset()
+          setShowKeys((v) => !v)
+          return
+        }
+      }
       // Ctrl+[ is vim's Esc: it drops a pending prefix (no timeout does).
       if (isCtrlChord(e, 'BracketLeft')) {
         e.preventDefault()
@@ -557,7 +577,7 @@ export function usePopupVimMode({ keymap, popup, box, initial, open, onCommand, 
 
   const clearUserSelection = useCallback(() => { userSelectedRef.current = false }, [])
 
-  return { mode, modeRef, pending, onBoxFocus, onBoxBlur, clearUserSelection }
+  return { mode, modeRef, pending, onBoxFocus, onBoxBlur, clearUserSelection, showKeys }
 }
 
 const NO_KEYMAP: VimKeymap = new Map()

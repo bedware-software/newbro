@@ -57,9 +57,9 @@ function sectionNote(context: HelpContext, keymap: ParsedVimKeymap): string | nu
   }
   switch (context) {
     case 'search':
-      return `Their COMMAND mode, out of the box (${LEAVE_INSERT_CAP}); Esc closes from either${typesAgain(keymap.search)}`
+      return `Their COMMAND mode, out of the box (${LEAVE_INSERT_CAP}); Esc closes from either${typesAgain(keymap.search)} In any popup ? shows its keys along the bottom.`
     case 'find':
-      return `Its COMMAND mode, out of typing (Enter or ${LEAVE_INSERT_CAP}); Esc closes from either${typesAgain(keymap.find)}`
+      return `Its COMMAND mode, out of typing (Enter or ${LEAVE_INSERT_CAP}); Esc closes from either${typesAgain(keymap.find)} ? shows its keys.`
     case 'url': {
       const twice = ['url-copy', 'url-change']
         .map((command) => singleKeys(keymap.url, command).find((key) => !isBlockKey(key)))

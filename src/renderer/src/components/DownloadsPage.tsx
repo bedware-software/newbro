@@ -23,6 +23,7 @@ import {
   type ListMove, type PageKeyRunner, type PageKeyTable,
 } from '../lib/internal-page-keys'
 import { log } from '../lib/log'
+import { useHelpPanelStore } from '../lib/help-panel'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 import { Hint, HintBar, KeyCap } from './KeyHints'
 
@@ -244,6 +245,7 @@ export function DownloadsPage() {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
+  const keysHelpOpen = useHelpPanelStore((st) => st.open)
   const [flash, setFlash] = useState<string | null>(null)
   const [, setIconTick] = useState(0)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -829,6 +831,8 @@ export function DownloadsPage() {
       </div>
 
       {/* Hint bar: the common keys, or a short confirmation after an action. */}
+      {/* Its keys while the keys' help (?) or its own is open; a flash always. */}
+      {(flash || keysHelpOpen || helpOpen) && (
       <HintBar>
         {flash ? (
           <span className="text-foreground">{flash}</span>
@@ -855,6 +859,7 @@ export function DownloadsPage() {
           {keyOf('help') && <kbd>{keyOf('help')}</kbd>}
         </button>
       </HintBar>
+      )}
 
       {helpOpen && (
         <div
