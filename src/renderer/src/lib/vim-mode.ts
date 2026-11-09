@@ -148,7 +148,10 @@ export function useVimSidebar(
       return await open()
     } finally {
       rowMenuOpen = false
-      endSidebarKeysHook?.()
+      // After the menu's action has run (a duplicate made active, a tab
+      // closed): the keyboard then goes to the page that's now in front, not
+      // the one about to be replaced.
+      setTimeout(() => endSidebarKeysHook?.(), 0)
     }
   }, [])
 

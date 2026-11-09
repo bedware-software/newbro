@@ -12,7 +12,7 @@ import { APP_NAME } from './branding'
 // missed by one process-life: the lib was already in Node's require cache
 // by the time the ready handler fired.
 import './extensions/patch-lib-deps'
-import { app, BrowserWindow, crashReporter, ipcMain, session, Menu, nativeImage, screen, protocol, systemPreferences } from 'electron'
+import { app, BrowserWindow, crashReporter, ipcMain, session, Menu, nativeImage, screen, protocol, systemPreferences, webContents as allWebContents } from 'electron'
 import { dirname, isAbsolute, join, resolve } from 'path'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { pathToFileURL } from 'url'
@@ -1083,6 +1083,32 @@ function getTargetWorkspaceWindow(): BrowserWindow | null {
   }
   return null
 }
+
+// The app in front with no window holding the keyboard (macOS): a key
+// window that closed or hid handed it to no one, and every key beeps. Some
+// window of ours takes it back — the one that window belonged to, else the
+// workspace in use (or the popup it waits on). Not when the app itself went
+// to the back (Cmd+Tab, Cmd+H): did-resign-active comes first, within the
+// beat waited here.
+let appActive = true
+app.on('did-become-active', () => { appActive = true })
+app.on('did-resign-active', () => { appActive = false })
+app.on('browser-window-blur', (_e, blurred) => {
+  if (process.platform !== 'darwin') return
+  setTimeout(() => {
+    if (!appActive || BrowserWindow.getFocusedWindow()) return
+    // A window still up lost the keyboard to something that took it (a
+    // page's DevTools, a native sheet or panel), not to no one.
+    if (!blurred.isDestroyed() && blurred.isVisible() && !blurred.isMinimized()) return
+    if (allWebContents.getAllWebContents().some((wc) => !wc.isDestroyed() && wc.isDevToolsOpened() && wc.isDevToolsFocused())) return
+    const parent = blurred.isDestroyed() ? null : blurred.getParentWindow()
+    const target = [parent, getTargetWorkspaceWindow()].find(
+      (w): w is BrowserWindow => !!w && !w.isDestroyed() && w.isVisible() && !w.isMinimized())
+    if (!target) return
+    log.warn('focus: app in front with no key window, handing it back', { to: target.id })
+    ;(modalPopupOf(target) ?? target).focus()
+  }, 50)
+})
 
 /** Hand a URL off to a workspace window's renderer as a new tab. The
  *  renderer subscribes to this channel in App.tsx (`onOpenUrlAsTab`) and
@@ -3334,7 +3360,7 @@ export function createWorkspaceWindow(profileId: string, workspaceId: string, wo
   // renderer requests a move. The popup is created synchronously after the
   // setWindowOpenHandler callback returns `allow`, and this event fires.
   win.webContents.on('did-create-window', (childWindow) => {
-    registerDetachedPopup(childWindow, pendingPopupId, pendingPopupModal ? win : null)
+    registerDetachedPopup(childWindow, pendingPopupId, pendingPopupModal ? win : null, win)
     pendingPopupId = null
     pendingPopupModal = false
     // setBounds rather than constructor bounds: a window.open popup built

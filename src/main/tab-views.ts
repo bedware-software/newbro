@@ -18,7 +18,7 @@
 // channel. The renderer's electronAPI.onTabEvent listener turns those
 // back into store updates and error-banner state.
 
-import { BrowserWindow, Menu, WebContentsView, clipboard, dialog, ipcMain, screen, session, app } from 'electron'
+import { BrowserWindow, Menu, WebContentsView, clipboard, dialog, ipcMain, screen, session, app, webContents as allWebContents } from 'electron'
 import type { FileFilter, Session, WebContents } from 'electron'
 import { join } from 'path'
 import { log } from './log'
@@ -172,6 +172,13 @@ const tabs = new Map<string, TabRecord>()
 const windowBounds = new Map<number, TabBounds>()
 /** windowId -> active tabId. Inactive tabs get HIDDEN_BOUNDS. */
 const activeTabByWindow = new Map<number, string>()
+/** windowId → the tab its keyboard was handed to. Tabs have
+ *  focusOnNavigation:false, so a commit that puts a new view in the page's
+ *  place (a fresh or lazy tab's first page, Dark pages' about:blank priming,
+ *  a cross-site process swap) gets the keyboard back only through this —
+ *  else it stays on a view no longer there, and keys go nowhere (macOS
+ *  beeps). */
+const keyOwnerByWindow = new Map<number, string>()
 /** windowId -> the tabs of a split view on screen, each at its own pane's
  *  bounds (renderer WebviewPanel). The active tab is one of them while the
  *  split shows: it takes its pane's bounds instead of the window's, and the
@@ -804,7 +811,23 @@ function wireEvents(rec: TabRecord): void {
     event.preventDefault()
     wc.send('vimperium-vim-leave-frame')
   })
+  // A commit that swaps the page's view: the keyboard goes back to it, if
+  // it's the tab that had it and the window is in use (never pulling the
+  // window forward, nor taking the keys from a popup or menu).
+  const refocusAfterCommit = (): void => {
+    if (keyOwnerByWindow.get(rec.windowId) !== rec.tabId || wc.isDestroyed()) return
+    const win = BrowserWindow.fromId(rec.windowId)
+    if (!win || win.isDestroyed() || !win.isFocused() || wc.isFocused()) return
+    // Another view in the window has the keyboard (an extension's popup or
+    // side panel, DevTools): it's theirs.
+    const focused = allWebContents.getFocusedWebContents()
+    if (focused && !focused.isDestroyed() && focused !== wc && focused !== win.webContents) return
+    try { wc.focus() } catch { /* the view's gone */ }
+  }
+  wc.on('did-navigate', refocusAfterCommit)
+  wc.on('dom-ready', refocusAfterCommit)
   wc.on('focus', () => {
+    keyOwnerByWindow.set(rec.windowId, rec.tabId)
     const at = Date.now()
     setTimeout(() => {
       if (wc.isDestroyed()) return
@@ -1121,6 +1144,7 @@ export function createTab(opts: {
       // Crucially we do NOT focus the page here — otherwise it would steal
       // OS focus as it settles, blur the URL bar, and clobber the user's
       // typing. The page still loads; it just doesn't grab the keyboard.
+      keyOwnerByWindow.delete(opts.windowId)
       try {
         win.webContents.focus()
       } catch {
@@ -1130,12 +1154,11 @@ export function createTab(opts: {
       // Hand OS keyboard focus to the new tab's webContents so the user can
       // start typing into the page right away — this is the "focus site"
       // default.
-      try {
-        rec.view.webContents.focus()
-      } catch {
-        /* ignore */
-      }
+      focusTabPage(rec)
     }
+  } else if (keyOwnerByWindow.get(opts.windowId) === opts.tabId) {
+    // The keyboard was asked for it before it existed (focusTab).
+    focusTabPage(rec)
   } else if (opts.eagerLoad) {
     // User-opened background tab — start loading now so the page is
     // ready when they switch to it. Skip the focus call: the tab is
@@ -1241,11 +1264,7 @@ export function activateTab(windowId: number, tabId: string, url: string, focusP
   loadIfNeeded(rec, url)
   if (isNewActivation && focusPage) {
     // Take keyboard focus so typing lands in the page.
-    try {
-      rec.view.webContents.focus()
-    } catch {
-      /* ignore */
-    }
+    focusTabPage(rec)
   }
 }
 
@@ -1259,6 +1278,7 @@ export function deactivateTab(windowId: number): void {
   hideOutgoingTab(windowId, null)
   activeTabByWindow.delete(windowId)
   emitTabActivity((l) => l.onActiveTabChanged?.(windowId))
+  keyOwnerByWindow.delete(windowId)
   const win = BrowserWindow.fromId(windowId)
   if (!win || win.isDestroyed()) return
   try {
@@ -1273,10 +1293,20 @@ export function deactivateTab(windowId: number): void {
  *  the already-active tab — used by the renderer's Escape handler to move
  *  focus from the URL bar / chrome back into the site so keystrokes reach
  *  the page. */
-export function focusTab(tabId: string): void {
+export function focusTab(tabId: string, windowId?: number): void {
   const rec = tabs.get(tabId)
-  if (!rec) return
-  focusTabPage(rec)
+  if (rec) {
+    focusTabPage(rec)
+    return
+  }
+  if (windowId === undefined) return
+  // Not created yet (the store ran ahead of tab:create): createTab gives it
+  // the keys; till then the window's renderer holds them — never no one.
+  keyOwnerByWindow.set(windowId, tabId)
+  const win = BrowserWindow.fromId(windowId)
+  if (win && !win.isDestroyed()) {
+    try { win.webContents.focus() } catch { /* ignore */ }
+  }
 }
 
 /** Hand OS keyboard focus to a tab's page. Centralised so every "focus the
@@ -1285,6 +1315,7 @@ export function focusTab(tabId: string): void {
  *  focusOnNavigation:false, so this is the only thing that moves focus into
  *  the page, and it must only ever fire from window-focused user actions. */
 function focusTabPage(rec: TabRecord): void {
+  keyOwnerByWindow.set(rec.windowId, rec.tabId)
   try {
     rec.view.webContents.focus()
   } catch {
@@ -1383,6 +1414,7 @@ function setActiveTab(windowId: number, tabId: string): void {
 export function destroyTab(tabId: string): void {
   const rec = tabs.get(tabId)
   if (!rec) return
+  if (keyOwnerByWindow.get(rec.windowId) === tabId) keyOwnerByWindow.delete(rec.windowId)
   const wcId = rec.view.webContents.id
   // Notify electron-chrome-extensions so chrome.tabs.onRemoved fires
   // and any cached state about this tab is cleaned up. Done before we
@@ -2540,6 +2572,9 @@ export function registerWorkspaceWindowForTabs(
 ): void {
   shortcutInstallers.set(win.id, installShortcuts)
   rememberNormalWindowState(win)
+  // The chrome taking the keyboard: no tab holds it now.
+  win.webContents.on('focus', () => keyOwnerByWindow.delete(win.id))
+  win.once('closed', () => keyOwnerByWindow.delete(win.id))
   const sync = (): void => {
     syncFullscreenBounds(win.id)
     if (!htmlFullscreenByWindow.has(win.id) && !windowStateBeforePage.has(win.id)) {
@@ -2635,6 +2670,27 @@ export function installTabPreloadListeners(): void {
     if (!tabId || !rec || typeof raw !== 'object' || raw === null) return
     const r = raw as { mode?: unknown; why?: unknown; command?: unknown; pending?: unknown }
     let evt: TabEvent | null = null
+    // A key typed in a page that's off screen: the keyboard was left there.
+    // It goes to the page on screen (or the window), and a command typed
+    // runs for that one.
+    const activeId = activeTabByWindow.get(rec.windowId)
+    const onScreen = tabId === activeId || !!splitByWindow.get(rec.windowId)?.has(tabId)
+    // (An empty pending — a sequence reset — isn't a key: it goes on as
+    // ever, so the window's showcmd clears.)
+    const typed = typeof r.command === 'string' || (typeof r.pending === 'string' && r.pending !== '')
+    if (!onScreen && typed) {
+      const active = activeId ? tabs.get(activeId) : undefined
+      if (active) focusTabPage(active)
+      else {
+        const win = BrowserWindow.fromId(rec.windowId)
+        if (win && !win.isDestroyed()) win.webContents.focus()
+      }
+      log.warn('tab-views: key in an off-screen page, keyboard moved', { from: tabId, to: activeId ?? 'renderer' })
+      if (typeof r.command === 'string' && activeId) {
+        sendToWindowRenderer(rec.windowId, 'tab-event', { type: 'vim-command', tabId: activeId, command: r.command })
+      }
+      return
+    }
     if (typeof r.command === 'string') evt = { type: 'vim-command', tabId, command: r.command }
     else if (typeof r.pending === 'string') evt = { type: 'vim-pending', tabId, pending: r.pending }
     else if (r.mode === 'command' || r.mode === 'insert') evt = { type: 'vim', tabId, mode: r.mode, why: typeof r.why === 'string' ? r.why : '' }

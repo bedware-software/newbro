@@ -6,10 +6,10 @@
 //
 // The filter at the top finds a key by what it does, by the keys, or by
 // its section — what matches stays under its section's heading, the count
-// beside it. ? opens the panel with the filter taking the keys (typing,
-// INSERT); Esc gives them back to the page (COMMAND), the panel staying;
-// ? again closes it. While it's open the header's buttons show their keys
-// too (HeaderHint.tsx).
+// beside it. ? opens the panel and leaves the keys where they were — COMMAND
+// stays COMMAND, the rows' labels and the header's keys (HeaderHint.tsx)
+// showing alongside; a click on the filter (or its ; label) types in it, and
+// Esc gives the keys back. ? again closes it.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Keyboard, Search, X } from 'lucide-react'
@@ -137,15 +137,11 @@ export function HelpPanel({ open, suppressed = false, keymap, vimPending, onClos
     }
   }, [])
 
-  // Opening: the filter takes the keys, empty — a key is found by typing.
-  // Only on opening: coming back after the page's fullscreen leaves the
-  // keys where they are.
+  // Opening: an empty filter, the keys left where they were — taking them
+  // for the filter would be INSERT, and the labels the keys' help is there
+  // to go with would go.
   useEffect(() => {
-    if (!open) return
-    setQuery('')
-    window.electronAPI.focusWindowRenderer?.()
-    const t = setTimeout(() => inputRef.current?.focus(), 30)
-    return () => clearTimeout(t)
+    if (open) setQuery('')
   }, [open])
 
   // A new filter starts from the top.
@@ -227,7 +223,7 @@ export function HelpPanel({ open, suppressed = false, keymap, vimPending, onClos
                 onReleaseKeys()
               }
             }}
-            placeholder="Find a key: what it does, the keys…"
+            placeholder="Find a key: click here, or ; and its label"
             spellCheck={false}
             className="flex-1 min-w-0 h-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
           />
@@ -273,7 +269,7 @@ export function HelpPanel({ open, suppressed = false, keymap, vimPending, onClos
       </div>
 
       <div className="h-9 px-3 flex items-center border-t border-border text-[11px] text-muted-foreground shrink-0">
-        Esc gives the keys back · ? closes · Settings → Keyboard Shortcuts edits them
+        Click the filter to search · ? closes · Settings → Keyboard Shortcuts edits them
       </div>
 
       <div

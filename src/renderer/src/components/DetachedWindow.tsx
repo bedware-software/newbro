@@ -59,6 +59,10 @@ interface Props {
    *  corner) and moves along with the window — Find in Page at the page's
    *  top-right corner. A new spot moves it there. */
   placement?: PopupPlacement
+  /** A pinned popup's live height: the open window grows or shrinks to it
+   *  without reopening. `height` stays the opening size — changing that
+   *  closes and reopens the window. */
+  fitHeight?: number
   /** Bumped to give the keyboard back to a pinned popup that's open. */
   focusTick?: number
   /** Vim's ; (lib/chrome-hints.ts) labels the popup's controls too — a
@@ -185,6 +189,7 @@ export function DetachedWindow({
   persistKey,
   matchRunwaPalette = false,
   placement,
+  fitHeight,
   focusTick,
   chromeHints = false,
   onMoved,
@@ -476,6 +481,13 @@ export function DetachedWindow({
     if (!popup || popup.closed) return
     popup.document.title = title
   }, [title])
+
+  // A pinned popup follows its content's height, without reopening.
+  useEffect(() => {
+    const popupId = popupIdRef.current
+    if (!popupId || !containerEl || fitHeight === undefined) return
+    window.electronAPI.detachedWindowResize?.(popupId, fitHeight)
+  }, [fitHeight, containerEl])
 
   // A pinned popup follows its spot.
   const placementLeft = placement?.left

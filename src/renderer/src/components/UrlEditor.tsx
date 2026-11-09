@@ -137,6 +137,27 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     return () => ro.disconnect()
   }, [inputEl])
 
+  // The window's height: HEIGHT, or more when the keys strip wraps (or a long
+  // flash does) — measured off the top part and the strip, whose heights
+  // don't depend on the window's, so it can't loop.
+  const [popupHeight, setPopupHeight] = useState(HEIGHT)
+  const [topEl, setTopEl] = useState<HTMLDivElement | null>(null)
+  const [barEl, setBarEl] = useState<HTMLDivElement | null>(null)
+  useLayoutEffect(() => {
+    const view = topEl?.ownerDocument.defaultView as (Window & typeof globalThis) | null | undefined
+    if (!topEl || !view) return
+    const measure = (): void => {
+      // + the box's 1px border, top and bottom.
+      const needed = Math.ceil(topEl.getBoundingClientRect().height + (barEl?.getBoundingClientRect().height ?? 0) + 2)
+      setPopupHeight(Math.max(HEIGHT, needed))
+    }
+    measure()
+    const ro = new view.ResizeObserver(measure)
+    ro.observe(topEl)
+    if (barEl) ro.observe(barEl)
+    return () => ro.disconnect()
+  }, [topEl, barEl])
+
   /** Any change but an undo or redo's own drops what could be redone. */
   const setValue = useCallback((next: string, remember: boolean) => {
     if (remember && next !== valueRef.current) historyRef.current.push(valueRef.current)
@@ -157,6 +178,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       setTarget(null)
       setSize(null)
       setPlacement(undefined)
+      setPopupHeight(HEIGHT)
       return
     }
     const tab = useAppStore.getState().getActiveTab()
@@ -198,7 +220,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       const next = {
         left: Math.round(Math.max(0, Math.min(window.innerWidth - width,
           bar ? bar.left + (bar.width - width) / 2 : r.left + (r.width - width) / 2))),
-        top: Math.round(Math.max(0, Math.min(window.innerHeight - HEIGHT,
+        top: Math.round(Math.max(0, Math.min(window.innerHeight - popupHeight,
           bar ? bar.bottom + BAR_GAP : r.top + INSET_TOP))),
       }
       setPlacement((prev) => (prev?.left === next.left && prev.top === next.top ? prev : next))
@@ -213,7 +235,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       ro.disconnect()
       window.removeEventListener('resize', measure)
     }
-  }, [open, anchorRef, size])
+  }, [open, anchorRef, size, popupHeight])
 
   // Where each block sits under the text: measured in the box's own font,
   // past the indent that centres an address shorter than the box, less
@@ -488,7 +510,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
     enabled: open && vim.mode !== 'command',
     onText: (text) => setValue(text, false),
     // The list hangs under the whole editor, its width.
-    getAnchor: () => placement && size ? { x: placement.left, y: placement.top, width: size.width, height: HEIGHT } : null,
+    getAnchor: () => placement && size ? { x: placement.left, y: placement.top, width: size.width, height: popupHeight } : null,
     onNavigated: closeUrlEditor,
   })
   suggRef.current = sugg
@@ -534,6 +556,8 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
       title="Edit Address - Vimperium"
       width={size.width}
       height={HEIGHT}
+      // Taller while the keys strip needs it: never clipped.
+      fitHeight={popupHeight}
       resizable={false}
       modal
       // In Vim mode Esc is the editor's Vim keys' (usePopupVimMode).
@@ -547,6 +571,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
         onMouseDown={(e) => { if (e.target !== inputRef.current) e.preventDefault() }}
         className="h-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden flex flex-col"
       >
+        <div ref={setTopEl} className="flex flex-col shrink-0">
         {/* The page's title — what yt copies, its key lit while y waits —
             centred over the address. */}
         <div className="flex items-center justify-center gap-2 h-8 mt-2 px-4 shrink-0">
@@ -649,10 +674,13 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
           </div>
         </div>
 
+        </div>
+
         {/* The keys' strip, hidden till ? in COMMAND (usePopupVimMode) —
             what an intent waits for, and a flash, show regardless. */}
         {(intent || flash || (vim.showKeys && vim.mode === 'command')) && (
-        <HintBar wrap className="mt-auto">
+        <div ref={setBarEl} className="mt-auto shrink-0">
+        <HintBar wrap>
           {intent ? (
             <>
               {flash && <span>{flash} ·</span>}
@@ -684,6 +712,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
             </>
           ) : null}
         </HintBar>
+        </div>
         )}
       </div>
     </DetachedWindow>

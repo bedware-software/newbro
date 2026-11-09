@@ -185,7 +185,7 @@ const detachedPopups = new Set<BrowserWindow>()
 // page's top-right corner), by the id DetachedWindow gave them.
 const pinnablePopups = new Map<string, BrowserWindow>()
 
-export function registerDetachedPopup(popup: BrowserWindow, popupId: string | null = null, modalTo: BrowserWindow | null = null): void {
+export function registerDetachedPopup(popup: BrowserWindow, popupId: string | null = null, modalTo: BrowserWindow | null = null, opener: BrowserWindow | null = null): void {
   detachedPopups.add(popup)
   popup.once('closed', () => detachedPopups.delete(popup))
   if (popupId) {
@@ -195,6 +195,30 @@ export function registerDetachedPopup(popup: BrowserWindow, popupId: string | nu
     })
   }
   if (modalTo) holdModal(popup, modalTo)
+  // Closing with the keyboard, it hands it to the window that opened it (or
+  // a popup that window still waits on): on macOS a closing key window
+  // otherwise leaves the app with none, and keys go nowhere.
+  if (opener) {
+    let handed = false
+    const handBack = (): void => {
+      if (handed) return
+      handed = true
+      if (popup.isDestroyed() || !popup.isFocused() || opener.isDestroyed() || opener.isMinimized()) return
+      const waiting = modalPopupOf(opener)
+      const target = waiting && waiting !== popup ? waiting : opener
+      setImmediate(() => {
+        // A window the OS gave the keyboard to (another popup, Settings)
+        // keeps it: only no one holding it is put right.
+        const focused = BrowserWindow.getFocusedWindow()
+        if (focused && focused !== popup && !focused.isDestroyed()) return
+        if (!target.isDestroyed()) target.focus()
+      })
+    }
+    // The renderer closing it (DetachedWindow's popup.close()) emits the
+    // webContents' 'close'; Cmd+W / Alt+F4 the window's.
+    ;(popup.webContents as NodeJS.EventEmitter).once('close', handBack)
+    popup.once('close', handBack)
+  }
 }
 
 // How many modal popups hold each window disabled.
@@ -469,7 +493,8 @@ export function registerIpcHandlers(): void {
   // presses Esc in the URL bar). Distinct from tab:activate, which only
   // focuses on a fresh activation and no-ops for the already-active tab.
   ipcMain.handle('tab:focus', (_e, tabId: string) => {
-    focusTab(tabId)
+    const win = BrowserWindow.fromWebContents(_e.sender)
+    focusTab(tabId, win?.id)
   })
 
   // High-frequency: bounds update on resize/sidebar toggle. `send` (no
@@ -795,6 +820,10 @@ export function registerIpcHandlers(): void {
   ipcMain.on('window:focus-renderer', (_e) => {
     const win = BrowserWindow.fromWebContents(_e.sender)
     if (!win || win.isDestroyed()) return
+    // On macOS webContents.focus() only moves focus inside a window: with no
+    // window of ours key at all (keys going nowhere), this one becomes it —
+    // never taking the keyboard from another window or a popup it waits on.
+    if (process.platform === 'darwin' && !win.isFocused() && !modalPopupOf(win) && !BrowserWindow.getFocusedWindow()) win.focus()
     win.webContents.focus()
   })
 
@@ -911,6 +940,27 @@ export function registerIpcHandlers(): void {
 
   // Hand the keyboard back to a popup that's already open (Find in Page
   // asked for again while the page has the keys).
+  // A pinned popup's content grew or shrank (the address editor's keys
+  // strip wrapping onto a second row): the window takes the new height, its
+  // spot and width kept. The spot remembers it, so the parent's moves and
+  // resizes re-apply it rather than the opening height.
+  ipcMain.on('detached-window:resize', (_e, popupId: unknown, height: unknown) => {
+    const popup = typeof popupId === 'string' ? pinnablePopups.get(popupId) : undefined
+    if (!popup || popup.isDestroyed()) return
+    if (typeof height !== 'number' || !Number.isFinite(height)) return
+    const h = Math.round(Math.min(Math.max(height, 40), 4000))
+    const spot = pinnedSpots.get(popup)
+    const parent = popup.getParentWindow()
+    if (spot && parent && !parent.isDestroyed()) {
+      if (spot.height === h) return
+      spot.height = h
+      pinPopup(popup, parent, spot.left, spot.top)
+      return
+    }
+    const b = popup.getBounds()
+    if (b.height !== h) popup.setBounds({ ...b, height: h })
+  })
+
   ipcMain.on('detached-window:focus', (_e, popupId: unknown) => {
     const popup = typeof popupId === 'string' ? pinnablePopups.get(popupId) : undefined
     if (!popup || popup.isDestroyed()) return

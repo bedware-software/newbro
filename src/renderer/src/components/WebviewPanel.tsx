@@ -605,7 +605,8 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
   useEffect(() => {
     if (showError || showCertError) {
       window.dispatchEvent(new CustomEvent('vimperium-tab-hide'))
-      window.electronAPI.focusWindowRenderer?.()
+      // Not a user action: only while this window is the one in use.
+      window.electronAPI.reclaimWindowRendererFocus?.()
       return () => { window.dispatchEvent(new CustomEvent('vimperium-tab-show')) }
     }
     return
