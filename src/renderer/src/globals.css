@@ -322,6 +322,13 @@ html[data-page-fullscreen] body {
 [data-density="normal"] [data-group-children] {
   margin-left: 15px;
 }
+/* A nested tab's row starts where its group's name column does — past the
+ * count badge (16px) and the gap after it — so a tab's label and icon line
+ * up with the group's label and pill. */
+[data-group-children] > [data-sidebar-row],
+[data-density="normal"] [data-group-children] > [data-sidebar-row] {
+  padding-left: 13px;
+}
 
 /* Bottom segment of the guide line, drawn in the group-header row
  * from just below the badge to the row's bottom. The line's x sits at

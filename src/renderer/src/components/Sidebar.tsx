@@ -121,7 +121,9 @@ interface Props {
   hintsOn: boolean
 }
 
-const hintId = (rowId: string): string => `sidebar:${rowId}`
+// Its rows' ids among the window's hint targets: one per thing, so a tab the
+// group page lists too wears the same label there (lib/hint-labels.ts).
+const hintId = (rowId: string, group: boolean): string => `${group ? 'group' : 'tab'}:${rowId}`
 
 export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hintsOn }: Props) {
   const activeTabId = useAppStore((s) => s.activeTabId)
@@ -457,10 +459,20 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
   // Rows in on-screen order: every top-level tab and group header, plus the
   // tabs of expanded groups. Shift+Click ranges run over this list.
   const visibleRowIds: string[] = []
+  // Each row's name and whether it's a group's, for its label.
+  const rowNames = new Map<string, string>()
+  const groupRowIds = new Set<string>()
   for (const item of sidebarItems) {
     visibleRowIds.push(item.id)
+    if (item.type === 'group') {
+      rowNames.set(item.id, item.group.name)
+      groupRowIds.add(item.id)
+    } else rowNames.set(item.id, item.tab.title || item.tab.url)
     if (item.type === 'group' && !item.group.isCollapsed) {
-      for (const t of item.group.tabs) visibleRowIds.push(t.id)
+      for (const t of item.group.tabs) {
+        visibleRowIds.push(t.id)
+        rowNames.set(t.id, t.title || t.url)
+      }
     }
   }
 
@@ -498,7 +510,8 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
   // on it would.
   useHintTargets('sidebar', 2, visible && hintsOn && vimMode === 'command' && workspace
     ? visibleRowIds.map((id) => ({
-      id: hintId(id),
+      id: hintId(id, groupRowIds.has(id)),
+      name: rowNames.get(id),
       activate: () => {
         if (workspace.tabGroups.some((g) => g.id === id)) setActiveGroup(id)
         else setActiveTab(id)
@@ -506,12 +519,14 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
     }))
     : null)
   const hintLabels = useHintLabels()
-  /** The row's label, at its right edge over the title's end — out of the
-   *  way of the hover buttons, which take its place. */
-  const rowHint = (rowId: string, hoverHides: string): React.ReactNode => {
-    const label = hintLabels.get(hintId(rowId))
+  /** The row's label, in the row ahead of what it names: a tab's before
+   *  its icon, a group's between its count and its name — the same column
+   *  for both, nested tabs lined up under their group's (globals.css). */
+  const rowHint = (rowId: string): React.ReactNode => {
+    const label = hintLabels.get(hintId(rowId, groupRowIds.has(rowId)))
     return label
-      ? <RowHint mode="command" label={label} pending={vimPending} className={`absolute right-1.5 top-1/2 -translate-y-1/2 bg-toolbar ${hoverHides}`} />
+      // 18px tall in a 16px line: -my-px keeps the row's height as it is.
+      ? <RowHint mode="command" label={label} pending={vimPending} className="shrink-0 -my-px" />
       : null
   }
   const findVimRow = (id: string): Element | null =>
@@ -999,7 +1014,7 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
         {showBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
-        {rowHint(tab.id, 'group-hover/tab:opacity-0')}
+        {rowHint(tab.id)}
         <TabFavicon favicon={tab.favicon} />
         {split && splitPane && (
           <span
@@ -1113,7 +1128,6 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
         {showGroupBefore && (
           <div className="absolute left-1 right-1 -top-px h-[3px] bg-primary rounded-full z-10" />
         )}
-        {rowHint(group.id, 'group-hover:opacity-0')}
         {/* Count badge — leading-edge column. Sized to match a tab row's
             favicon (w-4 h-4) so the leftmost glyph in every sidebar row
             sits on the same vertical axis. Colored with the group's hue
@@ -1127,6 +1141,7 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
         >
           {group.tabs.length}
         </span>
+        {rowHint(group.id)}
         {/* Edge-style colored pill. SWALLOWS the chevron, content-sized
             via inline-flex (no flex-1), with `max-w-full` letting it grow
             up to the row's right edge for long names — at which point
@@ -1265,11 +1280,10 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
             title={newTabHint ? `New Tab (${newTabHint})` : 'New Tab'}
             className="w-full flex items-center gap-1 px-1 py-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
+            {/* Its key, in the column the rows' labels take. */}
+            {newTabHint && <RowHint mode="command" label={newTabHint} className="shrink-0 -my-px opacity-70" />}
             <Plus size={16} className="shrink-0" />
             <span className="flex-1 text-left text-xs truncate">New Tab</span>
-            <span className="text-[10px] text-muted-foreground/70 font-mono shrink-0 pr-1">
-              {newTabHint}
-            </span>
           </button>
         </div>
 

@@ -237,7 +237,7 @@ export function PickerDialog({
 
   // ── Vim COMMAND mode ──
   // Two-letter row labels (lib/hint-labels.ts), in flat (on-screen) order.
-  const hints = usePopupHints(vimKeymap, filtered.length)
+  const hints = usePopupHints(vimKeymap, filtered.map((item) => item.label))
   const vim = usePopupVimMode({
     keymap: hints.keymap,
     popup: popupWindow,

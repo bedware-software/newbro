@@ -124,8 +124,8 @@ toggle-bookshelf    tb
 
 " ── COMMAND: app commands (the regular shortcuts' ids) ────────────────
 " ; labels every button of the browser's own, as f does a page's in
-" vimium; typing a label presses it. search opens Search Everything on
-" everything (ot ow og op on one kind of thing).
+" vimium; typing a label presses it. search opens Search Everything on the
+" kind of thing it showed last (ot ow og op on one kind).
 chrome-hints        ;
 close-window
 next-tab
@@ -164,7 +164,7 @@ duplicate-group
 ungroup-all-tabs
 expand-all-groups
 collapse-all-groups
-add-to-bookshelf
+add-to-bookshelf    nb
 rename-workspace
 close-workspace
 import-workspaces
@@ -188,17 +188,18 @@ quit
 " Search Everything and the Command Palette open in INSERT; Ctrl+C goes to
 " COMMAND, and insert-mode (i) drops back into the box. Esc closes the
 " window, from either. The scroll keys above (j/k, gg/G) move through
-" the results, Enter runs one. The filters are Search Everything's.
+" the results, Enter runs one. Search Everything shows one kind of thing,
+" the one ot / ow / og / op opened it on; Ctrl+1–4 switch to profiles,
+" workspaces, groups, tabs.
 " In COMMAND every result wears a label of one to three letters (the more
-" results, the longer), home-row letters first and only ones these keys
-" leave free, and typing it picks the result
-" (vimium's hints); typing in the box, digits type. So does the group page.
-" search-row-N picks result N, when bound.
-search-all          a
-search-profiles     p
-search-workspaces   w
-search-groups       g
-search-tabs         t
+" results, the longer), drawn from its name where the letters are free —
+" "work" w, "fun" f — and typing it picks the result (vimium's hints);
+" typing in the box, digits type. So does the group page. search-row-N
+" picks result N, when bound.
+search-profiles     <C-1>
+search-workspaces   <C-2>
+search-groups       <C-3>
+search-tabs         <C-4>
 search-scope        <Tab>
 search-row-1
 search-row-2
@@ -301,7 +302,11 @@ export function contextOf(command: string): VimContext {
 // on dw (was dv), w as in nw and ow; labelled the Sidebar's rows, so the
 // tab numbers lost <C-1>…<C-9> (unbound now), and put the row's menu on m
 // (was <C-m>), live while the Sidebar is shown. v16 left Search Everything
-// on everything unbound (was f): what COMMAND opens goes through o. A saved
+// on everything unbound (was f): what COMMAND opens goes through o. v17
+// dropped Search Everything's All filter (search-all, a) and moved its
+// filters onto Ctrl+1–4 (were p w g t), leaving the letters to the results'
+// labels, which come from their names; and it put adding the page to the
+// Bookshelf on nb (n new, as nt and ng). A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
 // the rest, including commands it couldn't know about. A key a version
@@ -348,9 +353,14 @@ const RENAMED_IN_V3: Record<string, string | null> = {
   'row-open': null,
 }
 
+/** Commands a later keymap dropped: a saved line naming one is ignored.
+ *  search-all (v17): Search Everything shows one kind of thing. */
+const RETIRED_COMMANDS = new Set(['search-all'])
+
 /** The current name of a command written under an older keymap (web-*,
  *  browse-*), or null for one that's gone. Any other name comes back as is. */
 export function renamedVimCommand(command: string): string | null {
+  if (RETIRED_COMMANDS.has(command)) return null
   const v2 = command.startsWith('web-') ? `browse-${command.slice(4)}` : command
   return v2 in RENAMED_IN_V3 ? RENAMED_IN_V3[v2] : v2
 }
@@ -474,6 +484,17 @@ const V14_DEFAULT_KEYS: Record<string, string> = {
   ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`tab-${n}`, `<C-${n}>`])),
 }
 
+/** v16 defaults of the commands v17 rebound: Search Everything's filters,
+ *  on Ctrl+1–4 now. */
+const V16_DEFAULT_KEYS: Record<string, string> = {
+  // Unbound till v17, which put it on nb (n, new: a new reading).
+  'add-to-bookshelf': '',
+  'search-profiles': 'p',
+  'search-workspaces': 'w',
+  'search-groups': 'g',
+  'search-tabs': 't',
+}
+
 /** v15 defaults of the commands v16 rebound: Search Everything on
  *  everything, unbound now — an owner who kept f loses it, one who chose a
  *  key of their own keeps that. */
@@ -570,7 +591,7 @@ function sameKeys(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1 to v15) over to the
+ * Carries a keymap saved under older defaults (v1 to v16) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
  * nothing to keep. `log` hears each key the migration had to decide on for
@@ -579,7 +600,7 @@ function sameKeys(a: string, b: string): boolean {
  */
 export function migrateVimKeymap(
   saved: string,
-  fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
+  fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16,
   log: (message: string) => void = () => {},
 ): string | null {
   // What the owner had, by the old name.
@@ -606,6 +627,7 @@ export function migrateVimKeymap(
     (fromVersion <= 13 ? V13_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 14 ? V14_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 15 ? V15_DEFAULT_KEYS[command] : undefined) ??
+    (fromVersion <= 16 ? V16_DEFAULT_KEYS[command] : undefined) ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
@@ -621,13 +643,14 @@ export function migrateVimKeymap(
     ...Object.keys(RENAMED_IN_V3).filter((old) => RENAMED_IN_V3[old] === command),
   ].filter(existed)
 
-  // Commands v13 to v16 moved off their old keys.
+  // Commands v13 to v17 moved off their old keys.
   const movedInV13 = (command: string): boolean =>
     (fromVersion <= 12 && command in V12_DEFAULT_KEYS) || (fromVersion <= 13 && command in V13_DEFAULT_KEYS) ||
     // Only where the saved keymap had it: v13 added delete-workspace, so an
     // older one never had dv to keep.
     (fromVersion <= 14 && command in V14_DEFAULT_KEYS && existed(command)) ||
-    (fromVersion <= 15 && command in V15_DEFAULT_KEYS)
+    (fromVersion <= 15 && command in V15_DEFAULT_KEYS) ||
+    (fromVersion <= 16 && command in V16_DEFAULT_KEYS)
 
   const lines = DEFAULT_VIM_KEYMAP.split('\n')
   // command → [line index, keys] for every binding line, as it stands.
@@ -709,6 +732,7 @@ export function migrateVimKeymap(
     ...(fromVersion <= 12 ? Object.keys(V12_DEFAULT_KEYS) : []),
     ...(fromVersion <= 13 ? Object.keys(V13_DEFAULT_KEYS) : []),
     ...(fromVersion <= 14 ? Object.keys(V14_DEFAULT_KEYS) : []),
+    ...(fromVersion <= 16 ? Object.keys(V16_DEFAULT_KEYS) : []),
   ])
   // Commands that lost every key that way, with what took them ("dd (your
   // d, half-page-down)").

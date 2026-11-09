@@ -100,7 +100,7 @@ const COMMANDS: CommandItem[] = [
   { id: 'split-focus', label: 'Switch Split Pane', category: 'Split View' },
   { id: 'split-close', label: 'Close Split', category: 'Split View' },
   { id: 'settings', label: 'Open Settings', category: 'General' },
-  { id: 'help', label: 'Vim Mode Keys', category: 'General', keywords: 'help keymap shortcuts bindings' },
+  { id: 'help', label: 'Toggle Keys Help', category: 'General', keywords: 'help keymap shortcuts bindings' },
   { id: 'check-updates', label: 'Check for Updates', category: 'General', keywords: 'upgrade version' },
   { id: 'install-update', label: 'Restart to Install Update', category: 'General', keywords: 'upgrade version' },
   { id: 'about', label: 'About', category: 'General' },
@@ -283,7 +283,7 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
   // command line. Ctrl+C goes to COMMAND, where j/k walk the list and a
   // row's label runs it; i types again. Esc closes from either.
   // COMMAND mode's row labels (lib/hint-labels.ts).
-  const hints = usePopupHints(vimKeymap, rows.length)
+  const hints = usePopupHints(vimKeymap, rows.map((c) => c.label))
   const vim = usePopupVimMode({
     keymap: hints.keymap,
     popup: popupWindow,

@@ -21,6 +21,8 @@ import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 import { MoveBookshelfDialog, type BookshelfMoveTarget } from './MoveBookshelfDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Hint, HintBar, RowHint, vimKeyCaps } from './KeyHints'
+import { useHeaderHint } from './HeaderHint'
+import { useHelpPanelStore } from '../lib/help-panel'
 import { useHintLabels, useHintTargets } from '../lib/hint-labels'
 import { usePageKeys } from '../lib/vim-mode'
 import { useWindowVimKeymap } from '../lib/window-vim-keymap'
@@ -992,6 +994,7 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
   useHintTargets('bookshelf', 1, open && keys && !editing
     ? rows.map((row) => ({
       id: hintId(row.id),
+      name: row.kind === 'reading' ? row.reading.title : row.kind === 'group' ? row.group.name : 'Archive',
       activate: () => {
         const current = rowsRef.current.find((r) => r.id === row.id)
         if (current) activateRow(current, 'here')
@@ -1007,11 +1010,18 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
     return {
       cursor,
       hint: label
-        ? <RowHint mode="command" label={label} pending={vimPending} className="absolute left-0.5 top-1/2 -translate-y-1/2 bg-toolbar" />
+        ? <RowHint mode="command" label={label} pending={vimPending} className="shrink-0 -my-px" />
         : null,
     }
   }
   const cursorClass = 'bg-accent text-foreground ring-1 ring-inset ring-primary/70'
+  // While the keys' help is open the header's buttons show their keys, as
+  // the window's header does (HeaderHint.tsx).
+  const helpOpen = useHelpPanelStore((s) => s.open)
+  const shelfHintState = { on: helpOpen, pending: vimPending ?? '' }
+  const addKey = useHeaderHint('add-to-bookshelf', true, 'absolute -left-2 -top-2 bg-toolbar', shelfHintState)
+  const groupKey = useHeaderHint('new-group', true, 'absolute -left-2 -top-2 bg-toolbar', shelfHintState)
+  const closeKey = useHeaderHint('toggle-bookshelf', true, 'absolute -right-2 -top-2 bg-toolbar', shelfHintState)
 
   if (!open) return null
 
@@ -1138,7 +1148,6 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
           onClick={() => { if (!suppressClick.current && editingGroupId !== g.id) toggleGroup(g) }}
           onContextMenu={(e) => openGroupMenu(g, contextMenuPoint(e))}
         >
-          {groupKeys.hint}
           <span
             data-group-badge=""
             className="shrink-0 w-4 h-4 inline-flex items-center justify-center rounded text-[10px] font-semibold tabular-nums leading-none"
@@ -1146,6 +1155,8 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
           >
             {items.length}
           </span>
+          {/* Its label between the count and the name, as the Sidebar's. */}
+          {groupKeys.hint}
           <span
             data-group-pill=""
             className="inline-flex items-center gap-1 min-w-0 max-w-full pl-1.5 pr-3 py-1 rounded-md text-xs font-medium overflow-hidden"
@@ -1227,23 +1238,26 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
           aria-label="Add current page"
           title="Add current page to Bookshelf"
           onClick={addCurrentPage}
-          className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="relative flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
+          {addKey}
           <Plus size={15} />
         </button>
         <button
           aria-label="New group"
           title={selectedIds.size > 0 ? `New group from ${selectedIds.size} selected` : 'New group'}
           onClick={createGroup}
-          className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="relative flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
+          {groupKey}
           <FolderPlus size={15} />
         </button>
         <button
           aria-label="Close Bookshelf"
           onClick={onClose}
-          className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="relative flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
+          {closeKey}
           <X size={14} />
         </button>
       </div>

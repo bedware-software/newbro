@@ -37,8 +37,9 @@ interface Props {
 }
 
 const HALF_PAGE_ROWS = 5
-// Its rows' ids among the window's hint targets (the Sidebar has the tabs').
-const hintId = (tabId: string): string => `group-page:${tabId}`
+// Its rows' ids among the window's hint targets: the tab's own, as the
+// Sidebar lists it too — one tab, one label in both places.
+const hintId = (tabId: string): string => `tab:${tabId}`
 
 export function GroupPage({ group, vimKeymap, vimMode, vimPending, hintsOn }: Props) {
   const [query, setQuery] = useState('')
@@ -84,7 +85,7 @@ export function GroupPage({ group, vimKeymap, vimMode, vimPending, hintsOn }: Pr
 
   // COMMAND's labels on its rows.
   useHintTargets('group-page', 0, vimMode === 'command' && hintsOn
-    ? rows.map((tab, i) => ({ id: hintId(tab.id), activate: () => { open(i) } }))
+    ? rows.map((tab, i) => ({ id: hintId(tab.id), name: tab.title || tab.url, activate: () => { open(i) } }))
     : null)
   const hintLabels = useHintLabels()
 

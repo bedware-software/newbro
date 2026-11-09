@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useAppStore, saveStateNow } from '../store/app-store'
 import { log } from '../lib/log'
 import { fuzzyFilter } from '../lib/fuzzy'
-import { Search, User, Layout, Layers, Globe, Asterisk } from 'lucide-react'
+import { Search, User, Layout, Layers, Globe } from 'lucide-react'
 import type { SearchableItem } from '../store/types'
 import { DetachedWindow } from './DetachedWindow'
 import { TabFavicon } from './TabFavicon'
@@ -32,7 +32,6 @@ interface Props {
 
 /** Search commands from the Vim keymap → the filter they pick. */
 const VIM_FILTER_COMMANDS: Record<string, FilterSelection> = {
-  'search-all': 'all',
   'search-profiles': 'profile',
   'search-workspaces': 'workspace',
   'search-groups': 'tabGroup',
@@ -73,8 +72,8 @@ const FILTER_LETTERS: Record<FilterType, string> = {
   tab: 'T',
 }
 
-/** Exclusive filter selection — 'all' or exactly one item type. */
-type FilterSelection = 'all' | FilterType
+/** Exclusive filter selection — exactly one item type. */
+type FilterSelection = FilterType
 export type SearchFilter = FilterSelection
 
 /** Where tab groups / tabs are searched: every workspace or only the one this window shows. */
@@ -83,12 +82,13 @@ type SearchScope = 'all' | 'current'
 const FILTER_STORAGE_KEY = 'vimperium-search-filter'
 const SCOPE_STORAGE_KEY = 'vimperium-search-scope'
 
+/** The filter picked last; tabs at first (a stale "all" too). */
 function loadFilter(): FilterSelection {
-  const raw = localStorage.getItem(FILTER_STORAGE_KEY)
-  if (raw === 'all' || (FILTER_TYPES as readonly string[]).includes(raw ?? '')) {
-    return raw as FilterSelection
-  }
-  return 'all'
+  try {
+    const raw = localStorage.getItem(FILTER_STORAGE_KEY)
+    if ((FILTER_TYPES as readonly string[]).includes(raw ?? '')) return raw as FilterSelection
+  } catch { /* no storage: the default */ }
+  return 'tab'
 }
 
 function saveFilter(filter: FilterSelection) {
@@ -222,7 +222,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
 
   const items = useMemo(() => {
     const all = getAllSearchableItems()
-    const typed = filter === 'all' ? all : all.filter((item) => item.type === filter)
+    const typed = all.filter((item) => item.type === filter)
     if (scopedToCurrent) {
       return typed.filter((item) => item.workspaceId === windowWorkspaceId)
     }
@@ -407,7 +407,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
       // The letters overlap app-wide shortcuts (Ctrl+P search, Ctrl+W close
       // tab, Ctrl+T new tab). Popups get no main-process shortcut
       // interceptor, and handling the key here keeps the menu accelerator
-      // from firing — the same way Ctrl+R picks All instead of reloading.
+      // from firing.
       // Shifted variants (Ctrl+Shift+P/W/T) are other commands; leave them be.
       const lettered = e.shiftKey
         ? undefined
@@ -415,11 +415,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
       if (lettered) {
         e.preventDefault()
         selectFilter(lettered)
-        return true
-      }
-      if (e.code === 'KeyR') {
-        e.preventDefault()
-        selectFilter('all')
         return true
       }
     }
@@ -539,7 +534,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
 
   // ── Vim COMMAND mode ──
   // COMMAND mode's row labels (lib/hint-labels.ts).
-  const hints = usePopupHints(searchKeymap, flatResults.length)
+  const hints = usePopupHints(searchKeymap, flatResults.map((item) => item.name))
   const runVimCommand = (command: string): void => {
     if (command === 'row-menu') {
       openRowMenu().catch((err: unknown) => log.warn('search: row menu failed', { err: String(err) }))
@@ -682,18 +677,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
         </div>
 
         <div className="flex items-center gap-1 px-4 py-2 border-b border-border shrink-0">
-          <button
-            onClick={() => selectFilter('all')}
-            className={`flex items-center gap-1 h-6 px-2 rounded-full text-[10px] font-medium transition-colors ${
-              filter === 'all'
-                ? 'bg-primary/20 text-primary border border-primary/30'
-                : 'bg-secondary text-muted-foreground border border-transparent hover:bg-accent'
-            }`}
-          >
-            <Asterisk size={10} />
-            All
-            <span className="opacity-50 ml-0.5">{vimKeymap ? vimHint('search-all') : `${MOD}R`}</span>
-          </button>
           {FILTER_TYPES.map((type, i) => {
             const Icon = TYPE_ICONS[type]
             const active = filter === type
@@ -837,7 +820,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
                 {flatResults[selectedIndex] && flatResults[selectedIndex].type !== 'profile' && (
                   <Hint label="Menu" keys={vimKeyCaps(searchKeymap, 'row-menu')} />
                 )}
-                <Hint label="Filter" keys={vimKeyCaps(vimKeymap, 'search-all', 'search-profiles', 'search-workspaces', 'search-groups', 'search-tabs')} />
+                <Hint label="Filter" keys={vimKeyCaps(vimKeymap, 'search-profiles', 'search-workspaces', 'search-groups', 'search-tabs')} />
                 {scopeApplies && <Hint label="Scope" keys={vimKeyCaps(vimKeymap, 'search-scope')} />}
                 <Hint label="Type" keys={vimKeyCaps(vimKeymap, 'insert-mode')} />
                 <Hint label="Close" keys={['Esc']} />
@@ -852,7 +835,6 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
                   <>
                     <Hint label="Filter" keys={[isMac ? '⌘' : 'Ctrl', '1…4']} />
                     <Hint label="or" keys={[isMac ? '⌘' : 'Ctrl', FILTER_TYPES.map((type) => FILTER_LETTERS[type]).join(' ')]} />
-                    <Hint label="All" keys={[isMac ? '⌘' : 'Ctrl', 'R']} />
                   </>
                 )}
                 {scopeApplies && <Hint label="Scope" keys={['Tab']} />}

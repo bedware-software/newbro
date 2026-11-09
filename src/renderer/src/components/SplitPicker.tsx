@@ -111,7 +111,7 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
   }
 
   // COMMAND mode's row labels (lib/hint-labels.ts).
-  const hints = usePopupHints(vimKeymap, rows.length)
+  const hints = usePopupHints(vimKeymap, rows.map((row) => row.title || row.url))
   const vim = usePopupVimMode({
     keymap: hints.keymap,
     popup: popupWindow,

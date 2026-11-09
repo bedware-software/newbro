@@ -72,8 +72,8 @@ export function DarkPagesButton({ url, onOpenSettings }: { url: string; onOpenSe
     window.addEventListener('vimperium-open-dark-pages-menu', onOpen)
     return () => window.removeEventListener('vimperium-open-dark-pages-menu', onOpen)
   }, [])
-  // Its label in COMMAND opens it as oD does.
-  const hint = useHeaderHint('dark', shown ? () => openByKeysRef.current() : null)
+  // Its key (oD), while the keys' help is open.
+  const hint = useHeaderHint('dark-pages-menu', shown)
 
   if (!shown) return null
 

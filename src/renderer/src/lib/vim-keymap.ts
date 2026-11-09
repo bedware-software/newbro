@@ -29,7 +29,7 @@ const VIM_COMMAND_LABELS: Record<string, string> = {
   'page-bottom': 'Bottom of the page',
   'insert-mode': 'INSERT mode in the page',
   'focus-input': 'Pick a text field',
-  help: 'This help',
+  help: 'Show or hide the keys help',
   'cursor-down-show': 'Next row (tab or group), showing it',
   'cursor-up-show': 'Previous row (tab or group), showing it',
   'row-move-down': 'Move the tab down',
@@ -72,7 +72,6 @@ const VIM_COMMAND_LABELS: Record<string, string> = {
   'url-undo': 'Undo the last change',
   'url-redo': 'Redo the last undone change',
   'url-go': 'Go to the address',
-  'search-all': 'Show everything',
   'search-profiles': 'Profiles only',
   'search-workspaces': 'Workspaces only',
   'search-groups': 'Tab groups only',
@@ -322,27 +321,6 @@ export function paletteKeymap(search: VimKeymap): VimKeymap {
   const map: VimKeymap = new Map()
   for (const [seq, command] of search) {
     if (command in SHARED_COMMANDS.search || command === 'row-open' || /^search-row-\d$/.test(command)) map.set(seq, command)
-  }
-  return map
-}
-
-/** The Vim help window's COMMAND keys, as help command → main command:
- *  the page's scroll keys (j/k, d/u, gg/G) scroll the help, i types in its
- *  filter. Straight from the page's map, as the help has no keys of its own
- *  — Search Everything's map would lose gg to its g filter. */
-const HELP_COMMANDS: Record<string, string> = {
-  'insert-mode': 'insert-mode',
-  ...LIST_COMMANDS,
-  'half-page-down': 'half-page-down',
-  'half-page-up': 'half-page-up',
-}
-
-export function helpKeymap(parsed: ParsedVimKeymap): VimKeymap {
-  const fromMain = new Map(Object.entries(HELP_COMMANDS).map(([help, main]) => [main, help]))
-  const map: VimKeymap = new Map()
-  for (const [seq, command] of parsed.main) {
-    const help = fromMain.get(command)
-    if (help) map.set(seq, help)
   }
   return map
 }

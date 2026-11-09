@@ -11,7 +11,7 @@ import { HINT_CANCEL_COMMAND, hintIndex, useHintKeymap } from './lib/hint-labels
 import { cancelChromeHints, toggleChromeHints } from './lib/chrome-hints'
 import { ChromeHintsOverlay } from './components/ChromeHintsOverlay'
 import { WhichKeyStrip } from './components/WhichKey'
-import { parseVimKeymap, paletteKeymap, helpKeymap, DEFAULT_VIM_KEYMAP, isPageCommand, isSidebarCommand } from './lib/vim-keymap'
+import { parseVimKeymap, paletteKeymap, DEFAULT_VIM_KEYMAP, isPageCommand, isSidebarCommand } from './lib/vim-keymap'
 import { Toolbar } from './components/Toolbar'
 import { Sidebar } from './components/Sidebar'
 import { WebviewPanel } from './components/WebviewPanel'
@@ -23,7 +23,8 @@ import { SearchDialog, type SearchFilter } from './components/SearchDialog'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
-import { VimHelpDialog } from './components/VimHelpDialog'
+import { HelpPanel } from './components/HelpPanel'
+import { closeHelpPanel, toggleHelpPanel, useHelpPanelStore } from './lib/help-panel'
 import { SidePanel } from './components/SidePanel'
 import { startExtensionTabGroupsBridge } from './lib/extension-tab-groups'
 import { setExtensionInstallHandler, type InstallOutcome } from './lib/extension-install'
@@ -686,8 +687,20 @@ export default function App() {
     })
   }, [])
 
-  // The help window (?), and the mode it was opened from.
-  const [vimHelpFrom, setVimHelpFrom] = useState<VimMode | null>(null)
+  // The keys' help (?): a panel on the right, beside the page. Closing it
+  // hands the keys back to the page, as a popup closing does — unless a
+  // field elsewhere has them.
+  const helpOpen = useHelpPanelStore((s) => s.open)
+  const helpWasOpenRef = useRef(helpOpen)
+  useEffect(() => {
+    const was = helpWasOpenRef.current
+    helpWasOpenRef.current = helpOpen
+    if (!was || helpOpen) return
+    const focused = document.activeElement as HTMLElement | null
+    const typing = !!focused && focused !== document.body &&
+      (focused.isContentEditable || focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')
+    if (!typing) vimRef.current?.enterCommand(false)
+  }, [helpOpen])
   // The Vim mode API for the shortcut handler, which is registered once.
   const vimRef = useRef<ReturnType<typeof useVimMode> | null>(null)
 
@@ -1660,7 +1673,7 @@ export default function App() {
         vimRef.current?.enterInsert()
         return
       case 'help':
-        setVimHelpFrom(vimRef.current?.mode ?? 'command')
+        toggleHelpPanel()
         return
     }
     if (isPageCommand(command)) {
@@ -1725,7 +1738,7 @@ export default function App() {
     useAppStore.getState().setActiveTab(evt.tabId)
   }), [])
   const urlEditorOpen = useUrlEditorStore((st) => st.open)
-  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || findBarOpen || splitPicking || urlEditorOpen || vimHelpFrom !== null
+  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || findBarOpen || splitPicking || urlEditorOpen
   // The address editor closing gives the keyboard back to the page; in Vim
   // mode COMMAND does that for every popup (below).
   const urlEditorWasOpenRef = useRef(urlEditorOpen)
@@ -1746,7 +1759,7 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} hintsOn={!popupOpen} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => { setSearchOpenFilter(null); setSearchOpen(true) }} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} onOpenDarkPagesSettings={() => { setSettingsTabRequest({ tab: 'darkPages', v: Date.now() }); setSettingsOpen(true) }} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => { setSearchOpenFilter(null); setSearchOpen(true) }} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} onOpenDarkPagesSettings={() => { setSettingsTabRequest({ tab: 'darkPages', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           visible={sidebarShown}
@@ -1777,6 +1790,14 @@ export default function App() {
         {/* Extension chrome.sidePanel column; hidden in cinema mode like the
             Bookshelf, the panel stays open behind it. */}
         <SidePanel suppressed={pageFullscreen} />
+        <HelpPanel
+          open={helpOpen}
+          suppressed={pageFullscreen}
+          keymap={vimKeymap}
+          vimPending={vim.pending}
+          onClose={closeHelpPanel}
+          onReleaseKeys={() => vimRef.current?.enterCommand(false)}
+        />
         {/* Hide the bookshelf while a page is in fullscreen (cinema mode) so
             the tab view can fill the full width — it reappears with its prior
             open state when fullscreen exits. */}
@@ -1794,13 +1815,6 @@ export default function App() {
         windowWorkspaceId={windowWorkspaceId}
         vimKeymap={vimReady ? vimKeymap.search : null}
         openFilter={searchOpenFilter}
-      />
-      <VimHelpDialog
-        open={vimHelpFrom !== null}
-        keymap={vimKeymap}
-        vimKeymap={vimReady ? helpKeymap(vimKeymap) : null}
-        fromMode={vimHelpFrom ?? 'command'}
-        onClose={() => setVimHelpFrom(null)}
       />
       <ExtensionInstallDialog
         preview={installPrompt?.preview ?? null}

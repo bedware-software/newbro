@@ -22,8 +22,9 @@ import type { VimMode } from '../lib/vim-mode'
 import { VimModeBadge } from './VimModeBadge'
 import { ModeEdge } from './ModeEdge'
 import { WorkspaceStats } from './WorkspaceStats'
-import { HEADER_HINT_BOTTOM_RIGHT, HeaderHintsContext, useHeaderHint, useHeaderHintList, type HeaderSlot } from './HeaderHint'
-import { openUrlEditor, useUrlEditorStore } from '../lib/url-editor'
+import { HEADER_HINT_BOTTOM_RIGHT, HeaderHintsContext, useHeaderHint } from './HeaderHint'
+import { useHelpPanelStore } from '../lib/help-panel'
+import { useUrlEditorStore } from '../lib/url-editor'
 import { actionHint, type HintSettings } from '../lib/shortcut-hints'
 import { BANGS_URL, DOWNLOADS_URL, internalPageOf } from '../lib/internal-pages'
 import { requestExtensionInstall } from '../lib/extension-install'
@@ -49,9 +50,6 @@ interface Props {
   vimMode?: VimMode | null
   /** Unfinished key sequence typed in COMMAND mode. */
   vimPending?: string
-  /** No popup over the window: in COMMAND the buttons wear their labels
-   *  (HeaderHint.tsx). */
-  hintsOn?: boolean
   onToggleSidebar: () => void
   onOpenSettings: () => void
   onOpenAbout: () => void
@@ -123,12 +121,13 @@ interface DropdownTriggerProps {
   /** A window event that opens it with the keyboard on it (Vim's oP / oW,
    *  sent by App.tsx). */
   openEvent?: string
-  /** Its label slot in COMMAND (HeaderHint.tsx). */
-  hintSlot: HeaderSlot
+  /** The command that opens it from the keys, whose key it shows while
+   *  the help is open (HeaderHint.tsx). */
+  keyCommand: string
 }
 
 function Dropdown(props: DropdownTriggerProps) {
-  const { iconName, items, value, onChange, onDelete, onEdit, onReorder, label, onNew, newLabel, canDelete, actions, openEvent, hintSlot } = props
+  const { iconName, items, value, onChange, onDelete, onEdit, onReorder, label, onNew, newLabel, canDelete, actions, openEvent, keyCommand } = props
   const openerId = useOpenerId()
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLDivElement>(null)
@@ -215,8 +214,8 @@ function Dropdown(props: DropdownTriggerProps) {
     window.addEventListener(openEvent, onOpen)
     return () => window.removeEventListener(openEvent, onOpen)
   }, [openEvent])
-  // Its label opens it from the keys, as oP / oW do.
-  const hint = useHeaderHint(hintSlot, () => openListRef.current(true))
+  // Its key (oP / oW), while the help is open.
+  const hint = useHeaderHint(keyCommand)
 
   return (
     <div ref={triggerRef} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
@@ -287,7 +286,6 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
       setTimeout(() => setState('idle'), 6000)
     }
   }
-  const hint = useHeaderHint('store', extensionId && state !== 'installing' ? () => { void handleClick() } : null)
 
   if (!extensionId) return null
 
@@ -313,7 +311,6 @@ function StoreInstallBadge({ activeTabUrl }: { activeTabUrl: string | undefined 
             : 'bg-primary text-primary-foreground hover:bg-primary/80'
       }`}
     >
-      {hint}
       <Puzzle size={13} />
       <span>{label}</span>
     </button>
@@ -544,11 +541,8 @@ function ExtensionActions({
     }
   }
 
-  // In COMMAND each button wears a label, the puzzle first.
-  const extHint = useHeaderHintList([
-    { id: 'manage', activate: onManageExtensions },
-    ...visible.map((ext) => ({ id: ext.id, activate: () => handleClick(ext) })),
-  ])
+  // The puzzle's key (oe, the extensions' menu), while the help is open.
+  const manageHint = useHeaderHint('extensions-menu')
 
   return (
     <div
@@ -565,7 +559,7 @@ function ExtensionActions({
         title="Manage extensions"
         className="relative h-8 w-8 shrink-0 flex items-center justify-center rounded-md bg-secondary hover:bg-muted text-secondary-foreground transition-colors"
       >
-        {extHint('manage')}
+        {manageHint}
         <Puzzle size={15} />
       </button>
       {visible.map((ext) => {
@@ -596,11 +590,8 @@ function ExtensionActions({
           iconSrc = `crx://extension-icon/${ext.id}/32/2?${params.toString()}`
         }
         return (
-          // The icon's button clips what spills past it: its label sits
-          // beside it, in a box of its own.
-          <span key={ext.id} className="relative shrink-0">
-          {extHint(ext.id)}
           <button
+            key={ext.id}
             ref={(el) => {
               if (el) buttonRefs.current.set(ext.id, el)
               else buttonRefs.current.delete(ext.id)
@@ -641,7 +632,6 @@ function ExtensionActions({
               </span>
             ) : null}
           </button>
-          </span>
         )
       })}
     </div>
@@ -822,8 +812,8 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
 
   const hint = actionHint(hintSettings, 'app-menu')
   const hintText = hint?.kind === 'vim' ? hint.keys : ''
-  // Its label opens it from the keys, as om does.
-  const labelHint = useHeaderHint('menu', () => openMenuRef.current(true))
+  // Its key (om), while the help is open.
+  const labelHint = useHeaderHint('app-menu')
 
   return (
     // A plain button like the bar's others: the Vimperium mark lives in
@@ -880,7 +870,7 @@ function AppMenu({ sidebarVisible, onToggleSidebar, onOpenSettings, onOpenAbout,
   )
 }
 
-export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vimMode, vimPending, hintsOn = false, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions, onOpenDarkPagesSettings }: Props) {
+export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vimMode, vimPending, onToggleSidebar, onOpenSettings, onOpenAbout, onOpenSearch, onManageExtensions, onOpenDarkPagesSettings }: Props) {
   const isMac = navigator.platform.includes('Mac')
   const urlEditorOpen = useUrlEditorStore((s) => s.open)
   const profiles = useAppStore((s) => s.profiles)
@@ -1444,16 +1434,15 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
     }
   }, [])
 
-  // In COMMAND, with no popup over the window, each button wears a label
-  // (HeaderHint.tsx); typing it presses the button.
-  const headerHints = useMemo(() => ({ on: hintsOn && vimMode === 'command', pending: vimPending ?? '' }), [hintsOn, vimMode, vimPending])
-  const downloadsHint = useHeaderHint('downloads', totalDownloads > 0 ? openDownloadsPage : null, undefined, headerHints)
-  const backHint = useHeaderHint('back', handleBack, undefined, headerHints)
-  const forwardHint = useHeaderHint('forward', canGoForward ? handleForward : null, undefined, headerHints)
-  const reloadHint = useHeaderHint('reload', handleReloadOrStop, undefined, headerHints)
-  // The address: opened as a click on it opens it (the address editor).
-  const urlHint = useHeaderHint('url', urlEditorOpen ? null : () => { openUrlEditor('click') }, undefined, headerHints)
-  const securityHint = useHeaderHint('security', security !== 'internal' ? () => setCertPopupOpen(true) : null, HEADER_HINT_BOTTOM_RIGHT, headerHints)
+  // While the keys' help is open each button shows its key (HeaderHint.tsx).
+  const helpOpen = useHelpPanelStore((s) => s.open)
+  const headerHints = useMemo(() => ({ on: helpOpen, pending: vimPending ?? '' }), [helpOpen, vimPending])
+  const downloadsHint = useHeaderHint('open-downloads', totalDownloads > 0, undefined, headerHints)
+  const backHint = useHeaderHint('back', true, undefined, headerHints)
+  const forwardHint = useHeaderHint('forward', canGoForward, undefined, headerHints)
+  const reloadHint = useHeaderHint('reload', true, undefined, headerHints)
+  const urlHint = useHeaderHint('edit-url', !urlEditorOpen, undefined, headerHints)
+  const securityHint = useHeaderHint('site-info', security !== 'internal', HEADER_HINT_BOTTOM_RIGHT, headerHints)
 
   return (
     <>
@@ -1485,7 +1474,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           onNew={openProfileDialog}
           newLabel="New Profile"
           openEvent="vimperium-open-profile-menu"
-          hintSlot="profile"
+          keyCommand="profile-menu"
         />
 
         {/* Workspace selector */}
@@ -1502,7 +1491,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           onNew={openWorkspaceDialog}
           newLabel="New Workspace"
           openEvent="vimperium-open-workspace-menu"
-          hintSlot="workspace"
+          keyCommand="workspace-menu"
           actions={[
             { id: 'import-workspace', label: 'Import Workspace', iconName: 'Import', onClick: handleImportWorkspace },
             { id: 'export-workspace', label: 'Export Workspaces', iconName: 'Upload', onClick: handleExportWorkspace, disabled: (activeProfile?.workspaces.length || 0) === 0 },
