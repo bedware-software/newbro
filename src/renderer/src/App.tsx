@@ -1587,11 +1587,9 @@ export default function App() {
   const focusActivePage = (mode: VimMode = 'insert'): boolean => {
     const s = useAppStore.getState()
     if (!s.activeTabId) return false
-    // Internal pages are drawn by this renderer. Downloads and Bangs are
-    // COMMAND's — the window's keymap runs on them (lib/internal-page-keys.ts)
-    // and there's no view to hand the keys to; only a form one shows (the
-    // bang form, data-vim-page) keeps its own keys, which is INSERT, and in
-    // COMMAND it lets go.
+    // Internal pages are drawn by this renderer (data-vim-page). Focused,
+    // their own keys run, which is INSERT (lib/internal-page-keys.ts); in
+    // COMMAND they let go, and the window keeps the keys for COMMAND's.
     if (isInternalUrl(s.getActiveTab()?.url)) {
       const page = document.querySelector<HTMLElement>('[data-vim-page]')
       if (!page) return false

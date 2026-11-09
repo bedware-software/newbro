@@ -481,9 +481,9 @@ export function BangsPage() {
   }
 
   // ── keyboard ──
-  // BANGS_KEYS through lib/internal-page-keys.ts: in Vim mode the window's
-  // keymap brings them, and a key or command this declines goes on to the
-  // window.
+  // BANGS_KEYS through lib/internal-page-keys.ts, while the page has the
+  // keyboard (INSERT): its own keys, and the window's commands it has a
+  // meaning for on the window's keymap.
   /** Back into the bang form, from keys outside it (Ctrl+[ left it). */
   const focusEditor = (): void => {
     rootRef.current?.querySelector<HTMLInputElement>('[role="dialog"] input')?.focus()
@@ -528,7 +528,8 @@ export function BangsPage() {
     }
     if (!selected) {
       // dd with nothing to delete does nothing — it never closes the tab
-      // here. The rest go on to the window (y copies the page's address).
+      // here. The rest do nothing either: the window's own keys are
+      // COMMAND's.
       return action === 'remove'
     }
     switch (action) {
@@ -542,16 +543,17 @@ export function BangsPage() {
   const pageKeys = useInternalPageKeys({
     table: BANGS_KEYS,
     run: runKey,
-    // Without Vim mode, the keys are the page's while it has the focus — on
-    // it, or on nothing at all — and no form or field has them. A focused
+    // The keys are the page's while the focus is in it (INSERT) and not in
+    // a field; on nothing at all it's COMMAND, the browser's keys. The bang
+    // form keeps its own; with it up and the focus outside it, runKey's
+    // editor branch has them (i or Enter back in, Esc closes it). A focused
     // control (Tab onto a header button) keeps its own Enter / Space.
     ownsKeyboard: (e) => {
       const root = rootRef.current
       const target = e.target
-      if (!root || editor || isEditable(target)) return false
-      const onPage = target === document.body || target === document.documentElement ||
-        (target instanceof Node && root.contains(target))
-      if (!onPage) return false
+      if (!root || isEditable(target)) return false
+      if (!(target instanceof Node && root.contains(target))) return false
+      if (editor && target instanceof Element && target.closest('[role="dialog"]')) return false
       return !((e.key === 'Enter' || e.key === ' ') && target instanceof HTMLElement && target.closest('button, a, [role="radio"]'))
     },
   })
@@ -611,9 +613,15 @@ export function BangsPage() {
     <div
       ref={rootRef}
       tabIndex={-1}
-      // In Vim mode it's COMMAND's (not data-vim-page, which is INSERT): the
-      // window's keymap reaches it through lib/internal-page-keys.ts. The
-      // bang form is data-vim-page: a form keeps its own keys.
+      // The focus in it is INSERT, as in a web page: its own keys run
+      // (lib/internal-page-keys.ts); Esc lets go of it for COMMAND. The bang
+      // form inside is data-vim-page too: a form keeps its own keys.
+      data-vim-page=""
+      // i lands on the page: with the bang form up, it goes back into it.
+      onFocus={(e) => { if (editor && e.target === e.currentTarget) focusEditor() }}
+      // The keys leaving the page (Esc for COMMAND, a click on the chrome)
+      // take its help along: nothing but its own keys would close it.
+      onBlur={(e) => { if (!(e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget))) setHelpOpen(false) }}
       className="absolute inset-0 z-50 flex flex-col bg-background text-foreground outline-none"
       role="region"
       aria-label="Bangs"

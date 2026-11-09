@@ -54,6 +54,14 @@
   outline-offset: 2px;
 }
 
+/* A popup the keys go round control by control (Dark pages' popover: j/k
+ * and h/l): the focused control wears the same ring, or the keys would move
+ * an invisible focus. */
+[data-key-ring] :is(button, a[href], [role="switch"], [role="radio"], input):focus-visible {
+  outline: 2px solid var(--color-ring) !important;
+  outline-offset: 1px;
+}
+
 /* ── Dark theme — default ── */
 @theme {
   --color-background: oklch(0.21 0 0);

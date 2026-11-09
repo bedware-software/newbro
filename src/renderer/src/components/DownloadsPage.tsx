@@ -585,10 +585,10 @@ export function DownloadsPage() {
   }
 
   // ── keyboard ──
-  // DOWNLOADS_KEYS through lib/internal-page-keys.ts: in Vim mode the
-  // window's keymap brings them, and a key or command this declines goes on
-  // to the window.
-  const runKey: PageKeyRunner<DownloadsAction> = (action, source) => {
+  // DOWNLOADS_KEYS through lib/internal-page-keys.ts, while the page has
+  // the keyboard (INSERT): its own keys, and the window's commands it has a
+  // meaning for on the window's keymap.
+  const runKey: PageKeyRunner<DownloadsAction> = (action) => {
     switch (action) {
       case 'escape':
         if (!helpOpen) return false
@@ -611,9 +611,14 @@ export function DownloadsPage() {
       case 'menu': openMenuForSelected(); return true
       case 'undo': undoRemove(); return true
     }
-    if (!selected) {
-      // dd with nothing to remove does nothing — it never closes the tab
-      // here. The rest go on to the window (y copies the page's address).
+    if (!selected || (action === 'retry' && !canRetry(selected))) {
+      // r reloads the list unless there's a download to retry; dd with
+      // nothing to remove does nothing — it never closes the tab here. The
+      // rest do nothing either: the window's own keys are COMMAND's.
+      if (action === 'retry') {
+        window.dispatchEvent(new Event(DOWNLOADS_RELOAD_EVENT))
+        return true
+      }
       return action === 'remove'
     }
     switch (action) {
@@ -622,27 +627,21 @@ export function DownloadsPage() {
       case 'copy': copyLink(selected); return true
       case 'pause': togglePause(selected); return true
       case 'remove': removeOrCancel(selected); return true
-      case 'retry':
-        // r reloads the list unless there's a download to retry.
-        if (!canRetry(selected)) return source.command === undefined
-        retry(selected)
-        return true
+      case 'retry': retry(selected); return true
     }
     return false
   }
   const pageKeys = useInternalPageKeys({
     table: DOWNLOADS_KEYS,
     run: runKey,
-    // Without Vim mode, the keys are the page's while it has the focus — on
-    // it, or on nothing at all — and not in its search box. A focused
-    // control (Tab onto a header button) keeps its own Enter / Space.
+    // The keys are the page's while the focus is in it (INSERT) and not in
+    // a field (its search box); on nothing at all it's COMMAND, the browser's keys. A
+    // focused control (Tab onto a header button) keeps its own Enter / Space.
     ownsKeyboard: (e) => {
       const root = rootRef.current
       const target = e.target
       if (!root || isEditable(target)) return false
-      const onPage = target === document.body || target === document.documentElement ||
-        (target instanceof Node && root.contains(target))
-      if (!onPage) return false
+      if (!(target instanceof Node && root.contains(target))) return false
       return !((e.key === 'Enter' || e.key === ' ') && target instanceof HTMLElement && target.closest('button, a, [role="radio"]'))
     },
   })
@@ -677,8 +676,12 @@ export function DownloadsPage() {
     <div
       ref={rootRef}
       tabIndex={-1}
-      // In Vim mode it's COMMAND's (not data-vim-page, which is INSERT): the
-      // window's keymap reaches it through lib/internal-page-keys.ts.
+      // The focus in it is INSERT, as in a web page: its own keys run
+      // (lib/internal-page-keys.ts); Esc lets go of it for COMMAND.
+      data-vim-page=""
+      // The keys leaving the page (Esc for COMMAND, a click on the chrome)
+      // take its help along: nothing but its own keys would close it.
+      onBlur={(e) => { if (!(e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget))) setHelpOpen(false) }}
       className="absolute inset-0 z-50 flex flex-col bg-background text-foreground outline-none"
       role="region"
       aria-label="Downloads"

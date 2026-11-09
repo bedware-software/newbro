@@ -68,18 +68,17 @@ export function isTypingElement(target: unknown): boolean {
   return TYPING_INPUT_TYPES.has(typeof el.type === 'string' ? el.type.toLowerCase() : '')
 }
 
-/** A part of the page area this renderer draws that keeps its own keys, as
- *  a text field does (marked `data-vim-page`: the Bangs page's bang form).
- *  Downloads and Bangs themselves are COMMAND's: the window's keymap runs
- *  on them (lib/internal-page-keys.ts). */
+/** A page this renderer draws in the page area, which keeps its own keys
+ *  as a web page does in INSERT (marked `data-vim-page`: Downloads, Bangs,
+ *  the bang form) — lib/internal-page-keys.ts. */
 function isInternalPage(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && target.closest('[data-vim-page]') !== null
 }
 
 /** The mode keyboard focus on `target` in this renderer stands for: a text
- *  field is INSERT, and so is a form this renderer draws in the page area
- *  (the bang form) — its keys are the form's; the rest COMMAND, the
- *  browser's own pages (Downloads, Bangs) included. */
+ *  field is INSERT, and so is a page this renderer draws (Downloads, Bangs)
+ *  — its own keys (j/k through its rows, dd) are the page's, as a web
+ *  page's are in INSERT; the rest COMMAND. */
 function modeForRendererFocus(target: EventTarget | null): VimMode {
   return isEditable(target) || isInternalPage(target) ? 'insert' : 'command'
 }

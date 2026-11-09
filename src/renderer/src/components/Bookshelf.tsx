@@ -1007,7 +1007,7 @@ export function Bookshelf({ open, profileId, pageFullscreen = false, vimPending,
     return {
       cursor,
       hint: label
-        ? <RowHint mode="command" label={label} number={0} pending={vimPending} className="absolute left-0.5 top-1/2 -translate-y-1/2 bg-toolbar" />
+        ? <RowHint mode="command" label={label} pending={vimPending} className="absolute left-0.5 top-1/2 -translate-y-1/2 bg-toolbar" />
         : null,
     }
   }

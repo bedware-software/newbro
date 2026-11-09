@@ -511,7 +511,7 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
   const rowHint = (rowId: string, hoverHides: string): React.ReactNode => {
     const label = hintLabels.get(hintId(rowId))
     return label
-      ? <RowHint mode="command" label={label} number={0} pending={vimPending} className={`absolute right-1.5 top-1/2 -translate-y-1/2 bg-toolbar ${hoverHides}`} />
+      ? <RowHint mode="command" label={label} pending={vimPending} className={`absolute right-1.5 top-1/2 -translate-y-1/2 bg-toolbar ${hoverHides}`} />
       : null
   }
   const findVimRow = (id: string): Element | null =>

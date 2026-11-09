@@ -438,7 +438,7 @@ export function PickerDialog({
                       onClick={(e) => onConfirm(item.id, { background: e.shiftKey })}
                       onMouseEnter={() => setSelectedIndex(idx)}
                     >
-                      <RowHint mode={vim.mode} label={hints.labels[idx]} number={idx + 1} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
+                      <RowHint mode={vim.mode} label={hints.labels[idx]} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
                       <div className="flex-1 min-w-0">
                         {item.color ? (
                           <GroupPill name={item.label} className="block w-fit max-w-full truncate" />

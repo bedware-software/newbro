@@ -86,7 +86,7 @@ export function VimFormLabels({ form, labels, mode, pending }: {
     <div ref={layerRef} aria-hidden="true" className="pointer-events-none fixed inset-0 z-40">
       {shown && spots.map((spot) => (
         <div key={spot.label} className="absolute" style={{ left: spot.left, top: spot.top }}>
-          <RowHint mode="command" label={spot.label} number={0} pending={pending} />
+          <RowHint mode="command" label={spot.label} pending={pending} />
         </div>
       ))}
     </div>

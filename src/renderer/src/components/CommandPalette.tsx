@@ -399,7 +399,7 @@ export function CommandPalette({ open, onOpenChange, onAction, vimKeymap }: Prop
                     }`}
                     onClick={() => handleSelect(cmd)}
                   >
-                    <RowHint mode={vim.mode} label={hints.labels[idx]} number={idx + 1} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
+                    <RowHint mode={vim.mode} label={hints.labels[idx]} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
                     <span>{cmd.label}</span>
                     {hint && (
                       <span className="text-xs text-muted-foreground ml-4 shrink-0 flex items-center">

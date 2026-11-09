@@ -762,7 +762,7 @@ export function SearchDialog({ open, onOpenChange, windowWorkspaceId, vimKeymap,
                         }`}
                         onClick={() => handleSelect(item)}
                       >
-                        <RowHint mode={vimMode} label={hints.labels[idx]} number={idx + 1} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
+                        <RowHint mode={vimMode} label={hints.labels[idx]} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
                         <span className="relative w-6 shrink-0 flex items-center">
                           {item.type === 'tab' ? (
                             <>

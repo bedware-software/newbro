@@ -205,7 +205,6 @@ export function GroupPage({ group, vimKeymap, vimMode, vimPending, hintsOn }: Pr
                   <RowHint
                     mode={vimMode}
                     label={hintLabels.get(hintId(tab.id))}
-                    number={idx + 1}
                     pending={vimPending}
                     className="absolute left-0.5 top-1/2 -translate-y-1/2 bg-background"
                   />

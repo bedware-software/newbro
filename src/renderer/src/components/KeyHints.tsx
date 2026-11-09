@@ -100,19 +100,19 @@ export const LEAVE_INSERT_CAP = displayKeySequence('<C-c>')
 
 /** A list row's key in Vim mode, as a keycap filling the row's left padding
  *  (positioned by the row, so its content never moves; a span, as the
- *  global kbd style's padding would widen it): in COMMAND its label — the part typed so far lit, rows it no longer fits faded — and in
- *  INSERT just its number, to read. Nothing while Vim mode is off. */
-export function RowHint({ mode, label, number, pending, className }: {
+ *  global kbd style's padding would widen it): in COMMAND its label — the
+ *  part typed so far lit, rows it no longer fits faded. Nothing in INSERT,
+ *  where typing goes in the box and no key picks a row. */
+export function RowHint({ mode, label, pending, className }: {
   mode: 'command' | 'insert' | null
   label?: string
-  number: number
   /** Keys typed so far of an unfinished sequence. */
   pending?: string
   className?: string
 }) {
-  if (!mode || (mode === 'command' && !label)) return null
-  const typed = mode === 'command' && pending && label?.startsWith(pending) ? pending.length : 0
-  const faded = mode === 'command' && !!pending && !typed
+  if (mode !== 'command' || !label) return null
+  const typed = pending && label.startsWith(pending) ? pending.length : 0
+  const faded = !!pending && !typed
   return (
     <span
       aria-hidden="true"
@@ -122,9 +122,7 @@ export function RowHint({ mode, label, number, pending, className }: {
         className,
       )}
     >
-      {mode === 'command'
-        ? <><span className="text-primary">{label!.slice(0, typed)}</span>{label!.slice(typed)}</>
-        : number}
+      <span className="text-primary">{label.slice(0, typed)}</span>{label.slice(typed)}
     </span>
   )
 }

@@ -108,7 +108,7 @@ export function ChromeHintsOverlay({ mode, pending }: {
             const left = Math.max(0, t.rect.left)
             return (
               <div key={t.id} className="absolute" style={{ left, top }}>
-                <RowHint mode="command" label={label} number={0} pending={pending} className="ring-1 ring-primary/60" />
+                <RowHint mode="command" label={label} pending={pending} className="ring-1 ring-primary/60" />
               </div>
             )
           })}

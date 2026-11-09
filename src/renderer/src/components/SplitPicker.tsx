@@ -213,7 +213,7 @@ export function SplitPicker({ split, paneRef, vimKeymap, focusTick }: Props) {
                   idx === selected ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
                 } ${isNew ? 'border-t border-border' : ''}`}
               >
-                <RowHint mode={vim.mode} label={hints.labels[idx]} number={idx + 1} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
+                <RowHint mode={vim.mode} label={hints.labels[idx]} pending={vim.pending} className="absolute left-0 top-1/2 -translate-y-1/2" />
                 <span className="w-6 shrink-0 flex items-center">
                   {isNew ? <Plus size={16} className="text-muted-foreground" />
                     : row.favicon ? <TabFavicon favicon={row.favicon} />
