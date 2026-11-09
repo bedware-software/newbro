@@ -2,8 +2,8 @@
 //
 // Such a page is INSERT's while it has the keyboard, as a web page is: its
 // own keys run — the scroll keys move its cursor, dd deletes the row, u
-// undoes that, y copies, m is the row's menu, i and / go to its search box,
-// Enter, Space, s for the sort… The window's commands it has a meaning for
+// undoes that, y copies, m is the row's menu, i and / go to its filter (the
+// address bar, lib/address-filter.ts), Enter, Space, s for the sort… The window's commands it has a meaning for
 // come on the window's keymap (a rebind carries over, and the page's hints
 // show what's bound); the rest of the window's keys don't run here. Esc (or
 // Ctrl+[) lets go of the page for COMMAND, where the keys are the browser's
@@ -203,9 +203,9 @@ export function windowKeysNote(keymap: VimKeymap): string | null {
   const parts: string[] = []
   const close = first('close-tab')
   if (close) parts.push(`${close} closes the tab`)
-  const down = first('cursor-down-show')
-  const up = first('cursor-up-show')
-  if (down && up) parts.push(`${down} / ${up} step through the tabs`)
+  const down = first('row-move-down')
+  const up = first('row-move-up')
+  if (down && up) parts.push(`${down} / ${up} move the tab up and down`)
   const sidebar = first('toggle-sidebar')
   if (sidebar) parts.push(`${sidebar} shows or hides the Sidebar`)
   const back = first('insert-mode')

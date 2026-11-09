@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Zap, Search, X, Keyboard, Plus, Pencil, Trash2, RotateCcw, Power, PowerOff, Copy,
+  Zap, X, Keyboard, Plus, Pencil, Trash2, RotateCcw, Power, PowerOff, Copy,
   ArrowDownWideNarrow, ArrowUpNarrowWide,
 } from 'lucide-react'
 import {
@@ -26,7 +26,7 @@ import {
   type ListMove, type PageKeyRunner, type PageKeyTable,
 } from '../lib/internal-page-keys'
 import { log } from '../lib/log'
-import { useHelpPanelStore } from '../lib/help-panel'
+import { focusAddressFilter, useAddressFilter, type AddressFilterKeyEvent } from '../lib/address-filter'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 import { Hint, HintBar, KeyCap } from './KeyHints'
 
@@ -45,7 +45,8 @@ const SORT_STORAGE_KEY = 'vimperium-bangs-sort'
 const RESET_ARM_MS = 3000
 
 /** Events other parts of the app send the page: App routes find-in-page and
- *  reload here while the Bangs tab is active. */
+ *  reload here while the Bangs tab is active. Find goes to the address bar,
+ *  the page's filter. */
 export const BANGS_FIND_EVENT = 'vimperium-bangs-find'
 export const BANGS_RELOAD_EVENT = 'vimperium-bangs-reload'
 
@@ -54,13 +55,15 @@ type BangsAction = ListMove
   | 'engine' | 'bangs' | 'reset' | 'menu' | 'help' | 'escape'
 
 // The page's keys (lib/internal-page-keys.ts). The window's commands it has
-// a meaning for — dd deletes, u undoes, y copies, i and / go to the search
-// box, e (the address editor's key) edits the bang, never the address — and
-// keys of its own, each one taken only while the window's keymap leaves it
-// free: by default o opens, so adding is a.
+// a meaning for — dd deletes, u undoes, y copies, i and / go to the filter
+// (the address bar), e (focus-url, the address bar's key) edits the bang,
+// never the address — and keys of its own, each one taken only while the
+// window's keymap leaves it free: by default o opens, so adding is a. E is
+// the address editor's (edit-url) on a web page, but the page doesn't take
+// that command, so its E stays free and cycles the search engine.
 export const BANGS_KEYS: PageKeyTable<BangsAction> = {
   ...LIST_MOVES,
-  edit: ['<CR>', cmd('edit-url')],
+  edit: ['<CR>', cmd('focus-url')],
   add: ['a', 'o'],
   toggle: ['<Space>'],
   remove: [cmd('close-tab'), '<Del>', '<BS>'],
@@ -175,19 +178,34 @@ export function BangsPage() {
   const [search, setSearch] = useState<SearchSettings | null>(null)
   const [customDraft, setCustomDraft] = useState<string | null>(null)
   const [sort, setSort] = useState<SortState>(loadSort)
-  const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
-  const keysHelpOpen = useHelpPanelStore((st) => st.open)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [flash, setFlash] = useState<string | null>(null)
   const [undo, setUndo] = useState<Array<{ bang: Bang; index: number }>>([])
   const resetArmedRef = useRef(0)
   const rootRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const searchRef = useRef<HTMLInputElement>(null)
   const customRef = useRef<HTMLInputElement>(null)
   const api = window.electronAPI
+
+  // The address bar is the filter: ↑/↓ and PageUp/PageDown typed there move
+  // the cursor, Enter edits the selected bang (as Enter on its row does).
+  const query = useAddressFilter('bangs', {
+    label: 'Bangs',
+    placeholder: 'Search bangs',
+    onKey: (e) => filterKey(e),
+    onEnter: () => {
+      // The bang form up: back into it, as Enter on the page does.
+      if (editor) {
+        focusEditor()
+        return true
+      }
+      if (!selected) return false
+      openEditor('edit', selected)
+      return true
+    },
+  })
 
   useEffect(() => { saveSort(sort) }, [sort])
 
@@ -318,12 +336,7 @@ export function BangsPage() {
     rootRef.current?.focus({ preventScroll: true })
   }, [])
 
-  const focusSearch = useCallback(() => {
-    const input = searchRef.current
-    if (!input) return
-    input.focus()
-    input.select()
-  }, [])
+  const focusSearch = useCallback(() => { focusAddressFilter() }, [])
 
   useEffect(() => {
     window.addEventListener(BANGS_FIND_EVENT, focusSearch)
@@ -567,17 +580,16 @@ export function BangsPage() {
     return key ? [key] : []
   }
 
-  const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'ArrowDown' || e.key === 'Enter') {
-      e.preventDefault()
-      if (visible[0]) setSelectedId(visible[0].id)
-      focusList()
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      e.stopPropagation()
-      if (query) setQuery('')
-      else focusList()
+  /** A key typed in the address bar, the page's filter. */
+  const filterKey = (e: AddressFilterKeyEvent): boolean => {
+    if (e.metaKey || e.ctrlKey || e.altKey || editor) return false
+    switch (e.key) {
+      case 'ArrowDown': moveBy(1); return true
+      case 'ArrowUp': moveBy(-1); return true
+      case 'PageDown': moveBy(pageSize()); return true
+      case 'PageUp': moveBy(-pageSize()); return true
     }
+    return false
   }
 
   const customProblem = customDraft !== null ? searchEngineProblem(customDraft) : null
@@ -728,38 +740,13 @@ export function BangsPage() {
           </div>
         )}
 
-        {/* Search and sort. */}
+        {/* What the filter (the address bar) narrowed it to, and the sort. */}
         <div className="mx-auto flex max-w-4xl items-center gap-3 px-6 pb-4">
-          <div className="relative flex-1">
-            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <input
-              ref={searchRef}
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={onSearchKeyDown}
-              data-vim-search=""
-              placeholder="Search bangs"
-              spellCheck={false}
-              className="h-9 w-full field rounded-xl pl-9 pr-9 text-sm text-foreground outline-none placeholder:text-muted-foreground"
-            />
-            {query ? (
-              <button
-                onClick={() => { setQuery(''); focusSearch() }}
-                className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                title="Clear search (Esc)"
-                tabIndex={-1}
-              >
-                <X size={13} />
-              </button>
-            ) : (
-              keyOf('search') && (
-                <span className="pointer-events-none absolute right-2.5 top-1/2 flex -translate-y-1/2">
-                  <KeyCap onField>{keyOf('search')}</KeyCap>
-                </span>
-              )
-            )}
-          </div>
+          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+            {query.trim()
+              ? <>Filtered by “<span className="text-foreground">{query.trim()}</span>” · {visible.length} of {bangs.length}</>
+              : null}
+          </span>
           <div className="flex items-center gap-2">
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
               Sort by {keyOf('sort') && <KeyCap>{keyOf('sort')}</KeyCap>}
@@ -844,8 +831,8 @@ export function BangsPage() {
         </div>
       </div>
 
-      {/* Its keys while the keys' help (?) or its own is open; a flash always. */}
-      {(flash || keysHelpOpen || helpOpen) && (
+      {/* Its keys while its own help (?) is open; a flash always. */}
+      {(flash || helpOpen) && (
       <HintBar>
         {flash ? (
           <span className="text-foreground">{flash}</span>

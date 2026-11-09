@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useAppStore, consumeNewTabUrlFocus, consumeNewTabEditor, consumeEagerLoad } from '../store/app-store'
+import { useAppStore, consumeNewTabUrlFocus, consumeEagerLoad } from '../store/app-store'
 import type { TabGroup } from '../store/types'
 import { log } from '../lib/log'
 import { focusAndSelectUrlBar } from '../lib/focus-url-bar'
-import { openUrlEditor } from '../lib/url-editor'
 import { keepsChromeKeyboard, usePageKeys, type VimMode } from '../lib/vim-mode'
 import { KeyCap, vimKeyCaps } from './KeyHints'
 import { internalPageOf, isInternalUrl } from '../lib/internal-pages'
@@ -16,7 +15,10 @@ import { SplitFrames, insetForFrame, splitPaneRects } from './SplitPanes'
 import { SplitPicker } from './SplitPicker'
 import { GroupPage } from './GroupPage'
 import { isSplitShown, setSplitRatio, useSplitStore, workspaceTabs, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO } from '../lib/split-view'
-import type { VimKeymap } from '../lib/vim-keymap'
+import type { ParsedVimKeymap, VimKeymap } from '../lib/vim-keymap'
+import { SearchPage } from './SearchPage'
+import { KeysPage } from './KeysPage'
+import { BookshelfPage } from './BookshelfPage'
 
 // Tab rendering lives in the main process now, as a WebContentsView per tab
 // attached to the window's root contentView. This component is a thin layout
@@ -176,11 +178,17 @@ interface Props {
   vimMode: VimMode | null
   /** Keys typed so far of an unfinished COMMAND sequence. */
   vimPending: string
-  /** The group page's rows may wear COMMAND's labels: no popup has its own up. */
+  /** The pages' rows (the group page's, Search Everything's, the
+   *  Bookshelf's) may wear COMMAND's labels: no popup has its own up. */
   groupHintsOn: boolean
+  /** The whole keymap, for the keys' help; null for the beat at launch. */
+  parsedKeymap: ParsedVimKeymap | null
+  /** The profile this window belongs to: the Bookshelf's. */
+  profileId: string | null
+  windowWorkspaceId: string | null
 }
 
-export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeymap, vimMode, vimPending, groupHintsOn }: Props) {
+export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeymap, vimMode, vimPending, groupHintsOn, parsedKeymap, profileId, windowWorkspaceId }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [errors, setErrors] = useState<Map<string, LoadError>>(new Map())
   const [certErrors, setCertErrors] = useState<Map<string, CertError>>(new Map())
@@ -202,8 +210,8 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
   const profiles = useAppStore((s) => s.profiles)
   const activeProfileId = useAppStore((s) => s.activeProfileId)
   // Parked on a tab group (a click on its header; Ctrl+Tab, or Vim's
-  // Ctrl+J/K, stop on group headers): no tab is active, so the group's tabs
-  // take the page's place.
+  // cursor-down-show / cursor-up-show, stop on group headers): no tab is
+  // active, so the group's tabs take the page's place.
   const parkedGroup = useAppStore((s) => (s.activeTabId === null
     ? s.getActiveWorkspace()?.tabGroups.find((g) => g.id === s.activeTabGroupId)
     : undefined))
@@ -334,16 +342,14 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
     // plus any tab the store has flagged for eager-load — currently
     // user-opened background tabs).
     let focusUrlBarForNewTab = false
-    let editorForNewTab = false
     for (const tab of currentTabs) {
       if (isInternalUrl(tab.url)) {
         // No view to load or focus: drop the one-shot flags so they don't
         // linger for a view created if the tab later turns into a web page.
         // A new tab (nt) on a page of the browser's own (the default page
-        // set to one) still comes up with the address editor.
+        // set to one) still comes up typing in the address bar.
         consumeEagerLoad(tab.id)
-        consumeNewTabUrlFocus(tab.id)
-        if (consumeNewTabEditor(tab.id) && tab.id === activeTabId) editorForNewTab = true
+        if (consumeNewTabUrlFocus(tab.id) && tab.id === activeTabId) focusUrlBarForNewTab = true
         continue
       }
       if (!createdTabsRef.current.has(tab.id)) {
@@ -353,14 +359,11 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
         // can (a) tell main to keep OS keyboard focus on the renderer
         // instead of handing it to the page, and (b) focus the URL bar
         // ourselves right after activation below.
-        // Vim's nt / nn: the address editor, its box empty, the same way.
-        const wantsEditor = isActiveNow && consumeNewTabEditor(tab.id)
-        const wantsUrlFocus = isActiveNow && !wantsEditor && consumeNewTabUrlFocus(tab.id)
-        if (wantsEditor) editorForNewTab = true
+        const wantsUrlFocus = isActiveNow && consumeNewTabUrlFocus(tab.id)
         if (wantsUrlFocus) focusUrlBarForNewTab = true
         window.electronAPI.setupSession?.(tab.partition)
-        // So does Vim's Ctrl stepping through the tabs (lib/vim-mode.ts).
-        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad, wantsEditor || wantsUrlFocus || keepsChromeKeyboard())
+        // So do Vim's Sidebar keys while held (lib/vim-mode.ts).
+        window.electronAPI.tabCreate?.(tab.id, tab.partition, tab.url, isActiveNow, eagerLoad, wantsUrlFocus || keepsChromeKeyboard())
         createdTabsRef.current.add(tab.id)
         if (isActiveNow) activatedTabsRef.current.add(tab.id)
       }
@@ -372,21 +375,26 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
       // Internal page: take the previous page off screen and keep keyboard
       // focus on the renderer, which draws the page (like a parked group).
       window.electronAPI.tabDeactivate?.()
-      if (editorForNewTab) openUrlEditor('new-tab')
+      // The bar turns into the page's filter only in the render after this
+      // one: focusAndSelectUrlBar looks the input up a tick later, so the
+      // filter, not the address box it replaces, takes the keys.
+      if (focusUrlBarForNewTab) focusAndSelectUrlBar()
     } else if (activeTabId && createdTabsRef.current.has(activeTabId)) {
       const tab = currentTabs.find((t) => t.id === activeTabId)
       const url = tab?.url || 'about:blank'
-      // While Vim's Ctrl+J/K step through the tabs, showing each, the chrome
-      // keeps the keyboard.
+      // While Vim's Sidebar keys are held (stepping through the tabs, showing
+      // each, or moving one), the chrome keeps the keyboard.
       window.electronAPI.tabActivate?.(activeTabId, url, !keepsChromeKeyboard())
       activatedTabsRef.current.add(activeTabId)
       // Focus the URL bar immediately for a brand-new "focus URL" tab,
       // rather than waiting for did-finish-load. Because we asked main to
       // keep OS focus on the renderer (focusUrlBar passed to tabCreate),
       // the page never steals focus as it settles, so this focus sticks
-      // and whatever the user types is never clobbered by the load.
-      if (editorForNewTab) openUrlEditor('new-tab')
-      else if (focusUrlBarForNewTab) focusAndSelectUrlBar()
+      // and whatever the user types is never clobbered by the load. Coming
+      // from a page this window draws (a parked group, Downloads…), the bar
+      // is still that page's filter here; the address box that replaces it
+      // is what the helper's lookup, a tick later, finds.
+      if (focusUrlBarForNewTab) focusAndSelectUrlBar()
     } else if (!activeTabId) {
       // No tab to show (parked on a group): main hides the page so the
       // group card shows through, and moves keyboard focus to the renderer
@@ -686,11 +694,28 @@ export function WebviewPanel({ splitPickerKeymap, splitPickerFocusTick, vimKeyma
 
       {parkedGroup && <GroupPage group={parkedGroup} vimKeymap={vimKeymap} vimMode={vimMode} vimPending={vimPending} hintsOn={groupHintsOn} />}
 
-      {activeInternalUrl && (internalPageOf(activeInternalUrl) === 'downloads'
-        ? <DownloadsPage />
-        : internalPageOf(activeInternalUrl) === 'bangs'
-          ? <BangsPage />
-          : <UnknownInternalPage url={activeInternalUrl} />)}
+      {activeInternalUrl && activeTabId && (() => {
+        switch (internalPageOf(activeInternalUrl)) {
+          case 'downloads': return <DownloadsPage />
+          case 'bangs': return <BangsPage />
+          case 'search':
+            return (
+              <SearchPage
+                key={activeTabId}
+                tabId={activeTabId}
+                windowWorkspaceId={windowWorkspaceId}
+                vimKeymap={vimKeymap}
+                vimMode={vimMode}
+                vimPending={vimPending}
+                hintsOn={groupHintsOn}
+              />
+            )
+          case 'keys': return parsedKeymap ? <KeysPage keymap={parsedKeymap} vimPending={vimPending} /> : null
+          case 'bookshelf':
+            return <BookshelfPage profileId={profileId} vimKeymap={vimKeymap} vimMode={vimMode} vimPending={vimPending} hintsOn={groupHintsOn} />
+          default: return <UnknownInternalPage url={activeInternalUrl} />
+        }
+      })()}
 
       {showError && activeError && errorInfo && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background text-foreground">

@@ -1,8 +1,11 @@
-// COMMAND's page keys on a page this window draws (Downloads, Bangs), so
-// they do there what they do on a web page (preload/webview-stealth.ts
-// runCommand): j/k scroll a little, <C-d>/<C-u> half a page, gg/G to the
-// ends, gi to the page's text field. The page marks what scrolls with
-// data-vim-scroll, inside its data-vim-page root.
+// COMMAND's page keys on a page this window draws (Downloads, Bangs, the
+// Keys), so they do there what they do on a web page
+// (preload/webview-stealth.ts runCommand): j/k scroll a little, <C-d>/<C-u>
+// half a page, gg/G to the ends, gi to the page's filter — the address bar
+// (lib/address-filter.ts). The page marks what scrolls with data-vim-scroll,
+// inside its data-vim-page root.
+
+import { focusAddressFilter } from './address-filter'
 
 /** A line of j/k, as a web page's (VIM_SCROLL_STEP in the preload). */
 const SCROLL_STEP = 60
@@ -14,12 +17,24 @@ export function runInternalPageCommand(command: string): boolean {
   if (!page) return false
   if (command === 'focus-input') {
     // A web page's gi picks one of its fields; these pages have one to type
-    // in (their search box, data-vim-search), so it goes straight there —
-    // INSERT. A form open over the page (the bang form) has its own first.
+    // in — their filter, the address bar — so it goes straight there:
+    // INSERT. A form open over the page (the bang form, a data-vim-page of
+    // its own inside it) has its own fields first.
     const pages = document.querySelectorAll<HTMLElement>('[data-vim-page]')
     const top = pages[pages.length - 1] ?? page
-    const field = top.querySelector<HTMLInputElement>('[data-vim-search]') ??
-      top.querySelector<HTMLInputElement>('input[type="text"], input[type="search"], input:not([type])')
+    const fieldIn = (root: HTMLElement): HTMLInputElement | null =>
+      root.querySelector<HTMLInputElement>('[data-vim-search]') ??
+      root.querySelector<HTMLInputElement>('input[type="text"], input[type="search"], input:not([type])')
+    if (top !== page) {
+      const field = fieldIn(top)
+      if (field) {
+        field.focus()
+        field.select()
+        return true
+      }
+    }
+    if (focusAddressFilter()) return true
+    const field = fieldIn(page)
     if (!field) return false
     field.focus()
     field.select()

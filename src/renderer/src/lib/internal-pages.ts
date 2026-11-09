@@ -5,10 +5,18 @@
 // and the web is a store change (retargetTab); WebviewPanel creates or drops
 // the tab's view to match.
 
-export type InternalPage = 'downloads' | 'bangs'
+export type InternalPage = 'downloads' | 'bangs' | 'search' | 'keys' | 'bookshelf'
 
 export const DOWNLOADS_URL = 'vimperium://downloads'
 export const BANGS_URL = 'vimperium://bangs'
+/** Search Everything (ot ow og op): there while you pick, gone once you
+ *  have — never in the closed tabs u brings back. */
+export const SEARCH_URL = 'vimperium://search'
+/** The keys' help (?): shown and hidden as the panel it was — never in the
+ *  closed tabs u brings back. */
+export const KEYS_URL = 'vimperium://keys'
+/** The Bookshelf (tb): likewise toggled, likewise never brought back by u. */
+export const BOOKSHELF_URL = 'vimperium://bookshelf'
 
 /** Tab favicon marker for internal pages. TabFavicon draws the named icon
  *  instead of loading an image. */
@@ -28,6 +36,19 @@ const INTERNAL_URL = /^(?:vimperium|newbro):\/\/([a-z-]*)/i
 const PAGES: Record<InternalPage, { title: string; icon: string }> = {
   downloads: { title: 'Downloads', icon: 'download' },
   bangs: { title: 'Bangs', icon: 'zap' },
+  search: { title: 'Search Everything', icon: 'search' },
+  keys: { title: 'Keys', icon: 'keyboard' },
+  bookshelf: { title: 'Bookshelf', icon: 'library' },
+}
+
+/** Pages that are there for a moment, as the popup and panels they were:
+ *  Search Everything, the keys' help, the Bookshelf. Closing one — toggled
+ *  shut, Esc, dd, its group closed — never goes to the closed tabs u brings
+ *  back (u would otherwise reopen the page you just put away instead of the
+ *  tab you closed), and one never opens inside a group of yours. */
+export function isTransientInternalUrl(url: string | null | undefined): boolean {
+  const page = internalPageOf(url)
+  return page === 'search' || page === 'keys' || page === 'bookshelf'
 }
 
 /** Any vimperium:// (or legacy newbro://) URL — known page or not, it must

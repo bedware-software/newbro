@@ -492,7 +492,8 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
   // ── Vim mode ──
   // While the Sidebar keys are live the (unmarked) cursor sits on the active row — the active
   // tab, the group we're parked on, or the header of the collapsed group
-  // hiding the active tab. Ctrl+J/K step through the rows showing each — a
+  // hiding the active tab. cursor-down-show / cursor-up-show (unbound by
+  // default; Ctrl+J/K move rows now) step through the rows showing each — a
   // tab's page, or parked on a group, its tabs — so it follows what's shown;
   // folding a group leaves it on the header.
   // Activating something else (a click, a row's label, Search) or the keys ending
@@ -505,14 +506,15 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
   const vimCursorId = vimCursorOverride !== null && visibleRowIds.includes(vimCursorOverride)
     ? vimCursorOverride
     : activeRowId
-  // Listening whenever Vim mode is on, hidden too: Ctrl+J/K still step
-  // through the rows, showing each, and Ctrl+H/L fold the active tab's
-  // group. The first Ctrl+J arrives before vimActive does.
+  // Listening whenever Vim mode is on, hidden too: Ctrl+J/K still move the
+  // row you're on, the show-stepping keys (when bound) still step through
+  // the rows, and Ctrl+H/L fold the active tab's group. The first Ctrl+J
+  // arrives before vimActive does.
   const { runMenu } = useVimSidebar(vimKeymap !== null, (cmd) => handleVimCommand(cmd))
   // COMMAND's labels on the rows while the Sidebar is shown (lib/
   // hint-labels.ts), after the group page's and the Bookshelf's: typing one
-  // shows that row — a tab's page, or a group's tabs — as Ctrl+J/K landing
-  // on it would.
+  // shows that row — a tab's page, or a group's tabs — as stepping onto it
+  // (cursor-down-show / cursor-up-show) would.
   useHintTargets('sidebar', 2, visible && hintsOn && vimMode === 'command' && workspace
     ? visibleRowIds.map((id) => ({
       id: hintId(id, groupRowIds.has(id)),
@@ -892,7 +894,8 @@ export function Sidebar({ visible, vimActive, vimKeymap, vimMode, vimPending, hi
       }
       requestAnimationFrame(() => findVimRow(id)?.scrollIntoView({ block: 'nearest' }))
     }
-    // Ctrl+J/K: on to the next row that way, and show it — a tab's page,
+    // cursor-down-show / cursor-up-show (no keys by default): on to the
+    // next row that way, and show it — a tab's page,
     // or parked on a group, its tabs (WebviewPanel's group page). The
     // cursor follows.
     const showRow = (id: string): void => {

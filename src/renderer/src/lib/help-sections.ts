@@ -1,4 +1,4 @@
-// The keys' help (components/HelpPanel.tsx), in the sections the default
+// The keys' help (components/KeysPage.tsx, vimperium://keys), in the sections the default
 // keymap is written in (shared/vim-default-keymap.ts: its `" ── title ──`
 // lines), each under a heading people read: Page, Sidebar, Open (o)…
 
@@ -26,7 +26,7 @@ const TITLES: Array<[RegExp, string, HelpContext]> = [
   [/^COMMAND: o, open/, 'Open (o)', 'command'],
   [/^COMMAND: t, toggle/, 'Toggle (t)', 'command'],
   [/^COMMAND: app commands/, 'Browser', 'command'],
-  [/^Search Everything/, 'Search Everything & Command Palette', 'search'],
+  [/^The Command Palette/, 'Command Palette & pickers', 'search'],
   [/^Address editor/, 'Address editor', 'url'],
   [/^Find in page/, 'Find in page', 'find'],
 ]

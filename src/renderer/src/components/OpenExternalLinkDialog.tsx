@@ -100,7 +100,7 @@ export function OpenExternalLinkDialog({ open, url, currentWorkspaceId, onClose 
 
     // A link handed off from another app must ALWAYS land focused — that's
     // the whole point of routing it here. The destination can be a workspace
-    // other than the one this window is showing, so we mirror SearchDialog's
+    // other than the one this window is showing, so we mirror Search Everything's
     // cross-window handoff: create the tab, then ask the destination
     // workspace's window to surface + activate it.
     const sameWindow = workspaceId === currentWorkspaceId

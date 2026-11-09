@@ -32,8 +32,8 @@ const VIM_COMMAND_LABELS: Record<string, string> = {
   help: 'Show or hide the keys help',
   'cursor-down-show': 'Next row (tab or group), showing it',
   'cursor-up-show': 'Previous row (tab or group), showing it',
-  'row-move-down': 'Move the tab down',
-  'row-move-up': 'Move the tab up',
+  'row-move-down': 'Move the tab (or group) down',
+  'row-move-up': 'Move the tab (or group) up',
   'row-fold': 'Fold the group, onto its header',
   'row-unfold': 'Unfold the group, or step into it',
   'row-menu': 'Tab menu',
@@ -354,7 +354,9 @@ const SETTINGS_FROM_MAIN: Record<string, string> = {
   filter: 'find-in-page',
   'row-remove': 'close-tab',
   'row-copy': 'copy-url',
-  'row-edit': 'edit-url',
+  // Editing a row in place is the address bar's e (focus-url), not the
+  // address editor's E.
+  'row-edit': 'focus-url',
   close: 'settings',
   help: 'help',
 }

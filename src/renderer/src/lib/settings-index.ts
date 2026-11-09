@@ -53,9 +53,7 @@ const STATIC: SettingsIndexEntry[] = [
   // General
   { section: 'general', item: 'general:default-url', title: 'Default New Tab URL', keywords: 'new tab page home start blank' },
   { section: 'general', item: 'general:new-tab-focus', title: 'Focus on New Tab', keywords: 'site url bar address keyboard' },
-  { section: 'general', item: 'general:url-editor-click', title: 'Address editor: click on the address', keywords: 'url bar edit insert command mode' },
-  { section: 'general', item: 'general:url-editor-new-tab', title: 'Address editor: new tab', keywords: 'url bar edit insert command mode nt nn' },
-  { section: 'general', item: 'general:url-editor-edit', title: 'Address editor: edit the address (e)', keywords: 'url bar edit insert command mode e' },
+  { section: 'general', item: 'general:url-editor-edit', title: 'Address editor (E): the mode it opens in', keywords: 'url bar edit insert command mode E' },
   { section: 'general', item: 'general:search-engine', title: 'Default Search Engine', keywords: 'google yandex duckduckgo bing unduck' },
   { section: 'general', item: 'general:custom-engine', title: 'Custom search engine', keywords: 'url template %s', fallback: 'general:search-engine' },
   { section: 'general', item: 'general:suggestions', title: 'Show search suggestions', keywords: 'address bar autocomplete' },

@@ -33,8 +33,9 @@ export const DEFAULT_VIM_KEYMAP = `" Vim mode keys.
 "   o  open      ot ow og op search tabs, workspaces, groups, profiles;
 "                od Downloads, ob Bangs, om the menu, and the rest below
 "   t  toggle    ts the Sidebar, tb the Bookshelf
-" u undoes: it brings back what dd or dg closed. Ctrl+h/j/k/l drive the
-" Sidebar, and Tab shows or hides it.
+" u undoes: it brings back what dd or dg closed. Ctrl+j/k move the tab (or
+" the group) up and down the Sidebar, Ctrl+h/l fold and unfold, and Tab
+" shows or hides it. A tab is picked by its label, not stepped to.
 
 " ── COMMAND: the page ─────────────────────────────────────────────────
 " focus-input outlines the page's text fields: h/j/k/l (or Tab) pick one,
@@ -56,19 +57,21 @@ zoom-out            -
 zoom-reset          =
 
 " ── COMMAND: the Sidebar ──────────────────────────────────────────────
-" Ctrl+j/k step through its rows, showing each — a tab's page, or a
-" group's tabs — with the keyboard kept in the browser until Ctrl is let
-" go, when the page shown gets it. Ctrl+h folds the group the cursor is in
-" and goes to its header; Ctrl+l unfolds a folded group, or steps into an
-" unfolded one. They work with the Sidebar hidden too. Tab (or ts) shows
-" or hides it; in a text field Tab moves on through the form as ever.
-" While it's shown, each row wears a label of one to three letters (the
-" more rows, the longer) — typing one shows that row — and m opens the
-" menu of the row the cursor is on.
-cursor-down-show    <C-j>
-cursor-up-show      <C-k>
-row-move-down       <C-S-j>
-row-move-up         <C-S-k>
+" Each row wears a label of one to three letters (the more rows, the
+" longer): typing one shows that row — a tab's page, or a group's tabs.
+" Ctrl+j/k carry the tab (or the group) you're on a row down or up: a tab
+" steps into an unfolded group it runs into and out of its own at either
+" end. Ctrl+h folds the group the cursor is in and goes to its header;
+" Ctrl+l unfolds a folded group, or steps into an unfolded one. The
+" keyboard stays in the browser until Ctrl is let go. They work with the
+" Sidebar hidden too. Tab (or ts) shows or hides it; in a text field Tab
+" moves on through the form as ever. m opens the menu of the row the
+" cursor is on. cursor-down-show / cursor-up-show, when bound, step
+" through the rows, showing each.
+cursor-down-show
+cursor-up-show
+row-move-down       <C-j>
+row-move-up         <C-k>
 row-fold            <C-h>
 row-unfold          <C-l>
 row-menu            m
@@ -125,13 +128,15 @@ toggle-bookshelf    tb
 " ── COMMAND: app commands (the regular shortcuts' ids) ────────────────
 " ; labels every button of the browser's own, as f does a page's in
 " vimium; typing a label presses it. search opens Search Everything on the
-" kind of thing it showed last (ot ow og op on one kind).
+" kind of thing it showed last (ot ow og op on one kind). e types in the
+" address bar, the address in place; E is the address editor, the address
+" block by block.
 chrome-hints        ;
 close-window
 next-tab
 prev-tab
-focus-url
-edit-url            e
+focus-url           e
+edit-url            E
 search
 command-palette     <C-p>
 copy-url            y
@@ -184,23 +189,18 @@ maximize-window
 restore-window
 quit
 
-" ── Search Everything and the Command Palette ─────────────────────────
-" Search Everything and the Command Palette open in INSERT; Ctrl+C goes to
-" COMMAND, and insert-mode (i) drops back into the box. Esc closes the
-" window, from either. The scroll keys above (j/k, gg/G) move through
-" the results, Enter runs one. Search Everything shows one kind of thing,
-" the one ot / ow / og / op opened it on; in COMMAND p w g t switch to
-" profiles, workspaces, groups, tabs.
-" In COMMAND every result wears a label of one to three letters (the more
-" results, the longer), drawn from its name where these keys leave the
-" letters free, and typing it picks the result (vimium's hints); typing in
-" the box, digits type. So does the group page. search-row-N picks result
-" N, when bound.
-search-profiles     p
-search-workspaces   w
-search-groups       g
-search-tabs         t
-search-scope        <Tab>
+" ── The Command Palette and the pickers ───────────────────────────────
+" The Command Palette and the pickers (split, move to…) open in INSERT;
+" Ctrl+C goes to COMMAND, and insert-mode (i) drops back into the box. Esc
+" closes the window, from either. The scroll keys above (j/k, gg/G) move
+" through the results, Enter runs one. In COMMAND every result wears a
+" label of one to three letters (the more results, the longer), drawn from
+" its name where these keys leave the letters free, and typing it picks the
+" result (vimium's hints); typing in the box, digits type. search-row-N
+" picks result N, when bound.
+" Search Everything is a page now (ot ow og op): the address bar is its
+" box, Tab there switches what it shows, and its rows wear the window's
+" labels, as the group page's do.
 search-row-1
 search-row-2
 search-row-3
@@ -306,7 +306,9 @@ export function contextOf(command: string): VimContext {
 // dropped Search Everything's All filter (search-all, a) and moved its
 // filters onto Ctrl+1–4 (were p w g t); and it put adding the page to the
 // Bookshelf on nb (n new, as nt and ng). v18 put the filters back on p w g
-// t, the letters they're named by. A saved
+// t, the letters they're named by. v19 put the address bar back on e, the
+// address editor on E, and Ctrl+j/k on moving the row (were stepping
+// through the rows, which labels do now; moving was Ctrl+Shift+j/k). A saved
 // keymap keeps every binding its owner changed — unless it now clashes with
 // another binding, then it takes the new default — and the new defaults for
 // the rest, including commands it couldn't know about. A key a version
@@ -355,7 +357,12 @@ const RENAMED_IN_V3: Record<string, string | null> = {
 
 /** Commands a later keymap dropped: a saved line naming one is ignored.
  *  search-all (v17): Search Everything shows one kind of thing. */
-const RETIRED_COMMANDS = new Set(['search-all'])
+const RETIRED_COMMANDS = new Set([
+  'search-all',
+  // v19: Search Everything is a page, its filters switched by ot ow og op
+  // and Tab in the address bar.
+  'search-profiles', 'search-workspaces', 'search-groups', 'search-tabs', 'search-scope',
+])
 
 /** The current name of a command written under an older keymap (web-*,
  *  browse-*), or null for one that's gone. Any other name comes back as is. */
@@ -484,6 +491,18 @@ const V14_DEFAULT_KEYS: Record<string, string> = {
   ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`tab-${n}`, `<C-${n}>`])),
 }
 
+/** v18 defaults of the commands v19 rebound: the address in place back on
+ *  e, the address editor on E, and Ctrl+j/k moving the row (stepping
+ *  through them goes: labels pick a row). */
+const V18_DEFAULT_KEYS: Record<string, string> = {
+  'focus-url': '',
+  'edit-url': 'e',
+  'cursor-down-show': '<C-j>',
+  'cursor-up-show': '<C-k>',
+  'row-move-down': '<C-S-j>',
+  'row-move-up': '<C-S-k>',
+}
+
 /** v17 defaults of the commands v18 rebound: Search Everything's filters,
  *  back on p w g t. */
 const V17_DEFAULT_KEYS: Record<string, string> = {
@@ -601,7 +620,7 @@ function sameKeys(a: string, b: string): boolean {
 }
 
 /**
- * Carries a keymap saved under older defaults (v1 to v17) over to the
+ * Carries a keymap saved under older defaults (v1 to v18) over to the
  * current ones: the default text, with each binding the owner changed (or
  * removed) as they had it. Null when that comes out as the plain default —
  * nothing to keep. `log` hears each key the migration had to decide on for
@@ -610,7 +629,7 @@ function sameKeys(a: string, b: string): boolean {
  */
 export function migrateVimKeymap(
   saved: string,
-  fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17,
+  fromVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18,
   log: (message: string) => void = () => {},
 ): string | null {
   // What the owner had, by the old name.
@@ -639,6 +658,7 @@ export function migrateVimKeymap(
     (fromVersion <= 15 ? V15_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 16 ? V16_DEFAULT_KEYS[command] : undefined) ??
     (fromVersion <= 17 ? V17_DEFAULT_KEYS[command] : undefined) ??
+    (fromVersion <= 18 ? V18_DEFAULT_KEYS[command] : undefined) ??
     fallback
   // Whether the saved keymap's version had the command: one it lacks isn't
   // missing because its owner unbound it.
@@ -654,7 +674,7 @@ export function migrateVimKeymap(
     ...Object.keys(RENAMED_IN_V3).filter((old) => RENAMED_IN_V3[old] === command),
   ].filter(existed)
 
-  // Commands v13 to v18 moved off their old keys.
+  // Commands v13 to v19 moved off their old keys.
   const movedInV13 = (command: string): boolean =>
     (fromVersion <= 12 && command in V12_DEFAULT_KEYS) || (fromVersion <= 13 && command in V13_DEFAULT_KEYS) ||
     // Only where the saved keymap had it: v13 added delete-workspace, so an
@@ -662,7 +682,8 @@ export function migrateVimKeymap(
     (fromVersion <= 14 && command in V14_DEFAULT_KEYS && existed(command)) ||
     (fromVersion <= 15 && command in V15_DEFAULT_KEYS) ||
     (fromVersion <= 16 && command in V16_DEFAULT_KEYS) ||
-    (fromVersion <= 17 && command in V17_DEFAULT_KEYS)
+    (fromVersion <= 17 && command in V17_DEFAULT_KEYS) ||
+    (fromVersion <= 18 && command in V18_DEFAULT_KEYS)
 
   const lines = DEFAULT_VIM_KEYMAP.split('\n')
   // command → [line index, keys] for every binding line, as it stands.
@@ -746,6 +767,7 @@ export function migrateVimKeymap(
     ...(fromVersion <= 14 ? Object.keys(V14_DEFAULT_KEYS) : []),
     ...(fromVersion <= 16 ? Object.keys(V16_DEFAULT_KEYS) : []),
     ...(fromVersion <= 17 ? Object.keys(V17_DEFAULT_KEYS) : []),
+    ...(fromVersion <= 18 ? Object.keys(V18_DEFAULT_KEYS) : []),
   ])
   // Commands that lost every key that way, with what took them ("dd (your
   // d, half-page-down)").

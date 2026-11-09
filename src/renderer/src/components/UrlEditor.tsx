@@ -65,9 +65,70 @@ const FLASH_MS = 1600
 // to the usual size, past which the box scrolls.
 const FONT_PX = 28
 const MIN_FONT_PX = 14
-// The empty box's placeholder until the version is known: "Vimperium 1.2.3".
+// The empty box's placeholder: the name and version ("Vimperium 1.2.3"),
+// then, while it stays empty, a word now and then of what the browser is up
+// to, each one scrambling into the next.
 const PLACEHOLDER = 'Vimperium'
 let appVersion: string | null = null
+const IDLE_WORDS = [
+  'Hjkl-ing', 'Tab-wrangling', 'Bang-banging', 'Label-leaping', 'Yanking',
+  'Splitting panes', 'Escaping modes', 'Grepping the web', 'Bookshelving',
+  'Unfolding groups', 'Keymapping', 'Reticulating tabs', 'Ctrl-jigging',
+  'Omniboxing', 'Discombobulating', 'Recombobulating', 'Vimming', 'Spelunking',
+  'Gg-ing to the top', 'Dark-paging', 'Hint-hunting', 'Tabulating',
+]
+/** How long each word stays, and the scramble's frames into the next. */
+const WORD_MS = 2600
+const SCRAMBLE_FRAME_MS = 35
+const SCRAMBLE_FRAMES = 12
+const SCRAMBLE_GLYPHS = 'abcdefghijklmnopqrstuvwxyz!?/<>[]{}=+*#'
+
+/** The placeholder, cycling while `running`: the name first, then the
+ *  words, each scrambling in letter by letter from the left. */
+function useIdlePlaceholder(name: string, running: boolean): string {
+  const [text, setText] = useState(name)
+  useEffect(() => {
+    setText(name)
+    if (!running) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    let current = name
+    let order = [...IDLE_WORDS].sort(() => Math.random() - 0.5)
+    let next = 0
+    const scramble = (to: string, frame: number): void => {
+      if (cancelled) return
+      if (frame > SCRAMBLE_FRAMES) {
+        current = to
+        setText(to)
+        timer = setTimeout(step, WORD_MS)
+        return
+      }
+      const settled = Math.floor((to.length * frame) / SCRAMBLE_FRAMES)
+      const len = Math.round(current.length + ((to.length - current.length) * frame) / SCRAMBLE_FRAMES)
+      let out = to.slice(0, settled)
+      for (let i = settled; i < len; i++) {
+        out += to[i] === ' ' ? ' ' : SCRAMBLE_GLYPHS[Math.floor(Math.random() * SCRAMBLE_GLYPHS.length)]
+      }
+      setText(out)
+      timer = setTimeout(() => scramble(to, frame + 1), SCRAMBLE_FRAME_MS)
+    }
+    const step = (): void => {
+      if (next >= order.length) {
+        order = [...IDLE_WORDS].sort(() => Math.random() - 0.5)
+        next = 0
+      }
+      // Every few words, the name again.
+      const to = next > 0 && next % 5 === 0 && current !== name ? name : `${order[next++]}…`
+      scramble(to, 1)
+    }
+    timer = setTimeout(step, WORD_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [name, running])
+  return text
+}
 
 
 /** First line, trimmed — what a paste means in a one-line box. */
@@ -103,16 +164,17 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
   const [intent, setIntentState] = useState<Intent | null>(null)
   const intentRef = useRef<Intent | null>(null)
   const [flash, setFlash] = useState<string | null>(null)
-  const [placeholder, setPlaceholder] = useState(appVersion ? `${PLACEHOLDER} ${appVersion}` : PLACEHOLDER)
+  const [appName, setAppName] = useState(appVersion ? `${PLACEHOLDER} ${appVersion}` : PLACEHOLDER)
   useEffect(() => {
     if (appVersion) return
     window.electronAPI.getAppVersion?.()
       .then((v) => {
         appVersion = v
-        setPlaceholder(`${PLACEHOLDER} ${v}`)
+        setAppName(`${PLACEHOLDER} ${v}`)
       })
       .catch(() => { /* the name alone */ })
   }, [])
+  const placeholder = useIdlePlaceholder(appName, open && value === '')
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Changes made in COMMAND mode, for U.
   const historyRef = useRef<string[]>([])
@@ -631,7 +693,7 @@ export function UrlEditor({ anchorRef, vimKeymap }: Props) {
                 autoComplete="off"
                 placeholder={placeholder}
                 style={{ fontSize: fontPx, paddingLeft: indent }}
-                className="flex-1 min-w-0 h-full bg-transparent border-none outline-none font-mono leading-none text-foreground placeholder:text-muted-foreground"
+                className="url-editor-text flex-1 min-w-0 h-full bg-transparent border-none outline-none leading-none text-foreground placeholder:text-muted-foreground"
               />
             </InputField>
           </div>

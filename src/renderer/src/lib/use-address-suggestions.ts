@@ -164,6 +164,8 @@ export function useAddressSuggestions({ inputRef, tabId, tabUrl, blankTab, enabl
 
   const closePopup = useCallback(() => {
     setPopupOpen(false)
+    // Its rows go with it: a click can only be on a list that shows.
+    shownMatchesRef.current = []
     window.electronAPI.omniboxHide?.()
   }, [])
 
@@ -509,6 +511,9 @@ export function useAddressSuggestions({ inputRef, tabId, tabUrl, blankTab, enabl
   removeRef.current = removeMatch
   useEffect(() => {
     const cleanup = window.electronAPI.onOmniboxEvent?.((raw) => {
+      // Every list in the window (the address bar's, the address editor's)
+      // hears every click: one is this hook's only while its own list is up.
+      if (!popupOpenRef.current) return
       const evt = raw as OmniboxPopupEvent
       const m = shownMatchesRef.current[evt.index]
       if (!m) return
@@ -527,6 +532,7 @@ export function useAddressSuggestions({ inputRef, tabId, tabUrl, blankTab, enabl
   useEffect(() => {
     const anchor = popupOpen && matches.length > 0 ? getAnchorRef.current() : null
     if (!anchor) {
+      shownMatchesRef.current = []
       window.electronAPI.omniboxHide?.()
       return
     }

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, markNewTabForEditor, getVisibleTabOrder, getTabCycleOrder, type NewTabFocus } from './store/app-store'
+import { useAppStore, withoutSave, setDefaultNewTabUrl, setNewTabFocusPref, markNewTabForUrlFocus, getVisibleTabOrder, getTabCycleOrder, type NewTabFocus } from './store/app-store'
 import { normalizeURL, setSearchEngine } from './lib/url'
 import { setBangs, setBangsEnabled } from './lib/bangs'
 import type { Bang } from '../../shared/bangs'
@@ -19,12 +19,13 @@ import { FindPopup } from './components/FindPopup'
 import { UrlEditor } from './components/UrlEditor'
 import { DEFAULT_URL_EDITOR_MODES, openUrlEditor, setUrlEditorModes, useUrlEditorStore, type UrlEditorMode } from './lib/url-editor'
 import { closeSplit, focusOtherPane, isSplitShown, otherPaneTab, startSplit, useSplitStore } from './lib/split-view'
-import { SearchDialog, type SearchFilter } from './components/SearchDialog'
+import { openSearchPage, togglePage, type SearchFilter } from './lib/page-nav'
+import { focusAddressFilter, useAddressFilterStore } from './lib/address-filter'
 import { SettingsDialog, type SettingsTabRequest } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
-import { Bookshelf, type Reading, type ReadingGroup } from './components/Bookshelf'
-import { HelpPanel } from './components/HelpPanel'
-import { closeHelpPanel, toggleHelpPanel, useHelpPanelStore } from './lib/help-panel'
+import type { Reading, ReadingGroup } from './components/Bookshelf'
+import { lastWebTab } from './components/BookshelfPage'
+import { toggleHelpPanel } from './lib/help-panel'
 import { SidePanel } from './components/SidePanel'
 import { startExtensionTabGroupsBridge } from './lib/extension-tab-groups'
 import { setExtensionInstallHandler, type InstallOutcome } from './lib/extension-install'
@@ -37,7 +38,7 @@ import { CloudSyncSetupDialog } from './components/CloudSyncSetupDialog'
 import { HttpAuthDialog } from './components/HttpAuthDialog'
 import { DOWNLOADS_FIND_EVENT, DOWNLOADS_RELOAD_EVENT } from './components/DownloadsPage'
 import { BANGS_FIND_EVENT, BANGS_RELOAD_EVENT } from './components/BangsPage'
-import { BANGS_URL, DOWNLOADS_URL, internalPageOf, isInternalUrl } from './lib/internal-pages'
+import { BANGS_URL, BOOKSHELF_URL, DOWNLOADS_URL, internalPageOf, isInternalUrl } from './lib/internal-pages'
 import { runInternalPageCommand } from './lib/internal-page-commands'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import { applyVimIndicator, normalizeVimIndicator, type VimIndicator } from './lib/vim-indicator'
@@ -598,10 +599,6 @@ const VIM_PICK_FILTERS: Record<string, SearchFilter> = {
 
 export default function App() {
   const [ready, setReady] = useState(false)
-  const [searchOpen, setSearchOpen] = useState(false)
-  // The filter Vim's pick-* keys open Search Everything on; null for the
-  // one it remembers.
-  const [searchOpenFilter, setSearchOpenFilter] = useState<SearchFilter | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTabRequest, setSettingsTabRequest] = useState<SettingsTabRequest | null>(null)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
@@ -612,8 +609,6 @@ export default function App() {
   // tabs. Shown one at a time; each is answered or cancelled back to main.
   const [httpAuthQueue, setHttpAuthQueue] = useState<HttpAuthRequest[]>([])
   // Right-hand Bookshelf sidebar visibility, persisted per machine.
-  const [bookshelfOpen, setBookshelfOpen] = useState<boolean>(() => localStorage.getItem('vimperium-bookshelf-open') === '1')
-  useEffect(() => { localStorage.setItem('vimperium-bookshelf-open', bookshelfOpen ? '1' : '0') }, [bookshelfOpen])
 
   // Offer to set up Cloud Sync on launch — and every launch until the user
   // enables it or picks "Don't show again". main's claim guarantees only one
@@ -688,30 +683,6 @@ export default function App() {
     })
   }, [])
 
-  // The keys' help (?): a panel on the right, beside the page. Closing it
-  // hands the keys back to the page, as a popup closing does — unless a
-  // field elsewhere has them.
-  const helpOpen = useHelpPanelStore((s) => s.open)
-  const helpWasOpenRef = useRef(helpOpen)
-  useEffect(() => {
-    const was = helpWasOpenRef.current
-    helpWasOpenRef.current = helpOpen
-    if (!was || helpOpen) return
-    const focused = document.activeElement as HTMLElement | null
-    const typing = !!focused && focused !== document.body &&
-      (focused.isContentEditable || focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')
-    // The Bookshelf opening in its place takes the keys itself.
-    if (!typing && !bookshelfOpen) vimRef.current?.enterCommand(false)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [helpOpen])
-  // One panel on the right: the keys' help and the Bookshelf take turns —
-  // the one opening puts the other away.
-  useEffect(() => {
-    if (helpOpen) setBookshelfOpen(false)
-  }, [helpOpen])
-  useEffect(() => {
-    if (bookshelfOpen) closeHelpPanel()
-  }, [bookshelfOpen])
   // The Vim mode API for the shortcut handler, which is registered once.
   const vimRef = useRef<ReturnType<typeof useVimMode> | null>(null)
 
@@ -999,9 +970,9 @@ export default function App() {
       }
       switch (action) {
         case 'new-tab': {
-          // It comes up with the address editor on it (WebviewPanel).
+          // It comes up typing in the address bar (WebviewPanel).
           const id = s.activeWorkspaceId ? s.addTabNearActive(s.activeWorkspaceId) : null
-          if (id) markNewTabForEditor(id)
+          if (id) markNewTabForUrlFocus(id)
           break
         }
         case 'new-group':
@@ -1028,7 +999,10 @@ export default function App() {
           s.reopenClosedTab(windowWorkspaceId ?? undefined)
           break
         case 'add-to-bookshelf': {
-          const tab = s.getActiveTab()
+          // On a page of the browser's own (the Bookshelf itself, say), the
+          // web page you were on last.
+          const active = s.getActiveTab()
+          const tab = active && isInternalUrl(active.url) ? lastWebTab(s) : active
           const pid = windowProfileId ?? s.activeProfileId
           log.action('add-to-bookshelf', {
             hasTab: !!tab,
@@ -1037,12 +1011,11 @@ export default function App() {
           })
           if (tab && pid && window.electronAPI.bookshelfAdd && !isInternalUrl(tab.url)) {
             window.electronAPI.bookshelfAdd(pid, { url: tab.url, title: tab.title, favicon: tab.favicon })
-            setBookshelfOpen(true)
           }
           break
         }
         case 'toggle-bookshelf':
-          setBookshelfOpen((v) => !v)
+          togglePage(BOOKSHELF_URL)
           break
         case 'dark-pages':
           darkPagesActions.toggle()
@@ -1077,8 +1050,7 @@ export default function App() {
           break
         }
         case 'search':
-          setSearchOpenFilter(null)
-          setSearchOpen((v) => !v)
+          openSearchPage(null)
           break
         case 'settings':
           setSettingsOpen((v) => !v)
@@ -1096,7 +1068,12 @@ export default function App() {
           setCommandPaletteOpen((v) => !v)
           break
         case 'find-in-page':
-          // The Downloads page has its own search box — find goes there.
+          // A page this window draws filters its rows in the address bar.
+          if (useAddressFilterStore.getState().owner) {
+            focusAddressFilter()
+            break
+          }
+          // Its own search events, should a page not have taken the bar.
           if (internalPageOf(s.getActiveTab()?.url) === 'downloads') {
             window.dispatchEvent(new Event(DOWNLOADS_FIND_EVENT))
             break
@@ -1568,9 +1545,17 @@ export default function App() {
       // Already parked on the body — nothing to blur; main's tab view
       // already owns keystrokes.
       if (!active || active === document.body) return
+      const leavingUrlBar = active.id === 'url-bar'
       active.blur?.()
-      // In Vim mode leaving a field is COMMAND mode, which keeps the keyboard.
-      if (vimRef.current?.mode) return
+      // In Vim mode leaving a field is COMMAND mode, which keeps the keyboard
+      // — but the address bar's last Esc gives the page the keys, as closing
+      // the address editor does. A tick later: returnToPage acts only in
+      // COMMAND, which the blur's focusout sets in a timer of its own,
+      // queued first.
+      if (vimRef.current?.mode) {
+        if (leavingUrlBar) setTimeout(() => vimRef.current?.returnToPage(), 0)
+        return
+      }
       // Hand OS keyboard focus to the active tab's page so keystrokes go to
       // the site. tabActivate only focuses on a *new* activation (it no-ops
       // for the already-active tab, which is exactly this case), so use the
@@ -1604,7 +1589,6 @@ export default function App() {
     await window.electronAPI.saveSettings(normalized)
   }
 
-  const bookshelfVisible = bookshelfOpen && !pageFullscreen
 
   // Find closing gives the keyboard back to the page — in Vim mode COMMAND
   // takes it there itself, once the popup's gone (below).
@@ -1675,8 +1659,7 @@ export default function App() {
   const runAppCommand = (command: string): void => {
     const pickFilter = VIM_PICK_FILTERS[command]
     if (pickFilter) {
-      setSearchOpenFilter(pickFilter)
-      setSearchOpen(true)
+      openSearchPage(pickFilter)
       return
     }
     switch (command) {
@@ -1749,7 +1732,7 @@ export default function App() {
     useAppStore.getState().setActiveTab(evt.tabId)
   }), [])
   const urlEditorOpen = useUrlEditorStore((st) => st.open)
-  const popupOpen = searchOpen || commandPaletteOpen || settingsOpen || findBarOpen || splitPicking || urlEditorOpen
+  const popupOpen = commandPaletteOpen || settingsOpen || findBarOpen || splitPicking || urlEditorOpen
   // The address editor closing gives the keyboard back to the page; in Vim
   // mode COMMAND does that for every popup (below).
   const urlEditorWasOpenRef = useRef(urlEditorOpen)
@@ -1770,7 +1753,7 @@ export default function App() {
 
   return (
     <>
-      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} hintsOn={!popupOpen} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => { setSearchOpenFilter(null); setSearchOpen(true) }} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} onOpenDarkPagesSettings={() => { setSettingsTabRequest({ tab: 'darkPages', v: Date.now() }); setSettingsOpen(true) }} />
+      <Toolbar windowWorkspaceId={windowWorkspaceId} sidebarVisible={sidebarShown} pageFullscreen={pageFullscreen} vimMode={vim.mode} vimPending={vim.pending} hintsOn={!popupOpen} onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} onOpenAbout={() => { setSettingsTabRequest({ tab: 'about', v: Date.now() }); setSettingsOpen(true) }} onOpenSearch={() => openSearchPage(null)} onManageExtensions={() => { setSettingsTabRequest({ tab: 'extensions', v: Date.now() }); setSettingsOpen(true) }} onOpenDarkPagesSettings={() => { setSettingsTabRequest({ tab: 'darkPages', v: Date.now() }); setSettingsOpen(true) }} />
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <Sidebar
           visible={sidebarShown}
@@ -1796,37 +1779,15 @@ export default function App() {
             vimMode={vim.mode}
             vimPending={vim.pending}
             groupHintsOn={!popupOpen}
+            parsedKeymap={vimReady ? vimKeymap : null}
+            profileId={windowProfileId ?? activeProfileId}
+            windowWorkspaceId={windowWorkspaceId}
           />
         </div>
         {/* Extension chrome.sidePanel column; hidden in cinema mode like the
             Bookshelf, the panel stays open behind it. */}
         <SidePanel suppressed={pageFullscreen} />
-        <HelpPanel
-          open={helpOpen}
-          suppressed={pageFullscreen}
-          keymap={vimKeymap}
-          vimPending={vim.pending}
-          onClose={closeHelpPanel}
-          onReleaseKeys={() => vimRef.current?.enterCommand(false)}
-        />
-        {/* Hide the bookshelf while a page is in fullscreen (cinema mode) so
-            the tab view can fill the full width — it reappears with its prior
-            open state when fullscreen exits. */}
-        <Bookshelf
-          open={bookshelfVisible}
-          profileId={windowProfileId ?? activeProfileId}
-          pageFullscreen={pageFullscreen}
-          vimPending={vim.pending}
-          onClose={() => setBookshelfOpen(false)}
-        />
       </div>
-      <SearchDialog
-        open={searchOpen}
-        onOpenChange={setSearchOpen}
-        windowWorkspaceId={windowWorkspaceId}
-        vimKeymap={vimReady ? vimKeymap.search : null}
-        openFilter={searchOpenFilter}
-      />
       <ExtensionInstallDialog
         preview={installPrompt?.preview ?? null}
         installing={installPrompt?.installing ?? false}

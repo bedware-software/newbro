@@ -3,7 +3,8 @@
 // page (lib/internal-pages.ts): WebviewPanel draws it over the page area.
 //
 // The list itself lives in main (src/main/downloads.ts); we mirror its
-// broadcasts and sort / filter locally. Every action is on the keyboard — see
+// broadcasts and sort / filter locally — the filter is the address bar
+// (lib/address-filter.ts), the page's name in a chip before it. Every action is on the keyboard — see
 // KEY_HELP (shown with `?`); the hint bar at the bottom advertises the common keys.
 // In Vim mode the page is COMMAND's and the window's keymap runs on it
 // (lib/internal-page-keys.ts): j/k move, dd removes, u puts it back, and
@@ -12,7 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Download as DownloadIcon, File, FileArchive, FileAudio, FileCode, FileImage, FileText, FileVideo,
-  Folder, FolderOpen, Link2, Pause, Play, RotateCw, Search, Trash2, X, Keyboard,
+  Folder, FolderOpen, Link2, Pause, Play, RotateCw, Trash2, X, Keyboard,
   ArrowDownWideNarrow, ArrowUpNarrowWide, type LucideIcon,
 } from 'lucide-react'
 import type { DownloadEntry } from '../App'
@@ -23,7 +24,7 @@ import {
   type ListMove, type PageKeyRunner, type PageKeyTable,
 } from '../lib/internal-page-keys'
 import { log } from '../lib/log'
-import { useHelpPanelStore } from '../lib/help-panel'
+import { focusAddressFilter, useAddressFilter, type AddressFilterKeyEvent } from '../lib/address-filter'
 import { openDropdownAsync, type DropdownAction } from './dropdown-protocol'
 import { Hint, HintBar, KeyCap } from './KeyHints'
 
@@ -41,7 +42,8 @@ const DEFAULT_DIR: Record<SortKey, SortDir> = { date: 'desc', size: 'desc', name
 const SORT_STORAGE_KEY = 'vimperium-downloads-sort'
 
 /** Events other parts of the app send the page: App routes find-in-page and
- *  reload here while the Downloads tab is active. */
+ *  reload here while the Downloads tab is active. Find goes to the address
+ *  bar, the page's filter. */
 export const DOWNLOADS_FIND_EVENT = 'vimperium-downloads-find'
 export const DOWNLOADS_RELOAD_EVENT = 'vimperium-downloads-reload'
 
@@ -242,20 +244,30 @@ export function DownloadsPage() {
   const [entries, setEntries] = useState<DownloadEntry[]>([])
   const [loaded, setLoaded] = useState(false)
   const [sort, setSort] = useState<SortState>(loadSort)
-  const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
-  const keysHelpOpen = useHelpPanelStore((st) => st.open)
   const [flash, setFlash] = useState<string | null>(null)
   const [, setIconTick] = useState(0)
   const rootRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const searchRef = useRef<HTMLInputElement>(null)
   // Downloads removed from the list (dd) that u can still put back: hidden
   // here until their time is up, then removed in main.
   const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(() => new Set())
   const removalsRef = useRef<Array<{ id: string; timer: ReturnType<typeof setTimeout> }>>([])
   const activePartition = useAppStore((s) => s.getActivePartition())
+
+  // The address bar is the filter: ↑/↓ and PageUp/PageDown typed there move
+  // the cursor, Enter runs the selected download's main action.
+  const query = useAddressFilter('downloads', {
+    label: 'Downloads',
+    placeholder: 'Search downloads',
+    onKey: (e) => filterKey(e),
+    onEnter: () => {
+      if (!selected) return false
+      primary(selected)
+      return true
+    },
+  })
 
   useEffect(() => { saveSort(sort) }, [sort])
 
@@ -384,12 +396,7 @@ export function DownloadsPage() {
     rootRef.current?.focus({ preventScroll: true })
   }, [])
 
-  const focusSearch = useCallback(() => {
-    const input = searchRef.current
-    if (!input) return
-    input.focus()
-    input.select()
-  }, [])
+  const focusSearch = useCallback(() => { focusAddressFilter() }, [])
 
   useEffect(() => {
     window.addEventListener(DOWNLOADS_FIND_EVENT, focusSearch)
@@ -654,17 +661,16 @@ export function DownloadsPage() {
     return key ? [key] : []
   }
 
-  const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'ArrowDown' || e.key === 'Enter') {
-      e.preventDefault()
-      if (visible[0]) setSelectedId(visible[0].id)
-      focusList()
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      e.stopPropagation()
-      if (query) setQuery('')
-      else focusList()
+  /** A key typed in the address bar, the page's filter. */
+  const filterKey = (e: AddressFilterKeyEvent): boolean => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return false
+    switch (e.key) {
+      case 'ArrowDown': moveBy(1); return true
+      case 'ArrowUp': moveBy(-1); return true
+      case 'PageDown': moveBy(pageSize()); return true
+      case 'PageUp': moveBy(-pageSize()); return true
     }
+    return false
   }
 
   const activeCount = shown.filter(isLive).length
@@ -717,36 +723,12 @@ export function DownloadsPage() {
           </div>
         </div>
         <div className="mx-auto flex max-w-4xl items-center gap-3 px-6 pb-4">
-          <div className="relative flex-1">
-            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <input
-              ref={searchRef}
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={onSearchKeyDown}
-              data-vim-search=""
-              placeholder="Search downloads"
-              spellCheck={false}
-              className="h-9 w-full field rounded-xl pl-9 pr-9 text-sm text-foreground outline-none placeholder:text-muted-foreground"
-            />
-            {query ? (
-              <button
-                onClick={() => { setQuery(''); focusSearch() }}
-                className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                title="Clear search (Esc)"
-                tabIndex={-1}
-              >
-                <X size={13} />
-              </button>
-            ) : (
-              keyOf('search') && (
-                <span className="pointer-events-none absolute right-2.5 top-1/2 flex -translate-y-1/2">
-                  <KeyCap onField>{keyOf('search')}</KeyCap>
-                </span>
-              )
-            )}
-          </div>
+          {/* The filter is the address bar: what it's narrowed to, if anything. */}
+          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+            {query.trim()
+              ? <>Filtered by “<span className="text-foreground">{query.trim()}</span>” · {visible.length} of {shown.length}</>
+              : null}
+          </span>
           <div className="flex items-center gap-2">
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
               Sort by {keyOf('sort') && <KeyCap>{keyOf('sort')}</KeyCap>}
@@ -831,8 +813,8 @@ export function DownloadsPage() {
       </div>
 
       {/* Hint bar: the common keys, or a short confirmation after an action. */}
-      {/* Its keys while the keys' help (?) or its own is open; a flash always. */}
-      {(flash || keysHelpOpen || helpOpen) && (
+      {/* Its keys while its own help (?) is open; a flash always. */}
+      {(flash || helpOpen) && (
       <HintBar>
         {flash ? (
           <span className="text-foreground">{flash}</span>

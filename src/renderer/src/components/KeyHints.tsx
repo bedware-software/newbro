@@ -66,7 +66,7 @@ export function SidebarHintBar({ keymap }: { keymap: VimKeymap }) {
   const caps = (...commands: string[]): string[] => vimKeyCaps(keymap, ...commands)
   const rows: Array<[string, string[]]> = [
     ['Switch tabs', caps('cursor-down-show', 'cursor-up-show')],
-    ['Move the row', caps('row-move-down', 'row-move-up')],
+    ['Move the tab or group', caps('row-move-down', 'row-move-up')],
     ['Fold / unfold', caps('row-fold', 'row-unfold')],
     ['Row menu', caps('row-menu')],
     ['New tab', caps('new-tab')],

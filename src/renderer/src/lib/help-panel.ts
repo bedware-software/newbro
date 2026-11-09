@@ -1,15 +1,20 @@
-// Whether the keys' help (Vim's ?) is open: a panel on the window's right,
-// beside the page, as the Bookshelf is (components/HelpPanel.tsx). While
-// it's open the header's buttons show their keys too (HeaderHint.tsx).
+// Whether the keys' help (Vim's ?) is up: the Keys page (vimperium://keys,
+// components/KeysPage.tsx) the tab in front. While it is, the header's
+// buttons show their keys (HeaderHint.tsx), and the Sidebar its own.
 
-import { create } from 'zustand'
+import { useAppStore } from '../store/app-store'
+import { KEYS_URL, internalPageOf } from './internal-pages'
+import { closePage, togglePage } from './page-nav'
 
-export const useHelpPanelStore = create<{ open: boolean }>(() => ({ open: false }))
+/** `select` of whether the keys' help is up. */
+export function useHelpPanelStore<T>(select: (s: { open: boolean }) => T): T {
+  return useAppStore((s) => select({ open: internalPageOf(s.getActiveTab()?.url) === 'keys' }))
+}
 
 export function toggleHelpPanel(): void {
-  useHelpPanelStore.setState((s) => ({ open: !s.open }))
+  togglePage(KEYS_URL)
 }
 
 export function closeHelpPanel(): void {
-  useHelpPanelStore.setState({ open: false })
+  closePage('keys')
 }

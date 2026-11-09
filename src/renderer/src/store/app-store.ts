@@ -3,7 +3,7 @@ import { produce } from 'immer'
 import { v4 as uuid } from 'uuid'
 import type { Profile, Workspace, TabGroup, Tab, SearchableItem, SearchPathSegment, WorkspaceCandidate } from './types'
 import { log } from '../lib/log'
-import { canonicalInternalUrl, internalPageOf, internalTabMeta, withCanonicalInternalPages } from '../lib/internal-pages'
+import { canonicalInternalUrl, internalPageOf, internalTabMeta, isTransientInternalUrl, withCanonicalInternalPages } from '../lib/internal-pages'
 
 // Edge-style palette: medium-saturation, medium-light hues spread around the
 // HSL wheel so dark text on top stays readable across the whole set. The
@@ -56,17 +56,10 @@ export function consumeNewTabUrlFocus(tabId: string): boolean {
   return true
 }
 
-// Tabs Vim's nt / nn opened: each comes up with the address editor open on
-// it, its box empty (WebviewPanel opens it once the tab is in front).
-const newTabEditorPending = new Set<string>()
-export function markNewTabForEditor(tabId: string): void {
-  newTabUrlFocusPending.delete(tabId)
-  newTabEditorPending.add(tabId)
-}
-export function consumeNewTabEditor(tabId: string): boolean {
-  if (!newTabEditorPending.has(tabId)) return false
-  newTabEditorPending.delete(tabId)
-  return true
+// Tabs Vim's nt / nn opened: each comes up typing in the address bar,
+// whatever the setting (WebviewPanel focuses it once the tab is in front).
+export function markNewTabForUrlFocus(tabId: string): void {
+  newTabUrlFocusPending.add(tabId)
 }
 
 // Tabs added in background (activate=false) that should still start
@@ -260,6 +253,11 @@ const closedTabsByWorkspace = new Map<string, ClosedEntry[]>()
 const CLOSED_TAB_LIMIT = 20
 
 function pushClosedTab(workspaceId: string, entry: ClosedEntry): void {
+  // A page that's there for a moment (Search Everything, the keys' help,
+  // the Bookshelf) isn't one to bring back. A group's snapshot has them
+  // taken out already (snapshotGroup); one that held nothing else would
+  // come back empty, so it isn't remembered either.
+  if (entry.kind === 'tab' ? isTransientInternalUrl(entry.tab.url) : entry.group.tabs.length === 0) return
   let stack = closedTabsByWorkspace.get(workspaceId)
   if (!stack) { stack = []; closedTabsByWorkspace.set(workspaceId, stack) }
   stack.push(entry)
@@ -267,14 +265,15 @@ function pushClosedTab(workspaceId: string, entry: ClosedEntry): void {
 }
 
 /** Plain snapshot of a group for the closed stack — never the immer draft,
- *  which is revoked once produce returns. */
+ *  which is revoked once produce returns. Pages that are there for a moment
+ *  are left out: one moved into the group by hand doesn't come back with it. */
 function snapshotGroup(g: TabGroup, tabs: Tab[] = g.tabs): TabGroup {
   return {
     id: g.id,
     name: g.name,
     color: g.color,
     isCollapsed: g.isCollapsed,
-    tabs: tabs.map((t) => ({ ...t })),
+    tabs: tabs.filter((t) => !isTransientInternalUrl(t.url)).map((t) => ({ ...t })),
   }
 }
 
@@ -294,6 +293,11 @@ function popClosedTab(workspaceId: string): ClosedEntry | null {
 function topLevelAnchorId(w: Workspace, tabId: string | null): string | null {
   if (!tabId) return null
   if (w.tabs?.some((t) => t.id === tabId)) return tabId
+  return w.tabGroups.find((g) => g.tabs.some((t) => t.id === tabId))?.id ?? null
+}
+
+/** The group holding `tabId` in `w`, or null for an ungrouped tab. */
+function groupIdOfTab(w: Workspace, tabId: string): string | null {
   return w.tabGroups.find((g) => g.tabs.some((t) => t.id === tabId))?.id ?? null
 }
 
@@ -1167,6 +1171,9 @@ export const useAppStore = create<AppState>((set, get) => ({
               const historical = findHistoricalTabId(w, id)
               const next = w.tabs[uIdx] || w.tabs[uIdx - 1]
               s.activeTabId = historical || next?.id || w.tabGroups[0]?.tabs[0]?.id || null
+              // The group goes with the tab it lands on — never one left
+              // from a group page parked on earlier.
+              s.activeTabGroupId = s.activeTabId ? groupIdOfTab(w, s.activeTabId) : null
             }
             dropFromTabHistory(w.id, id)
             return
@@ -1193,6 +1200,9 @@ export const useAppStore = create<AppState>((set, get) => ({
               const historical = findHistoricalTabId(w, id)
               const next = g.tabs[idx] || g.tabs[idx - 1]
               s.activeTabId = historical || next?.id || null
+              // As above. Nothing to land on means this group just emptied:
+              // marking it keeps unparkFromVanishedGroup below finding one.
+              s.activeTabGroupId = s.activeTabId ? groupIdOfTab(w, s.activeTabId) : g.id
             }
             dropFromTabHistory(w.id, id)
             // Remove empty groups
@@ -1339,6 +1349,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const existing = workspaceTabs(w).find((t) => t.url === url || (page !== null && internalPageOf(t.url) === page))
     log.action('showInternalPage', { url, existing: existing?.id ?? null })
     if (existing) s.setActiveTab(existing.id)
+    // Search Everything, the keys' help and the Bookshelf open at the top
+    // level, below where you are, never inside a group of yours — they'd
+    // show in its Sidebar rows and on its page. (addUngroupedTab anchors on
+    // the active tab's group, or the group parked on.)
+    else if (isTransientInternalUrl(url)) {
+      const id = s.addUngroupedTab(s.activeWorkspaceId, url, true)
+      // Not a new tab to type an address in: the page takes the keys it
+      // wants itself (Search Everything its filter), the rest stay COMMAND.
+      newTabUrlFocusPending.delete(id)
+    }
     else s.addTabNearActive(s.activeWorkspaceId, url, true)
   },
 

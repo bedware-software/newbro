@@ -12,6 +12,7 @@ import { VIM_INDICATORS, DEFAULT_VIM_INDICATOR, normalizeVimIndicator, type VimI
 import { VimModeBadge } from './VimModeBadge'
 import { ModeEdge } from './ModeEdge'
 import { BrandMark } from './BrandMark'
+import { WorkspaceStatsCard } from './WorkspaceStats'
 import { VIM_EDGES, DEFAULT_VIM_EDGE, DEFAULT_VIM_EDGE_EVERYWHERE, normalizeVimEdge, type VimEdge } from '../lib/vim-edge'
 import { useAppStore } from '../store/app-store'
 import { DEFAULT_VIM_KEYMAP, parseVimKeymap, settingsKeymap, settingsCommandLabel, settingsCommandsInOrder, type ParsedVimKeymap, type VimKeymap } from '../lib/vim-keymap'
@@ -2624,14 +2625,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                 </p>
               </div>
 
-              {/* The address editor: the mode it opens in, each way. */}
+              {/* The address editor (E): the mode it opens in. The address
+                  bar (e, a click, a new tab) is the address in place. */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Address Editor Opens In</label>
                 <div className="flex flex-col gap-2">
                   {([
-                    ['Click on the address', 'general:url-editor-click', urlEditorClickMode, setUrlEditorClickMode],
-                    ['New tab (nt / nn)', 'general:url-editor-new-tab', urlEditorNewTabMode, setUrlEditorNewTabMode],
-                    ['Edit the address (e)', 'general:url-editor-edit', urlEditorEditMode, setUrlEditorEditMode],
+                    ['The address editor (E)', 'general:url-editor-edit', urlEditorEditMode, setUrlEditorEditMode],
                   ] as const).map(([label, item, value, onChange]) => (
                     <div key={item} className="flex items-center gap-3">
                       <span className="w-44 shrink-0 text-xs text-muted-foreground">{label}</span>
@@ -3298,12 +3298,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   Vimperium runs on two modes, shown in the address bar. COMMAND: plain keys drive the
                   page and the browser, the way Vimium does — scrolling, history, tabs, app commands;
                   keys not bound reach the page. INSERT: keys go to the page or the field you're typing in.
-                  i goes into INSERT, Esc or Ctrl+[ comes back; in a popup (Search Everything, Find,
-                  the address editor, a dialog, Settings) Ctrl+C or Ctrl+[ leaves its field and Esc
+                  i goes into INSERT, Esc or Ctrl+[ comes back; in a popup (Find, the address
+                  editor, a dialog, Settings) Ctrl+C or Ctrl+[ leaves its field and Esc
                   closes it. Clicking a text field is INSERT,
-                  anywhere else COMMAND. Ctrl+J/K step through the Sidebar's tabs and groups, Ctrl+H/L
-                  fold and unfold, Tab shows or hides it. ? lists every key. The system's own shortcuts
-                  — copy, paste, undo, quit — work as everywhere else.
+                  anywhere else COMMAND. Ctrl+J/K move the tab or group you're on a row down or
+                  up, a row's label shows it, Ctrl+H/L fold and unfold, Tab shows or hides the Sidebar.
+                  ? lists every key. The system's own shortcuts — copy, paste, undo, quit — work as
+                  everywhere else.
                 </p>
               </div>
 
@@ -3579,6 +3580,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                       </div>
                     ))}
                 </div>
+              </section>
+              {/* How much is open: here, in this profile, everywhere. */}
+              <section>
+                <h3 className="text-sm font-semibold text-foreground mb-3">What's Open</h3>
+                <WorkspaceStatsCard />
               </section>
 
               {/* Updates — same card pattern as the identity block; the

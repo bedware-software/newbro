@@ -1444,7 +1444,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
   const backHint = useHeaderHint('back', true, undefined, headerHints)
   const forwardHint = useHeaderHint('forward', canGoForward, undefined, headerHints)
   const reloadHint = useHeaderHint('reload', true, undefined, headerHints)
-  const urlHint = useHeaderHint('edit-url', !urlEditorOpen, undefined, headerHints)
+  const urlHint = useHeaderHint('focus-url', !urlEditorOpen, undefined, headerHints)
   const securityHint = useHeaderHint('site-info', security !== 'internal', HEADER_HINT_BOTTOM_RIGHT, headerHints)
 
   return (
@@ -1628,7 +1628,7 @@ export function Toolbar({ windowWorkspaceId, sidebarVisible, pageFullscreen, vim
           {/* The address editor (E) has the address: the bar shows stats. */}
           {urlEditorOpen
             ? <WorkspaceStats />
-            : <Omnibox tabUrl={activeTab?.url || ''} />}
+            : <Omnibox tabId={activeTab?.id ?? null} tabUrl={activeTab?.url || ''} anchorRef={urlBarRef} />}
           {/* Dark pages: the page dark or not, and its popover. */}
           {!urlEditorOpen && <DarkPagesButton url={activeTab?.url || ''} onOpenSettings={onOpenDarkPagesSettings} />}
           {/* Vim's mode at the bar's end, as in every text field. */}
