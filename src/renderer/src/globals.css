@@ -562,6 +562,14 @@ kbd.vim-mode[data-indicator="dot"]::before {
  * gradient's own angle or position animated would cost the window's main
  * thread a frame's work 60 times a second, for as long as Vim mode is on. */
 @keyframes mode-edge-turn { to { rotate: 1turn; } }
+/* A turn that rests at the sides: the comet's head (--head, its angle in the
+ * gradient) is taken from the right end to the left and round again, each
+ * half eased — slow at the ends, quick along the top and the bottom. */
+@keyframes mode-edge-turn-sides {
+  0% { rotate: calc(90deg - var(--head)); animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1); }
+  50% { rotate: calc(270deg - var(--head)); animation-timing-function: cubic-bezier(0.8, 0, 0.2, 1); }
+  100% { rotate: calc(450deg - var(--head)); }
+}
 @keyframes mode-edge-slide { to { translate: -50% 0; } }
 @keyframes mode-edge-breathe {
   0%, 100% { opacity: calc(var(--glow) * 0.4); }
@@ -625,15 +633,24 @@ kbd.vim-mode[data-indicator="dot"]::before {
 }
 
 /* Comet on rail: a comet over a faint ring of all three colours. */
-.mode-edge[data-edge="comet-rail"] > span > i {
+.mode-edge[data-edge^="comet-rail"] > span > i {
   background: linear-gradient(90deg, color-mix(in oklch, var(--c1) 40%, transparent), color-mix(in oklch, var(--c2) 40%, transparent), color-mix(in oklch, var(--c3) 40%, transparent));
 }
-.mode-edge[data-edge="comet-rail"] > span > i > i {
+.mode-edge[data-edge^="comet-rail"] > span > i > i {
+  --head: 348deg;
   background: conic-gradient(transparent 0deg 200deg, color-mix(in oklch, var(--c2) 70%, transparent) 290deg, var(--c1) 348deg, transparent 360deg);
 }
 /* Comet: the comet alone. */
-.mode-edge[data-edge="comet"] > span > i > i {
+.mode-edge[data-edge="comet"] > span > i > i,
+.mode-edge[data-edge="comet-sides"] > span > i > i {
+  --head: 340deg;
   background: conic-gradient(transparent 0deg 230deg, var(--c2) 290deg, var(--c1) 340deg, transparent 360deg);
+}
+/* Either comet resting at the sides. A steady turn has it crawl past the
+ * middle of a wide field's top and bottom and whip round its ends; this one
+ * lingers at the ends instead. */
+.mode-edge[data-edge$="-sides"] > span > i > i {
+  animation-name: mode-edge-turn-sides;
 }
 /* Aurora: the three colours circling the whole edge. */
 .mode-edge[data-edge="aurora"] > span > i > i {

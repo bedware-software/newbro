@@ -36,7 +36,8 @@ export interface Settings {
    *  'dot' or 'plain'. */
   vimIndicator: string
   /** How a field's edge shows Vim's mode (renderer lib/vim-edge.ts):
-   *  'comet-rail', 'comet', 'aurora', 'living', 'glint' or 'off'. */
+   *  'comet-rail', 'comet-rail-sides', 'comet', 'comet-sides', 'aurora',
+   *  'living', 'glint' or 'off'. */
   vimEdge: string
   /** The edge on every field that shows the mode, not the address bar
    *  alone. */
@@ -115,7 +116,7 @@ const KNOWN_LIGHT_VARIANTS = new Set(['light-default', 'light-bright', 'light-so
 const KNOWN_DARK_VARIANTS = new Set(['dark-default', 'dark-deep', 'dark-soft'])
 const KNOWN_DENSITIES = new Set(['compact', 'normal'])
 const KNOWN_VIM_INDICATORS = new Set(['rim-label', 'rim', 'label', 'tint', 'base', 'dot', 'plain'])
-const KNOWN_VIM_EDGES = new Set(['comet-rail', 'comet', 'aurora', 'living', 'glint', 'off'])
+const KNOWN_VIM_EDGES = new Set(['comet-rail', 'comet-rail-sides', 'comet', 'comet-sides', 'aurora', 'living', 'glint', 'off'])
 const KNOWN_MOTIONS = new Set(['system', 'always', 'never'])
 function motionChoice(value: unknown): Settings['motion'] {
   return KNOWN_MOTIONS.has(value as string) ? (value as Settings['motion']) : null

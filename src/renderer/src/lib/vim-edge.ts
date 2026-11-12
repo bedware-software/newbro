@@ -8,11 +8,13 @@
 
 import { useSyncExternalStore } from 'react'
 
-export type VimEdge = 'comet-rail' | 'comet' | 'aurora' | 'living' | 'glint' | 'off'
+export type VimEdge = 'comet-rail' | 'comet-rail-sides' | 'comet' | 'comet-sides' | 'aurora' | 'living' | 'glint' | 'off'
 
 export const VIM_EDGES: readonly { id: VimEdge; label: string; hint: string }[] = [
   { id: 'comet-rail', label: 'Comet on rail', hint: 'A comet runs round the edge over a faint ring in the mode\'s colours.' },
+  { id: 'comet-rail-sides', label: 'Comet on rail, resting at the sides', hint: 'The same comet over its ring, slowing to rest at the left and right ends instead of the top and bottom.' },
   { id: 'comet', label: 'Comet', hint: 'A lone comet runs round the edge; the rest of it stays dark.' },
+  { id: 'comet-sides', label: 'Comet, resting at the sides', hint: 'The lone comet, slowing to rest at the left and right ends instead of the top and bottom.' },
   { id: 'aurora', label: 'Aurora', hint: 'The mode\'s three colours slowly circle the edge, with a soft halo.' },
   { id: 'living', label: 'Living border', hint: 'The colours drift in place while the glow slowly swells and fades.' },
   { id: 'glint', label: 'Glint', hint: 'A ring in the mode\'s colours with a glint passing along it now and then.' },
