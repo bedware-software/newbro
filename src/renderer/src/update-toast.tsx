@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { UpdateToastContent, type UpdateToastStatus } from './components/UpdateToastContent'
 import './globals.css'
+// Motion's platform default on this document's root (lib/motion.ts).
+import './lib/motion'
 
 interface UpdateToastSpec {
   status: UpdateToastStatus

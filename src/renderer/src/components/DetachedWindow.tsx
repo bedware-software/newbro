@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { log } from '../lib/log'
 import { registerHintPopup } from '../lib/chrome-hints'
 import { isEscapeKey } from '../lib/vim-mode'
+import { MOTION_ATTRIBUTE, syncMotionTo } from '../lib/motion'
 
 const DRAG_HANDLE_SELECTOR = '[data-detached-drag-handle]'
 const DRAG_CANCEL_SELECTOR = '[data-detached-no-drag]'
@@ -126,6 +127,8 @@ function syncThemeToPopup(popupDoc: Document): void {
   const variant = document.documentElement.getAttribute('data-theme-variant')
   if (variant) popupDoc.documentElement.setAttribute('data-theme-variant', variant)
   else popupDoc.documentElement.removeAttribute('data-theme-variant')
+  // Whether the edge's light and the mark's glitch move there too.
+  syncMotionTo(popupDoc)
 }
 
 /** The page background as RRGGBB, for the popup's native window background,
@@ -404,7 +407,7 @@ export function DetachedWindow({
     const themeObserver = new MutationObserver(() => syncThemeToPopup(popup.document))
     themeObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme', 'data-theme-variant'],
+      attributeFilter: ['data-theme', 'data-theme-variant', MOTION_ATTRIBUTE],
     })
 
     let closeOnBlurArmed = false

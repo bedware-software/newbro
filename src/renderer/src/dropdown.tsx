@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client'
 import { DropdownMenuContent } from './components/DropdownMenuContent'
 import type { DropdownEventBody, DropdownSpec } from './components/dropdown-protocol'
 import './globals.css'
+// Motion's platform default on this document's root (lib/motion.ts).
+import './lib/motion'
 
 // Popup window entry. Lifecycle:
 // 1. Main creates this window (transparent, frameless, always-on-top child).

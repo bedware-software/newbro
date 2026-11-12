@@ -41,6 +41,13 @@ export interface Settings {
   /** The edge on every field that shows the mode, not the address bar
    *  alone. */
   vimEdgeEverywhere: boolean
+  /** Whether the app's own decorations move — the edge's light, the mark's
+   *  glitch (renderer lib/motion.ts): 'system' goes by the OS's Reduce
+   *  motion, 'always' and 'never' don't. Null is no choice made: the
+   *  renderer takes the platform's default then ('always' on Windows,
+   *  'system' elsewhere), and nothing is saved for it, so settings synced
+   *  from a Mac don't pin its default onto Windows, nor the other way. */
+  motion: 'system' | 'always' | 'never' | null
   /** COMMAND-mode keymap as the user wrote it in Settings — plain text, one
    *  `<command> <keys>` binding per line, parsed by the renderer
    *  (lib/vim-keymap.ts). Null means the built-in default, so users who never
@@ -109,6 +116,10 @@ const KNOWN_DARK_VARIANTS = new Set(['dark-default', 'dark-deep', 'dark-soft'])
 const KNOWN_DENSITIES = new Set(['compact', 'normal'])
 const KNOWN_VIM_INDICATORS = new Set(['rim-label', 'rim', 'label', 'tint', 'base', 'dot', 'plain'])
 const KNOWN_VIM_EDGES = new Set(['comet-rail', 'comet', 'aurora', 'living', 'glint', 'off'])
+const KNOWN_MOTIONS = new Set(['system', 'always', 'never'])
+function motionChoice(value: unknown): Settings['motion'] {
+  return KNOWN_MOTIONS.has(value as string) ? (value as Settings['motion']) : null
+}
 const KNOWN_NEW_TAB_FOCUS = new Set(['site', 'url'])
 const KNOWN_URL_EDITOR_MODES = new Set(['insert', 'command'])
 type UrlEditorModeKey = 'urlEditorClickMode' | 'urlEditorNewTabMode' | 'urlEditorEditMode'
@@ -315,6 +326,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vimIndicator: 'rim-label',
   vimEdge: 'comet-rail',
   vimEdgeEverywhere: false,
+  motion: null,
   vimKeymap: null,
   defaultPageUrl: '',
   searchEngine: 'https://www.google.com/search?q=%s',
@@ -675,6 +687,7 @@ export function loadSettings(): Settings {
       ? (saved!.vimEdge as string)
       : DEFAULT_SETTINGS.vimEdge,
     vimEdgeEverywhere: saved?.vimEdgeEverywhere === true,
+    motion: motionChoice(saved?.motion),
     vimKeymap: normalizeVimKeymap(saved?.vimKeymap),
     searchSuggestions: saved?.searchSuggestions !== false,
     bangsEnabled: saved?.bangsEnabled !== false,
@@ -733,6 +746,7 @@ export function saveSettings(settings: Settings): void {
       ? settings.vimEdge
       : DEFAULT_SETTINGS.vimEdge,
     vimEdgeEverywhere: settings.vimEdgeEverywhere === true,
+    motion: motionChoice(settings.motion),
     vimKeymap: normalizeVimKeymap(settings.vimKeymap),
     searchSuggestions: settings.searchSuggestions !== false,
     bangsEnabled: settings.bangsEnabled !== false,

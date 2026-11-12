@@ -71,6 +71,7 @@ const STATIC: SettingsIndexEntry[] = [
   { section: 'appearance', item: 'appearance:vim-indicator', title: 'Vim mode indicator', keywords: 'cmd ins key cap badge colour', fallback: 'appearance:theme' },
   { section: 'appearance', item: 'appearance:vim-edge', title: 'Vim mode edge', keywords: 'address bar light comet', fallback: 'appearance:theme' },
   { section: 'appearance', item: 'appearance:vim-edge-everywhere', title: 'Vim mode edge on every field', keywords: 'search find palette', fallback: 'appearance:theme' },
+  { section: 'appearance', item: 'appearance:motion', title: 'Motion', keywords: 'animation animations reduce reduced motion effects moving still glitch light system always never' },
   // Dark pages
   { section: 'darkPages', item: 'dark:mode', title: 'Dark pages', keywords: 'off on theme night mode' },
   { section: 'darkPages', item: 'dark:style', title: 'Dark pages style', keywords: 'smart native own themes' },

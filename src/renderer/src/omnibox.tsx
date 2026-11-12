@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client'
 import { OmniboxPopupContent } from './components/OmniboxPopupContent'
 import type { OmniboxPopupEvent, OmniboxPopupSpec } from './components/omnibox-protocol'
 import './globals.css'
+// Motion's platform default on this document's root (lib/motion.ts).
+import './lib/motion'
 
 // Address-bar suggestion popup entry (src/main/omnibox-popup.ts). Main
 // forwards the Toolbar's spec on every change; we render it, report our

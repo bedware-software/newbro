@@ -668,12 +668,12 @@ kbd.vim-mode[data-indicator="dot"]::before {
   animation: mode-edge-glint calc(var(--speed) * 0.6) ease-in-out infinite;
 }
 
-/* Still while its window isn't the one in use (lib/vim-edge.ts), and for
- * Reduce motion. */
+/* Still while its window isn't the one in use (lib/vim-edge.ts), and
+ * wherever the root says data-reduce-motion — Settings → Appearance →
+ * Motion (lib/motion.ts): Never, or Follow system while the OS asks for
+ * less. Not the media query itself, so Always moves it whatever the OS says. */
 [data-window-inactive] .mode-edge i { animation-play-state: paused; }
-@media (prefers-reduced-motion: reduce) {
-  .mode-edge i { animation-play-state: paused !important; }
-}
+[data-reduce-motion] .mode-edge i { animation-play-state: paused !important; }
 
 /* ── The app's mark (BrandMark) ──
  * Two katanas crossed into a V, in the app icon's colours wherever it is,
@@ -768,9 +768,8 @@ kbd.vim-mode[data-indicator="dot"]::before {
   100% { opacity: 0; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .brand-mark > svg { animation: none !important; }
-}
+/* No glitch where the root says data-reduce-motion (lib/motion.ts). */
+[data-reduce-motion] .brand-mark > svg { animation: none !important; }
 
 /* ── Sliders (Dark pages' comfort, components/DarkPagesControls.tsx) ──
  * A thin track filled up to the thumb in the primary colour (--fill, set by

@@ -43,6 +43,7 @@ import { runInternalPageCommand } from './lib/internal-page-commands'
 import { resolveVariantId, normalizeLightVariant, normalizeDarkVariant, normalizeDensity, applyDensity, type ThemeChoice, type Density } from './lib/theme'
 import { applyVimIndicator, normalizeVimIndicator, type VimIndicator } from './lib/vim-indicator'
 import { applyVimEdge, normalizeVimEdge, type VimEdge } from './lib/vim-edge'
+import { applyMotion, normalizeMotion, type MotionChoice } from './lib/motion'
 import { usePublishWindowVimKeymap } from './lib/window-vim-keymap'
 import { darkPagesActions } from './lib/dark-pages'
 import type { PermissionKind, PermissionPolicy, PermissionGrant } from './lib/permissions'
@@ -74,6 +75,9 @@ interface Settings {
   vimEdge: VimEdge
   /** That edge on every field that shows the mode, not the address bar alone. */
   vimEdgeEverywhere: boolean
+  /** Whether the edge's light and the mark's glitch move, see lib/motion.ts;
+   *  null = no choice made, the platform's default. */
+  motion: MotionChoice | null
   /** COMMAND-mode keymap text; null = DEFAULT_VIM_KEYMAP. */
   vimKeymap: string | null
   defaultPageUrl: string
@@ -772,6 +776,7 @@ export default function App() {
         density: normalizeDensity(s.density),
         vimIndicator: normalizeVimIndicator(s.vimIndicator),
         vimEdge: normalizeVimEdge(s.vimEdge),
+        motion: normalizeMotion(s.motion),
         newTabFocus: normalizeNewTabFocus(s.newTabFocus),
       }
       setSettings(normalized)
@@ -779,6 +784,7 @@ export default function App() {
       applyDensity(normalized.density)
       applyVimIndicator(normalized.vimIndicator)
       applyVimEdge(normalized.vimEdge, normalized.vimEdgeEverywhere === true)
+      applyMotion(normalized.motion)
       setDefaultNewTabUrl(normalized.defaultPageUrl)
       setNewTabFocusPref(normalized.newTabFocus)
       applyUrlEditorModes(normalized)
@@ -1453,6 +1459,7 @@ export default function App() {
         density: normalizeDensity(raw.density),
         vimIndicator: normalizeVimIndicator(raw.vimIndicator),
         vimEdge: normalizeVimEdge(raw.vimEdge),
+        motion: normalizeMotion(raw.motion),
         newTabFocus: normalizeNewTabFocus(raw.newTabFocus),
       }
       setSettings(s)
@@ -1460,6 +1467,7 @@ export default function App() {
       applyDensity(s.density)
       applyVimIndicator(s.vimIndicator)
       applyVimEdge(s.vimEdge, s.vimEdgeEverywhere === true)
+      applyMotion(s.motion)
       setDefaultNewTabUrl(s.defaultPageUrl)
       setNewTabFocusPref(s.newTabFocus)
       applyUrlEditorModes(s)
@@ -1574,6 +1582,7 @@ export default function App() {
       density: normalizeDensity(newSettings.density),
       vimIndicator: normalizeVimIndicator(newSettings.vimIndicator),
       vimEdge: normalizeVimEdge(newSettings.vimEdge),
+      motion: normalizeMotion(newSettings.motion),
       newTabFocus: normalizeNewTabFocus(newSettings.newTabFocus),
     }
     setSettings(normalized)
@@ -1581,6 +1590,7 @@ export default function App() {
     applyDensity(normalized.density)
     applyVimIndicator(normalized.vimIndicator)
     applyVimEdge(normalized.vimEdge, normalized.vimEdgeEverywhere === true)
+    applyMotion(normalized.motion)
     setDefaultNewTabUrl(normalized.defaultPageUrl)
     setNewTabFocusPref(normalized.newTabFocus)
     applyUrlEditorModes(normalized)
@@ -1818,7 +1828,7 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         settings={settings}
         onSave={handleSaveSettings}
-        onAppearancePreview={(p) => { applyTheme(p.theme, p.lightVariant, p.darkVariant); applyDensity(p.density); applyVimIndicator(p.vimIndicator); applyVimEdge(p.vimEdge, p.vimEdgeEverywhere) }}
+        onAppearancePreview={(p) => { applyTheme(p.theme, p.lightVariant, p.darkVariant); applyDensity(p.density); applyVimIndicator(p.vimIndicator); applyVimEdge(p.vimEdge, p.vimEdgeEverywhere); applyMotion(p.motion) }}
         tabRequest={settingsTabRequest}
         vimKeymap={vimReady ? vimKeymap : null}
       />

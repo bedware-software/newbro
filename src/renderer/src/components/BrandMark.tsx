@@ -19,8 +19,9 @@ interface Props {
  *  theme. A glitch (glitchKey bumped, or the pointer coming onto it with
  *  glitchOnHover) tears it: three copies of it, the two behind in the
  *  second trio and in the mark's second colour alone, cut into bands that
- *  jump sideways for half a second (.brand-mark in globals.css). Still for
- *  Reduce motion, and while its window isn't the one in use. */
+ *  jump sideways for half a second (.brand-mark in globals.css). Still
+ *  where Settings → Appearance → Motion says so (lib/motion.ts), and while
+ *  its window isn't the one in use. */
 export function BrandMark({ glitchKey = 0, variant = 'small', glitchOnHover = false, size }: Props) {
   const ref = useRef<HTMLSpanElement>(null)
   const first = useRef(true)

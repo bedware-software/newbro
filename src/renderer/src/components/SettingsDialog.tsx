@@ -14,6 +14,7 @@ import { ModeEdge } from './ModeEdge'
 import { BrandMark } from './BrandMark'
 import { WorkspaceStatsCard } from './WorkspaceStats'
 import { VIM_EDGES, DEFAULT_VIM_EDGE, DEFAULT_VIM_EDGE_EVERYWHERE, normalizeVimEdge, type VimEdge } from '../lib/vim-edge'
+import { MOTIONS, effectiveMotion, normalizeMotion, type MotionChoice } from '../lib/motion'
 import { useAppStore } from '../store/app-store'
 import { DEFAULT_VIM_KEYMAP, parseVimKeymap, settingsKeymap, settingsCommandLabel, settingsCommandsInOrder, type ParsedVimKeymap, type VimKeymap } from '../lib/vim-keymap'
 import { usePopupVimMode, type VimMode } from '../lib/vim-mode'
@@ -61,6 +62,8 @@ interface Settings {
   vimIndicator: VimIndicator
   vimEdge: VimEdge
   vimEdgeEverywhere: boolean
+  /** Null = no choice made: the platform's default (lib/motion.ts). */
+  motion: MotionChoice | null
   /** Null = the built-in default keymap. */
   vimKeymap: string | null
   defaultPageUrl: string
@@ -103,6 +106,7 @@ interface AppearancePreview {
   vimIndicator: VimIndicator
   vimEdge: VimEdge
   vimEdgeEverywhere: boolean
+  motion: MotionChoice | null
 }
 
 type UpdateStatus =
@@ -504,6 +508,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   const [vimIndicator, setVimIndicator] = useState<VimIndicator>(DEFAULT_VIM_INDICATOR)
   const [vimEdge, setVimEdge] = useState<VimEdge>(DEFAULT_VIM_EDGE)
   const [vimEdgeEverywhere, setVimEdgeEverywhere] = useState(DEFAULT_VIM_EDGE_EVERYWHERE)
+  // Null till one is picked, here or before: saved as null, so the
+  // platform's default stays the platform's.
+  const [motion, setMotion] = useState<MotionChoice | null>(null)
   const [vimKeymapText, setVimKeymapText] = useState(DEFAULT_VIM_KEYMAP)
   const [defaultUrl, setDefaultUrl] = useState('')
   const [searchEngine, setSearchEngine] = useState(SEARCH_ENGINES.Google)
@@ -615,6 +622,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
     vimIndicator: DEFAULT_VIM_INDICATOR,
     vimEdge: DEFAULT_VIM_EDGE,
     vimEdgeEverywhere: DEFAULT_VIM_EDGE_EVERYWHERE,
+    motion: null,
   })
 
   // Subscribe to updater status while the dialog is open so the
@@ -885,6 +893,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       const indicator = normalizeVimIndicator(settings.vimIndicator)
       const edge = normalizeVimEdge(settings.vimEdge)
       const edgeEverywhere = settings.vimEdgeEverywhere === true
+      const savedMotion = normalizeMotion(settings.motion)
       setTheme(settings.theme)
       setLightVariant(lv)
       setDarkVariant(dv)
@@ -897,8 +906,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       setVimIndicator(indicator)
       setVimEdge(edge)
       setVimEdgeEverywhere(edgeEverywhere)
+      setMotion(savedMotion)
       setVimKeymapText(settings.vimKeymap ?? DEFAULT_VIM_KEYMAP)
-      originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens, vimIndicator: indicator, vimEdge: edge, vimEdgeEverywhere: edgeEverywhere }
+      originalAppearanceRef.current = { theme: settings.theme, lightVariant: lv, darkVariant: dv, density: dens, vimIndicator: indicator, vimEdge: edge, vimEdgeEverywhere: edgeEverywhere, motion: savedMotion }
       setDefaultUrl(settings.defaultPageUrl)
       setSearchEngine(settings.searchEngine || SEARCH_ENGINES.Google)
       setSearchSuggestions(settings.searchSuggestions !== false)
@@ -1339,6 +1349,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
       vimIndicator,
       vimEdge,
       vimEdgeEverywhere,
+      motion,
       // Left at the default it stays null, so later default bindings reach it.
       vimKeymap: vimKeymapText === DEFAULT_VIM_KEYMAP ? null : vimKeymapText,
       defaultPageUrl: defaultUrl,
@@ -1369,7 +1380,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
   }
 
   const previewAppearance = (next: Partial<AppearancePreview>): void => {
-    onAppearancePreview?.({ theme, lightVariant, darkVariant, density, vimIndicator, vimEdge, vimEdgeEverywhere, ...next })
+    onAppearancePreview?.({ theme, lightVariant, darkVariant, density, vimIndicator, vimEdge, vimEdgeEverywhere, motion, ...next })
   }
 
   const handleWipeAllData = () => {
@@ -1902,6 +1913,23 @@ export function SettingsDialog({ open, onClose, settings, onSave, onAppearancePr
                   On every field that shows the mode too — Search Everything, the Command Palette,
                   Find, the address editor
                 </label>
+              </div>
+
+              {/* Whether the edge's light and the mark's glitch move. */}
+              <div>
+                <h3 className="text-sm font-semibold text-foreground mb-1">Motion</h3>
+                <p className="text-[11px] text-muted-foreground mb-3">
+                  Whether the light round the edge and the logo's glitch move. Follow system keeps
+                  them still while the OS asks for less motion — Reduce motion on macOS, "Animation
+                  effects" turned off on Windows.
+                </p>
+                <Segmented
+                  label="Motion"
+                  vimItem="appearance:motion"
+                  value={effectiveMotion(motion)}
+                  onChange={(id) => { setMotion(id); previewAppearance({ motion: id }) }}
+                  options={MOTIONS.map((m) => ({ value: m.id, label: m.label, title: m.hint }))}
+                />
               </div>
             </div>
           )}
